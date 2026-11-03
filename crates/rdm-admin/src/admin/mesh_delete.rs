@@ -1195,7 +1195,7 @@ mod tests {
         let template = LaunchTemplate {
             fabric: "fab".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
                 name: me.clone(),

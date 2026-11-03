@@ -142,7 +142,7 @@ pub fn binding_set(sha: &str) -> BindingSet {
     BindingSet {
         candidate: Candidate { sha: sha.into(), build: "rdm-test".into() },
         launch_ids: vec!["node-admin".into(), "node".into()],
-        bindings: vec![bind("node-admin", "faulted-node-admin"), bind("node", "rdm-rpc-node")],
+        bindings: vec![bind("node-admin", "faulted-node-admin"), bind("node", "testkit-node")],
     }
 }
 

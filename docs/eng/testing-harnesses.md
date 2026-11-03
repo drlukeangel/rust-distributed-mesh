@@ -114,7 +114,7 @@ fails any node process of the lane's build still running after the jobs end
 `RDM_BIN_DIR`, else the target profile directory of the test executable (`estate.rs::bin_dir`).
 The test kit's own executables are `rdm-node-admin` (from `rdm-admin`), and from `rdm-test`:
 `faulted-node-admin` (the node-admin runtime with the test kit's stall door, op `0x75`),
-`rdm-rpc-node` (the generic RPC proof node), `rdm-node` (the test kit's node executable for every
+`testkit-node` (the testkit node for the `node` type, serving the testkit store and probe families), `rdm-node` (the test kit's node executable for every
 other node type), `rdm-rpc-probe`, `rdm-scenario` and `rdm-store-root-probe`
 (`crates/rdm-test/Cargo.toml`).
 

@@ -28,7 +28,7 @@ A process calls one `init_*` once, at its start, and holds the returned guard fo
 
 | call | for | source |
 |---|---|---|
-| `rdm_transport::init_evidence_telemetry(service)` | every RDM binary: `rdm-node-admin` (`crates/rdm-admin/src/entry.rs`), every node built on `rdm-node` (`crates/rdm-node/src/lib.rs`), `rdm-rpc-node` | `telemetry.rs` |
+| `rdm_transport::init_evidence_telemetry(service)` | every RDM binary: `rdm-node-admin` (`crates/rdm-admin/src/entry.rs`), every node built on `rdm-node` (`crates/rdm-node/src/lib.rs`), `testkit-node` | `telemetry.rs` |
 | `rdm_transport::init_evidence_telemetry_for_one_call(service)` | a process that makes one call and ends (`rdm-rpc-probe`); it reports its init steps inside its call's root span (`report_init_steps_here`), so each run is one trace | `telemetry.rs` |
 | `rdm_transport::telemetry::init_telemetry(service)` | a long-running service outside the node runtime (`demo/admin-ui`) | `telemetry.rs` |
 | `init_telemetry_for_cli(service)` | a short-lived command-line process; no caller in the workspace today | `telemetry.rs` |
@@ -56,7 +56,7 @@ The resource every span and log record carries (`telemetry.rs::build_resource_wi
 
 | attribute | value |
 |---|---|
-| `service.name` | `OTEL_SERVICE_NAME`, else the name the binary passes to `init_*` (`rdm-rpc-node`, `rdm-rpc-probe`, the executable's own name for an `rdm-node` node). It names the host process, never the caller: `caller_system` names the caller (telemetry.md §1) |
+| `service.name` | `OTEL_SERVICE_NAME`, else the name the binary passes to `init_*` (`testkit-node`, `rdm-rpc-probe`, the executable's own name for an `rdm-node` node). It names the host process, never the caller: `caller_system` names the caller (telemetry.md §1) |
 | `process.pid` | the process's pid |
 | `rafka.node` | `RDM_NODE_NAME` (the node's `path.name`), when the launcher set it |
 | `service.instance.id` | a node-admin's node id: its launch's `RDM_NODE_ID`, else the one the bootstrap's first step minted (`init_evidence_telemetry_for_instance`, Q208) |

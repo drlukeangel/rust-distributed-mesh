@@ -1021,7 +1021,7 @@ mod tests {
         let old_name = name.renamed().unwrap();
         let binding = Binding {
             launch_id: "node".into(),
-            executable: "/bin/rdm-rpc-node-v2".into(),
+            executable: "/bin/testkit-node-v2".into(),
             sha256: "b".repeat(64),
             image: None,
         };

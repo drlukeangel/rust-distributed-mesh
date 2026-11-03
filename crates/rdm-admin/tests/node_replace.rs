@@ -141,7 +141,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         let succ1_allocation = provenance(&pred1, &name1);
         let v2_binding = Binding {
             launch_id: "node".into(),
-            executable: "/bin/rdm-rpc-node-v2".into(),
+            executable: "/bin/testkit-node-v2".into(),
             sha256: "2".repeat(64),
             image: None,
         };

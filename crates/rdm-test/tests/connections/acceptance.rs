@@ -432,7 +432,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     let failed_dials = named(&spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source_node_id"] == source_id.as_str() && rdm_test::estate::names_location(sp, "destination", &DEST) && sp["attributes"]["outcome"] != "Reply").count();
     assert!(failed_dials >= 1, "the blocked attempt is the series' own dial too");
     assert!(start(dials[0]) >= due_ms * 1_000_000, "the dial waited for the series' backoff: {} ns, due {due_ms} ms", start(dials[0]));
-    assert!(s(&dials[0]["resource"]["service.name"]).is_empty() || s(&dials[0]["resource"]["service.name"]) == "rdm-rpc-node", "the dial is the source process's own: {}", dials[0]);
+    assert!(s(&dials[0]["resource"]["service.name"]).is_empty() || s(&dials[0]["resource"]["service.name"]) == "testkit-node", "the dial is the source process's own: {}", dials[0]);
     let woken: Vec<&Value> = named(&spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source_node_id"] == source_id.as_str() && rdm_test::estate::names_location(sp, "destination", &DEST)).collect();
     assert!(woken.is_empty(), "no accept woke the dial: {woken:#?}");
     let landed: Vec<&Value> = named(&spans, "rdm.node_admin.connection.delete.via-direct-restored").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "source", &SOURCE) && sp["attributes"]["outcome"] == "landed").collect();

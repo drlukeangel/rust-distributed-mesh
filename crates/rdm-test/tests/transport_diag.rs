@@ -159,7 +159,7 @@ fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
     }
     let _ = std::fs::remove_dir_all(&data_dir);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rdm-rpc-node") });
+    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("testkit-node") });
     let (noq_trace, diag_target) = (tracing::enabled!(target: "noq_proto::endpoint", tracing::Level::TRACE), tracing::enabled!(target: "transport_diag", tracing::Level::INFO));
     rt.block_on(async {
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

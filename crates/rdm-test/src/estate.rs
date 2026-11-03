@@ -327,7 +327,7 @@ pub fn binary(name: &str) -> PathBuf {
 pub(crate) fn package_of(name: &str) -> &'static str {
     match name {
         "rdm-node-admin" => "rdm-admin",
-        "rdm-rpc-probe" | "rdm-rpc-node" | "faulted-node-admin" => "rdm-test",
+        "rdm-rpc-probe" | "testkit-node" | "faulted-node-admin" => "rdm-test",
         "rdm-node" => "rdm-test",
         _ => "<the package of this binary>",
     }
@@ -2076,7 +2076,7 @@ mod span_reader_tests {
         let names: Vec<&str> = replaced.iter().filter_map(|s| s["name"].as_str()).collect();
         assert_eq!(names, vec!["rdm.from_zero"], "a replaced file is read from 0");
 
-        let second_file = dir.join("rdm-rpc-node.2-1.spans.jsonl");
+        let second_file = dir.join("testkit-node.2-1.spans.jsonl");
         std::fs::write(
             &second_file,
             concat!(

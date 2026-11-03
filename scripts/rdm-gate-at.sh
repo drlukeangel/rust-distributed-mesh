@@ -565,7 +565,7 @@ cat $D/*.log >> $O.detail
 # Nothing an estate launched may outlive the gate: a node process of this lane's build that the
 # init/user manager has adopted is a leak, named and failed (then killed so the next gate is clean).
 LANE_ROOT=$(pwd)
-leaked=$(ps -eo pid,ppid,args | awk -v r="$LANE_ROOT/target/debug/" '$2!=0 && index($0, r) && /(rdm-node-admin|rdm-rpc-node|rshape-node-admin|rafka-broker|rafka-gateway|rafka-compute)/ {print $1":"$2}' | while IFS=: read pid ppid; do pcomm=$(ps -o comm= -p $ppid 2>/dev/null); case "$pcomm" in systemd|init) echo $pid;; esac; done)
+leaked=$(ps -eo pid,ppid,args | awk -v r="$LANE_ROOT/target/debug/" '$2!=0 && index($0, r) && /(rdm-node-admin|testkit-node|rshape-node-admin|rafka-broker|rafka-gateway|rafka-compute)/ {print $1":"$2}' | while IFS=: read pid ppid; do pcomm=$(ps -o comm= -p $ppid 2>/dev/null); case "$pcomm" in systemd|init) echo $pid;; esac; done)
 if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" | tee -a $O; for p in $leaked; do echo "leaked: $(ps -o pid=,etimes=,args= -p $p | cut -c1-160)" >> $O.detail; kill -9 $p 2>/dev/null; done; fi
 # Preserve once after all live tests and their runtimes ended. Per-job copies during the
 # concurrent batch multiply every artifact by every red and perform disk work inside other

@@ -3005,7 +3005,7 @@ mod tests {
         let data_root = tempdir(cell);
         LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: rdm_core::FabricId::mint(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

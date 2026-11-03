@@ -263,7 +263,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let view_sink = View::default();
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: fabric_id.clone(),
-        executable: "/nonexistent/rdm-rpc-node".into(),
+        executable: "/nonexistent/testkit-node".into(),
         seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
         launcher: rdm_core::launch::Launcher { mesh: m1_a1.mesh.clone(), name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
         env: BTreeMap::new(),
@@ -514,7 +514,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         sink.writes_through(rows_fp.clone());
         let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
@@ -609,7 +609,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         view_sink.writes_through(rows_fp.clone());
         let fp_template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
@@ -672,7 +672,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         view_sink.writes_through(rows_a2.clone());
         let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { mesh: m2_a2.mesh.clone(), name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
@@ -851,7 +851,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
                 mesh: fp.mesh.clone(), name: fp.name.clone(),

@@ -231,7 +231,7 @@ mod tests {
             span("rdm.mesh.topology.update.via-snapshot-installed", 4_000_000_000, json!({"node": "0123456789ab"})),
             span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"path": "mesh1.node-admin", "name": "1", "outcome": "applied"})),
         ];
-        std::fs::write(dir.join("rdm-rpc-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
+        std::fs::write(dir.join("testkit-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
         let mut e = Evidence::default();
         assert_eq!(e.refresh(&dir).unwrap(), 1);
         let (shown, hidden) = e.newest(&[], false, 10);
@@ -243,13 +243,13 @@ mod tests {
         let node = |e: &Event| (e.node_path.clone(), e.node_name.clone(), e.node_id.clone());
         assert_eq!(node(&shown[0]), (Some("mesh1.broker".into()), Some("1".into()), Some("0123456789ab".into())));
         assert_eq!(node(&shown[1]), (Some("mesh1.node-admin".into()), Some("1".into()), None), "a span's own `path`/`name` names it, never mixed with its file's node");
-        assert_eq!(shown[0].process, "rdm-rpc-node.1-1", "the span file's name before `.spans.jsonl`");
+        assert_eq!(shown[0].process, "testkit-node.1-1", "the span file's name before `.spans.jsonl`");
         let (all, _) = e.newest(&[], true, 10);
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].name, "rdm.mesh.topology.update.via-snapshot-installed", "newest first across the toggle");
         assert_eq!(node(&all[0]), (Some("mesh1.broker".into()), Some("1".into()), Some("0123456789ab".into())), "a span naming no node is its process file's node");
         // A second refresh reads only what was appended, and never a half-written line.
-        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("rdm-rpc-node.1-1.spans.jsonl")).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("testkit-node.1-1.spans.jsonl")).unwrap();
         use std::io::Write;
         write!(f, "{}\n{{\"name\":\"half", span("rdm.mesh.election.resolve.via-mesh-primary", 5_000_000_000, json!({"node_path": "mesh1.node-admin", "node_name": "2", "node_id": "123456789abc"}))).unwrap();
         e.refresh(&dir).unwrap();

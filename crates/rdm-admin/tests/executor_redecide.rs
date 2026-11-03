@@ -271,7 +271,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
     Executor {
         template: LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),

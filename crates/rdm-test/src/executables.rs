@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Where each type's executable comes from.
 #[derive(Debug, Clone)]
 pub enum Executables {
-    /// The testkit's own binaries in [`crate::estate::bin_dir`]: `rdm-node-admin`, `rdm-rpc-node`, and
+    /// The testkit's own binaries in [`crate::estate::bin_dir`]: `rdm-node-admin`, `testkit-node`, and
     /// `rdm-node` for every other kind (it takes its type from the launch). `container` binds each
     /// to the container provider's runtime image.
     Testkit {
@@ -50,7 +50,7 @@ impl Executables {
             Self::Testkit { container } => {
                 let name = match r#type {
                     "node-admin" => "rdm-node-admin",
-                    "node" => "rdm-rpc-node",
+                    "node" => "testkit-node",
                     _ => "rdm-node",
                 };
                 let executable = crate::estate::binary(name);

@@ -53,8 +53,8 @@ path = "src/bin/rdm_node.rs"
 required-features = ["file-backend"]
 
 [[bin]]
-name = "rdm-rpc-node"
-path = "src/bin/rdm_rpc_node.rs"
+name = "testkit-node"
+path = "src/bin/testkit_node.rs"
 required-features = ["file-backend"]
 
 [[bin]]

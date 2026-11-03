@@ -2170,7 +2170,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("step-image-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("rdm-rpc-node");
+        let exe = dir.join("testkit-node");
         std::fs::write(&exe, b"#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let sha256 = rdm_core::binding::sha256_file(&exe).unwrap();
@@ -2260,8 +2260,8 @@ mod tests {
     #[tokio::test]
     async fn concurrent_launches_of_one_file_and_sha_share_one_hash() {
         let dir = crate::test_support::tempdir("shared-hash-one-file");
-        let one = padded(&dir, "rdm-rpc-node", "node", 64 << 20);
-        let other = padded(&dir, "rdm-rpc-node-other", "node", 64 << 20);
+        let one = padded(&dir, "testkit-node", "node", 64 << 20);
+        let other = padded(&dir, "testkit-node-other", "node", 64 << 20);
         let capture = crate::span_capture::Capture::new("rdm151-shared-hash");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let launches = (0..8).map(|_| &one).chain((0..2).map(|_| &other)).map(|b| verify_binding(b, "node", ProviderKind::Process, "build"));
@@ -2371,7 +2371,7 @@ mod tests {
         let template = LaunchTemplate {
             fabric: "fab".into(),
             fabric_id: fabric_id.clone(),
-            executable: "/nonexistent/rdm-rpc-node".into(),
+            executable: "/nonexistent/testkit-node".into(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: me.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
             env: BTreeMap::new(),
