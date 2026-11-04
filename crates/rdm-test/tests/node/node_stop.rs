@@ -127,7 +127,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     }
     // node.get shows it stopped: the same birth, the same process, alive.
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(stopped.stopped, "node.get lists {node:?} stopped: {stopped:?}");
+    assert!(stopped.state == NodeStatus::Stopped, "node.get lists {node:?} stopped: {stopped:?}");
     assert_eq!(stopped.state, NodeStatus::Stopped, "the row's status as its mesh-primary wrote it from the stopped frame (Q233): {stopped:?}");
     assert_eq!((&stopped.node_id, &stopped.incarnation, &stopped.endpoint_id, &stopped.transport_addr), (&before.node_id, &before.incarnation, &before.endpoint_id, &before.transport_addr), "a stop keeps the node id, incarnation, endpoint key and port");
     assert!(alive(pid), "the stopped process {pid} is alive and stopped");
@@ -146,7 +146,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
             .await;
     }
     let after = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(!after.stopped && after.state == NodeStatus::Ready, "node.get lists {node:?} ready again: {after:?}");
+    assert!(after.state == NodeStatus::Ready, "node.get lists {node:?} ready again: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation, &after.endpoint_id, &after.transport_addr), (&before.node_id, &before.incarnation, &before.endpoint_id, &before.transport_addr), "a start keeps the node id, incarnation, endpoint key and port");
     assert_eq!(estate.pid_of(node).await, pid, "the same process");
 
@@ -405,14 +405,14 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(stopped.stopped && stopped.state == NodeStatus::Stopped, "{stopped:?}");
+    assert!(stopped.state == NodeStatus::Stopped, "{stopped:?}");
 
     // The rename of a stopped node: one call to its mesh-primary, the row moved and the bound process told.
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(stopped.node_id.clone()), node_id: stopped.node_id.clone(), incarnation: stopped.incarnation.clone().expect("the stopped node's birth") };
     let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed).await.expect("node.name.update answered");
     assert!(matches!(reply, StatusReply::NameUpdated { .. }), "a stopped node holds no connection and is renamed: {reply:?}");
     let listed = view_of(&estate.nodes_obj().await, &renamed).await;
-    assert!(listed.stopped && listed.node_id == before.node_id && listed.incarnation == before.incarnation, "node.get lists the stopped birth at {renamed:?}: {listed:?}");
+    assert!(listed.state == NodeStatus::Stopped && listed.node_id == before.node_id && listed.incarnation == before.incarnation, "node.get lists the stopped birth at {renamed:?}: {listed:?}");
     assert_eq!(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").into_iter().filter(|n| n.location() == path).count(), 0, "node.get lists nothing at {path:?}");
 
     // The start by its new name rejoins the same process under it.
@@ -427,7 +427,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
             .await;
     }
     let after = view_of(&estate.nodes_obj().await, &renamed).await;
-    assert!(!after.stopped && after.state == NodeStatus::Ready, "node.get lists {renamed:?} ready: {after:?}");
+    assert!(after.state == NodeStatus::Ready, "node.get lists {renamed:?} ready: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation, &after.endpoint_id, &after.transport_addr), (&before.node_id, &before.incarnation, &before.endpoint_id, &before.transport_addr), "the same birth");
     assert_eq!(estate.pid_of(&renamed).await, pid, "the same process");
 
@@ -472,7 +472,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let held = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(held.stopped && held.state == NodeStatus::Stopped, "{held:?}");
+    assert!(held.state == NodeStatus::Stopped, "{held:?}");
 
     // The update: one call to the fabric-primary, here mesh1's mesh-primary too, and the stopped node,
     // still bound, applies it through its own writer.
@@ -493,12 +493,12 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let until = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
     let after = loop {
         let v = view_of(&estate.nodes_obj().await, &path).await;
-        if (v.config == told && !v.stopped && v.state == NodeStatus::Ready) || std::time::Instant::now() >= until {
+        if (v.config == told && v.state == NodeStatus::Ready) || std::time::Instant::now() >= until {
             break v;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    assert!(!after.stopped && after.state == NodeStatus::Ready, "node.get lists {path:?} ready: {after:?}");
+    assert!(after.state == NodeStatus::Ready, "node.get lists {path:?} ready: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation), (&before.node_id, &before.incarnation), "the same birth");
     assert_eq!(after.config, told, "the started node carries the config its join handed it");
     assert_eq!(estate.pid_of(&node_at()).await, pid, "the same process");
@@ -566,7 +566,7 @@ async fn a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_ever
                 at(&renamed).filter(|n| n.node_id == before.node_id && at(&path).is_none())
             })
             .await;
-        assert_eq!((listed.stopped, listed.incarnation.clone()), (true, before.incarnation.clone()), "{:?}: {listed:?}", admin.name);
+        assert_eq!((listed.state, listed.incarnation.clone()), (NodeStatus::Stopped, before.incarnation.clone()), "{:?}: {listed:?}", admin.name);
     }
 
     // The start by the row's name: the same process rejoins under it.
@@ -581,7 +581,7 @@ async fn a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_ever
     for admin in &admins {
         estate
             .until_view_at(&admin.location(), &format!("{:?} lists the rejoined birth ready at {renamed:?}", admin.name), Duration::from_secs(10), |view| {
-                view.iter().find(|n| n.location() == renamed && n.node_id == before.node_id && n.state == NodeStatus::Ready && !n.stopped).map(|_| ())
+                view.iter().find(|n| n.location() == renamed && n.node_id == before.node_id && n.state == NodeStatus::Ready).map(|_| ())
             })
             .await;
     }
@@ -683,7 +683,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     let until = std::time::Instant::now() + Duration::from_secs(30);
     let stopped = loop {
         let v = view_of(&estate.nodes_obj().await, &path).await;
-        if v.stopped {
+        if v.state == NodeStatus::Stopped {
             break v;
         }
         assert!(std::time::Instant::now() < until, "the stopped birth's declaration lists it stopped within 30 s while the stream's stopped is held: {v:?}");
@@ -806,7 +806,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     let stopped = frames(nodes.stop(&stopped_path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let before = view_of(&estate.nodes_obj().await, &stopped_path).await;
-    assert!(before.stopped && before.state == NodeStatus::Stopped, "node.get lists {stopped_path:?} stopped: {before:?}");
+    assert!(before.state == NodeStatus::Stopped, "node.get lists {stopped_path:?} stopped: {before:?}");
 
     // The other path: a node of mesh2 that is not its node-type primary, so its delete moves no primary.
     let mesh2 = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
@@ -835,7 +835,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     if settled {
         estate.until_node(&other, "the deleted path is listed no more", SETTLE, |n| n.is_none().then_some(())).await;
         let held = view_of(&estate.nodes_obj().await, &stopped_path).await;
-        assert!(held.stopped && held.state == NodeStatus::Stopped, "{stopped_path:?} is still stopped after the delete of {other:?}: {held:?}");
+        assert!(held.state == NodeStatus::Stopped, "{stopped_path:?} is still stopped after the delete of {other:?}: {held:?}");
         assert_eq!((&held.node_id, &held.incarnation), (&before.node_id, &before.incarnation), "the stopped birth is the same birth");
     }
     assert!(alive(pid), "the stopped process {pid} is alive");
@@ -899,7 +899,7 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     estate.until_stopped_at_the_fabric_primary(&stopped_path).await;
     let before = view_of(&estate.nodes_obj().await, &stopped_path).await;
-    assert!(before.stopped && before.state == NodeStatus::Stopped, "node.get lists {stopped_name:?} stopped: {before:?}");
+    assert!(before.state == NodeStatus::Stopped, "node.get lists {stopped_name:?} stopped: {before:?}");
 
     // The resize: mesh2 grows by one node while the stopped birth rests.
     let mut stream = estate.submit_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
@@ -922,7 +922,7 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     assert_eq!(rpc.len(), 3, "mesh2 holds three nodes: {grown:?}");
     assert!(rpc.iter().filter(|n| n.location() != stopped_path).all(|n| n.state == NodeStatus::Ready), "every node of mesh2 that is not stopped is ready: {grown:?}");
     let held = view_of(&estate.nodes_obj().await, &stopped_path).await;
-    assert!(held.stopped && held.state == NodeStatus::Stopped, "{stopped_name:?} is still stopped after the resize: {held:?}");
+    assert!(held.state == NodeStatus::Stopped, "{stopped_name:?} is still stopped after the resize: {held:?}");
     assert_eq!((&held.node_id, &held.incarnation), (&before.node_id, &before.incarnation), "the stopped birth is the same birth");
     assert!(alive(pid), "the stopped process {pid} is alive");
     assert_eq!(estate.pid_of(&stopped_name).await, pid, "the same process");
@@ -932,7 +932,7 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
     // The answering admin learns mesh2's rows by gossip: its view takes the start a moment after the stream's end.
-    let after = estate.until_node(&stopped_name, "node.get lists the started birth ready again", Duration::from_secs(60), |n| n.filter(|n| !n.stopped && n.state == NodeStatus::Ready).cloned()).await;
+    let after = estate.until_node(&stopped_name, "node.get lists the started birth ready again", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation), (&before.node_id, &before.incarnation), "a start keeps the birth");
     assert_eq!(estate.pid_of(&stopped_name).await, pid, "the same process");
 
@@ -1444,7 +1444,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
             .collect();
         assert!(unadmitted.is_empty(), "the stop of {node_s:?} sent again was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
         let v = view_of(&estate.nodes_obj().await, &node).await;
-        if v.stopped {
+        if v.state == NodeStatus::Stopped {
             assert_eq!((v.state, &v.node_id, &v.incarnation), (NodeStatus::Stopped, &before.node_id, &before.incarnation), "the same birth, stopped: {v:?}");
             break;
         }

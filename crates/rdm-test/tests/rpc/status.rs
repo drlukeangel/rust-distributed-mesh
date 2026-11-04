@@ -197,11 +197,11 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1.node-admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.node-admin.1", estate.nodes_obj().await.start(&a1).await).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready && !n.is_primary).map(|_| ())).await;
     let before_rpc = estate.node_view(&rpc1).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready).map(|_| ())).await;
 
     // A declaration straight to the admin holding no role: its own role decision.
     let (rpc1v, a1v, a2v) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await);

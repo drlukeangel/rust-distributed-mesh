@@ -981,7 +981,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
         .until_view(&format!("{fp_name:?} is stopped and {successor_name:?} holds the fabric-primary role"), SETTLE, |views| {
             let old = views.iter().find(|n| n.location() == fp_name)?;
             let new = views.iter().find(|n| n.location() == successor_name)?;
-            (old.stopped && !old.is_fabric_primary && new.is_fabric_primary).then(|| serde_json::to_value(old).expect("a view serializes"))
+            (old.state == NodeStatus::Stopped && !old.is_fabric_primary && new.is_fabric_primary).then(|| serde_json::to_value(old).expect("a view serializes"))
         })
         .await;
     assert_eq!(stopped["incarnation_id"], fp["incarnation_id"], "the stopped fabric-primary is the same birth, stopped: {stopped}");

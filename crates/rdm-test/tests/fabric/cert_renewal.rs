@@ -485,8 +485,8 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         assert_eq!(held_after, held_before, "what the node holds is unchanged");
         let view_after = bounded("node.get of mesh1.node.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.node.1 in the view");
         assert_eq!(
-            (view_after.state, &view_after.incarnation, &view_after.name, &view_after.config, view_after.stopped),
-            (view_before.state, &view_before.incarnation, &view_before.name, &view_before.config, view_before.stopped),
+            (view_after.state, &view_after.incarnation, &view_after.name, &view_after.config),
+            (view_before.state, &view_before.incarnation, &view_before.name, &view_before.config),
             "no status set, nothing restarted"
         );
         let (digest_after, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.node.2 still holds mesh1.node.1's digest");

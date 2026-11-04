@@ -83,7 +83,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let before = estate.node_view(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
     let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     estate.stop_then_start(&path).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "RPC fixture ready after its stop and start", SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped && n.node_id == before.node_id && n.incarnation == before.incarnation).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "RPC fixture ready after its stop and start", SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation == before.incarnation).map(|_| ())).await;
     let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();

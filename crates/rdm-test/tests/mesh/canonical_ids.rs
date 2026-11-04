@@ -105,7 +105,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let builds = estate.build_ids().await;
     estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     let after = estate
-        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).map(json_of))
+        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
@@ -115,7 +115,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     assert_eq!(estate.build_ids().await, builds, "a restart writes no Build (Q342)");
     let third = estate
-        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).map(json_of))
+        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready).map(json_of))
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");

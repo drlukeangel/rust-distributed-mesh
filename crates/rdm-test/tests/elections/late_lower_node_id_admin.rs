@@ -122,7 +122,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // It stops and starts one of A's births and deletes the other.
     let (restarted, deleted) = (a_births[0].clone(), a_births[1].clone());
     estate.stop_then_start(&restarted.location()).await;
-    let after = estate.until_node(&restarted.location(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).cloned()).await;
+    let after = estate.until_node(&restarted.location(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation), (&restarted.node_id, &restarted.incarnation), "stop/start keeps ID and incarnation");
     Estate::workflow(&format!("node.delete of {:?}", deleted.name), estate.delete_node(&deleted.location()).await).await;
     estate

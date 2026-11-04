@@ -343,7 +343,7 @@ async fn a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_k
     assert_eq!(at_moved.len(), 1, "node.get [path, name] names one node at the moved pair: {at_moved:#?}");
     let renamed = at_moved[0].clone();
     assert_eq!((&renamed.node_id, &renamed.incarnation, renamed.r#type.clone(), &renamed.mesh()), (&before.node_id, &before.incarnation, before.r#type.clone(), &before.mesh()), "the rename keeps the node's identity");
-    assert!(!renamed.stopped, "the renamed node is live: {renamed:?}");
+    assert!(renamed.state != NodeStatus::Stopped, "the renamed node is live: {renamed:?}");
     assert!(at_pair(&estate, &subject).await.is_empty(), "nothing is listed at the old pair");
     let named_by_id: Vec<PathName> = by_id(&estate, &before.node_id).await.into_iter().map(|n| n.location()).collect();
     assert_eq!(named_by_id, vec![moved.clone()], "node.get by the node's id names it at the moved pair");

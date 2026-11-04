@@ -85,7 +85,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     // 2. A same-node restart, node.stop then node.start (Q183), keeps the store.
     estate.stop_then_start(&location()).await;
     let restarted = estate
-        .until_node(&location(), "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .until_node(&location(), "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "and the birth: the process was stopped and started, never replaced");
