@@ -257,7 +257,7 @@ mod tests {
         let snapshot = view.read().await.clone();
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         configs.uses_records(records.clone(), || "memory".into(), channels.clone());
-        configs.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("tags-own")).unwrap(), (None, None)).await.unwrap();
+        configs.bound_own(&crate::model::Node { endpoint_id: Some(crate::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..admin1.clone() }, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("tags-own")).unwrap(), (None, None)).await.unwrap();
         let own = || async { records.node(&admin1.node_id).await.unwrap().unwrap().record };
 
         // 3. Create {"gold", "ssd"} persists both labels on the node's own record.

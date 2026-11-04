@@ -649,7 +649,7 @@ mod tests {
             assert_eq!(f.refusal(Entity::Nodes), None, "node.get takes {f:?}");
         }
         let why = Filter::new().eq("state", ["redy"]).local_refusal().expect("a value the field cannot take");
-        assert!(why.starts_with("node.get: the pair (status, [redy])"), "{why:?}");
+        assert!(why.starts_with("node.get: the pair (state, [redy])"), "{why:?}");
     }
 
     /// CONTRACT (Q167 R-RD5): `build.get` filters on the Build header (`id`, `current`, `phase`): a

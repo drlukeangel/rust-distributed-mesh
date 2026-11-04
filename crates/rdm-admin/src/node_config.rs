@@ -773,7 +773,7 @@ mod tests {
         assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
         assert!(storage.record_at(&admin.location()).await.unwrap().is_none());
         configs.uses_records(records.clone(), || "memory".into(), channels.clone());
-        configs.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("config-own")).unwrap(), (None, None)).await.unwrap();
+        configs.bound_own(&crate::model::Node { endpoint_id: Some(crate::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..admin.clone() }, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("config-own")).unwrap(), (None, None)).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
         assert!(matches!(configs.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
         let own = || async { records.node(&admin.node_id).await.unwrap().unwrap().record };

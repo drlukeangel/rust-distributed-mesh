@@ -428,8 +428,9 @@ mod tests {
     /// caller: its re-created birth is at its path and name, and it is deleted"; Q207, Q217; rdm#153, gate
     /// gates-6-9af200cc4): a birth of mesh1.node.2 that its mesh-primary commanded back through
     /// node.mesh.join (a held deployment) is deleted and re-created while it is os-stopped. Resumed, it
-    /// answers the command with its join report: the row at its path and name now holds the re-created
-    /// birth, so the join is refused `JoinMismatch` by name at once, and the `JoinService` decides the
+    /// answers the command with its join report: its own record is `Deleted` and the record at its path
+    /// and name is the re-created birth's, so the join is refused `JoinMismatch` (`status`) by name at
+    /// once, and the `JoinService` decides the
     /// caller by its path and name and the atlas: another birth is at its path and name, so it is deleted
     /// (`delete-path-held`), decided at the root itself, and reported for
     /// `node.terminate` (`via-returned-reported` naming the exact birth; the rig builds no `BuildService`,
@@ -519,7 +520,7 @@ mod tests {
         };
         let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), listeners: Vec::new() };
         let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
-        assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "node_id" && deployed.contains(recreated.node_id.as_str())), "the deleted birth's join is refused at once by its node id, naming the re-created birth: {reply:?}");
+        assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "status" && deployed.contains(caller.node_id.as_str()) && deployed.contains("deleted")), "the deleted birth's join is refused at once by its own Deleted record: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the `JoinService` decided the caller: {spans:?}"));

@@ -16,15 +16,7 @@ use std::sync::Arc;
 
 /// A node row of `mesh` at `ordinal`, its config carrying `note` bytes.
 fn node(mesh: &str, ordinal: usize, note: usize) -> NodeView {
-    let mut n: NodeView = serde_json::from_value(serde_json::json!({
-        "path": format!("{mesh}.node"), "name": ordinal.to_string(), "type": "node", "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
-        "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
-        "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
-        "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {},
-        "cert": null, "executable": null,
-        "storage_persistence": null, "topology_storage_provider": null,
-    }))
-    .expect("a node row");
+    let mut n = NodeView::new(&rdm_core::PathName::new(format!("{mesh}.node"), ordinal.to_string()).expect("a node path and name"), "node", NodeId::mint(), rdm_core::views::NodeStatus::Ready);
     n.config.insert("note".into(), "n".repeat(note));
     n
 }

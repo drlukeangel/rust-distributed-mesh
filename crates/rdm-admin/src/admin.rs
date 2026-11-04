@@ -347,6 +347,8 @@ mod tests {
             for d in [&admin, &rpc, &deleted, &other] {
                 own_record(&*nodes, d).await;
             }
+            // mesh2's Mesh record, its mesh-primary's: what names mesh2 as a mesh of the fabric.
+            meshes.put_mesh(&crate::storage::MeshRecord::new(crate::model::MeshId::mint(), "mesh2".into())).await.unwrap();
             crate::node_rows::write_deleted(&*nodes, &deleted.node.location(), &deleted.node.node_id).await.ok().expect("the deleted node's record");
             // The live records of every mesh: no Deleted one.
             let live: std::collections::BTreeSet<PathName> = crate::storage::live_records(&*meshes, &*nodes, "mesh1").await.unwrap().into_iter().map(|r| r.location()).collect();
@@ -1472,7 +1474,7 @@ mod tests {
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
         let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), Arc::new(RecordsUnreadable::default()));
         let (outcome, inspections, submits) = two_ticks(&recovery, &node, "i143-3051-runtime-row-unreadable").await;
-        let why = format!("the node record of node {}, incarnation {} could not be read from nodes.storage by path \"mesh2.node-admin\", name \"1\": nodes.jsonl is not a record this build recognises: dataschema node-record/9 is not one this build reads", node.node_id, member.node.incarnation.as_str());
+        let why = format!("the node record of {} at {} could not be read: nodes.jsonl is not a record this build recognises: dataschema node-record/9 is not one this build reads", node.node_id, member.node.incarnation.as_str());
         assert_eq!(outcome, Inspected::Unavailable(why.clone()), "an unreadable row is named as unreadable");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 0, "with no runtime fact the provider is not asked");
         let a = &inspections[0].attributes;

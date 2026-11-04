@@ -627,22 +627,22 @@ mod tests {
         }
     }
 
-    /// CONTRACT (`held-runtimes/1`, a durable format: the launcher's build writes it, the launched
+    /// CONTRACT (`held-runtimes/2`, a durable format: the launcher's build writes it, the launched
     /// admin's build reads it): the hand-off in a launched node-admin's data dir is
-    /// `held-runtimes.json`, exactly `{"format": "held-runtimes/1", "rows": [<runtime row>...]}`, read
+    /// `held-runtimes.json`, exactly `{"format": "held-runtimes/2", "rows": [<node record>...]}`, read
     /// back to the rows written; a data dir with none hands over no rows; a hand-off of another format
     /// is refused by name, naming the format it holds and the one this build reads. Must NOT happen: a
     /// hand-off this build cannot read answered as no rows.
     #[tokio::test]
-    async fn the_held_runtimes_hand_off_is_held_runtimes_1_and_another_format_is_refused_by_name() {
+    async fn the_held_runtimes_hand_off_is_held_runtimes_2_and_another_format_is_refused_by_name() {
         let dir = crate::test_support::tempdir("held-runtimes");
         assert_eq!(held_runtimes_in(&dir).await.unwrap(), Vec::new(), "a data dir with no hand-off holds no rows");
         let rows = vec![{ let mut r = rdm_node::nodes_storage::NodeRecord { runtime: fact("process:host-a"), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", crate::model::NodeId::mint(), crate::model::IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) }; r.storage.data_dir = Some("/data/mesh1.node.1".into()); r }];
         write_held_runtimes(&dir, &rows).await.unwrap();
         let written: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(HELD_RUNTIMES_FILE)).unwrap()).unwrap();
-        assert_eq!(written, serde_json::json!({ "format": "held-runtimes/1", "rows": serde_json::to_value(&rows).unwrap() }), "the hand-off's shape");
+        assert_eq!(written, serde_json::json!({ "format": "held-runtimes/2", "rows": serde_json::to_value(&rows).unwrap() }), "the hand-off's shape");
         assert_eq!(held_runtimes_in(&dir).await.unwrap(), rows, "the launched admin reads the rows its launcher wrote");
-        std::fs::write(dir.join(HELD_RUNTIMES_FILE), br#"{"format":"held-runtimes/2","rows":[]}"#).unwrap();
+        std::fs::write(dir.join(HELD_RUNTIMES_FILE), br#"{"format":"held-runtimes/1","rows":[]}"#).unwrap();
         let refused = held_runtimes_in(&dir).await.unwrap_err();
         assert!(refused.contains("held-runtimes/2") && refused.contains("held-runtimes/1"), "refused naming both formats: {refused}");
     }
