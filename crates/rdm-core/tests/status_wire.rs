@@ -351,6 +351,21 @@ fn golden<T: serde::Serialize>(value: T, expected: &str) {
     assert_eq!(postcard::to_allocvec(&value).unwrap(), bytes(expected));
 }
 
+/// CONTRACT (Q366; wire format moved): a node.get answer of a node with its runtime round-trips through
+/// postcard, the Status wire's codec, and the runtime's bytes are frozen: `Some` (01) | deployment_id
+/// "d" (01 64) | provider Process (00) | control_domain "c" (01 63) | locator Process (00) | pid 4321
+/// (e1 21) | start 123456 (c0 c4 07), the locator a positional enum, its variant's index then its fields.
+/// Must NOT happen: a NodeView that encodes and cannot be decoded (an internally tagged locator needs a
+/// self-describing codec).
+#[test]
+fn a_node_view_with_its_runtime_round_trips_through_its_frozen_bytes() {
+    let runtime = RuntimeFact { deployment_id: "d".into(), provider: RuntimeProvider::Process, control_domain: "c".into(), locator: RuntimeLocator::Process { pid: 4321, start: 123456 } };
+    golden(Some(runtime.clone()), "01016400016300e121c0c407");
+    let view = NodeView { runtime: Some(runtime), ..node_view() };
+    let encoded = Status::encode_reply(&StatusReply::Nodes { nodes: vec![view.clone()] }).unwrap();
+    assert_eq!(Status::decode_reply(&encoded).unwrap(), StatusReply::Nodes { nodes: vec![view] }, "the answer decodes as it was encoded");
+}
+
 #[test]
 fn nested_enum_discriminants_and_fields_are_frozen_too() {
     for (state, expected) in [
