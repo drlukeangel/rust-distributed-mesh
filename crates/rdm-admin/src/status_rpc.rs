@@ -2689,9 +2689,11 @@ fn serve_node_command(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>
                     return Ok(rdm_core::reply::node_command::not_ready(format!("the caller left before {} was accepted", req.op())));
                 }
                 let change = rdm_core::build::StorageChange { change_id: change_id.clone(), from: from.clone(), to: to.clone() };
+                // Accepted: the stream ends with the command's terminal or `Failed`, never a refusal
+                // (node-rpc-envelope.md, NodeCommand op 0x22).
                 let reply = match &req {
-                    NodeCommandRequest::BlockMesh { .. } => changes.serve_block(&change).await,
-                    _ => changes.serve_unblock(&change).await,
+                    NodeCommandRequest::BlockMesh { .. } => rdm_core::reply::node_command::after_acceptance("mesh.block", changes.serve_block(&change).await),
+                    _ => rdm_core::reply::node_command::after_acceptance("mesh.unblock", changes.serve_unblock(&change).await),
                 };
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node_path = %service.me.path, node_name = %service.me.name, op = req.op(), sender = %sender.map(|n| n.node_id.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this admin was decided"));

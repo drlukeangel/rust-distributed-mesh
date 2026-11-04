@@ -667,4 +667,33 @@ mod tests {
             assert!(order.admit(NodeCommand::frame_kind(&terminal)).is_err(), "{}: one terminal", req.op());
         }
     }
+
+    /// CONTRACT (node-rpc-envelope.md, NodeCommand op 0x22: `StorageBlock`, `BlockMesh` and
+    /// `UnblockMesh` each stream `CommandAccepted` then their terminal or `Failed { step, reason, code }`;
+    /// "A refusal before acceptance is one refusal frame"): once accepted, a storage command's not-ready
+    /// answer ends its stream `Failed` at its step, `UNAVAILABLE`, and a stale change `Failed`, `ABORTED`,
+    /// naming the change; a success terminal is as it is. Must NOT happen: a refusal frame after
+    /// `CommandAccepted`, which the stream refuses as a protocol violation (424).
+    // @feature: topology-storage-provider
+    #[test]
+    fn an_accepted_storage_commands_refusal_ends_its_stream_failed_at_its_step() {
+        use crate::outcome::Code;
+        let held = crate::ChangeId::mint();
+        for step in ["storage-block", "mesh.block", "mesh.unblock"] {
+            for (refusal, code) in [(crate::reply::node_command::not_ready("a node of this mesh has not frozen its writes yet".into()), Code::Unavailable), (crate::reply::node_command::rejected_stale_change(held.clone()), Code::Aborted)] {
+                let mut order = FrameOrder::new();
+                order.admit(NodeCommand::frame_kind(&accepted())).unwrap();
+                let mut refused = FrameOrder::new();
+                refused.admit(NodeCommand::frame_kind(&accepted())).unwrap();
+                assert!(refused.admit(NodeCommand::frame_kind(&refusal)).is_err(), "{step}: a refusal after the acceptance is a protocol violation: {refusal:?}");
+                let ended = crate::reply::node_command::after_acceptance(step, refusal.clone());
+                assert!(matches!(&ended, NodeCommandReply::Failed { step: s, code: c, .. } if s == step && *c == code), "{step}: {refusal:?} ends Failed at its step, {code:?}: {ended:?}");
+                order.admit(NodeCommand::frame_kind(&ended)).unwrap_or_else(|e| panic!("{step}: Failed is the accepted stream's terminal: {e}"));
+            }
+            for done in [NodeCommandReply::StorageBlocked, NodeCommandReply::MeshBlocked, NodeCommandReply::MeshUnblocked { provider: "test-target".into() }] {
+                assert_eq!(crate::reply::node_command::after_acceptance(step, done.clone()), done, "{step}: a terminal is as it is");
+            }
+        }
+        assert!(matches!(crate::reply::node_command::after_acceptance("storage-block", crate::reply::node_command::rejected_stale_change(held.clone())), NodeCommandReply::Failed { reason, .. } if reason.contains(held.as_str())), "the stale change is named");
+    }
 }

@@ -708,7 +708,9 @@ impl NodeSelf {
             if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
                 return rdm_core::reply::node_command::not_ready("caller gone before storage block acceptance".into());
             }
-            return storage.block(change_id).await;
+            // Accepted: the stream ends with `StorageBlocked` or `Failed`, never a refusal
+            // (node-rpc-envelope.md, NodeCommand op 0x22).
+            return rdm_core::reply::node_command::after_acceptance("storage-block", storage.block(change_id).await);
         }
         if let NodeCommandRequest::StorageStep { incarnation, change_id, provider, .. } = req {
             return self.serve_storage_step(incarnation, change_id, provider, frames).await;
@@ -797,11 +799,8 @@ impl NodeSelf {
         if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
             return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing done", self.node_id));
         }
-        match storage.serve(change_id, provider).await {
-            // Refused after the acceptance (an older change raced it): the command's terminal.
-            NodeCommandReply::RejectedStaleChange { held } => rdm_core::reply::node_command::failed("storage-step".into(), format!("rejected-stale-change: this node acted on storage change {held}"), rdm_core::outcome::Code::Aborted),
-            done => done,
-        }
+        // Refused after the acceptance (an older change raced it): `Failed`, the command's terminal.
+        rdm_core::reply::node_command::after_acceptance("storage-step", storage.serve(change_id, provider).await)
     }
 
     /// Whether this birth is stopped: stopped, its process alive, waiting for a start or a delete.

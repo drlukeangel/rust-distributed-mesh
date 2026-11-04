@@ -136,6 +136,17 @@ use serde::{Deserialize, Serialize};
 pub fn rejected_invalid_node_transition(current: crate::status::NodeState) -> NodeCommandReply { NodeCommandReply::RejectedInvalidNodeTransition { current } }
 /// An accepted command failed at the named step with its typed code.
 pub fn failed(step: String, reason: String, code: crate::outcome::Code) -> NodeCommandReply { NodeCommandReply::Failed { step, reason, code } }
+/// A storage command's answer once its `CommandAccepted` is sent: after acceptance the stream ends
+/// with the command's terminal or `Failed { step, reason, code }`, never a refusal (node-rpc-envelope.md,
+/// NodeCommand op 0x22). A not-ready answer is `Failed` at `step`, `UNAVAILABLE`; a stale change is
+/// `Failed` at `step`, `ABORTED`, naming the change the birth acted on; every other answer is as it is.
+pub fn after_acceptance(step: &str, reply: NodeCommandReply) -> NodeCommandReply {
+    match reply {
+        NodeCommandReply::NotReady { reason } => failed(step.into(), reason, crate::outcome::Code::Unavailable),
+        NodeCommandReply::RejectedStaleChange { held } => failed(step.into(), format!("rejected-stale-change: this node acted on storage change {held}"), crate::outcome::Code::Aborted),
+        other => other,
+    }
+}
 /// Construct the typed connections-deleting outcome.
 pub fn connections_deleting(node_id: NodeId, incarnation: IncarnationId) -> NodeCommandReply { NodeCommandReply::ConnectionsDeleting { node_id, incarnation } }
 /// Construct the typed rejected-connection-scope outcome.
