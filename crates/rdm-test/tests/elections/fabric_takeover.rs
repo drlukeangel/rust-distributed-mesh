@@ -306,12 +306,13 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
     (status, name)
 }
 
-/// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives": the backbone
-/// acts only "When the mesh has no node-admin left"; Q335; Q153: "A runtime the executor can inspect
-/// running but cannot reach is unreachable from the executor, not lost"): mesh2's admin that is neither mesh2's primary nor the fabric-primary hears and is
-/// heard by no node (all its UDP dropped) while the fabric-primary mesh1.node-admin.1 runs. The cut is held
-/// past the cut admin's mark of the fabric-primary and past the backbone arm's finding that the fabric-primary's
-/// mesh has a node-admin left (mesh1.node-admin.2 runs; Q335), so it starts no fabric recovery, and two gossip intervals more. Throughout, the
+/// CONTRACT (fabric-recovery.md: a lost fabric-primary is re-created at its own path and name by its own
+/// mesh's node-admin, else by the lowest Ready mesh-primary on the backbone; no other node takes its role,
+/// Q370, Q335; Q153: "running" from an investigator that hears no other node is unreachable from it, not
+/// lost): mesh2.node-admin.2, which is not mesh2's primary, hears and is heard by no node (all its UDP
+/// dropped) while the fabric-primary mesh1.node-admin.1 runs. It is not a mesh-primary, so it runs no fabric
+/// recovery, and it hears no one, so it recovers nothing: the cut is held past its mark of the
+/// fabric-primary and two gossip intervals more, and it writes nothing. Throughout, the
 /// store root holds the fabric-primary's row live and its name held by its node id; no view marks its
 /// birth deleted; nothing is opened for it; and within a floor of the heal every admin's view names
 /// mesh1's members ready and mesh1.node-admin.1, the same birth, mesh1's one primary and the one
@@ -321,13 +322,13 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 ///
 /// The cut admin is a lost node of mesh2 (Q335; Q342): mesh2's primary, which reaches it through no peer,
 /// investigates it and recovers it on its verdict as its own workflow, with no Build (node-recovery.md
-/// step 3, Q111). The cut admin, mesh2's primary in its own view, recovers mesh2's rpc nodes it cannot
-/// hear; its provider is armed with the testkit's provider-terminate cut, the shared-host rig's limit, so
-/// it terminates no live runtime and each of those recoveries fails by name. The views are read for mesh1 and
-/// the fabric-primary.
+/// step 3, Q111). The cut admin, mesh2's primary in its own view, hears no other node, so the mesh2 births
+/// it cannot reach are unreachable from it, not lost: it recovers none of them and names each (Q153); its
+/// provider stays armed with the testkit's provider-terminate cut, the shared-host rig's limit, so it could
+/// terminate no live runtime either way. The views are read for mesh1 and the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing() {
-    let test = "a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing";
+async fn node_admin_cut_off_runs_no_recovery() {
+    let test = "node_admin_cut_off_runs_no_recovery";
     let fp = &Estate::path("mesh1.node-admin", "1");
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = estate_of(test, &shape).await;
@@ -450,38 +451,16 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
     assert!(ran.is_empty(), "{victim:?} started no fabric recovery: {ran:#?}");
     eprintln!("the cut held {held_ms} ms; {victim:?} found {:?} left", left.iter().map(|sp| (attr(sp, "subject_path"), attr(sp, "subject_name"), attr(sp, "finding"))).collect::<Vec<_>>());
 
-    // Q344 (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again by the
-    // next check that finds the node still lost; its calls retry only under their `Send`"; "Execution": one
-    // recovery per birth in flight): the cut admin, mesh2's primary in its own view with no fabric-primary
-    // in it, fails each recovery of the mesh2 births it cannot reach by name (Q118). Per birth, each run
-    // after the first is a run again of the failed recovery (`again`), starting no earlier than the one
-    // before it ended, and the birth is inspected only for its first run. Must NOT happen: two runs of one
-    // birth at once, or a failed recovery inspected again on every tick (the held commit's flame: 22
-    // inspections in 5 s).
+    // Q153 (node-investigation.md: "`running` from an investigator that hears no other node ... is
+    // unreachable from that investigator, not lost: nothing is written, and the next investigation
+    // decides again"): the cut admin hears no node, so it recovers none of the mesh2 births it cannot
+    // reach; it names each as unreachable from it. Must NOT happen: a recovery submitted by the cut admin.
     let end = |sp: &Value| sp["end_unix_nano"].as_u64().unwrap_or(0);
     let in_cut = |sp: &&Value| at(sp) >= cut_at && at(sp) <= healed_ns;
-    let mut cut_submits: std::collections::BTreeMap<String, Vec<&Value>> = std::collections::BTreeMap::new();
-    for sp in named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(in_cut).filter(|sp| attr(sp, "submitter") == victim_id && attr(sp, "node_path").starts_with("mesh2.")) {
-        cut_submits.entry(attr(sp, "node_id")).or_default().push(sp);
-    }
-    let mut ran_again = 0usize;
-    for (node_id, submits) in &mut cut_submits {
-        submits.sort_by_key(|sp| at(sp));
-        for pair in submits.windows(2) {
-            assert!(attr(pair[0], "outcome") != "complete", "{victim:?} ran {node_id}'s recovery again after it completed: {} then {}", pair[0], pair[1]);
-            assert!(at(pair[1]) >= end(pair[0]), "{victim:?} ran {node_id}'s recovery beside the one in flight: {} then {}", pair[0], pair[1]);
-            assert_eq!(attr(pair[1], "again"), "true", "{victim:?}'s next run of {node_id} is its failed recovery run again: {}", pair[1]);
-            ran_again += 1;
-        }
-        // The tick's inspections: a submit's own TerminateRuntime step inspects the runtime it terminates
-        // (`caller` "terminate"), which is that submit's, not a look of the tick.
-        let inspections = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(in_cut).filter(|sp| attr(sp, "inspector") == victim_id && attr(sp, "node_id") == *node_id && attr(sp, "caller") != "terminate").count();
-        let first_runs = submits.iter().filter(|sp| attr(sp, "again") != "true").count();
-        assert!(inspections <= first_runs + 1, "{victim:?} inspected {node_id} only for its first run: {inspections} inspections, {} runs, {first_runs} first", submits.len());
-        let gaps: Vec<u64> = submits.windows(2).map(|p| at(p[1]).saturating_sub(end(p[0])) / 1_000_000).collect();
-        eprintln!("Q344: {victim:?} under the {held_ms} ms cut: {node_id} run {} times (one tick each: {}), inspected {inspections} times, gaps after each failed run {gaps:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64);
-    }
-    assert!(ran_again > 0, "{victim:?} failed a recovery of a mesh2 birth and ran it again under the cut: {cut_submits:?}");
+    let cut_submits: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(in_cut).filter(|sp| attr(sp, "submitter") == victim_id && attr(sp, "node_path").starts_with("mesh2.")).collect();
+    assert!(cut_submits.is_empty(), "{victim:?} hears no other node under the cut and recovers none of mesh2's births (Q153): {cut_submits:#?}");
+    let unreached: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-investigator-hears-none").into_iter().filter(in_cut).filter(|sp| attr(sp, "observer") == victim_id).collect();
+    assert!(!unreached.is_empty(), "{victim:?} names the births it cannot reach as unreachable from it, not lost (Q153)");
     // mesh2's primary's recovery of the cut admin is its own workflow: no Build is opened for it (Q342).
     let opened_for_victim: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "node_id") == victim_id).collect();
     assert!(opened_for_victim.is_empty(), "no Build is opened for {victim:?}'s recovery: {opened_for_victim:#?}");
