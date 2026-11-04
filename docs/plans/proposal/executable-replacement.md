@@ -77,7 +77,7 @@ compares each submitted node with the node it holds at that path and name:
 | a node at a path and name | none | `node.create` |
 | none | a node | `node.delete` |
 | the same executable, the same entry | the node | nothing |
-| the same executable, another config or tags | the node | O2 |
+| the same executable, another config or tags | the node | `node.config.update` (and the tags update) on the running node (Q379) |
 | another executable | the node | the replacement (§4) |
 
 Order in each mesh: replacements of the other nodes of a type first, its node-type primary last, so
@@ -136,7 +136,5 @@ the same executable it is refused `NameHeld` as today: there is nothing to repla
 ## 9. Open for Luke
 
 - **O1.** The name of the complete-topology change on `build.create`.
-- **O2.** A node with the same executable and another config or tags: `node.config.update` (and the
-  tags update) on the running node, or the replacement. Dev recommendation: `node.config.update`,
-  the existing command: node-config-update.md, "replaces the whole application config map: a PUT",
-  and "the same writer serializes local changes, caller commands, tags, Build entry application".
+- **O2, ruled Q379 (A):** a node with the same executable and another config or tags gets
+  `node.config.update` (and the tags update) on the running node, never the replacement.
