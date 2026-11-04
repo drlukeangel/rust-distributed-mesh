@@ -1424,7 +1424,8 @@ fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, dige
         cert: None,
         signing_cert: None,
         storage: rdm_core::meta::Storage {
-            persistence: own.as_ref().and_then(|r| r.storage.persistence).or(launch.initial_properties.persistence),
+            // The launch's, else its type's default (a launch no Build entry made, the Day-0 admin's).
+            persistence: own.as_ref().and_then(|r| r.storage.persistence).or(launch.initial_properties.persistence).or_else(|| Some(rdm_core::meta::StoragePersistence::of_type(&launch.r#type))),
             data_dir: Some(launch.data_dir.display().to_string()),
         },
         executable: own.as_ref().and_then(|r| r.executable.clone()).or_else(|| launch.initial_properties.executable.clone()),
