@@ -366,8 +366,9 @@ async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut In
     let names = f.shape.names();
     let have: BTreeSet<PathName> = nodes.iter().map(|n| location(&n)).collect();
     inv.holds("the view holds exactly the shape's nodes", have == names && nodes.len() == f.shape.total(), json!({"want": names.len(), "have": have.len()}));
-    for key in ["node_id", "endpoint_id", "incarnation_id", "deployment_id"] {
-        let ids: BTreeSet<String> = nodes.iter().map(|n| s(&n[key])).collect();
+    for key in ["node_id", "endpoint_id", "incarnation", "deployment_id"] {
+        // The node view's names (Q366): its `incarnation`, and its runtime's `deployment_id`.
+        let ids: BTreeSet<String> = nodes.iter().map(|n| if key == "deployment_id" { s(&n["runtime"][key]) } else { s(&n[key]) }).collect();
         inv.holds(&format!("{} distinct `{key}` values", nodes.len()), ids.len() == nodes.len() && !ids.contains(""), json!({"distinct": ids.len()}));
     }
     for n in nodes {
@@ -2502,8 +2503,9 @@ async fn check_final_shape(f: &Formed, nodes: &[Value], inv: &mut Invariants) ->
         }
     }
     assert_eq!(have, want, "the final view holds exactly the shape's counts");
-    for key in ["node_id", "endpoint_id", "incarnation_id", "deployment_id"] {
-        let ids: BTreeSet<String> = nodes.iter().map(|n| s(&n[key])).collect();
+    for key in ["node_id", "endpoint_id", "incarnation", "deployment_id"] {
+        // The node view's names (Q366): its `incarnation`, and its runtime's `deployment_id`.
+        let ids: BTreeSet<String> = nodes.iter().map(|n| if key == "deployment_id" { s(&n["runtime"][key]) } else { s(&n[key]) }).collect();
         assert!(ids.len() == nodes.len() && !ids.contains(""), "{} distinct `{key}` values in the final view", nodes.len());
     }
     let mut launches = Vec::new();

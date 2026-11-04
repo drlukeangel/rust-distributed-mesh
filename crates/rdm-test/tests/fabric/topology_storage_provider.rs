@@ -1071,8 +1071,10 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
         attr(recreated, "node_id") == old_id && attr(recreated, "node_path") == role().path && attr(recreated, "node_name") == role().name && recreated["attributes"]["change_id"].is_null(),
         "mesh2's mesh-primary's node recovery of the refusing birth re-creates it at its (path, name), never a step of the change: {recreated}"
     );
-    let (writer, _) = estate.record_lines(&rdm_core::NodeId::parse(&new_id).expect("the new birth's node id")).into_iter().next().expect("the re-created birth's record");
-    assert_eq!(writer, new_id, "the re-created birth writes its own record (Q356)");
+    // The re-created birth writes its own record (Q356) on the new provider, which node.get reads
+    // (the file store root holds the records written before the move only).
+    let reread = estate.node_view(&role()).await;
+    assert_eq!(reread.node_id.to_string(), new_id, "the re-created birth's own record answers node.get at its (path, name): {reread:?}");
     let new_moved = named(&spans, MOVE).into_iter().find(|sp| attr(sp, "node_id") == new_id && attr(sp, "change_id") == change_id && sp["attributes"]["outcome"] == "moved").unwrap_or_else(|| panic!("the re-created birth {new_id} answered its move under Build {change_id}"));
     assert!(new_moved["end_unix_nano"].as_u64().unwrap_or(u64::MAX) <= unblocked["end_unix_nano"].as_u64().unwrap_or(0), "the re-created birth moved before its mesh-primary replied unblocked: {new_moved} {unblocked}");
     estate.record_trace_url(&s(&blocked["trace_id"]));

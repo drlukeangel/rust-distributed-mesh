@@ -154,7 +154,7 @@ impl NodeConfigs {
             node_id: subject.node_id.clone(), path: subject.path.clone(), name: subject.name.clone(), r#type: subject.r#type.clone(),
             incarnation, state: crate::model::NodeStatus::Starting, endpoint_id, transport_addr, listeners: subject.listeners.clone(), runtime,
             is_primary: None, is_fabric_primary: None, cert: cert.0, signing_cert: cert.1,
-            storage: rdm_core::meta::Storage { persistence: properties.persistence, data_dir: subject.data_dir.clone() },
+            storage: rdm_core::meta::Storage { persistence: properties.persistence.or_else(|| Some(rdm_core::meta::StoragePersistence::of_type(&subject.r#type))), data_dir: subject.data_dir.clone() },
             executable: properties.executable.clone(), config, tags,
         };
         let channels = self.own_channels.get().ok_or_else(|| format!("{}: own property writer is not bound", subject.node_id))?.clone();
