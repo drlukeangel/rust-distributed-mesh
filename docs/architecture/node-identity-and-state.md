@@ -203,8 +203,7 @@ events, and at no other time.
 It does not know whether its mesh is the first or the 101st, and it does not care. There is no
 "am I first" question anywhere in its boot, because nothing it does depends on the answer.
 
-Its day zero does NOT read `ops.nodes`. At Day 0 the bootstrap admin writes its own
-record, the first write of its start, as every node does. From there the topology grows by two inputs: the
+Its day zero does NOT read `ops.nodes`. At Day 0 the bootstrap admin writes its own record before its Ready, as every node does. From there the topology grows by two inputs: the
 backbone mesh topology of each peer mesh, and node.create calls for its own mesh.
 
 Mesh-local gossip is not a third input: it carries liveness for members this admin already knows,
