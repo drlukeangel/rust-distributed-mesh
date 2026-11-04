@@ -153,7 +153,13 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
         let refused = gw1.node_row(NodeId::mint()).await.expect_err("the first read folds the store and meets the line");
         assert!(matches!(&refused, StorageError::Unrecognised { file: f, .. } if f.ends_with("nodes.jsonl")), "refused by name, naming the file: {refused:?}");
         assert_eq!(nodes_folds(&seen), vec![Some(READ.to_string())], "the one fold is the read's");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), started, "the read leaves the file as it is");
+        // The read writes nothing; gw1 itself may append its own record at any change of its own fields
+        // (Q356), so every line after the start's is gw1's own.
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(after.starts_with(&started), "the read leaves the file as it was");
+        let subject = |l: &str| serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v["subject"].as_str().map(str::to_owned));
+        let own = started.lines().filter(|l| !l.is_empty()).last().and_then(subject).expect("the start appended gw1's own record");
+        assert!(after[started.len()..].lines().filter(|l| !l.is_empty()).all(|l| subject(l).as_deref() == Some(own.as_str())), "every line after the start's is gw1's own record: the read appends nothing");
 
         gw1.stop().await;
         drop(admin);
