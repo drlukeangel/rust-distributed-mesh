@@ -983,7 +983,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_which_writes_the_da
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:31
 /// "3. The admin checks the material names its own mesh and its own `(node.id, incarnation)` and verifies the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root), installs it, and answers `IssuerUpdated`."
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:34
-/// "4. The admin's mesh-primary writes the signing cert's issue date and expiry on the admin's record: its own at its install, another admin's when its `IssuerUpdated` returns through the mesh-primary as the carrier."
+/// "4. The admin writes the signing cert's issue date and expiry on its own record at its install (Q356)."
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:38
 /// "node.issuer.update { node_id, incarnation, key, cert } ← node.issuer.updated { node_id, incarnation, issuer_expires_at }"
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:52
@@ -996,9 +996,8 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_which_writes_the_da
 /// inner call is Status (0x1B) `UpdateIssuer`. The fabric-primary originates and records both: each hop's
 /// `via-renewal` names it as `sender` and the receiver `installed`. The secondary's install names mesh2's
 /// primary as its `sender` (the carrier); the forward and the carried inner call are in the trace of the
-/// fabric-primary's update to the secondary, and mesh2's primary, the secondary's writer, writes the
-/// signing cert dates the secondary answered on its record as they return through it (`via-carried`
-/// `written`). Must NOT happen: an update originated by mesh2's primary
+/// fabric-primary's update to the secondary, and the secondary writes the signing cert's dates on its
+/// own record at its install (Q356). Must NOT happen: an update originated by mesh2's primary
 /// alone, or the fabric-primary calling mesh2's secondary admin directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
@@ -1039,12 +1038,10 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     };
     estate_span(&estate, "rdm.node_rpc.request.update.via-call", "the fabric-primary's update to the secondary is a Forward (0x1A) whose carrier is mesh2's primary", Duration::from_secs(10), in_this_trace("op", "26", primary_id.clone())).await;
     estate_span(&estate, "rdm.node_rpc.request.serve.via-carried-inner", "mesh2's primary carries the Status (0x1B) UpdateIssuer to the secondary", Duration::from_secs(10), in_this_trace("inner_op", "27", secondary_id.clone())).await;
-    // The carrier is the secondary's writer: the dates its IssuerUpdated answered are written on the
-    // secondary's record by mesh2's primary as they return through it (node-issuer-update.md step 4).
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-carried", "mesh2's primary writes the dates the secondary answered on its record", Duration::from_secs(10), {
-        let (secondary_name, primary_id, expiry) = (secondary_name.clone(), primary_id.clone(), expiry.clone());
-        move |sp: &serde_json::Value| rdm_test::estate::at_location(sp, &secondary_name) && attr(sp, "carrier_node_id") == primary_id && attr(sp, "issuer_expires_at") == expiry && attr(sp, "outcome") == "written"
-    }).await;
+    // The secondary writes the signing cert's dates on its own record at its install (node-issuer-update.md
+    // step 4, Q356): it answered IssuerUpdated once they were written, so its record holds them now.
+    let record = estate.node_record(&secondary_id).unwrap_or_else(|| panic!("the record of {secondary_id} is in nodes.jsonl"));
+    assert_eq!(record["data"]["signing_cert"]["expires_at"].to_string(), expiry, "mesh2's secondary wrote the installed issuer's expiry on its own record: {record}");
     let spans = estate.spans();
     let alone: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &secondary_name) && attr(sp, "sender_node_id") != fp_id).collect();
     assert!(alone.is_empty(), "no update to the secondary is originated by anyone but the fabric-primary: {alone:#?}");
