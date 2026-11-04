@@ -102,7 +102,7 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
-    let boot = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == launcher["node_id"] && sp["attributes"]["incarnation_id"] == launcher["incarnation_id"]).cloned().expect("the bootstrap admin is ready");
+    let boot = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == launcher["node_id"] && sp["attributes"]["incarnation_id"] == launcher["incarnation"]).cloned().expect("the bootstrap admin is ready");
     assert_eq!(boot["attributes"]["runtime_locator_kind"], if estate.owner.provider == "container" { "container-id" } else { "process-pid-start" });
     assert_eq!(boot["attributes"]["source"], "self-published-topology");
     let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
@@ -166,12 +166,12 @@ async fn a_successor_manages_births_it_never_launched() {
         let name = s(&birth["node_id"]);
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
-            .find(|sp| sp["attributes"]["node_id"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
+            .find(|sp| sp["attributes"]["node_id"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation"])
             .cloned()
             .unwrap_or_else(|| panic!("{name} reports ready"));
         let adopted = named(&spans, "rdm.node_admin.runtime.update.via-adopt")
             .into_iter()
-            .find(|sp| sp["attributes"]["node_id"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
+            .find(|sp| sp["attributes"]["node_id"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation"])
             .cloned()
             .unwrap_or_else(|| panic!("the successor adopted {name}'s runtime"));
         let (r, a) = (&ready["attributes"], &adopted["attributes"]);

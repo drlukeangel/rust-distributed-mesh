@@ -1,19 +1,23 @@
-//! i143.e6.s7 process E2E: a node declares its lifecycle state to its authority over Node RPC,
-//! from public surfaces (`node.get` at the authority, `rdm-rpc-probe`'s `declare` oracle on the
-//! node) and the estate's span evidence only.
+//! i143.e6.s7 process E2E: a node declares its lifecycle state to its mesh-primary over Node RPC,
+//! from public surfaces (`node.get` at the mesh-primary, `rdm-rpc-probe`'s `declare` oracle on the
+//! node) and the estate's span evidence only. A node writes its state on its own record before it
+//! declares it (Q356); the mesh-primary decides the declaration and holds it in its view, and writes
+//! nothing.
 //!
-//! 0. Born ready, every node declares `Ready` to its mesh-primary by itself
-//!    (i143.e4.s11), and the non-primary admin declares its own to its mesh-primary: the
-//!    authority's view shows them as `declared` before any probe asks.
+//! 0. Born ready, every node, the non-primary admin and the mesh-primary included, writes its own
+//!    `Ready` on its own record (i143.e4.s11): `node.get` at the mesh-primary answers each `ready`
+//!    before any probe asks.
 //! 1. The node's `Ready` asked again through the oracle: `AlreadyApplied` (one logical
-//!    event); topology view's `status` is untouched.
+//!    event); the node's `state` is untouched.
 //! 2. `Pending` after `Ready`: `RejectedInvalidNodeTransition`.
-//! 3. A declaration naming a node the authority does not hold: `RejectedNotPrimary`
+//! 3. A declaration naming a node the mesh-primary does not hold: `RejectedNotPrimary`
 //!    (subject-unknown; decided for the subject, never the caller); under a wrong incarnation:
 //!    `RejectedStaleIncarnation`.
-//! 4. A declaration to the non-primary admin: `RejectedNotPrimary` (receiver-not-primary).
-//! 5. `ConnectionsDeleting`, then `Stopped`: `Applied`, and the view follows.
-//! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the authority.
+//! 4. A declaration to the non-primary admin: `RejectedNotPrimary` (receiver-not-primary), and it
+//!    applies nothing: the node's next forward declaration is `Applied`.
+//! 5. `ConnectionsDeleting`, then `Stopped`: `Applied`; `Stopped` asked again is `AlreadyApplied`
+//!    and a state before it is refused naming `Stopped`; the other node's held `Ready` is untouched.
+//! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the mesh-primary.
 
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
@@ -50,7 +54,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let rpc1 = estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
     let node = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let to = format!("exact:{}", primary["node_id"].as_str().unwrap());
-    // What the authority applied is the authority's view: read it there.
+    // What the mesh-primary applied is its view: read it there.
     let primary_id = serde_json::from_value(primary["node_id"].clone()).expect("primary ID");
     estate.enter_by_id(&primary_id).await;
 
@@ -63,10 +67,10 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
             .await,
     );
     let view = declared_by_birth.iter().find(|n| n["node_id"] == rpc1["node_id"]).unwrap().clone();
-    assert_eq!(view["status"], "ready", "topology view's status is untouched");
-    // The authority itself: its own Ready goes through the same `StatusService`, applied by itself.
+    assert_eq!(view["state"], "ready", "the node's state is untouched");
+    // The mesh-primary itself: its own Ready is on its own record (Q356).
     let self_declared = declared_by_birth.iter().find(|n| n["node_id"] == primary["node_id"]).unwrap();
-    assert_eq!(self_declared["declared"], "Ready", "the mesh primary declared its own birth to itself: {self_declared}");
+    assert_eq!(self_declared["state"], "ready", "the mesh primary wrote its own Ready: {self_declared}");
 
     // 1. The same declaration asked again: one logical event.
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "ready"]);
@@ -78,7 +82,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     assert_eq!(reply, "rejected-invalid-node-transition", "{r}");
     assert!(detail.contains("Ready"), "{r}");
 
-    // 3. A subject the authority does not hold (decided for the subject, never the caller:
+    // 3. A subject the mesh-primary does not hold (decided for the subject, never the caller:
     // node-rpc.md §14); a stale birth.
     let never_born = rdm_core::NodeId::mint();
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting", "--as-node-id", never_born.as_str()]);
@@ -88,24 +92,28 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting", "--as-incarnation", rdm_core::IncarnationId::mint().as_str()]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
-    // 4. The non-primary admin is not the authority.
+    // 4. The non-primary admin is not the node's mesh-primary.
     let not_primary = format!("exact:{}", other_admin["node_id"].as_str().unwrap());
     let r = estate.probe(&["declare", "--target", &node, "--to", &not_primary, "--state", "connections-deleting"]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-primary", "{r}");
     assert!(detail.contains("ReceiverNotPrimary"), "{r}");
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await["declared"], "Ready", "a refusal applies nothing");
 
-    // 5. Forward moves apply and the view follows.
-    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"])).0, "applied");
+    // 5. Forward moves apply (the first after the refusal: the refusal applied nothing), and the
+    // mesh-primary holds the last.
+    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"])).0, "applied", "a refusal applies nothing");
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "stopped"])).0, "applied");
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await["declared"], "Stopped");
-    assert_eq!(estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await["declared"], "Ready", "rpc.2 declared only its birth");
+    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "stopped"])).0, "already-applied", "the mesh-primary holds Stopped");
+    let (reply, detail) = declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"]));
+    assert!(reply == "rejected-invalid-node-transition" && detail.contains("Stopped"), "a state before Stopped is refused naming it: {reply} {detail}");
+    let rpc2 = estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
+    let as_rpc2 = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "ready", "--as-node-id", rpc2["node_id"].as_str().unwrap(), "--as-incarnation", rpc2["incarnation"].as_str().unwrap()]);
+    assert_eq!(declared(&as_rpc2).0, "already-applied", "rpc.2's held Ready is untouched: rpc.1 declared only its birth: {as_rpc2}");
 
     estate.artifact("declarations.json", &json!({"primary": primary["name"], "other_admin": other_admin["name"], "node": rpc1["name"]}));
     estate.stop().await;
 
-    // Evidence: every decision is one span on the authority, naming op, sender and outcome.
+    // Evidence: every decision is one span on the mesh-primary, naming op, sender and outcome.
     let spans = estate.spans();
     let decided = named(&spans, "rdm.node_admin.status.update.via-declaration");
     let on_primary = |outcome: &str| decided.iter().filter(|s| actor_is(s, &primary) && s["attributes"]["outcome"] == outcome && s["attributes"]["sender"] == rpc1["node_id"]).count();
@@ -206,7 +214,7 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     // A declaration straight to the admin holding no role: its own role decision.
     let (rpc1v, a1v, a2v) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await);
     assert_eq!(rpc1v["node_id"], before_rpc.node_id.as_str(), "stop/start keeps the node ID");
-    assert_eq!(rpc1v["incarnation_id"], serde_json::to_value(&before_rpc.incarnation).unwrap(), "stop/start keeps the incarnation");
+    assert_eq!(rpc1v["incarnation"], serde_json::to_value(&before_rpc.incarnation).unwrap(), "stop/start keeps the incarnation");
     let primary_id = a2v["node_id"].as_str().unwrap().to_string();
     let node = format!("exact:{}", rpc1v["node_id"].as_str().unwrap());
     let non_primary = format!("exact:{}", a1v["node_id"].as_str().unwrap());
@@ -222,7 +230,7 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     // sends no second Ready declaration"); frame and declaration apply once (Q49).
     let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node_id"] == rpc1v["node_id"] && sp["attributes"]["incarnation_id"] == rpc1v["incarnation_id"] && sp["attributes"]["frame"] == "node-started" && sp["attributes"]["operation"] == "node.start" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
+        .filter(|sp| sp["attributes"]["node_id"] == rpc1v["node_id"] && sp["attributes"]["incarnation_id"] == rpc1v["incarnation"] && sp["attributes"]["frame"] == "node-started" && sp["attributes"]["operation"] == "node.start" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
     assert!(!started.is_empty(), "the primary records the start's terminal: {started:#?}");
     assert!(started.iter().all(|sp| sp["attributes"]["recorder_node_id"] == primary_id), "only the primary records it: {started:#?}; primary {primary_id}");

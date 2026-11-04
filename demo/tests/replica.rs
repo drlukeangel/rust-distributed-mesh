@@ -90,7 +90,7 @@ async fn broker_primary(estate: &Estate, not: Option<&PathName>) -> PathName {
     loop {
         for broker in brokers() {
             let row = estate.node_value(&broker).await;
-            if row["is_primary"] == true && row["status"] == "ready" && Some(&broker) != not {
+            if row["is_primary"] == true && row["state"] == "ready" && Some(&broker) != not {
                 return broker;
             }
         }

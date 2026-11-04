@@ -83,7 +83,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
         .collect();
     assert!(!direct_b.is_empty() && direct_b.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b:?}");
     let direct_served = served_in(&direct_b);
-    assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["node_id"] == b["node_id"] && s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the direct calls were served by B's birth only: {direct_served:?}");
+    assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["node_id"] == b["node_id"] && s["attributes"]["incarnation_id"] == b["incarnation"]), "the direct calls were served by B's birth only: {direct_served:?}");
 
     let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-carried-inner").collect();
     assert_eq!(carried_t.len(), 1, "exactly one carried inner call in the whole run: {carried_t:?}");
@@ -93,7 +93,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b_id.as_str()), Some(carrier_id.as_str()), Some("Reply")));
     let via_served = served_in(&via);
     assert_eq!(via_served.len(), 1, "one carried testkit-store request was served: {via_served:?}");
-    assert!(via_served.iter().all(|s| s["attributes"]["node_id"] == b["node_id"] && s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the carried call was served by B's birth only: {via_served:?}");
+    assert!(via_served.iter().all(|s| s["attributes"]["node_id"] == b["node_id"] && s["attributes"]["incarnation_id"] == b["incarnation"]), "the carried call was served by B's birth only: {via_served:?}");
 
     let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
     assert_eq!(none_t.len(), 1, "{none_t:?}");
@@ -107,7 +107,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {:?}'s view read: {opened:?}", entry.name);
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
 
-    let c_served: Vec<_> = served.iter().filter(|s| s["attributes"]["node_id"] == c["node_id"] && s["attributes"]["incarnation_id"] == c["incarnation_id"]).collect();
+    let c_served: Vec<_> = served.iter().filter(|s| s["attributes"]["node_id"] == c["node_id"] && s["attributes"]["incarnation_id"] == c["incarnation"]).collect();
     assert_eq!(c_served.len(), 1, "C served exactly the one call the domain selected it for: {c_served:?}");
     let _ = p;
 }

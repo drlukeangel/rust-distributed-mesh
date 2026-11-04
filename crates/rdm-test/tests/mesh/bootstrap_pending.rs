@@ -408,7 +408,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         "accepted_build": accepted,
         "runs_before": runs_before,
         "admin_before": admin_inc,
-        "admin_after": recovered["incarnation_id"],
+        "admin_after": recovered["incarnation"],
         "handoffs": handoffs.len(),
         "decision": {"span_id": decision["span_id"], "start": start(&decision)},
         "held_mesh_status": {"status": held.0, "changed_at_rafka_ms": held.1},

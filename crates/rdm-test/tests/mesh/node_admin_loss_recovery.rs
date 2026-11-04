@@ -45,7 +45,7 @@ fn values(views: &[NodeView]) -> Vec<Value> {
 
 /// location -> incarnation
 fn births(nodes: &[Value]) -> BTreeMap<PathName, String> {
-    nodes.iter().map(|n| (location(&n), s(&n["incarnation_id"]))).collect()
+    nodes.iter().map(|n| (location(&n), s(&n["incarnation"]))).collect()
 }
 
 /// The fabric-primary role handed over before any loss (Luke 2026-10-12, i143-prd.md e12.s57): a node.stop of
@@ -102,10 +102,10 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let survivors: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{lost}.node"), &i.to_string())).collect();
     assert_eq!(estate.accepted_build_id().await, accepted, "the accepted Build names the topology");
     let starts_before = estate.starts_of_build(&accepted).await;
-    let lost_primary_id = before.iter().find(|n| n["mesh"] == lost && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh's primary");
+    let lost_primary_id = before.iter().find(|n| rdm_test::estate::mesh_of(&n) == lost && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh's primary");
     let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| n.path == format!("{lost}.node-admin") || *n == window_victim).collect();
     // A runtime's data dir is named by its birth's node id.
-    let lost_admin_ids: Vec<String> = before.iter().filter(|n| n["mesh"] == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
+    let lost_admin_ids: Vec<String> = before.iter().filter(|n| rdm_test::estate::mesh_of(&n) == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
     let victim_id = before.iter().find(|n| location(&n) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
     // Control goes through the fabric primary's advertised API, which the fault never touches.
@@ -231,7 +231,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         .filter(|sp| rdm_test::estate::at_location(sp, &window_victim) && attr(sp, "node_id") == victim_id && attr(sp, "outcome").starts_with("complete"))
         .collect();
     assert_eq!(recovery.len(), 1, "the dead member is recovered once, keyed on its exited birth: {recovery:?}");
-    let lost_admins_after: Vec<String> = after.iter().filter(|n| n["mesh"] == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
+    let lost_admins_after: Vec<String> = after.iter().filter(|n| rdm_test::estate::mesh_of(&n) == lost && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
     assert!(lost_admins_after.contains(&attr(recovery[0], "submitter")), "by its own mesh's new primary: {recovery:?}");
     // The recovery's steps are the ones in its own trace.
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")

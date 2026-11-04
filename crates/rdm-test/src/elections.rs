@@ -25,9 +25,9 @@ fn s(v: &Value) -> String {
 /// living primary.
 pub fn expected_primaries(nodes: &[Value]) -> BTreeMap<NodeType, String> {
     let mut best: BTreeMap<NodeType, String> = BTreeMap::new();
-    for n in nodes.iter().filter(|n| n["status"] == "ready") {
+    for n in nodes.iter().filter(|n| n["state"] == "ready") {
         let id = s(&n["node_id"]);
-        let best_id = best.entry((s(&n["mesh"]), s(&n["type"]))).or_insert_with(|| id.clone());
+        let best_id = best.entry((s(&crate::estate::mesh_of(&n)), s(&n["type"]))).or_insert_with(|| id.clone());
         if id < *best_id { *best_id = id; }
     }
     best
@@ -37,7 +37,7 @@ pub fn expected_primaries(nodes: &[Value]) -> BTreeMap<NodeType, String> {
 pub fn advertised_primaries(nodes: &[Value]) -> BTreeMap<NodeType, Vec<String>> {
     let mut out: BTreeMap<NodeType, Vec<String>> = BTreeMap::new();
     for n in nodes {
-        let e = out.entry((s(&n["mesh"]), s(&n["type"]))).or_default();
+        let e = out.entry((s(&crate::estate::mesh_of(&n)), s(&n["type"]))).or_default();
         if n["is_primary"] == true {
             e.push(s(&n["node_id"]));
         }
@@ -56,7 +56,7 @@ pub fn advertised_fabric_primaries(nodes: &[Value]) -> Vec<String> {
 /// advertised, a node-admin that is also its mesh's primary.
 pub fn primaries_as_expected(nodes: &[Value]) -> Result<(), String> {
     for (c, p) in &advertised_primaries(nodes) {
-        let ready = nodes.iter().any(|n| s(&n["mesh"]) == c.0 && s(&n["type"]) == c.1 && n["status"] == "ready");
+        let ready = nodes.iter().any(|n| s(&crate::estate::mesh_of(&n)) == c.0 && s(&n["type"]) == c.1 && n["state"] == "ready");
         if (ready && p.len() != 1) || p.len() > 1 {
             return Err(format!("node type {c:?}: advertised {p:?}, expected exactly one primary"));
         }
@@ -74,11 +74,11 @@ pub fn primaries_as_expected(nodes: &[Value]) -> Result<(), String> {
 /// lower NodeId, a newcomer or a restarted node never displaces it (elections §5).
 pub fn primaries_kept(before: &[Value], after: &[Value]) -> Result<(), String> {
     for b in before.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true) {
-        let Some(a) = after.iter().find(|n| n["node_id"] == b["node_id"] && n["incarnation_id"] == b["incarnation_id"]) else { continue };
-        if a["status"] == "ready" || a["status"] == "pending-reconnect" {
+        let Some(a) = after.iter().find(|n| n["node_id"] == b["node_id"] && n["incarnation"] == b["incarnation"]) else { continue };
+        if a["state"] == "ready" || a["state"] == "pending-reconnect" {
             for role in ["is_primary", "is_fabric_primary"] {
                 if b[role] == true && a[role] != true {
-                    return Err(format!("{} lost {role} while it lives ({})", s(&b["node_id"]), s(&a["status"])));
+                    return Err(format!("{} lost {role} while it lives ({})", s(&b["node_id"]), s(&a["state"])));
                 }
             }
         }

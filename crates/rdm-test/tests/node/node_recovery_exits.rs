@@ -27,12 +27,12 @@ fn s(v: &Value) -> String {
 }
 
 fn ready(node: &Value) -> bool {
-    node["status"] == "ready"
+    node["state"] == "ready"
 }
 
 /// A birth that holds or contends for a role and serves (`NodeStatus::is_live`).
 fn live(node: &Value) -> bool {
-    matches!(node["status"].as_str(), Some("pending" | "ready" | "connections-deleting"))
+    matches!(node["state"].as_str(), Some("pending" | "ready" | "connections-deleting"))
 }
 
 /// The node at `name` once `holds` is true of what `node.get` lists there, as the JSON the view
@@ -94,13 +94,13 @@ async fn recovery_span(estate: &Estate, node: &PathName, node_id: &Value) -> Val
 /// the fabric-primary's view row.
 fn member_and_primaries(nodes: &[Value]) -> (PathName, Value, Value) {
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
-    let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
-    let mesh_primary = nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
+    let mesh = if rdm_test::estate::mesh_of(&primary) == "mesh1" { "mesh2" } else { "mesh1" };
+    let mesh_primary = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
     assert_ne!(mesh_primary["node_id"], primary["node_id"], "the member's mesh-primary is not the fabric-primary");
     // The member is a node holding no role: a node-type primary runs node.primary.update before its
     // own node.connection.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
     // is not the member workflow these cells follow.
-    let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["type"] == "node" && n["is_primary"] != true).map(location).min().expect("an rpc member of the mesh that holds no primary role");
+    let member = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node" && n["is_primary"] != true).map(location).min().expect("an rpc member of the mesh that holds no primary role");
     (member, mesh_primary, primary)
 }
 
@@ -152,8 +152,8 @@ fn assert_mesh_primary_ran_the_recovery(run: &[Value], mp: &Value, before: &Valu
 async fn recovery_recorded(estate: &Estate, before: &Value) -> (Value, Value) {
     let node_id = s(&before["node_id"]);
     wait_for(&format!("{node_id}'s record deleted and its rdm.node.investigated event"), Duration::from_secs(30), || async {
-        let record = estate.node_record(&node_id).filter(|r| r["data"]["status"] == "deleted")?;
-        let event = build_log::node_investigated(estate, &node_id).into_iter().rev().find(|e| e["data"]["incarnation"] == before["incarnation_id"])?;
+        let record = estate.node_record(&node_id).filter(|r| r["data"]["state"] == "deleted")?;
+        let event = build_log::node_investigated(estate, &node_id).into_iter().rev().find(|e| e["data"]["incarnation"] == before["incarnation"])?;
         Some((record, event))
     })
     .await
@@ -175,10 +175,10 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // The node lives in the mesh that does NOT hold the fabric-primary: its own mesh-primary runs it.
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
-    let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
+    let mesh = if rdm_test::estate::mesh_of(&primary) == "mesh1" { "mesh2" } else { "mesh1" };
     let node = Estate::path(&format!("{mesh}.node"), "1");
     let node_path = &node;
-    let mesh_primary = nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
+    let mesh_primary = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
     let before = estate.node_value(node_path).await;
     let data_dir = estate.data_dir(node_path).await;
     let others: Vec<(PathName, String)> = nodes.iter().filter(|n| !rdm_test::estate::is_location(&n, &node_path)).map(|n| (location(n), s(&n["node_id"]))).collect();
@@ -190,10 +190,10 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 
     let after = until_node_where(&estate, node_path, &format!("{node_path:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["node_id"], before["node_id"], "recovery creates a new node.id");
-    assert_ne!(after["incarnation_id"], before["incarnation_id"], "and a new incarnation");
+    assert_ne!(after["incarnation"], before["incarnation"], "and a new incarnation");
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     assert_ne!(estate.data_dir(node_path).await, data_dir, "a newly allocated data dir: the node's storage is ephemeral (Q359)");
-    assert_ne!(after["deployment_id"], before["deployment_id"], "a new runtime");
+    assert_ne!(after["runtime"]["deployment_id"], before["runtime"]["deployment_id"], "a new runtime");
 
     // The mesh-primary proved the exit and submitted the recovery, keyed on the exited birth.
     let recovery = recovery_span(&estate, node_path, &before["node_id"]).await;
@@ -203,7 +203,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
         "the node's own mesh-primary submits: {recovery}"
     );
     assert_eq!(
-        recovery["attributes"]["incarnation_id"], before["incarnation_id"],
+        recovery["attributes"]["incarnation_id"], before["incarnation"],
         "keyed on the exact exited birth: {recovery}"
     );
     assert_eq!(
@@ -233,7 +233,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // Delete, then create: the exited birth departs once, named by its exact birth, before the new node boots.
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
-    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (targeted) before the new node joins");
     // node-recovery.md "Delete blocks the old instance before the new join": the target is the
@@ -278,7 +278,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     let node = &Estate::path("mesh1.node", "3");
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
-    let mesh_primary = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["is_primary"] == true).expect("the mesh-primary").clone();
+    let mesh_primary = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node-admin" && n["is_primary"] == true).expect("the mesh-primary").clone();
     assert_eq!(mesh_primary["node_id"], primary["node_id"], "one mesh: its primary holds the fabric-primary role too");
     let before = estate.node_value(node).await;
     let data_dir = estate.data_dir(node).await;
@@ -287,14 +287,14 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     estate.kill_node(node).await;
 
     let after = until_node_where(&estate, node, &format!("{node:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
-    assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
+    assert_ne!(after["incarnation"], before["incarnation"], "a new incarnation");
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     assert_ne!(estate.data_dir(node).await, data_dir, "a newly allocated data dir: the node's storage is ephemeral (Q359)");
 
     let recovery = recovery_span(&estate, node, &before["node_id"]).await;
     assert_eq!(s(&recovery["attributes"]["submitter"]), s(&mesh_primary["node_id"]), "{recovery}");
     assert_eq!(s(&recovery["attributes"]["mesh"]), "mesh1", "{recovery}");
-    assert_eq!(recovery["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {recovery}");
+    assert_eq!(recovery["attributes"]["incarnation_id"], before["incarnation"], "keyed on the exact exited birth: {recovery}");
     assert_eq!(s(&recovery["attributes"]["verdict"]), "exited", "on the verdict exited: {recovery}");
     assert_eq!(s(&recovery["attributes"]["outcome"]), "complete", "the recovery's end: {recovery}");
     let (_, event) = recovery_recorded(&estate, &before).await;
@@ -321,7 +321,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     }
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
-    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (targeted) before the new node joins");
     // node-recovery.md "Delete blocks the old instance before the new join": the target is the
@@ -408,7 +408,7 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_run_again_by_the_nex
     let after = until_node_where(&estate, node, &format!("{node:?} ready as a new node after its recovery failed"), Duration::from_secs(60), |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
-    assert_eq!(done["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {done}");
+    assert_eq!(done["attributes"]["incarnation_id"], before["incarnation"], "keyed on the exact exited birth: {done}");
     assert_eq!(s(&done["attributes"]["outcome"]), "complete", "{done}");
     assert_eq!(s(&done["attributes"]["again"]), "true", "the submit runs again the recovery that failed, owed in its mesh-primary's memory (D48): {done}");
     assert_eq!(s(&done["attributes"]["mesh"]), "mesh1", "{done}");
@@ -493,7 +493,7 @@ async fn a_hung_member_whose_runtime_runs_is_terminated_and_recovered_at_once() 
     .await;
     let (node, mesh_primary, _) = member_and_primaries(&estate.node_values().await);
     let before = estate.node_value(&node).await;
-    let mesh = s(&before["mesh"]);
+    let mesh = s(&rdm_test::estate::mesh_of(&before));
     let rt = exact_runtime(&estate, &node).await;
     let builds = estate.build_ids().await;
     let held = rt.hang().expect("the exact runtime is hung");
@@ -589,12 +589,12 @@ async fn a_hung_mesh_primary_is_investigated_and_recovered_by_its_successor_afte
     let nodes = estate.node_values().await;
     let fp_row = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
     let fp = s(&fp_row["node_id"]);
-    let mp = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
+    let mp = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
     let mp_name = location(&mp);
-    let standby_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["node_id"] != mp["node_id"]).expect("mesh2's standby admin").clone();
+    let standby_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["node_id"] != mp["node_id"]).expect("mesh2's standby admin").clone();
     let standby = location(&standby_row);
     let successor = s(&standby_row["node_id"]);
-    assert_ne!(fp_row["mesh"], "mesh2", "the fabric-primary is in mesh1: {fp_row}");
+    assert_ne!(rdm_test::estate::mesh_of(&fp_row), "mesh2", "the fabric-primary is in mesh1: {fp_row}");
 
     let rt = exact_runtime(&estate, &mp_name).await;
     let builds = estate.build_ids().await;
@@ -682,8 +682,8 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     let fp_name = location(&fp);
-    assert_eq!((fp["mesh"].as_str(), fp["is_primary"].as_bool()), (Some("mesh1"), Some(true)), "the Day-0 admin is mesh-primary and fabric-primary: {fp}");
-    let standby_row = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["node_id"] != fp["node_id"]).expect("mesh1's other admin").clone();
+    assert_eq!((rdm_test::estate::mesh_of(&fp).as_str(), fp["is_primary"].as_bool()), (Some("mesh1"), Some(true)), "the Day-0 admin is mesh-primary and fabric-primary: {fp}");
+    let standby_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node-admin" && n["node_id"] != fp["node_id"]).expect("mesh1's other admin").clone();
     let (standby, standby_id) = (location(&standby_row), s(&standby_row["node_id"]));
     // Control is read through the other admin from here: a hung admin answers nothing.
     estate.enter(&standby).await;
@@ -769,10 +769,10 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let floor = rdm_transport::topology::staleness_floor();
     let nodes = estate.node_values().await;
     let fp_row = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
-    assert_eq!(fp_row["mesh"], "mesh1", "the day-0 admin keeps the fabric-primary role: {fp_row}");
+    assert_eq!(rdm_test::estate::mesh_of(&fp_row), "mesh1", "the day-0 admin keeps the fabric-primary role: {fp_row}");
     // Each admin by node id, as the spans name an actor, and by location for its own Stop.
-    let mp_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary").clone();
-    let standby_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["node_id"] != mp_row["node_id"]).expect("mesh2's second admin").clone();
+    let mp_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary").clone();
+    let standby_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["node_id"] != mp_row["node_id"]).expect("mesh2's second admin").clone();
     let (mp, mp_at, standby) = (s(&mp_row["node_id"]), location(&mp_row), s(&standby_row["node_id"]));
     let node = &Estate::path("mesh2.node", "1");
     let before = estate.node_value(node).await;
@@ -857,13 +857,13 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
     let resolver = std::sync::Arc::new(StaticResolver::new());
     let node_id: rdm_core::NodeId = s(&admin["node_id"]).parse().expect("a node id");
-    resolver.insert(ResolvedNode { mesh: s(&admin["mesh"]), r#type: (admin["type"].as_str().unwrap()).to_string(),
+    resolver.insert(ResolvedNode { mesh: s(&rdm_test::estate::mesh_of(&admin)), r#type: (admin["type"].as_str().unwrap()).to_string(),
         node_id: node_id.clone(),
         path: s(&admin["path"]),
         name: s(&admin["name"]),
         endpoint_id: s(&admin["endpoint_id"]).parse().expect("an iroh key"),
         transport_addr: s(&admin["transport_addr"]).parse().expect("a transport address"),
-        incarnation: rdm_core::IncarnationId::parse(&s(&admin["incarnation_id"])).unwrap(),
+        incarnation: rdm_core::IncarnationId::parse(&s(&admin["incarnation"])).unwrap(),
     });
     (std::sync::Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), node_id)
 }
@@ -889,7 +889,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let before = estate.node_value(node_path).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation"])).unwrap() };
     // node-config-update.md step 1: the caller sends it to the fabric-primary, which sends it down.
     let (fp_client, fp_id) = caller_of(&fp).await;
     let reply = rdm_client::NodeRpc::new(&fp_client)
@@ -967,10 +967,10 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     let fp_name = location(&fp);
-    assert_eq!(fp["mesh"], "mesh1", "the day-0 admin holds the fabric-primary role: {fp_name:?}");
-    let successor = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["node_id"] != fp["node_id"]).expect("mesh1's other node-admin").clone();
+    assert_eq!(rdm_test::estate::mesh_of(&fp), "mesh1", "the day-0 admin holds the fabric-primary role: {fp_name:?}");
+    let successor = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node-admin" && n["node_id"] != fp["node_id"]).expect("mesh1's other node-admin").clone();
     let successor_name = location(&successor);
-    let mp_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary").clone();
+    let mp_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary").clone();
     let mp = s(&mp_row["node_id"]);
 
     // The fabric-primary is stopped by a caller's node command: its roles move to mesh1's other
@@ -984,7 +984,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
             (old.state == NodeStatus::Stopped && !old.is_fabric_primary && new.is_fabric_primary).then(|| serde_json::to_value(old).expect("a view serializes"))
         })
         .await;
-    assert_eq!(stopped["incarnation_id"], fp["incarnation_id"], "the stopped fabric-primary is the same birth, stopped: {stopped}");
+    assert_eq!(stopped["incarnation"], fp["incarnation"], "the stopped fabric-primary is the same birth, stopped: {stopped}");
     // A stopped node answers only the Status family (node-rpc.md §16, the ConnectionsDeleting guard): the
     // Build reads go to the fabric-primary now, its successor.
     estate.enter(&successor_name).await;
@@ -1013,7 +1013,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
     // The stopped fabric-primary stayed stopped through the recovery.
     let still = estate.node_value(&fp_name).await;
-    assert_eq!((still["stopped"].clone(), still["incarnation_id"].clone()), (json!(true), fp["incarnation_id"].clone()), "{fp_name:?} stayed stopped: {still}");
+    assert_eq!((still["state"].clone(), still["incarnation"].clone()), (json!("stopped"), fp["incarnation"].clone()), "{fp_name:?} stayed stopped: {still}");
     recovery_recorded(&estate, &before).await;
     eprintln!("member exit with the fabric-primary {fp_name:?} stopped, role at {successor_name:?}; {node:?} recovered by {mp}: trace {}", s(&done["trace_id"]));
     estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));
@@ -1061,8 +1061,8 @@ async fn a_re_created_node_is_launched_on_its_predecessors_data_dir_only_when_it
     let want: std::collections::BTreeSet<PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2"), broker.clone(), gateway.clone()].into();
     estate.settles_to_named(&want, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
-    assert_eq!(s(&estate.node_value(&broker).await["storage_persistence"]["persistence"]), "persistent", "the broker's storage is persistent");
-    assert_eq!(s(&estate.node_value(&gateway).await["storage_persistence"]["persistence"]), "ephemeral", "the gateway's storage is ephemeral");
+    assert_eq!(s(&estate.node_value(&broker).await["storage"]["persistence"]["persistence"]), "persistent", "the broker's storage is persistent");
+    assert_eq!(s(&estate.node_value(&gateway).await["storage"]["persistence"]["persistence"]), "ephemeral", "the gateway's storage is ephemeral");
 
     // 1. The broker (persistent), its data dir there: launched on it, with a new endpoint.
     let before = estate.node_value(&broker).await;
@@ -1134,7 +1134,7 @@ async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and
     let failed = wait_for("the recovery ends failed", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
     let outcome = s(&failed["attributes"]["outcome"]);
     assert!(outcome.contains("the data is not usable"), "the recovery's step names the hook's reason: {failed}");
-    let after = until_node_where(&estate, node, &format!("{node:?} a new node, pending"), Duration::from_secs(60), |n| n["node_id"] != before["node_id"] && n["status"] == "pending").await;
+    let after = until_node_where(&estate, node, &format!("{node:?} a new node, pending"), Duration::from_secs(60), |n| n["node_id"] != before["node_id"] && n["state"] == "pending").await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     // The recovery owed after its failed step is not run again: the node it created stands there.
     let settled = wait_for("the recovery's run on the next tick ends already-recovered", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]) == "already-recovered") }).await;
@@ -1142,7 +1142,7 @@ async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and
     // It stays Pending, and no second create: nothing makes it Ready over the data its application refused.
     tokio::time::sleep(Duration::from_secs(10)).await;
     let still = estate.node_value(node).await;
-    assert_eq!((still["node_id"].clone(), s(&still["status"])), (after["node_id"].clone(), "pending".to_string()), "the new node stays Pending: {still}");
+    assert_eq!((still["node_id"].clone(), s(&still["state"])), (after["node_id"].clone(), "pending".to_string()), "the new node stays Pending: {still}");
     let spans = estate.spans();
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(creates.len(), 1, "one create of the exited birth, never a second recovery: {creates:?}");
@@ -1177,7 +1177,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(30);
     while std::time::Instant::now() < until && alive(pid as u64) {
         let views = estate.node_values().await;
-        let old_listed: Vec<String> = views.iter().filter(|n| s(&n["node_id"]) == old_id).map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
+        let old_listed: Vec<String> = views.iter().filter(|n| s(&n["node_id"]) == old_id).map(|n| format!("{}={}", s(&n["name"]), s(&n["state"]))).collect();
         let live_at_path: Vec<String> = views.iter().filter(|n| rdm_test::estate::is_location(&n, &node) && live(n)).map(|n| s(&n["node_id"])).collect();
         samples.push(json!({"t_ms": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 - resumed_ns) / 1_000_000, "old_listed": old_listed, "live_at_path": live_at_path, "old_process_alive": alive(pid as u64)}));
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1188,7 +1188,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     let mut named_old: std::collections::BTreeMap<String, usize> = Default::default();
     for sp in spans.iter().filter(|sp| start_ns(sp) >= resumed_ns) {
         let a = sp["attributes"].to_string();
-        if a.contains(&old_id) || a.contains(&s(&before["incarnation_id"])) {
+        if a.contains(&old_id) || a.contains(&s(&before["incarnation"])) {
             *named_old.entry(s(&sp["name"])).or_default() += 1;
         }
     }
@@ -1204,9 +1204,9 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     assert!(reported, "its mesh-primary reported it to the fabric-primary: {facts}");
     // node.terminate of the exact returned birth: its run's span names the birth, and its TerminateRuntime
     // step completed under it.
-    let runs: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-terminate-returned").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == old_id && sp["attributes"]["incarnation_id"] == before["incarnation_id"]).collect();
+    let runs: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-terminate-returned").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == old_id && sp["attributes"]["incarnation_id"] == before["incarnation"]).collect();
     let terminated = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete" && runs.iter().any(|run| descends_from(&spans, sp, run)));
-    assert!(terminated, "TerminateRuntime ran under node.terminate of {node:?}@{}: {runs:?} {facts}", s(&before["incarnation_id"]));
+    assert!(terminated, "TerminateRuntime ran under node.terminate of {node:?}@{}: {runs:?} {facts}", s(&before["incarnation"]));
     assert_eq!(last["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
 }
 
@@ -1278,8 +1278,8 @@ async fn completed_recovery_span(estate: &Estate, node: &PathName, node_id: &Val
 async fn two_members_of_two_meshes_killed_at_once_are_recovered_by_their_own_mesh_primaries_at_the_same_time() {
     let (mut estate, birth_build) = two_mesh_estate("two_members_of_two_meshes_killed_at_once_are_recovered_by_their_own_mesh_primaries_at_the_same_time").await;
     let nodes = estate.node_values().await;
-    let member_of = |mesh: &str| nodes.iter().filter(|n| n["mesh"] == mesh && n["type"] == "node" && n["is_primary"] != true).map(location).min().unwrap_or_else(|| panic!("an rpc member of {mesh} holding no primary role"));
-    let primary_of = |mesh: &str| nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("{mesh}'s primary"));
+    let member_of = |mesh: &str| nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node" && n["is_primary"] != true).map(location).min().unwrap_or_else(|| panic!("an rpc member of {mesh} holding no primary role"));
+    let primary_of = |mesh: &str| nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("{mesh}'s primary"));
     let (a, b) = (member_of("mesh1"), member_of("mesh2"));
     let (before_a, before_b) = (estate.node_value(&a).await, estate.node_value(&b).await);
     let builds = estate.build_ids().await;

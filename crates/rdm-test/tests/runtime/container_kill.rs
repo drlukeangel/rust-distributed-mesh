@@ -63,7 +63,7 @@ async fn a_killed_container_is_read_exited_by_inspection_and_its_mesh_primary_re
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     let before = estate.node_value(&location()).await;
-    assert_eq!(before["provider"], "container", "{before}");
+    assert_eq!(before["runtime"]["provider"], "container", "{before}");
     let killed = estate.container_of(&location()).await.expect("the node runs in a container labelled with its fabric and node ID");
     assert_eq!(killed.len(), 64, "the immutable container id: {killed}");
     let survivor = estate.container_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.expect("the other node's container");
@@ -78,7 +78,7 @@ async fn a_killed_container_is_read_exited_by_inspection_and_its_mesh_primary_re
     let after = estate
         .until_node(&location(), "mesh1.node.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != before["node_id"] && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != before["node_id"] && n["incarnation"] != before["incarnation"]).then_some(n)
         })
         .await;
     let recreated = estate.container_of(&location()).await.expect("the re-created node runs in a container");
@@ -88,18 +88,18 @@ async fn a_killed_container_is_read_exited_by_inspection_and_its_mesh_primary_re
     // it, which removes it (node-recovery.md step 3, Q145): the killed container is gone from the host.
     assert_eq!(docker_state(&killed), "", "the killed container is removed by the recovery's TerminateRuntime");
     assert_eq!(estate.container_of(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
-    assert_eq!(after["provider"], "container");
+    assert_eq!(after["runtime"]["provider"], "container");
 
     // Evidence: the proof started the recovery, and the recovery re-created the node through every
     // create step.
     let is_recovery = |sp: &&Value| sp["attributes"]["mesh"] == "mesh1"
         && sp["attributes"]["node_id"] == before["node_id"]
-        && sp["attributes"]["incarnation_id"] == before["incarnation_id"]
+        && sp["attributes"]["incarnation_id"] == before["incarnation"]
         && s(&sp["attributes"]["outcome"]).starts_with("complete");
     // Ending a span only queues it: each process's own export thread appends it to the evidence a
     // batch later, so the read waits for both the admin's recovery span and the re-created container's
     // own boot span.
-    let is_born = |sp: &&Value| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation_id"];
+    let is_born = |sp: &&Value| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation"];
     let spans = wait_for("the recovery's spans and the re-created container's own boot span are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
         (named(&spans, "rdm.node_admin.node.update.via-node-recovery").iter().any(is_recovery) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)

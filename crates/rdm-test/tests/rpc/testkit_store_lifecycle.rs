@@ -48,8 +48,8 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
     let r = &out["reply"];
     assert_eq!(r["executing_node"], node["node_id"], "{out}");
     assert_eq!((&r["path"], &r["name"]), (&node["path"], &node["name"]), "{out}");
-    assert_eq!(r["mesh"], node["mesh"], "{out}");
-    assert_eq!(r["incarnation_id"], node["incarnation_id"], "{out}");
+    assert_eq!(r["mesh"], rdm_test::estate::mesh_of(&node), "{out}");
+    assert_eq!(r["incarnation_id"], node["incarnation"], "{out}");
     assert_eq!(r["op"], op, "{out}");
 }
 
@@ -70,7 +70,7 @@ async fn view(estate: &Estate, name: &rdm_core::PathName) -> Value {
 }
 
 fn birth(n: &Value) -> Value {
-    json!({"node": n["name"], "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "mesh": n["mesh"]})
+    json!({"node": n["name"], "node_id": n["node_id"], "incarnation_id": n["incarnation"], "mesh": rdm_test::estate::mesh_of(&n)})
 }
 
 /// CONTRACT (#2775): a restart of the logical node holding the testkit store, a `node.restart` call to the
@@ -102,9 +102,9 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     // Node commands of the primary above the node, never a Build or part of one (Q342).
     estate.stop_then_start(&node()).await;
     let restarted = view(&estate, &node()).await;
-    assert_eq!(restarted["status"], "ready", "the restarted birth is ready: {restarted}");
+    assert_eq!(restarted["state"], "ready", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
-    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is node.stop then node.start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
+    assert_eq!(restarted["incarnation"], first["incarnation"], "a restart is node.stop then node.start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
     let restarted_dir = estate.node_view(&node()).await.storage.data_dir.expect("the launching admin advertises the node's data dir");
     assert_eq!(restarted_dir, first_dir, "a restart keeps the node's data dir");
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
@@ -116,8 +116,8 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     let spans = estate.spans();
     let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["node_id"] == first["node_id"] && s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
-    let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
-    let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
+    let put_span = at(&first["incarnation"], "put", "stored").expect("the first birth served the put");
+    let kept_span = at(&restarted["incarnation"], "get", "value").expect("the restarted birth served the kept value");
     // The stop ran as the Build its node.stop call was accepted as: the call, then the rectifier's
     // node update of this path under the same Build. A stop of its type's primary moves the role
     // first (node-stop.md: "A target that is a primary hands over first by node.primary.update"), and
@@ -187,7 +187,7 @@ async fn testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_foll
     let replacement = estate
         .until_node(&node(), "a new logical node holds the path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
         })
         .await;
     let replacement_dir = estate.node_view(&node()).await.storage.data_dir.expect("the launching admin advertises the node's data dir");
@@ -220,7 +220,7 @@ async fn testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_foll
         .cloned()
         .unwrap_or_else(|| panic!("node recovery of the selected node completed"));
     let under = |name: &str| -> Vec<Value> {
-        named(&spans, name).into_iter().filter(|sp| sp["parent_span_id"] == recovery["span_id"] && sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"]).cloned().collect()
+        named(&spans, name).into_iter().filter(|sp| sp["parent_span_id"] == recovery["span_id"] && sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation"]).cloned().collect()
     };
     let (deletes, creates) = (under("rdm.node_admin.node.delete.via-node-recovery"), under("rdm.node_admin.node.create.via-node-recovery"));
     assert!(deletes.len() == 1 && creates.len() == 1, "one delete and one create of the exited birth under the recovery's submit: {deletes:?} {creates:?}");

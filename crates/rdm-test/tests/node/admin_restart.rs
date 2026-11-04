@@ -77,8 +77,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     estate.stop_then_start(primary).await;
     wait_for(&format!("{successor:?} holds {away}'s mesh-primary role and {primary:?} is back as the same birth, not the primary"), Duration::from_secs(60), || async {
         let nodes = estate.node_values().await;
-        let s_ok = nodes.iter().any(|n| (s(&n["node_id"]), s(&n["incarnation_id"])) == successor_birth && n["is_primary"] == true && n["status"] == "ready");
-        let h_ok = nodes.iter().any(|n| s(&n["node_id"]) == primary_birth.0 && n["is_primary"] == false && n["status"] == "ready" && (s(&n["node_id"]), s(&n["incarnation_id"])) == primary_birth);
+        let s_ok = nodes.iter().any(|n| (s(&n["node_id"]), s(&n["incarnation"])) == successor_birth && n["is_primary"] == true && n["state"] == "ready");
+        let h_ok = nodes.iter().any(|n| s(&n["node_id"]) == primary_birth.0 && n["is_primary"] == false && n["state"] == "ready" && (s(&n["node_id"]), s(&n["incarnation"])) == primary_birth);
         (s_ok && h_ok).then_some(())
     })
     .await;
@@ -102,8 +102,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     //    to mark it silent, the tickle, a floor to the second no-path, the provider's proof, the create).
     let recovered = wait_for(&format!("{primary:?} is {away}'s mesh primary again and a new node stands ready at {successor:?}"), Duration::from_secs(120), || async {
         let nodes = estate.node_values().await;
-        let h_ok = nodes.iter().any(|n| s(&n["node_id"]) == primary_birth.0 && n["is_primary"] == true && n["status"] == "ready");
-        let re_born = nodes.iter().find(|n| rdm_test::estate::is_location(n, &successor) && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
+        let h_ok = nodes.iter().any(|n| s(&n["node_id"]) == primary_birth.0 && n["is_primary"] == true && n["state"] == "ready");
+        let re_born = nodes.iter().find(|n| rdm_test::estate::is_location(n, &successor) && n["state"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
         if h_ok { re_born } else { None }
     })
     .await;

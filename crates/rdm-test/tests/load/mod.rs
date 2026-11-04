@@ -269,7 +269,7 @@ async fn every_admin_holds(estate: &Estate, admins: &[rdm_core::PathName], node:
         for a in left {
             let values = estate.held_values_at(a).await;
             let mine: Vec<&Value> = values.iter().filter(|v| rdm_test::estate::is_location(&v, &node) && not_id.is_none_or(|id| s(&v["node_id"]) != id)).collect();
-            let held = if status == "leaving" { mine.iter().all(|v| s(&v["status"]) != "ready") } else { mine.iter().any(|v| s(&v["status"]) == status) };
+            let held = if status == "leaving" { mine.iter().all(|v| s(&v["state"]) != "ready") } else { mine.iter().any(|v| s(&v["state"]) == status) };
             if !held {
                 still.push(a);
             }

@@ -192,7 +192,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     // 6. Only now is Direct effective.
     let (cut, c0, c1) = originate(&estate, &source_id, &destination_id, "after-delete");
     assert_eq!((cut["call_outcome"].as_str(), cut["route"].as_str()), (Some("reply"), Some("direct")), "{cut}");
-    assert_eq!(cut["reply"]["incarnation_id"], dest["incarnation_id"], "{cut}");
+    assert_eq!(cut["reply"]["incarnation_id"], dest["incarnation"], "{cut}");
 
     // 7. Spans: the accept and the wake under it, the source's dial and its entry, the refusals by
     // name, the landing, then the Direct route.
@@ -209,7 +209,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     assert_eq!(wakes.len(), 1, "one accept from the destination, one wake: {wakes:?}");
     let wake = wakes[0];
     assert_eq!(wake["attributes"]["outcome"], "pending", "the accept woke the dial: the Direct Failed rows armed none (Q348): {wake}");
-    assert_eq!(s(&wake["attributes"]["destination_incarnation"]), s(&dest["incarnation_id"]), "the attempt is toward the exact birth the Proxy names: {wake}");
+    assert_eq!(s(&wake["attributes"]["destination_incarnation"]), s(&dest["incarnation"]), "the attempt is toward the exact birth the Proxy names: {wake}");
     assert!(start(wake) >= t_inbound0 && start(wake) <= t_inbound1 + 5_000_000_000, "the wake belongs to the destination's call");
     let accept = named(&spans, "rdm.node_rpc.connection.create.via-accept").into_iter().find(|sp| sp["span_id"] == wake["parent_span_id"] && sp["trace_id"] == wake["trace_id"]).expect("the wake runs under the accept span");
     assert!(s(&dest["endpoint_id"]).starts_with(&s(&accept["attributes"]["peer"])), "the accepted peer is the destination: {accept}");

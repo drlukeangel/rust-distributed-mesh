@@ -92,7 +92,7 @@ async fn fixture(cell: &str) -> Fixture {
     // The fault falls on a mesh whose status is published: the fabric is ready at the
     // fabric-primary's apply of the mesh's ready, the moment the mesh's primary sends it (states.md), so
     // the fixture waits for that send and its first repeat in the primary's own spans.
-    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh has a primary node-admin");
+    let primary = before.iter().find(|n| rdm_test::estate::mesh_of(&n) == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh has a primary node-admin");
     wait_for("the lost mesh's primary has sent its ready status and repeated it", Duration::from_secs(60), || {
         let spans = estate.spans();
         let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready").count();
@@ -125,7 +125,7 @@ impl Fixture {
     /// The node ids of `mesh`'s node-admins, settled and as the view holds them now.
     async fn admin_ids(&self, mesh: &str) -> std::collections::BTreeSet<String> {
         let now = self.estate.node_values().await;
-        self.before.iter().chain(now.iter()).filter(|n| n["mesh"] == mesh && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect()
+        self.before.iter().chain(now.iter()).filter(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect()
     }
 }
 
@@ -164,9 +164,9 @@ fn result(dir: &std::path::Path, v: Value) {
 /// path.name `node`'s name is held by (`None`: released).
 fn stored_birth(root: &std::path::Path, node: &PathName, node_id: &str) -> (Option<String>, Option<String>) {
     let record = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id));
-    let status = record.as_ref().map(|r| s(&r["data"]["status"]));
+    let status = record.as_ref().map(|r| s(&r["data"]["state"]));
     // The name is read from the record (i152 s5: no name claim): the node id whose live record holds the pair.
-    let name = record.filter(|r| r["data"]["path"] == node.path.as_str() && r["data"]["name"] == node.name.as_str() && r["data"]["status"] != "deleted").map(|r| s(&r["data"]["node_id"]));
+    let name = record.filter(|r| r["data"]["path"] == node.path.as_str() && r["data"]["name"] == node.name.as_str() && r["data"]["state"] != "deleted").map(|r| s(&r["data"]["node_id"]));
     (status, name)
 }
 
@@ -208,10 +208,10 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let before = values(&estate.settled_views(&shape).await);
     let fp_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric-primary");
     let (fp, fp_id) = (location(&fp_row), s(&fp_row["node_id"]));
-    assert_eq!(fp_row["mesh"], "mesh1", "the fabric-primary is mesh1's: {fp_row}");
+    assert_eq!(rdm_test::estate::mesh_of(&fp_row), "mesh1", "the fabric-primary is mesh1's: {fp_row}");
     let lost = Estate::path("mesh2.node-admin", "1");
     let lost_row = before.iter().find(|n| location(n) == lost).cloned().expect("mesh2's node-admin");
-    let (lost_id, lost_inc) = (s(&lost_row["node_id"]), s(&lost_row["incarnation_id"]));
+    let (lost_id, lost_inc) = (s(&lost_row["node_id"]), s(&lost_row["incarnation"]));
     assert_eq!(lost_row["is_primary"], true, "mesh2's one node-admin is its primary: {lost_row}");
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 has its id").to_string();
     estate.enter(&fp).await;
@@ -222,7 +222,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     estate.kill_pid(runtime_of(&estate, &lost_id));
     let recreated = wait_for(&format!("{lost:?} re-created at its path.name, ready and mesh2's primary"), floor * 4 + Duration::from_secs(60), || {
         let (estate, lost, lost_id) = (&estate, lost.clone(), lost_id.clone());
-        async move { estate.node_values().await.into_iter().find(|n| location(n) == lost && s(&n["node_id"]) != lost_id && n["status"] == "ready" && n["is_primary"] == true) }
+        async move { estate.node_values().await.into_iter().find(|n| location(n) == lost && s(&n["node_id"]) != lost_id && n["state"] == "ready" && n["is_primary"] == true) }
     })
     .await;
     wait_for("the fabric is ready", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
@@ -286,10 +286,10 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
     let mut f = fixture(cell).await;
     let (fp, fp_id, lost) = (f.fabric_primary.clone(), f.fabric_primary_id.clone(), f.lost.clone());
     let fp_mesh = if lost == "mesh1" { "mesh2" } else { "mesh1" };
-    let first_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
-    let (first, first_id, first_inc) = (location(&first_row), s(&first_row["node_id"]), s(&first_row["incarnation_id"]));
-    let mine: Vec<PathName> = f.before.iter().filter(|n| n["mesh"] == fp_mesh).map(location).collect();
-    let theirs: Vec<PathName> = f.before.iter().filter(|n| n["mesh"] == lost.as_str()).map(location).collect();
+    let first_row = f.before.iter().find(|n| rdm_test::estate::mesh_of(&n) == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
+    let (first, first_id, first_inc) = (location(&first_row), s(&first_row["node_id"]), s(&first_row["incarnation"]));
+    let mine: Vec<PathName> = f.before.iter().filter(|n| rdm_test::estate::mesh_of(&n) == fp_mesh).map(location).collect();
+    let theirs: Vec<PathName> = f.before.iter().filter(|n| rdm_test::estate::mesh_of(&n) == lost.as_str()).map(location).collect();
     let root = f.estate.fabric_store_root();
     let intact = || {
         let (status, name) = stored_birth(&root, &first, &first_id);
@@ -308,7 +308,7 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
     for at in [&fp, &first] {
         f.estate
             .until_view_at(at, &format!("{at:?}'s view holds {first:?} as the same birth, ready and {lost}'s primary"), floor * 2 + gossip * 4, |v| {
-                Estate::values(v).iter().any(|n| location(n) == first && s(&n["node_id"]) == first_id && s(&n["incarnation_id"]) == first_inc && n["is_primary"] == true && n["status"] == "ready").then_some(())
+                Estate::values(v).iter().any(|n| location(n) == first && s(&n["node_id"]) == first_id && s(&n["incarnation"]) == first_inc && n["is_primary"] == true && n["state"] == "ready").then_some(())
             })
             .await;
     }
@@ -363,11 +363,11 @@ async fn a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_pr
     let cell = "a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_primary_each_commanded_one_dropping_its_role_before_it_rejoins";
     let mut f = fixture(cell).await;
     let (fp, fp_id, lost) = (f.fabric_primary.clone(), f.fabric_primary_id.clone(), f.lost.clone());
-    let first_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
+    let first_row = f.before.iter().find(|n| rdm_test::estate::mesh_of(&n) == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
     let (first, first_id) = (location(&first_row), s(&first_row["node_id"]));
-    let successor_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["node_id"] != first_row["node_id"]).cloned().expect("the peer mesh's other node-admin");
+    let successor_row = f.before.iter().find(|n| rdm_test::estate::mesh_of(&n) == lost.as_str() && n["type"] == "node-admin" && n["node_id"] != first_row["node_id"]).cloned().expect("the peer mesh's other node-admin");
     let (successor, successor_id) = (location(&successor_row), s(&successor_row["node_id"]));
-    let births: Vec<(PathName, String, String)> = [&first_row, &successor_row].iter().map(|r| (location(r), s(&r["node_id"]), s(&r["incarnation_id"]))).collect();
+    let births: Vec<(PathName, String, String)> = [&first_row, &successor_row].iter().map(|r| (location(r), s(&r["node_id"]), s(&r["incarnation"]))).collect();
     let others: Vec<PathName> = f.before.iter().map(location).filter(|l| *l != first).collect();
     let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
     let before = f.before.clone();
@@ -388,8 +388,8 @@ async fn a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_pr
         let mut named = Vec::new();
         for at in [&fp, &first, &successor] {
             let v = Estate::values(&f.estate.node_views_at(at).await?);
-            let same = births.iter().all(|(l, id, inc)| v.iter().any(|n| location(n) == *l && s(&n["node_id"]) == *id && s(&n["incarnation_id"]) == *inc));
-            let primaries: Vec<String> = v.iter().filter(|n| n["mesh"] == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).collect();
+            let same = births.iter().all(|(l, id, inc)| v.iter().any(|n| location(n) == *l && s(&n["node_id"]) == *id && s(&n["incarnation"]) == *inc));
+            let primaries: Vec<String> = v.iter().filter(|n| rdm_test::estate::mesh_of(&n) == lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).collect();
             if !(same && primaries.len() == 1 && births.iter().any(|(_, id, _)| *id == primaries[0])) {
                 return None;
             }
@@ -467,8 +467,8 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let primary = f.before.iter().find(|n| n["mesh"] == f.lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the peer mesh has a primary node-admin");
-    let survivor = f.before.iter().filter(|n| n["mesh"] == f.lost.as_str() && n["type"] == "node-admin").map(|n| location(&n)).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
+    let primary = f.before.iter().find(|n| rdm_test::estate::mesh_of(&n) == f.lost.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the peer mesh has a primary node-admin");
+    let survivor = f.before.iter().filter(|n| rdm_test::estate::mesh_of(&n) == f.lost.as_str() && n["type"] == "node-admin").map(|n| location(&n)).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
     let fault_ms = now_ms();
     let (_, pid) = f.runtimes(&format!("{}.node-admin", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary:?} is running"));
     f.estate.kill_pid(pid);

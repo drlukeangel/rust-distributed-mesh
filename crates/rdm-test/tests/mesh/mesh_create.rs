@@ -114,7 +114,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         .collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "one fabric primary once the view settles");
-    let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).unwrap();
+    let mesh2_primary = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).unwrap();
     let node_at = |path: &str, name: &str| nodes.iter().find(|node| node["path"] == path && node["name"] == name).expect("settled node at explicit location");
     let first_admin = node_at("mesh2.node-admin", "1");
     let day0_admin = node_at("mesh1.node-admin", "1");
@@ -177,7 +177,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         assert!(handoff["attributes"][k].as_str().is_some_and(|v| !v.is_empty()), "the hand-off names {k}: {handoff}");
     }
     assert_eq!(handoff["attributes"]["target_node_id"], first_admin["node_id"]);
-    assert_eq!(handoff["attributes"]["target_incarnation"], first_admin["incarnation_id"]);
+    assert_eq!(handoff["attributes"]["target_incarnation"], first_admin["incarnation"]);
     assert_eq!(handoff["attributes"]["state"], "Pending");
     let handed = handoff["end_unix_nano"].as_u64().unwrap();
     let shape_started = named(&spans, "rdm.node_admin.node.create.via-build")
@@ -232,7 +232,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         m2_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(),
         "mesh2's row is its first durable write: it ends before mesh2.node-admin.1's row is written: {m2_write} {admin_row}"
     );
-    let rewrites: Vec<&&Value> = mesh_writes.iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && nodes.iter().any(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["node_id"] == c["attributes"]["node"])).collect();
+    let rewrites: Vec<&&Value> = mesh_writes.iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && nodes.iter().any(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["node_id"] == c["attributes"]["node"])).collect();
     assert!(!rewrites.is_empty() && rewrites.iter().all(|c| s(&c["attributes"]["mesh_id"]) == mesh2_id && c["attributes"]["outcome"] == "row-held-by-mesh"), "mesh2's own primary writes its row again and finds the row the fabric-primary wrote: {rewrites:?}");
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before node.create.via-node-row subject=mesh2.node-admin.1", s(&m2_write["trace_id"]));
     assert!(mesh_writes.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's write is refused: {mesh_writes:?}");

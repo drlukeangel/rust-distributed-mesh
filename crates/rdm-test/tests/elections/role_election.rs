@@ -31,14 +31,14 @@ fn s(v: &Value) -> String {
 }
 
 fn live(nodes: &[Value]) -> Vec<Value> {
-    nodes.iter().filter(|n| !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
+    nodes.iter().filter(|n| !matches!(n["state"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
 }
 
 async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
     estate
         .until_view(&format!("{label}: the view settles on the computed roles"), Duration::from_secs(30), |views| {
             let nodes = live(&Estate::values(views));
-            (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready") && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
+            (!nodes.is_empty() && nodes.iter().all(|n| n["state"] == "ready") && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
         .await
 }

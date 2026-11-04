@@ -562,10 +562,10 @@ impl Run {
         match watch {
             Watch::NewNodes(before) => {
                 let new: Vec<&Value> = nodes.iter().filter(|n| !before.contains(&location(&n))).collect();
-                (new.iter().any(|n| n["status"] == "ready"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{:?}={}", location(n), n["status"])).collect::<Vec<_>>().join(",") })
+                (new.iter().any(|n| n["state"] == "ready"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{:?}={}", location(n), n["state"])).collect::<Vec<_>>().join(",") })
             }
             Watch::Node(name) => match nodes.iter().find(|n| location(n) == *name) {
-                Some(n) => (n["status"] == "ready", format!("{name:?}={}", n["status"])),
+                Some(n) => (n["state"] == "ready", format!("{name:?}={}", n["state"])),
                 None => (false, format!("{name:?} absent from the view")),
             },
         }
@@ -587,7 +587,7 @@ async fn fault_case(run: &Run, family: Family, id: &str, spec: Value, faults: &F
     let mut ev = Evidence::new(family, id);
     let nodes_before = run.estate.node_values().await;
     let (roles_before, roles_detail_before) = primaries(&nodes_before);
-    let admin_view = |nodes: &[Value]| nodes.iter().find(|n| location(n) == faults.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let admin_view = |nodes: &[Value]| nodes.iter().find(|n| location(n) == faults.location()).map(|n| s(&n["incarnation"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
     let current_before = run.fabric_build_id().await;
     let pid_before = run.admin_pid(&faults.location()).await;
@@ -730,7 +730,7 @@ async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
     let counts = step_counts(done, &op);
     rec.check("every documented create step has one step event, in order", done_steps(done, &op) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
     let view = run.node_ready(&node).await;
-    rec.check("the node serves", view["status"] == "ready", s(&view["status"]));
+    rec.check("the node serves", view["state"] == "ready", s(&view["state"]));
     let serving = run.runtimes(&node).await;
     rec.check("exactly one runtime serves the node", serving == 1, format!("{serving}"));
 }
@@ -750,7 +750,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let exec = run.fabric_faults().await;
     let nodes_before = run.estate.node_values().await;
     let (roles_before, detail_before) = primaries(&nodes_before);
-    let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
+    let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation"])).unwrap_or_default());
     let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
@@ -786,7 +786,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let nodes_during = run.estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
     let alive = run.admin_pid(admin).await.and_then(proc_state).is_some_and(|c| c != 'Z');
-    let inc_during = nodes_during.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let inc_during = nodes_during.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation"])).unwrap_or_default();
     let fp_during = fabric_primary(&nodes_during);
 
     let rel = faults.release(id).await;
@@ -803,7 +803,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: true,
-        incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
+        incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation"])).unwrap_or_default()],
         runs,
         exact_runtime_alive: alive,
         replaced_during: inc_before != inc_during || runs[0] != runs[1],
@@ -835,8 +835,8 @@ async fn silent_case(run: &Run) {
     let id = "silent-runtime:hang-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;
-    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary node: {nodes:?}"));
-    let (name, node_id, incarnation) = (location(&target), s(&target["node_id"]), s(&target["incarnation_id"]));
+    let target = nodes.iter().find(|n| n["type"] == "node" && n["is_primary"] == false && n["state"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary node: {nodes:?}"));
+    let (name, node_id, incarnation) = (location(&target), s(&target["node_id"]), s(&target["incarnation"]));
     let exact = format!("exact:{node_id}");
     let pid = run.estate.pid_of(&name).await;
     let data_dir = run.estate.data_dir(&name).await;
@@ -874,7 +874,7 @@ async fn silent_case(run: &Run) {
     let during_node = nodes_during.iter().find(|n| location(n) == name).cloned();
     let runs_during = run.runs(&fabric_build);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
-    let inc_during = during_node.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let inc_during = during_node.as_ref().map(|n| s(&n["incarnation"])).unwrap_or_default();
     let replaced = during_node.as_ref().is_none_or(|n| s(&n["node_id"]) != node_id) || run.fabric_build_id().await != fabric_build;
     let outcomes: Vec<Value> = std::thread::scope(|scope| {
         let calls: Vec<_> = (0..2).map(|_| scope.spawn(|| run.estate.probe(&["get", "--target", &exact, "--budget-ms", "1500", "--key", "77"]))).collect();
@@ -888,9 +888,9 @@ async fn silent_case(run: &Run) {
     let acked = true;
     let ended = wait_for(&format!("{name:?} (pid {pid}) runs again"), Duration::from_secs(10), || async { tasks.iter().all(|t| proc_state(u64::from(*t)) != Some('t')).then_some(true) }).await;
     ev.release = Some(Release { acked, hold_ended: ended });
-    ev.fault = Some(FaultAck { held: state_after_stop == 't', names: Some(json!({"pid": pid, "held_tasks": tasks, "proc_state": "t", "view_status": silent_view["status"]})), held_at_last_read });
+    ev.fault = Some(FaultAck { held: state_after_stop == 't', names: Some(json!({"pid": pid, "held_tasks": tasks, "proc_state": "t", "view_status": silent_view["state"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
-    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
+    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["state"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
 
     // Recovery: the same birth is ready again and serves the value stored before the freeze.
     let back = run
@@ -908,7 +908,7 @@ async fn silent_case(run: &Run) {
         fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: false,
-        incarnation: [inc_before, inc_during, s(&back["incarnation_id"])],
+        incarnation: [inc_before, inc_during, s(&back["incarnation"])],
         runs: [runs_before, runs_during],
         exact_runtime_alive: alive,
         replaced_during: replaced,

@@ -110,7 +110,7 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     let mesh = mesh_of(&old);
     let heir = sibling(&old);
     let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| (location(&n), s(&n["node_id"]))).unwrap();
+    let other_primary = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == other_mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| (location(&n), s(&n["node_id"]))).unwrap();
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     let discriminating = other_primary.1 < heir_id;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -201,7 +201,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let subject_name = Estate::path(&format!("{other_mesh}.node"), "1");
     let subject = node(&nodes, &subject_name).clone();
     let node_id = rdm_core::NodeId::parse(&s(&subject["node_id"])).expect("a node id");
-    let incarnation = rdm_core::IncarnationId::parse(&s(&subject["incarnation_id"])).expect("a live birth");
+    let incarnation = rdm_core::IncarnationId::parse(&s(&subject["incarnation"])).expect("a live birth");
     let fp_id = rdm_core::NodeId::parse(&s(&node(&nodes, &old)["node_id"])).expect("the fabric-primary's id");
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
@@ -260,12 +260,12 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let (mut estate, nodes) = fabric("a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone").await;
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let mesh = if mesh_of(&fp) == "mesh1" { "mesh2" } else { "mesh1" };
-    let old = nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).unwrap();
+    let old = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).unwrap();
     let heir = sibling(&old);
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;
     estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.location() == heir && n.is_primary).then_some(())).await;
-    let watcher = nodes.iter().find(|n| n["type"] == "node-admin" && n["mesh"] != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
+    let watcher = nodes.iter().find(|n| n["type"] == "node-admin" && rdm_test::estate::mesh_of(&n) != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
     let heard = estate
         .until_view_at(&watcher, &format!("{watcher:?} names {heir:?} {mesh}'s primary"), Duration::from_secs(60), |views| {
             let ns = Estate::values(views);
@@ -273,7 +273,7 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
         })
         .await;
     estate.stop().await;
-    let primaries: Vec<PathName> = heard.iter().filter(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
+    let primaries: Vec<PathName> = heard.iter().filter(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
     assert_eq!(primaries, vec![heir.clone()], "{watcher:?} names one {mesh} primary, {heir:?}: {heard:#?}");
 }
 
@@ -297,10 +297,10 @@ async fn a_mesh_cut_from_the_backbone_with_a_node_admin_left_on_each_side_is_rec
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let fp_node = node(&nodes, &fp).clone();
     let (mine, theirs): (Vec<PathName>, Vec<PathName>) = {
-        let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| location(&n)).collect::<Vec<_>>();
+        let side = |incumbent: bool| nodes.iter().filter(|n| (rdm_test::estate::mesh_of(&n) == rdm_test::estate::mesh_of(&fp_node)) == incumbent).map(|n| location(&n)).collect::<Vec<_>>();
         (side(true), side(false))
     };
-    let other_primary_row = nodes.iter().find(|n| n["type"] == "node-admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).cloned().expect("the other mesh's primary");
+    let other_primary_row = nodes.iter().find(|n| n["type"] == "node-admin" && rdm_test::estate::mesh_of(&n) != rdm_test::estate::mesh_of(&fp_node) && n["is_primary"] == true).cloned().expect("the other mesh's primary");
     let (other_primary, other_primary_id) = (location(&other_primary_row), s(&other_primary_row["node_id"]));
     let floor = rdm_transport::topology::staleness_floor();
     let fp_id = s(&fp_node["node_id"]);
@@ -337,7 +337,7 @@ async fn a_mesh_cut_from_the_backbone_with_a_node_admin_left_on_each_side_is_rec
             match estate.node_views_at(at).await {
                 Some(v) => {
                     let ns = Estate::values(&v);
-                    let all = everyone.iter().all(|name| ns.iter().any(|n| location(n) == *name && n["status"] == "ready"));
+                    let all = everyone.iter().all(|name| ns.iter().any(|n| location(n) == *name && n["state"] == "ready"));
                     if all && fabric_primary(&ns).as_ref() == Some(&fp) {
                         healed += 1;
                     }

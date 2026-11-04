@@ -57,7 +57,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     // One primary per node type, one fabric primary (an admin primary).
     let mut primaries: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for n in &nodes {
-        let r#type = (n["mesh"].as_str().unwrap().to_string(), n["type"].as_str().unwrap().to_string());
+        let r#type = (rdm_test::estate::mesh_of(&n).as_str().unwrap().to_string(), n["type"].as_str().unwrap().to_string());
         let e = primaries.entry(r#type).or_default();
         if n["is_primary"] == true {
             e.push(n["node_id"].as_str().unwrap().to_string());

@@ -101,13 +101,13 @@ async fn complete(what: &str, call: Result<WorkflowStream, CallEnd>) -> rdm_core
 /// The view without the rows of births proven dead: drift recovery restores a killed birth's
 /// count at a free path, so the dead birth's own row is not replaced at its path.
 fn live(nodes: &[Value]) -> Vec<Value> {
-    nodes.iter().filter(|n| !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
+    nodes.iter().filter(|n| !matches!(n["state"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
 }
 
 /// Every live node is ready and every role is the computed one.
 fn settled(nodes: &[Value]) -> bool {
     let nodes = live(nodes);
-    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready") && primaries_as_expected(&nodes).is_ok()
+    !nodes.is_empty() && nodes.iter().all(|n| n["state"] == "ready") && primaries_as_expected(&nodes).is_ok()
 }
 
 /// Wait until the view of the node-admin `admin` is settled; return its live rows. A timeout names the last view.
@@ -129,7 +129,7 @@ async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) 
     let mut first: Option<Vec<Value>> = None;
     while Instant::now() < until {
         let nodes = live(&estate.node_values_at(admin).await);
-        if nodes.iter().all(|n| n["status"] == "ready") {
+        if nodes.iter().all(|n| n["state"] == "ready") {
             if let Err(e) = primaries_as_expected(&nodes) {
                 panic!("{label}: {e}: {nodes:#?}");
             }
@@ -151,7 +151,7 @@ async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) 
 fn next_lowest(nodes: &[Value], c: &NodeType, primary: &str) -> (PathName, String) {
     nodes
         .iter()
-        .filter(|n| n["mesh"] == c.0.as_str() && n["type"] == c.1.as_str() && n["status"] == "ready" && n["node_id"] != primary)
+        .filter(|n| rdm_test::estate::mesh_of(&n) == c.0.as_str() && n["type"] == c.1.as_str() && n["state"] == "ready" && n["node_id"] != primary)
         .map(|n| (location(n), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} than {primary}: {nodes:#?}"))
@@ -184,7 +184,7 @@ fn primary_updated(spans: &[Value], c: &NodeType, preceding: &str, node_id: &str
 async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &NodeType, gone_id: &str) -> (PathName, String) {
     let (name, id) = before
         .iter()
-        .filter(|n| n["mesh"] == c.0.as_str() && n["type"] == c.1.as_str() && n["status"] == "ready" && n["node_id"] != gone_id)
+        .filter(|n| rdm_test::estate::mesh_of(&n) == c.0.as_str() && n["type"] == c.1.as_str() && n["state"] == "ready" && n["node_id"] != gone_id)
         .map(|n| (location(n), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
@@ -264,7 +264,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     estate.until_stopped_at_the_fabric_primary(&location_of(&nodes, &rpc_p)).await;
     command(&format!("node.start of {rpc_p}"), estate.nodes_obj().await.start(&location_of(&nodes, &rpc_p)).await).await;
     let nodes = settle(&estate, &admin1, "restart primary").await;
-    assert!(nodes.iter().any(|n| n["node_id"] == rpc_p_id && n["status"] == "ready"), "restart keeps the NodeId");
+    assert!(nodes.iter().any(|n| n["node_id"] == rpc_p_id && n["state"] == "ready"), "restart keeps the NodeId");
     assert_eq!(primary_of(&nodes, &rpc).as_deref(), Some(succ_r_id.as_str()), "node.primary.update moved the role of {rpc_p} to {succ_r:?} before the stop, and the started node never displaces it: {nodes:#?}");
     steady(&estate, &admin1, "restart primary", hold).await;
 
@@ -297,7 +297,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let nodes = settle(&estate, &admin1, "the node type is back at its desired count").await;
     estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.node_values().await}));
     assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again: {nodes:#?}");
-    assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["type"] == "node").count(), 3, "three live nodes: {nodes:#?}");
+    assert_eq!(nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node").count(), 3, "three live nodes: {nodes:#?}");
     steady(&estate, &admin1, "the node type is back at its desired count", hold).await;
 
     // legal removal of the primary -> the next-lowest succeeds
@@ -307,7 +307,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let nodes = estate
         .until_view("the view drops the removed primary", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
-            (!nodes.iter().any(|n| n["node_id"] == removed.as_str() && n["status"] == "ready") && primary_of(&nodes, &rpc).is_some()).then_some(nodes)
+            (!nodes.iter().any(|n| n["node_id"] == removed.as_str() && n["state"] == "ready") && primary_of(&nodes, &rpc).is_some()).then_some(nodes)
         })
         .await;
     let succ2 = primary_of(&nodes, &rpc).unwrap();
@@ -356,7 +356,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
             // lists the births re-created during the cut, which the estate dials from then on.
             let converged = |views: &[rdm_client::NodeView]| {
                 let view = live(&Estate::values(views));
-                let one_each = everyone.iter().all(|name| view.iter().filter(|n| location(n) == *name).count() == 1 && view.iter().any(|n| location(n) == *name && n["status"] == "ready"));
+                let one_each = everyone.iter().all(|name| view.iter().filter(|n| location(n) == *name).count() == 1 && view.iter().any(|n| location(n) == *name && n["state"] == "ready"));
                 (one_each && primaries_as_expected(&view).is_ok()).then_some(view)
             };
             // Both pre-cut admin paths are asked on every pass: an answer teaches the estate the births the
@@ -369,7 +369,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
                     match estate.node_views_at(at).await {
                         Some(v) => {
                             let ns = live(&Estate::values(&v));
-                            last.push(format!("{at:?}: {:?} roles={:?}", ns.iter().map(|n| format!("{:?}={}/{} p={} f={}", location(n), s(&n["status"]), s(&n["node_id"]), n["is_primary"], n["is_fabric_primary"])).collect::<Vec<_>>(), primaries_as_expected(&ns)));
+                            last.push(format!("{at:?}: {:?} roles={:?}", ns.iter().map(|n| format!("{:?}={}/{} p={} f={}", location(n), s(&n["state"]), s(&n["node_id"]), n["is_primary"], n["is_fabric_primary"])).collect::<Vec<_>>(), primaries_as_expected(&ns)));
                             views.push(converged(&v));
                         }
                         None => {
@@ -467,7 +467,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     let nodes = estate
         .until_view("the view holds the killed birth dead", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
-            (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))) && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
+            (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && !matches!(n["state"].as_str(), Some("dead" | "pending-reconnect"))) && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
         })
         .await;
     assert_eq!(primary_of(&nodes, &admin2).as_deref(), Some(succ_id.as_str()), "the announced successor keeps mesh2's admin role over the birth drift recovery brings back at the killed path: {nodes:#?}");
@@ -494,7 +494,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     let nodes = estate
         .until_view("the removed admin primary's role moves to another admin of its mesh", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
-            (!nodes.iter().any(|n| n["node_id"] == removed.as_str() && n["status"] == "ready") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
+            (!nodes.iter().any(|n| n["node_id"] == removed.as_str() && n["state"] == "ready") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
         })
         .await;
     let succ2 = primary_of(&nodes, &admin2).unwrap();

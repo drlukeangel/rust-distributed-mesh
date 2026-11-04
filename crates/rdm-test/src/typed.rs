@@ -174,13 +174,14 @@ impl Estate {
         self.views_at(admin).await.ok()
     }
 
-    /// [`Self::held_topology_at`] as values a cell reads like a view: one `{path, name, mesh, type, node_id, status}` per birth
-    /// the node holds, its status as the node holds it; a birth silent past the staleness floor has left the
+    /// [`Self::held_topology_at`] as values a cell reads like a view, under the view's names: one
+    /// `{path, name, type, node_id, incarnation, state}` per birth the node holds, its state as the node
+    /// holds it (its mesh is its path's first location, [`crate::estate::mesh_of`]); a birth silent past the staleness floor has left the
     /// node's topology and is not listed (query.md §2: "a node silent past the staleness floor leaves the
     /// view"). Empty when the node does not answer within 2 s.
     pub async fn held_values_at(&self, node: &PathName) -> Vec<serde_json::Value> {
         let Some(held) = self.held_topology_at(node).await else { return Vec::new() };
-        held.members.iter().map(|d| serde_json::json!({"path": d.node.path, "name": d.node.name, "mesh": d.node.mesh, "type": d.node.r#type, "node_id": d.node.node_id.to_string(), "status": serde_json::to_value(d.status).unwrap_or_default()})).collect()
+        held.members.iter().map(|d| serde_json::json!({"path": d.node.path, "name": d.node.name, "type": d.node.r#type, "node_id": d.node.node_id.to_string(), "incarnation": d.node.incarnation, "state": serde_json::to_value(d.status).unwrap_or_default()})).collect()
     }
 
     /// What the node `node` holds itself, never a primary's atlas (query.md §2: a node queries its own

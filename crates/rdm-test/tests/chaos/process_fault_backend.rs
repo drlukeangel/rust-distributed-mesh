@@ -166,7 +166,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // stored on each victim.
     let hold_exact = format!("exact:{}", s(&hold_n["node_id"]));
     let kill_exact = format!("exact:{}", s(&kill_n["node_id"]));
-    for (exact, inc) in [(&hold_exact, &hold_n["incarnation_id"]), (&kill_exact, &kill_n["incarnation_id"])] {
+    for (exact, inc) in [(&hold_exact, &hold_n["incarnation"]), (&kill_exact, &kill_n["incarnation"])] {
         let put = estate.probe(&["put", "--target", exact, "--key", "83", "--value", "before-fault"]);
         assert_eq!(put["outcome"], "Reply", "{put}");
         assert_eq!(put["reply"]["incarnation_id"], *inc, "{put}");
@@ -216,13 +216,13 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     hung.release();
     let thawed = json!({"released": "hang", "states": tasks.iter().map(|t| proc_state(*t).map(String::from)).collect::<Vec<_>>()});
     ev.release = Some(Release { acked: true, hold_ended: tasks.iter().all(|t| proc_state(*t) != Some('t')) });
-    ev.fault = Some(FaultAck { held: true, names: Some(json!({"pid": hold_rt.pid, "start": hold_rt.start, "control_domain": hold_rt.control_domain, "view_status": silent_view["status"]})), held_at_last_read });
+    ev.fault = Some(FaultAck { held: true, names: Some(json!({"pid": hold_rt.pid, "start": hold_rt.start, "control_domain": hold_rt.control_domain, "view_status": silent_view["state"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
-    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
+    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["state"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
     let back = estate
         .until_node(&hold, &format!("{hold:?} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready").then_some(n)
+            (n["incarnation"] == hold_n["incarnation"] && n["state"] == "ready").then_some(n)
         })
         .await;
     let kept = estate.probe(&["get", "--target", &hold_exact, "--key", "83"]);
@@ -235,7 +235,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: false,
-        incarnation: [s(&hold_n["incarnation_id"]), during.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
+        incarnation: [s(&hold_n["incarnation"]), during.as_ref().map(|n| s(&n["incarnation"])).unwrap_or_default(), s(&back["incarnation"])],
         runs: [runs_before, runs_during],
         exact_runtime_alive: alive,
         replaced_during: replaced,
@@ -243,7 +243,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     });
     let mut rec = Reconciliation::default();
     rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-fault"}), kept.to_string());
-    rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == hold_n["incarnation_id"] && kept["reply"]["executing_node"] == hold_n["node_id"], kept.to_string());
+    rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == hold_n["incarnation"] && kept["reply"]["executing_node"] == hold_n["node_id"], kept.to_string());
     rec.check("the exact runtime is the one that was held (same domain, pid, start)", published(&estate, &hold).await == hold_rt, format!("{hold_rt:?}"));
     rec.check("the Build was not run again", runs_of(&estate, &build_id).await == runs_before, format!("runs {runs_before}"));
     rec.check("the primaries equal the public candidates' after the thaw", roles_after, detail_after);
@@ -258,12 +258,12 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let replacement = estate
         .until_node(&kill, "a new logical node holds the path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != kill_n["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != kill_n["node_id"]).then_some(n)
         })
         .await;
     let replacement_rt = published(&estate, &kill).await;
     assert_ne!((replacement_rt.pid, replacement_rt.start), (kill_rt.pid, kill_rt.start));
-    assert_ne!(replacement["incarnation_id"], kill_n["incarnation_id"], "a new incarnation: {replacement}");
+    assert_ne!(replacement["incarnation"], kill_n["incarnation"], "a new incarnation: {replacement}");
     assert_ne!(replacement["endpoint_id"], kill_n["endpoint_id"], "a new endpoint_id (Q358): {replacement}");
     let fresh = estate.probe(&["get", "--target", &rdm_test::estate::path_target(&kill), "--key", "83"]);
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a `node`'s storage is ephemeral: the recovered node runs on a new data dir, its store empty (Q359): {fresh}");
@@ -285,10 +285,10 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let admin_new = estate
         .until_node(&admin, "a new logical node holds the admin's path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != admin_n["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != admin_n["node_id"]).then_some(n)
         })
         .await;
-    assert_ne!(admin_new["incarnation_id"], admin_n["incarnation_id"], "a new incarnation: {admin_new}");
+    assert_ne!(admin_new["incarnation"], admin_n["incarnation"], "a new incarnation: {admin_new}");
     assert_ne!(admin_new["endpoint_id"], admin_n["endpoint_id"], "a new endpoint_id (Q358): {admin_new}");
     assert_eq!(estate.data_dir(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
@@ -355,7 +355,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     }
     // The dispatches to the held node's births.
     for sp in named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == s(&hold_n["node_id"])) {
-        ev.dispatches.push(Dispatch { birth: attr(sp, "incarnation_id").to_string(), current_birth: s(&hold_n["incarnation_id"]), after_supersession: false });
+        ev.dispatches.push(Dispatch { birth: attr(sp, "incarnation_id").to_string(), current_birth: s(&hold_n["incarnation"]), after_supersession: false });
     }
     assert!(!ev.dispatches.is_empty(), "the held node's birth exported serve spans for the calls that reached it");
     let verdict = judge(&ev).unwrap_or_else(|r| panic!("the detector refused the held runtime: {r}"));
@@ -378,7 +378,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         "forged_start": format!("{forged:?}"),
         "foreign_domain": format!("{foreign:?}"),
         "hold": {"node": hold, "runtime": hold_rt, "stopped": stopped, "thawed": thawed, "view_while_held": silent_view, "calls_while_held": outcomes, "after_thaw": kept, "verdict": serde_json::to_value(&verdict).unwrap(), "evidence": serde_json::to_value(&ev).unwrap()},
-        "kill": {"node": kill, "killed": killed, "old": {"node_id": kill_n["node_id"], "incarnation_id": kill_n["incarnation_id"], "data_dir": kill_dir}, "replacement": {"node_id": replacement["node_id"], "incarnation_id": replacement["incarnation_id"], "runtime": replacement_rt}, "fresh": fresh["reply"], "old_exact_probe": old},
+        "kill": {"node": kill, "killed": killed, "old": {"node_id": kill_n["node_id"], "incarnation_id": kill_n["incarnation"], "data_dir": kill_dir}, "replacement": {"node_id": replacement["node_id"], "incarnation_id": replacement["incarnation"], "runtime": replacement_rt}, "fresh": fresh["reply"], "old_exact_probe": old},
         "admin_kill": {"node": admin, "killed": admin_killed, "old_node_id": admin_n["node_id"], "new_node_id": admin_new["node_id"], "was_fabric_primary": admin_n["is_fabric_primary"], "was_mesh_primary": admin_n["is_primary"]},
         "recoveries": recoveries,
         "backend_spans": fault_spans.iter().map(|sp| json!({"fault": attr(sp, "fault"), "pid": attr(sp, "pid"), "outcome": attr(sp, "outcome"), "trace_id": sp["trace_id"], "span_id": sp["span_id"], "service": sp["resource"]["service.name"]})).collect::<Vec<_>>(),

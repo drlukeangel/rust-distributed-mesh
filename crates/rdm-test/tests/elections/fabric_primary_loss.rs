@@ -79,11 +79,11 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
         .until_view("the node re-created at mesh1.node-admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
             let primaries: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(location).collect();
-            let mesh1_primary: Vec<PathName> = ns.iter().filter(|n| n["type"] == "node-admin" && n["is_primary"] == true && n["mesh"] == "mesh1").map(location).collect();
+            let mesh1_primary: Vec<PathName> = ns.iter().filter(|n| n["type"] == "node-admin" && n["is_primary"] == true && rdm_test::estate::mesh_of(&n) == "mesh1").map(location).collect();
             assert!(primaries.iter().all(|h| h == &fp), "only the node at {fp:?} is ever fabric-primary: {primaries:?}");
             assert!(mesh1_primary.iter().all(|h| h == &fp), "only the node at {fp:?} is ever mesh1's primary: {mesh1_primary:?}");
             ns.iter()
-                .find(|n| location(n) == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)
+                .find(|n| location(n) == fp && s(&n["node_id"]) != before.node_id.to_string() && n["state"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)
                 .cloned()
         })
         .await;
@@ -153,8 +153,8 @@ async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives
     let one = estate
         .until_view_at(&standby, &format!("one birth at {fp:?}, not the killed {killed}, ready, mesh-primary and fabric-primary"), within, |views| {
             let ns = Estate::values(views);
-            let at_fp: Vec<&Value> = ns.iter().filter(|n| location(n) == fp && n["status"] != "deleted").collect();
-            (at_fp.len() == 1 && s(&at_fp[0]["node_id"]) != killed && at_fp[0]["status"] == "ready" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
+            let at_fp: Vec<&Value> = ns.iter().filter(|n| location(n) == fp && n["state"] != "deleted").collect();
+            (at_fp.len() == 1 && s(&at_fp[0]["node_id"]) != killed && at_fp[0]["state"] == "ready" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
         })
         .await;
     let named_fp = estate.fabric_view_at(&standby).await.and_then(|f| f.fabric_primary).map(|p| p.to_string());

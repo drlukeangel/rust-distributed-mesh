@@ -446,7 +446,7 @@ async fn all_node_fields_survive_node_restart() {
     // 2) issues the same birth a new cert under the same issuer; every other listed field stands.
     let changed = differing_except(&before, &started, &["load", "gossip", "cert"]);
     assert!(changed.is_empty(), "every listed field survives the stop and start: {changed:#?}");
-    let (was, now) = (before.cert.expect("the birth's member cert"), started.cert.expect("the started birth's member cert"));
+    let (was, now) = (before.cert.clone().expect("the birth's member cert"), started.cert.clone().expect("the started birth's member cert"));
     assert!(now.issued_at >= was.issued_at && now.issuer_expires_at == was.issuer_expires_at, "the start's join issues a fresh member cert under the same issuer: {was:?} -> {now:?}");
     let restarted = fields(&latest(&estate, &before.node_id).await.expect("the record after the start"));
     let changed = differing_except(&lifecycle, &restarted, &["cert"]);

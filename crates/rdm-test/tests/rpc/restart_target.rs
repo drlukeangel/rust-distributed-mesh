@@ -46,7 +46,7 @@ async fn a_gateway_reaches_the_brokers_same_birth_after_its_restart() {
     let gateway_location = PathName::new("mesh1.gateway", "1").unwrap();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
     let broker = estate.node_value(&broker_location).await;
-    let (broker_id, old_birth, addr) = (s(&broker["node_id"]), s(&broker["incarnation_id"]), s(&broker["transport_addr"]));
+    let (broker_id, old_birth, addr) = (s(&broker["node_id"]), s(&broker["incarnation"]), s(&broker["transport_addr"]));
     let exact = format!("exact:{broker_id}");
     let gateway_id = estate.node_view(&gateway_location).await.node_id;
     let via = format!("exact:{gateway_id}");
@@ -68,7 +68,7 @@ async fn a_gateway_reaches_the_brokers_same_birth_after_its_restart() {
     estate.stop_then_start(&broker_location).await;
     let restarted = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await).into_iter().find(|n| n["node_id"] == broker["node_id"]).unwrap();
     assert_eq!(s(&restarted["node_id"]), broker_id, "a restart keeps the NodeId: {restarted}");
-    assert_eq!(s(&restarted["incarnation_id"]), old_birth, "a restart keeps the birth: {restarted}");
+    assert_eq!(s(&restarted["incarnation"]), old_birth, "a restart keeps the birth: {restarted}");
     assert_eq!(s(&restarted["transport_addr"]), addr, "a restart keeps the port: {restarted}");
 
     estate.witness_holds_birth(&gateway_location, &broker_location).await;

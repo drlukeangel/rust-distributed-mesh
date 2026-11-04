@@ -136,7 +136,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // Before Ready: the current Build and every held birth's runtime.
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
-        .find(|sp| sp["attributes"]["node_id"] == late["node_id"] && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
+        .find(|sp| sp["attributes"]["node_id"] == late["node_id"] && sp["attributes"]["incarnation_id"] == late["incarnation"])
         .cloned()
         .expect("the late admin is ready");
     let current = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
@@ -158,7 +158,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     for birth in [&restarted, &deleted] {
         let adopted = named(&spans, "rdm.node_admin.runtime.update.via-adopt")
             .into_iter()
-            .find(|sp| sp["attributes"]["node_id"] == birth["node_id"] && sp["attributes"]["incarnation_id"] == birth["incarnation_id"] && sp["attributes"]["adopter_node_id"] == late["node_id"])
+            .find(|sp| sp["attributes"]["node_id"] == birth["node_id"] && sp["attributes"]["incarnation_id"] == birth["incarnation"] && sp["attributes"]["adopter_node_id"] == late["node_id"])
             .unwrap_or_else(|| panic!("{} adopted by the late admin", birth["name"]));
         assert_eq!(adopted["attributes"]["adopter_node_id"], late["node_id"]);
         assert_eq!(adopted["attributes"]["source"], "self-published-topology");

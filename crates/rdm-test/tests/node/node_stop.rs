@@ -625,8 +625,8 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     tokio::time::sleep(Duration::from_secs(15)).await;
     assert_eq!(estate.build_ids().await, builds, "a stop writes no Build");
     let n = estate.node_value(&node_at()).await;
-    assert_eq!(n["incarnation_id"], before["incarnation_id"], "no new birth at {:?}: {n}", node_at());
-    assert_eq!(n["stopped"], true, "{n}");
+    assert_eq!(n["incarnation"], before["incarnation"], "no new birth at {:?}: {n}", node_at());
+    assert_eq!(n["state"], "stopped", "{n}");
 
     // Every process flushes its spans on exit.
     estate.stop().await;
@@ -1024,11 +1024,11 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
         let primary: Vec<PathName> = view.iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).collect();
         assert_eq!(primary, vec![na2.location()], "{:?} names {:?} mesh2's primary once the stop is complete", admin.location(), na2.location());
     }
-    // Step 5: NA2 records `is_primary` on its own row, a local write of the mesh's writer.
-    let recorded = || -> Option<u64> { estate.node_record(&na2_id).and_then(|r| r["data"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["is_primary"].as_u64())) };
+    // Step 5: NA2 records `is_primary` on its own record (Q356).
+    let recorded = || -> Option<u64> { estate.node_record(&na2_id).and_then(|r| r["data"]["is_primary"].as_u64()) };
     let deadline = std::time::Instant::now() + SETTLE;
     while recorded().is_none() {
-        assert!(std::time::Instant::now() < deadline, "NA2 recorded is_primary on its own row in nodes.jsonl within {SETTLE:?}");
+        assert!(std::time::Instant::now() < deadline, "NA2 recorded is_primary on its own record in nodes.jsonl within {SETTLE:?}");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
@@ -1732,7 +1732,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     assert_eq!(rdm_test::estate::location(&primary), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let fp_id = s(&primary["node_id"]);
-    let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && rdm_test::estate::location(n) != fp).cloned().expect("mesh1's other node-admin");
+    let victim_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node-admin" && rdm_test::estate::location(n) != fp).cloned().expect("mesh1's other node-admin");
     let (victim, victim_id) = (rdm_test::estate::location(&victim_row), s(&victim_row["node_id"]));
     let victim_pid = estate.pid_of(&victim).await;
     let cut = match Partition::isolate(&udp_ports(&nodes, &[victim.clone()])) {

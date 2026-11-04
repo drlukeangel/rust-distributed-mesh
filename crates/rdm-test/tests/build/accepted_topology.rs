@@ -173,12 +173,12 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let before = build_log::build_value(&estate, &r4).await;
     let builds = estate.build_ids().await;
     let lost = estate.node_value(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
-    let mesh_primary = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"].as_str().unwrap().to_string();
+    let mesh_primary = estate.node_values().await.into_iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"].as_str().unwrap().to_string();
     estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     let back = estate
         .until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 is recovered", crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != lost["node_id"] && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != lost["node_id"] && n["incarnation"] != lost["incarnation"]).then_some(n)
         })
         .await;
     estate.settled_views(&[("mesh1", 3, 4)]).await;
@@ -199,7 +199,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate
         .until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again as the same birth", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["stopped"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
+            (n["state"] == "ready" && n["incarnation"] == restarted_from["incarnation"] && n["node_id"] == restarted_from["node_id"]).then_some(())
         })
         .await;
     assert_eq!(current_build(&estate).await, r4);
@@ -214,11 +214,11 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // create, under the submit (node-recovery.md "Execution", Q342).
     let submit = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
-        .find(|sp| sp["attributes"]["node_id"] == lost["node_id"] && sp["attributes"]["incarnation_id"] == lost["incarnation_id"])
+        .find(|sp| sp["attributes"]["node_id"] == lost["node_id"] && sp["attributes"]["incarnation_id"] == lost["incarnation"])
         .unwrap_or_else(|| panic!("mesh1's primary submitted the recovery of the killed birth"));
     let sa = &submit["attributes"];
     assert_eq!(sa["submitter"], mesh_primary.as_str(), "the member's own mesh-primary submits: {submit}");
-    assert_eq!(sa["incarnation_id"], lost["incarnation_id"], "keyed on the exact exited birth: {submit}");
+    assert_eq!(sa["incarnation"], lost["incarnation"], "keyed on the exact exited birth: {submit}");
     assert_eq!(sa["outcome"], "complete", "the submit followed the recovery to its end: {submit}");
     for (name, what) in [("rdm.node_admin.node.delete.via-node-recovery", "delete"), ("rdm.node_admin.node.create.via-node-recovery", "create")] {
         let child = named(&spans, name).into_iter().find(|sp| sp["attributes"]["node_id"] == lost["node_id"] && sp["parent_span_id"] == submit["span_id"]).unwrap_or_else(|| panic!("the recovery's {what} of the killed birth runs under its submit"));
@@ -228,7 +228,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert!(ran.iter().all(|sp| sp["attributes"]["reason"] != "recovery"), "no Build ran the recovery: {ran:?}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == lost["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
-    assert_eq!(deleted[0]["attributes"]["incarnation_id"], lost["incarnation_id"], "named by the exact exited birth");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], lost["incarnation"], "named by the exact exited birth");
     estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
     // 8: the stop ran as a node command of the primary above the node, never a Build or part of one (Q342).
     let stop_command = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| sp["attributes"]["command"] == "stop-node" && sp["attributes"]["subject_id"] == restarted_from["node_id"] && sp["attributes"]["outcome"] == "node-stopped").cloned();
@@ -239,7 +239,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let moved = named(&spans, "rdm.node_admin.build.create.via-accepted");
     let late_ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
-        .find(|sp| sp["attributes"]["node_id"] == late["node_id"] && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
+        .find(|sp| sp["attributes"]["node_id"] == late["node_id"] && sp["attributes"]["incarnation_id"] == late["incarnation"])
         .cloned()
         .expect("the late admin is ready");
     assert_eq!(late_ready["attributes"]["build_id"], c.as_str(), "the late admin held the current Build when it committed Ready: {late_ready}");

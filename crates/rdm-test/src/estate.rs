@@ -1662,6 +1662,12 @@ pub fn location(node: &Value) -> rdm_core::PathName {
     rdm_core::PathName { path: field("path"), name: field("name") }
 }
 
+/// The mesh of the node a node view or record names, as JSON: the first location of its `path` (Q366;
+/// neither carries a `mesh` field).
+pub fn mesh_of(node: &Value) -> Value {
+    Value::String(rdm_core::path::mesh_of(node["path"].as_str().unwrap_or_else(|| panic!("a node view carries `path` as a string: {node}"))))
+}
+
 /// Whether the node view, record or connection end `v` is at `location`: its `path` and `name` fields.
 pub fn is_location(v: &Value, location: &rdm_core::PathName) -> bool {
     v["path"] == location.path.as_str() && v["name"] == location.name.as_str()
@@ -1698,7 +1704,7 @@ pub fn span_operation(sp: &Value, action: &str, subject: &rdm_core::OperationSub
 pub fn birth_of(row: &Value) -> rdm_core::framing::Birth {
     rdm_core::framing::Birth {
         node_id: serde_json::from_value(row["node_id"].clone()).expect("a view row names its node id"),
-        incarnation: serde_json::from_value(row["incarnation_id"].clone()).expect("a view row names its incarnation"),
+        incarnation: serde_json::from_value(row["incarnation"].clone()).expect("a view row names its incarnation"),
     }
 }
 

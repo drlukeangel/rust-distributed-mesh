@@ -119,7 +119,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let mut ids: BTreeMap<PathName, String> = before.iter().map(|n| (location(n), s(&n["node_id"]))).collect();
     let mesh1_pids: Vec<(PathName, u64)> = {
         let mut v = Vec::new();
-        for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
+        for n in before.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1") {
             let name = location(&n);
             // The bootstrap admin was adopted on day 0: its pid is the estate's own child.
             let pid = match estate.bootstrap_pid() {
@@ -132,14 +132,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     };
 
     // The Node rows mesh1's admin holds, read from its data dir while it runs.
-    let mesh1_ids: Vec<(PathName, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (location(&n), s(&n["node_id"]))).collect();
+    let mesh1_ids: Vec<(PathName, String)> = before.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1").map(|n| (location(&n), s(&n["node_id"]))).collect();
     let mesh1_dir = estate.data_dir(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
     let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
 
     // Control moves to mesh2 before mesh1 goes: its admins advertise it in the topology.
     let mesh2_admin = before
         .iter()
-        .find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["status"] == "ready")
+        .find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["state"] == "ready")
         .map(|n| location(n))
         .expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
@@ -154,14 +154,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let after_b = loop {
         let read = estate.try_node_views().await;
         let nodes = read.as_ref().map(|views| Estate::values(views)).unwrap_or_default();
-        let ours: BTreeSet<PathName> = nodes.iter().filter(|n| n["mesh"] != "mesh1").map(location).collect();
-        let ready = nodes.iter().filter(|n| n["mesh"] != "mesh1").all(|n| n["status"] == "ready");
-        if read.is_ok() && ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1 {
+        let ours: BTreeSet<PathName> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) != "mesh1").map(location).collect();
+        let ready = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) != "mesh1").all(|n| n["state"] == "ready");
+        if read.is_ok() && ours == survivors_named && ready && nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1").count() <= 1 {
             break nodes;
         }
         if std::time::Instant::now() >= settle_by {
             let held: Vec<String> = match &read {
-                Ok(_) => nodes.iter().map(|n| format!("{:?}={}", location(n), s(&n["status"]))).collect(),
+                Ok(_) => nodes.iter().map(|n| format!("{:?}={}", location(n), s(&n["state"]))).collect(),
                 Err(e) => vec![format!("the read ended: {e}")],
             };
             estate.stop().await;
@@ -173,7 +173,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     // mesh.deleted leaves mesh1's final primary alive: the one mesh1 node the view still holds.
-    let Some(last) = after_b.iter().find(|n| n["mesh"] == "mesh1").cloned() else {
+    let Some(last) = after_b.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1").cloned() else {
         estate.stop().await;
         let spans = estate.spans();
         let stopped: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
@@ -200,7 +200,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // not raced.
     let survivors = ["mesh2", "mesh3"];
     for m in survivors {
-        for admin in after_b.iter().filter(|n| n["mesh"] == m && n["type"] == "node-admin") {
+        for admin in after_b.iter().filter(|n| rdm_test::estate::mesh_of(&n) == m && n["type"] == "node-admin") {
             let who = location(&admin);
             wait_for(&format!("{who:?} holds mesh1 dead with {final_name:?} its only node"), Duration::from_secs(30), || async {
                 let dead = named(&estate.spans(), "rdm.mesh.topology.update.via-mesh-status").into_iter().any(|sp| on(sp, &ids, &who) && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "dead" && s(&sp["attributes"]["taken"]) == "true");
@@ -238,7 +238,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert_eq!(estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string(), mesh2_id, "an untouched mesh keeps its id");
     assert_eq!(estate.mesh_view("mesh3").await.id.expect("mesh3 carries its id").to_string(), mesh3_id, "an untouched mesh keeps its id");
     estate.fabrics_obj().await.fact("mesh1 is no longer a mesh of the fabric", Duration::from_secs(30), |f| !f.meshes.iter().any(|m| m.name == "mesh1")).await.unwrap_or_else(|end| panic!("{end}"));
-    assert!(!after.iter().any(|n| n["mesh"] == "mesh1"), "no mesh1 node remains: {after:#?}");
+    assert!(!after.iter().any(|n| rdm_test::estate::mesh_of(&n) == "mesh1"), "no mesh1 node remains: {after:#?}");
     for (name, pid) in &mesh1_pids {
         wait_for(&format!("{name:?}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
     }
@@ -276,13 +276,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // (its lines in `nodes.jsonl` at its node id, R-SR1; storage-whole-records.md), written Deleted: the members' by
     // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A deleted birth
     // never answers, so mesh-left takes the primaries of every birth its proof set names off its record
-    // (`clear_primaries`; its address is in the node's own part of the record, Q333, which mesh-left leaves).
+    // (`clear_primaries`), written from the node's latest line (Q356: the node cannot write it).
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.node-admin.1's own Node row remains in {mesh1_dir}");
     for (name, id) in mesh1_ids.iter() {
         let row: Value = estate.node_record(id).unwrap_or_else(|| panic!("the Node row of {name:?} ({id}) remains in nodes.jsonl"));
-        assert_eq!((s(&row["data"]["node_id"]), s(&row["data"]["status"])), (id.clone(), "deleted".to_string()), "{name:?}'s Node row is written Deleted: {row}");
-        let newest = row["data"]["births"].as_array().and_then(|b| b.last()).cloned().unwrap_or_default();
-        assert!(newest["is_primary"].is_null() && newest["is_fabric_primary"].is_null(), "mesh-left took {name:?}'s ({id}) primaries off its record: {row}");
+        assert_eq!((s(&row["data"]["node_id"]), s(&row["data"]["state"])), (id.clone(), "deleted".to_string()), "{name:?}'s Node row is written Deleted: {row}");
+        assert!(row["data"]["is_primary"].is_null() && row["data"]["is_fabric_primary"].is_null(), "mesh-left took {name:?}'s ({id}) primaries off its record: {row}");
     }
     // states.md: the mesh's `deleting` is entered by the delete-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op": mesh1's primary stored its own mesh row
@@ -557,6 +556,6 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // The successor is the primary's exact birth (gossip.md "A primary change on gossip": its digest then
     // carries `is_fabric_primary`, and the other remaining mesh-primary pulled from it above).
     let h = after.iter().find(|n| location(n) == primary).unwrap();
-    assert!(attr_s(&installed, "primaries").contains(&format!("-> {}/{} @", s(&h["node_id"]), s(&h["incarnation_id"]))), "the successor is the primary's exact birth: {installed} {h}");
+    assert!(attr_s(&installed, "primaries").contains(&format!("-> {}/{} @", s(&h["node_id"]), s(&h["incarnation"]))), "the successor is the primary's exact birth: {installed} {h}");
     estate.record_trace_url(&s(&installed["trace_id"]));
 }

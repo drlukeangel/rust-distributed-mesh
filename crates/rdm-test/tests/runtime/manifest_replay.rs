@@ -213,7 +213,7 @@ async fn observe_launch(estate: &Estate, node: &PathName) -> Value {
         let rest = Path::new(&path).strip_prefix(mount["Destination"].as_str().unwrap()).unwrap();
         let source = if rest.as_os_str().is_empty() { mount["Source"].as_str().unwrap().to_string() } else { Path::new(mount["Source"].as_str().unwrap()).join(rest).display().to_string() };
         json!({
-            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "type": n["type"],
+            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation"], "type": n["type"],
             "container": id, "image": inspect["Config"]["Image"], "entry_point": path, "mount_source": source, "mount_read_only": mount["RW"] == false,
             "observed_sha256": sha256_file(Path::new(&source)).unwrap(),
         })
@@ -225,7 +225,7 @@ async fn observe_launch(estate: &Estate, node: &PathName) -> Value {
         };
         let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node:?}: /proc/{pid}/exe: {e}"));
         json!({
-            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "type": n["type"],
+            "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation"], "type": n["type"],
             "pid": pid, "exe": exe, "observed_sha256": sha256_file(Path::new(&format!("/proc/{pid}/exe"))).unwrap(),
         })
     }
@@ -317,14 +317,14 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let before = estate.node_value(node).await;
         estate.stop_then_start(node).await;
         let after = estate.node_value(node).await;
-        assert_eq!(after["status"], "ready", "{node:?}: ready after the restart: {after}");
+        assert_eq!(after["state"], "ready", "{node:?}: ready after the restart: {after}");
         assert_eq!(after["node_id"], before["node_id"], "{node:?}: a restart keeps the NodeId");
-        assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node:?}: a restart is node.stop then node.start on the stopped process: the same birth");
+        assert_eq!(after["incarnation"], before["incarnation"], "{node:?}: a restart is node.stop then node.start on the stopped process: the same birth");
         let o = observe_launch(&estate, node).await;
         let b = expect_for(node);
         assert_eq!(launched_path(&o), b.executable, "{node:?} restarts on the bound executable: {o}");
         assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node:?} restarts on the bound bytes: {o}");
-        restarts.push(json!({ "node": node, "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "launch": o }));
+        restarts.push(json!({ "node": node, "node_id": before["node_id"], "old_incarnation_id": before["incarnation"], "new_incarnation_id": after["incarnation"], "launch": o }));
     }
     let get = estate.probe(&["get", "--target", broker_target.as_str(), "--key", "7"]);
     assert_eq!(get["outcome"], "Reply", "the restarted broker answers: {get}");

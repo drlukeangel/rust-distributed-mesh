@@ -129,7 +129,7 @@ fn verdicts(spans: &[Value], node: &str, mesh: &str) -> Option<String> {
 }
 
 fn primary(nodes: &[Value], mesh: &str) -> Value {
-    nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or(Value::Null)
+    nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or(Value::Null)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -152,7 +152,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     let subs: Vec<(String, String)> =
         named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
     for n in &rpcs {
-        let mesh = nodes.iter().find(|v| s(&v["node_id"]) == *n).and_then(|v| v["mesh"].as_str()).expect("node mesh metadata");
+        let mesh = nodes.iter().find(|v| s(&v["node_id"]) == *n).map(|v| s(&rdm_test::estate::mesh_of(v))).expect("node mesh metadata");
         let mine: BTreeSet<&str> = subs.iter().filter(|(x, _)| x == n).map(|(_, c)| c.as_str()).collect();
         assert_eq!(mine, [format!("mesh:{mesh}").as_str()].into_iter().collect(), "{n} joins its own mesh channel only: {mine:?}");
     }
@@ -218,7 +218,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         }
     })
     .await;
-    for n in rpcs.iter().filter(|id| nodes.iter().any(|n| s(&n["node_id"]) == **id && n["mesh"] == "mesh2")) {
+    for n in rpcs.iter().filter(|id| nodes.iter().any(|n| s(&n["node_id"]) == **id && rdm_test::estate::mesh_of(&n) == "mesh2")) {
         let n = n.clone();
         wait_for(&format!("{n} holds mesh1 again"), Duration::from_secs(15), || {
             let spans = estate.spans();
@@ -232,7 +232,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     // its own workflow (Q342): step 4 starts once it has completed.
     estate
         .until_view(&format!("{old_name} is recovered as a new node"), rdm_transport::topology::staleness_floor() * 4 + Duration::from_secs(60), |views| {
-            Estate::values(views).iter().any(|n| location(n) == location(&old) && s(&n["node_id"]) != old_id && n["status"] == "ready").then_some(())
+            Estate::values(views).iter().any(|n| location(n) == location(&old) && s(&n["node_id"]) != old_id && n["state"] == "ready").then_some(())
         })
         .await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -254,7 +254,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         .node_values()
         .await
         .iter()
-        .filter(|n| n["type"] == "node-admin" && n["status"] == "ready" && s(&n["node_id"]) != fp_id)
+        .filter(|n| n["type"] == "node-admin" && n["state"] == "ready" && s(&n["node_id"]) != fp_id)
         .map(|n| s(&n["node_id"]))
         .collect();
     assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
@@ -305,7 +305,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let _one = SERIAL.lock().await;
     let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_heals_to_one_birth_per_path"), "fabric2", "mesh1").await;
     let nodes = mm(&estate, "fabric2").await;
-    let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node").map(|n| s(&n["node_id"])).collect();
+    let rpcs2: Vec<String> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node").map(|n| s(&n["node_id"])).collect();
     wait_for("mesh2's nodes hold mesh1", Duration::from_secs(30), || {
         let spans = estate.spans();
         let rpcs2 = rpcs2.clone();
@@ -319,7 +319,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let original = estate.node_value(&PathName::new("mesh2.node", "1").unwrap()).await;
     let restarted_id = s(&original["node_id"]);
-    let before = s(&original["incarnation_id"]);
+    let before = s(&original["incarnation"]);
     let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "node_id") == restarted_id && attr(sp, "incarnation_id") == before).count();
     estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).await;
     // The Build can complete on another admin: wait for the asked one's view, and for the node's own
@@ -328,7 +328,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         .until_node(&rdm_core::PathName::new("mesh2.node", "1").unwrap(), "the asked admin's view holds the restarted birth ready", Duration::from_secs(15), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             let ready_now = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "node_id") == restarted_id && attr(sp, "incarnation_id") == before).count();
-            (n["status"] == "ready" && s(&n["node_id"]) == restarted_id && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
+            (n["state"] == "ready" && s(&n["node_id"]) == restarted_id && s(&n["incarnation"]) == before && ready_now > ready_before).then_some(s(&n["incarnation"]))
         })
         .await;
     assert_eq!(restarted, before, "a stop then a start keep the birth");
@@ -374,17 +374,17 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // (path, name) holds one live birth, the same in every admin's view, and a Build submitted at the
     // fabric-primary then completes.
     let nodes = estate.node_values().await;
-    let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node-admin" && n["is_primary"] != true).cloned().unwrap();
+    let lone = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node-admin" && n["is_primary"] != true).cloned().unwrap();
     let lone_name = s(&lone["node_id"]);
     let others: Vec<String> = nodes.iter().map(|n| s(&n["node_id"])).filter(|n| *n != lone_name).collect();
     let pre_cut: BTreeSet<PathName> = nodes.iter().map(location).collect();
     let admins: Vec<PathName> = nodes.iter().filter(|n| n["type"] == "node-admin").map(location).collect();
     let one_primary = |view: &[Value]| -> Result<(), String> {
         let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-        for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready") {
-            seen.entry((s(&n["mesh"]), s(&n["type"]))).or_default().push(s(&n["node_id"]));
+        for n in view.iter().filter(|n| n["is_primary"] == true && n["state"] == "ready") {
+            seen.entry((s(&rdm_test::estate::mesh_of(&n)), s(&n["type"]))).or_default().push(s(&n["node_id"]));
         }
-        let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready").map(|n| s(&n["node_id"])).collect();
+        let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["state"] == "ready").map(|n| s(&n["node_id"])).collect();
         match seen.iter().find(|(_, v)| v.len() > 1) {
             Some((k, v)) => Err(format!("two primaries of {k:?}: {v:?}")),
             None if fps.len() > 1 => Err(format!("two fabric-primaries: {fps:?}")),
@@ -457,11 +457,11 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
             one_primary(&view).ok()?;
             let mut at = BTreeMap::new();
             for p in &pre_cut {
-                let live: Vec<&Value> = view.iter().filter(|n| location(n) == *p && n["status"] == "ready").collect();
+                let live: Vec<&Value> = view.iter().filter(|n| location(n) == *p && n["state"] == "ready").collect();
                 if live.len() != 1 {
                     return None;
                 }
-                at.insert(p.clone(), (s(&live[0]["node_id"]), s(&live[0]["incarnation_id"])));
+                at.insert(p.clone(), (s(&live[0]["node_id"]), s(&live[0]["incarnation"])));
             }
             if want.as_ref().is_some_and(|w| *w != at) {
                 return None;
@@ -494,7 +494,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // Relearned with the topology view after the heal: every birth's current
     // runtime metadata (i143.e4.s16), no Build history replayed.
     for n in &after {
-        assert!(n["data_dir"].as_str().is_some_and(|d| !d.is_empty()), "{} carries its data dir after the heal: {n}", n["name"]);
+        assert!(n["storage"]["data_dir"].as_str().is_some_and(|d| !d.is_empty()), "{} carries its data dir after the heal: {n}", n["name"]);
     }
     let _ = converged;
     estate.stop().await;

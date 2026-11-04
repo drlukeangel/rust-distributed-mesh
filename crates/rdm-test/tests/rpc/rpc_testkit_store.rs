@@ -39,7 +39,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
     assert_eq!(r["executing_node"], node["node_id"], "{out}");
     assert_eq!((&r["path"], &r["name"]), (&node["path"], &node["name"]), "{out}");
     assert_eq!(r["mesh"], "mesh1", "{out}");
-    assert_eq!(r["incarnation_id"], node["incarnation_id"], "{out}");
+    assert_eq!(r["incarnation_id"], node["incarnation"], "{out}");
     assert_eq!(r["op"], op, "{out}");
 }
 
@@ -88,7 +88,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
         .until_node(&location(), "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
-    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "and the birth: the process was stopped and started, never replaced");
+    assert_eq!(restarted["incarnation"], first["incarnation"], "and the birth: the process was stopped and started, never replaced");
     let kept = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
     landed_on(&kept, &restarted, "get");
     assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
@@ -103,7 +103,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     // file holds is what its exporter wrote before the kill. The served calls read below of this process
     // (the first birth's, and the same birth's after its stop and start, which ran in it) are in the
     // evidence before it is killed.
-    let first_inc = first["incarnation_id"].clone();
+    let first_inc = first["incarnation"].clone();
     wait_for("the first birth's served calls are exported before its process is killed", Duration::from_secs(30), || async {
         let spans = estate.spans();
         let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
@@ -116,10 +116,10 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     let recovered = estate
         .until_node(&location(), "the recovered node holds the path", crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
         })
         .await;
-    assert_ne!(recovered["incarnation_id"], first["incarnation_id"], "recovery creates a new node.id and incarnation");
+    assert_ne!(recovered["incarnation"], first["incarnation"], "recovery creates a new node.id and incarnation");
     assert_ne!(recovered["endpoint_id"], first["endpoint_id"], "a new endpoint_id (Q358)");
     assert_ne!(estate.data_dir(&location()).await, data_dir, "a new data dir: the node's storage is ephemeral (Q359)");
     let inherited = estate.probe(&["get", "--target", &path, "--key", "41"]);
@@ -136,7 +136,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     let replacement = estate
         .until_node(&location(), "a new logical node holds the path", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != recovered["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != recovered["node_id"]).then_some(n)
         })
         .await;
     let predecessor_id: rdm_core::NodeId = serde_json::from_value(recovered["node_id"].clone()).expect("predecessor ID");
@@ -174,7 +174,7 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     let spans = estate.spans();
     let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let on = |node: &Value, op: &str, outcome: &str| {
-        served.iter().any(|s| s["attributes"]["node_id"] == node["node_id"] && s["attributes"]["incarnation_id"] == node["incarnation_id"] && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome)
+        served.iter().any(|s| s["attributes"]["node_id"] == node["node_id"] && s["attributes"]["incarnation_id"] == node["incarnation"] && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome)
     };
     assert!(on(&first, "put", "stored"));
     assert!(on(&first, "compare-and-swap", "mismatch"));
@@ -185,9 +185,9 @@ async fn the_testkit_store_survives_a_restart_and_never_a_recovery_or_a_new_node
     // birth, to its end, as its own workflow.
     let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
-        .find(|sp| sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"])
+        .find(|sp| sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation"])
         .expect("the mesh-primary's recovery of the killed birth");
-    assert_eq!(recovery["attributes"]["incarnation_id"], first["incarnation_id"], "keyed on the exact exited birth: {recovery}");
+    assert_eq!(recovery["attributes"]["incarnation_id"], first["incarnation"], "keyed on the exact exited birth: {recovery}");
     assert_eq!(recovery["attributes"]["outcome"], "complete", "{recovery}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     assert!(on(&replacement, "get", "absent"), "the replacement served an empty store");

@@ -53,7 +53,7 @@ async fn two_meshes(estate: &mut Estate) -> Vec<Value> {
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;
     let views = estate.node_values().await;
-    let pick = |kind: &str, primary: bool| views.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == kind && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds a {kind} with is_primary={primary}: {views:#?}"));
+    let pick = |kind: &str, primary: bool| views.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == kind && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds a {kind} with is_primary={primary}: {views:#?}"));
     vec![pick("node", false), pick("node", true), pick("node-admin", false), pick("node-admin", true)]
 }
 
@@ -92,9 +92,9 @@ async fn a_start_of_another_meshs_node_sent_the_moment_its_stop_completes_is_adm
         }
         let after = estate.until_node(&node, "the node ready again after its stop and start", std::time::Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["stopped"] == false).then_some(n)
+            (n["state"] == "ready").then_some(n)
         }).await;
-        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{node:?}: the same birth after its stop and start: {after}");
+        assert_eq!((&after["node_id"], &after["incarnation"]), (&before["node_id"], &before["incarnation"]), "{node:?}: the same birth after its stop and start: {after}");
     }
     estate.stop().await;
     let spans = estate.spans();
@@ -125,7 +125,7 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
             Err(e) => {
                 refused_stops.push(format!("{node:?}: {e}"));
                 // The cell goes on with this node stopped, so every node is asked.
-                let views_live = |n: Option<&rdm_client::NodeView>| n.filter(|n| serde_json::to_value(n).map(|v| v["status"] == "ready" && v["stopped"] == false).unwrap_or(false)).map(|_| ());
+                let views_live = |n: Option<&rdm_client::NodeView>| n.filter(|n| serde_json::to_value(n).map(|v| v["state"] == "ready").unwrap_or(false)).map(|_| ());
                 estate.until_node(&node, "the started node live at the asked admin", std::time::Duration::from_secs(60), views_live).await;
                 Estate::workflow(&format!("node.stop of {node:?}"), estate.nodes_obj().await.stop(&node).await).await;
             }
@@ -134,7 +134,7 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
         Estate::workflow(&format!("node.start of {node:?}"), estate.nodes_obj().await.start(&node).await).await;
         estate.until_node(&node, "the node ready again", std::time::Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["stopped"] == false).then_some(())
+            (n["state"] == "ready").then_some(())
         }).await;
     }
     estate.stop().await;
@@ -159,7 +159,7 @@ async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
     for v in &views {
         let name = path_of(v);
         let row = read.node(&id_of(v)).unwrap_or_else(|| panic!("R-FA4: the atlas holds no row of {name:?}: {read:#?}"));
-        assert_eq!((row.node_id.to_string().as_str(), row.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or_default(), status_of(row).as_str(), row.stopped), (v["node_id"].as_str().unwrap_or_default(), v["incarnation_id"].as_str().unwrap_or_default(), v["status"].as_str().unwrap_or_default(), v["stopped"] == true), "R-FA4: the atlas row of {name:?} is its birth as the node view holds it: {row:#?} vs {v}");
+        assert_eq!((row.node_id.to_string().as_str(), row.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or_default(), status_of(row).as_str(), row.stopped), (v["node_id"].as_str().unwrap_or_default(), v["incarnation"].as_str().unwrap_or_default(), v["state"].as_str().unwrap_or_default(), v["state"] == "stopped"), "R-FA4: the atlas row of {name:?} is its birth as the node view holds it: {row:#?} vs {v}");
     }
     assert_eq!(read.nodes.len(), views.len(), "R-FA4: the atlas holds exactly the nodes the node view holds: {read:#?}");
     let again = estate.fabric_view().await;
@@ -183,7 +183,7 @@ async fn the_atlas_holds_a_stop_the_fabric_primary_ran_at_its_complete() {
     let targets = two_meshes(&mut estate).await;
     let (node, node_id) = (path_of(&targets[3]), id_of(&targets[3]));
     let mut mesh2_faults = Vec::new();
-    for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
+    for v in estate.node_values().await.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin") {
         mesh2_faults.push((path_of(v), FaultClient::at(&estate, &path_of(v)).await));
     }
     for (_, d) in &mesh2_faults {
@@ -232,7 +232,7 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
     let targets = two_meshes(&mut estate).await;
     for before in targets.iter().filter(|n| n["type"] == "node-admin") {
         let (node, node_id) = (path_of(before), id_of(before));
-        let birth = (before["node_id"].as_str().unwrap_or_default().to_string(), before["incarnation_id"].as_str().unwrap_or_default().to_string());
+        let birth = (before["node_id"].as_str().unwrap_or_default().to_string(), before["incarnation"].as_str().unwrap_or_default().to_string());
         Estate::workflow(&format!("node.stop of {node:?}"), estate.nodes_obj().await.stop(&node).await).await;
         atlas_holds_for(&estate, &node, &node_id, 1, "R-FA3: after the stop's Complete", |row| if row.stopped { Ok(()) } else { Err(format!("{node:?} is not stopped in the atlas")) }).await;
         Estate::workflow(&format!("node.start of {node:?}"), estate.nodes_obj().await.start(&node).await).await;
@@ -285,7 +285,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let birth = rdm_client::ExactBirth {
         target: rdm_transport::NodeTarget::ExactNode(node_id.clone()),
         node_id,
-        incarnation: serde_json::from_value(targets[0]["incarnation_id"].clone()).expect("an incarnation id"),
+        incarnation: serde_json::from_value(targets[0]["incarnation"].clone()).expect("an incarnation id"),
     };
     let mesh_primary: rdm_core::NodeId = serde_json::from_value(primary["node_id"].clone()).expect("a node id");
     let reply = nodes.name_update(&birth, &mesh_primary, &rdm_transport::RouteChoice::Direct, &renamed).await.unwrap_or_else(|e| panic!("node.name.update of {node:?} at mesh2's primary: {e}"));

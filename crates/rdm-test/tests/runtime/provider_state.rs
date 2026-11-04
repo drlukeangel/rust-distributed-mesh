@@ -73,7 +73,7 @@ async fn an_os_stopped_member_is_recovered_at_once_over_a_new_data_dir_and_its_r
     let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
     let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
-    let recovered = node_where(&estate, &member, &format!("{member:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready" && n["node_id"] != before["node_id"]).await;
+    let recovered = node_where(&estate, &member, &format!("{member:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["state"] == "ready" && n["node_id"] != before["node_id"]).await;
     assert_ne!(recovered["node_id"], before["node_id"], "a new node.id at the path: {recovered}");
     assert_ne!(estate.data_dir(&member).await, old_dir, "a newly allocated data dir, never the suspended runtime's");
     assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "the suspended runtime is sent nothing: still stopped");
@@ -115,14 +115,14 @@ async fn hold_until_recovered(estate: &Estate, path: &PathName) -> Held {
     let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     assert_eq!(held.state_after, Some('T'), "the OS holds {path:?}: {held:?}");
     let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
-    let recovered = node_where(estate, path, &format!("{path:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready" && s(&n["node_id"]) != node_id).await;
+    let recovered = node_where(estate, path, &format!("{path:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["state"] == "ready" && s(&n["node_id"]) != node_id).await;
     assert_ne!(s(&recovered["node_id"]), node_id, "a new node.id at the path: {recovered}");
     assert_ne!(estate.data_dir(path).await, old_dir, "{path:?}: a newly allocated data dir, never the held runtime's");
     assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "{path:?}: the held runtime is sent nothing by the recovery, its create included: still stopped");
     assert_eq!(rdm_test::process_faults::cpu_ticks(rt.pid), ticks, "{path:?}: the held runtime used no CPU");
     // The cell's own cleanup: the held runtime the recovery left is no estate's.
     rt.apply(Fault::Kill(estate.fabric_ready())).expect("the cell kills the held runtime it made");
-    let birth = rdm_core::framing::Birth { node_id: node_id.parse().unwrap(), incarnation: s(&before["incarnation_id"]).parse().unwrap() };
+    let birth = rdm_core::framing::Birth { node_id: node_id.parse().unwrap(), incarnation: s(&before["incarnation"]).parse().unwrap() };
     let successor = estate.node_views().await.into_iter().find(|n| n.node_id.as_str() == s(&recovered["node_id"])).expect("recovered birth");
     Held { path: path.clone(), node_id, rt, birth, successor }
 }
@@ -302,7 +302,7 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     .await;
     let resumed = rt.apply(Fault::Continue).expect("the held runtime is resumed");
     assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
-    let recovered = node_where(&estate, &path, &format!("{path:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready" && s(&n["node_id"]) != node_id).await;
+    let recovered = node_where(&estate, &path, &format!("{path:?} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["state"] == "ready" && s(&n["node_id"]) != node_id).await;
     wait_for("the resumed birth's runtime is terminated", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
     // Its decision's span closes once the termination is answered: read before the estate stops.
     wait_for("the resumed birth's decision closes", crate::node_recovery_due(), || async {
@@ -313,7 +313,7 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     estate.stop().await;
     let spans = estate.spans();
 
-    assert_eq!((s(&at_path["node_id"]), s(&at_path["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds {path:?}: {at_path}");
+    assert_eq!((s(&at_path["node_id"]), s(&at_path["state"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds {path:?}: {at_path}");
     let decisions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-refused-caller").into_iter().filter(|sp| attr(sp, "node_id") == node_id).collect();
     assert!(decisions.iter().all(|d| attr(d, "decision") != "re-admit"), "a birth that comes back during its replacement's birth is never re-admitted: {decisions:#?}");
     let acted: Vec<&&Value> = decisions.iter().filter(|d| attr(d, "outcome") == "terminated" || attr(d, "outcome").starts_with("mesh-join:")).collect();

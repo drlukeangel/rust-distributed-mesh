@@ -67,11 +67,11 @@ async fn describe(estate: &Estate, node: &Value) -> Value {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
     let start_token = stat.rsplit(')').next().and_then(|r| r.split_whitespace().nth(19)).unwrap_or("").to_string();
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).map(|b| String::from_utf8_lossy(&b).replace('\0', " ")).unwrap_or_default();
-    let data_dir = s(&node["data_dir"]);
+    let data_dir = s(&node["storage"]["data_dir"]);
     let deployment = std::fs::read_to_string(format!("{data_dir}/deployment.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
     json!({
-        "name": name, "mesh": node["mesh"], "type": node["type"], "node_id": node["node_id"], "incarnation_id": node["incarnation_id"],
-        "endpoint_id": node["endpoint_id"], "status": node["status"], "is_primary": node["is_primary"], "is_fabric_primary": node["is_fabric_primary"],
+        "name": name, "mesh": rdm_test::estate::mesh_of(&node), "type": node["type"], "node_id": node["node_id"], "incarnation_id": node["incarnation"],
+        "endpoint_id": node["endpoint_id"], "status": node["state"], "is_primary": node["is_primary"], "is_fabric_primary": node["is_fabric_primary"],
         "admin_api_base": node["admin_api_base"], "transport_addr": node["transport_addr"], "listeners": node["listeners"],
         "data_dir": data_dir, "data_dir_exists": std::path::Path::new(&data_dir).is_dir(), "node_key_present": std::path::Path::new(&format!("{data_dir}/node-key")).is_file(),
         "deployment_json": deployment,
@@ -98,7 +98,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let primary = estate.fabric_view().await.fabric_primary.expect("the fabric names its primary").to_string();
     let primary_record = before.iter().find(|n| s(&n["node_id"]) == primary).expect("fabric primary in view");
     let primary_location: rdm_core::PathName = rdm_test::estate::location(&primary_record);
-    let lost_mesh = s(&primary_record["mesh"]);
+    let lost_mesh = s(&rdm_test::estate::mesh_of(&primary_record));
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
 
     // Every process of the run before the loss: API/control endpoints, data-dir bindings, host.
@@ -189,7 +189,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
             let f = fabric_view_of_id(&peers, &name.parse().unwrap(), &fabric_id).await?;
             let (primary, advertised) = (f.fabric_primary.clone()?, f.admin_api_base.clone().unwrap_or_default());
             let own = fabric_view_of_id(&peers, &primary, &fabric_id).await?;
-            if !after.iter().any(|n| n["node_id"] == primary.as_str() && n["mesh"] == survivor_mesh && n["type"] == "node-admin" && n["status"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
+            if !after.iter().any(|n| n["node_id"] == primary.as_str() && rdm_test::estate::mesh_of(&n) == survivor_mesh && n["type"] == "node-admin" && n["state"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
                 return None;
             }
         }
@@ -222,7 +222,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         let node_id: rdm_core::NodeId = name.parse().unwrap();
         let fabric_view = fabric_view_of_id(&peers, &node_id, &fabric_id).await.map(|f| serde_json::to_value(f).expect("a view serializes"));
         let nodes_view = rdm_client::Nodes::new(peers.carrier_for(node_id)).get(&rdm_client::Filter::new()).await.expect("survivor node view").into_iter().map(|n| serde_json::to_value(n).unwrap()).collect::<Vec<_>>();
-        survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["status"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
+        survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["state"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
     }
 
     let entry: rdm_core::PathName = rdm_test::estate::location(&primary_record);

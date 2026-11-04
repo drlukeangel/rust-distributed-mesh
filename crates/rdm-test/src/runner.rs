@@ -196,7 +196,7 @@ pub async fn run_replayable(
             let after = estate
                 .until_node(node, &format!("{node:?} ready again as the same birth after its restart"), SETTLE, |n| {
                     let n = serde_json::to_value(n?).expect("a view serializes");
-                    (n["status"] == "ready" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).then_some(n)
+                    (n["state"] == "ready" && n["node_id"] == before["node_id"] && n["incarnation"] == before["incarnation"]).then_some(n)
                 })
                 .await;
             outcomes.push(StepOutcome {
@@ -205,7 +205,7 @@ pub async fn run_replayable(
                 path: node.path.clone(), name: node.name.clone(),
                 key: None,
                 outcome: "Restarted".into(),
-                result: json!({ "same_node_id": after["node_id"] == before["node_id"], "same_incarnation": after["incarnation_id"] == before["incarnation_id"] }),
+                result: json!({ "same_node_id": after["node_id"] == before["node_id"], "same_incarnation": after["incarnation"] == before["incarnation"] }),
             });
         }
         let Some(op) = sc.operations.get(i) else { break };

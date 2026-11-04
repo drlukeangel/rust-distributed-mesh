@@ -198,10 +198,10 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
 
     // Each created admin held every surviving member's runtime before it
     // committed Ready (i143.e4.s16): mesh1's five births at least.
-    for admin in after.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
+    for admin in after.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin") {
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
-            .find(|sp| rdm_test::estate::of_node(sp, &location(admin), admin["node_id"].as_str().unwrap_or_default()) && sp["attributes"]["incarnation_id"] == admin["incarnation_id"])
+            .find(|sp| rdm_test::estate::of_node(sp, &location(admin), admin["node_id"].as_str().unwrap_or_default()) && sp["attributes"]["incarnation_id"] == admin["incarnation"])
             .unwrap_or_else(|| panic!("{} reports ready", admin["name"]))
             .clone();
         let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);

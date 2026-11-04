@@ -53,7 +53,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     let nodes = estate
         .until_view("two ready node-admins and two ready nodes, one node not a primary", Duration::from_secs(60), |views| {
             let v = Estate::values(views);
-            let ready = v.iter().filter(|n| n["status"] == "ready").count();
+            let ready = v.iter().filter(|n| n["state"] == "ready").count();
             (ready == 4 && v.iter().any(|n| n["type"] == "node" && n["is_primary"] != true)).then_some(v)
         })
         .await;

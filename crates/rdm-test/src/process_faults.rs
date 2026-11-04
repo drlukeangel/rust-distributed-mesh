@@ -148,13 +148,13 @@ impl ExactRuntime {
         let file = data_dir.join("runtime.json");
         let raw = std::fs::read(&file).map_err(|e| Refusal::NoPublishedFact { reason: format!("{}: {e}", file.display()) })?;
         let v: Value = serde_json::from_slice(&raw).map_err(|e| Refusal::NoPublishedFact { reason: format!("{}: {e}", file.display()) })?;
-        let provider = v["provider"].as_str().unwrap_or_default();
+        let provider = v["runtime"]["provider"].as_str().unwrap_or_default();
         if provider != "process" {
             return Err(Refusal::NotAProcess { provider: provider.into() });
         }
         let field = |what: &str, x: Option<u64>| x.ok_or_else(|| Refusal::NoPublishedFact { reason: format!("{}: no {what}", file.display()) });
         Ok(Self {
-            deployment_id: v["deployment_id"].as_str().unwrap_or_default().to_string(),
+            deployment_id: v["runtime"]["deployment_id"].as_str().unwrap_or_default().to_string(),
             control_domain: v["control_domain"].as_str().filter(|d| !d.is_empty()).ok_or_else(|| Refusal::NoPublishedFact { reason: format!("{}: no control_domain", file.display()) })?.to_string(),
             pid: field("pid", v["locator"]["pid"].as_u64())? as u32,
             start: field("start", v["locator"]["start"].as_u64())?,

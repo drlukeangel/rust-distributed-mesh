@@ -45,7 +45,7 @@ async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_proces
     let spans = estate.spans();
     let root = named(&spans, "rdm.node_rpc.testkit_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put").cloned().expect("the probe's call span");
     let carried = named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().find(|s| s["attributes"]["target"] == broker_id.as_str()).cloned().expect("the gateway's carried inner invocation");
-    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().find(|s| s["attributes"]["node_id"] == broker["node_id"] && s["attributes"]["incarnation_id"] == broker["incarnation_id"]).cloned().expect("the broker's serve span");
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().find(|s| s["attributes"]["node_id"] == broker["node_id"] && s["attributes"]["incarnation_id"] == broker["incarnation"]).cloned().expect("the broker's serve span");
     let op_is = |v: &Value, op: u64| v.as_u64() == Some(op) || v.as_str() == Some(&op.to_string());
     // Every role runs the one node executable, so the process is told apart by what it served: the
     // one direct serve of the testkit-store op in the probe's trace is the broker's (the broker's

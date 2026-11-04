@@ -52,7 +52,7 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
     estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = estate.node_values().await;
-    let admin = |primary: bool| before.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds an admin with is_primary={primary}: {before:#?}"));
+    let admin = |primary: bool| before.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds an admin with is_primary={primary}: {before:#?}"));
     let (first, second) = (admin(true), admin(false));
     let name = |n: &Value| rdm_test::estate::location(&n);
     let nodes = estate.nodes_obj().await;
@@ -68,11 +68,11 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
         Estate::complete(&mut stream).await;
         let after = estate.until_node(&name(target), &format!("{path:?} ready again after its stop and start"), Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["stopped"] == false).then_some(n)
+            (n["state"] == "ready").then_some(n)
         }).await;
-        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path:?} is the same birth after its stop and start: {after}");
+        assert_eq!((&after["node_id"], &after["incarnation"]), (&target["node_id"], &target["incarnation"]), "{path:?} is the same birth after its stop and start: {after}");
     }
-    let primary = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2 holds a primary");
+    let primary = estate.node_values().await.into_iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2 holds a primary");
     assert_eq!(primary["node_id"], first["node_id"], "the second stop moved mesh2's role back to {:?}", name(&first));
 
     estate.stop().await;

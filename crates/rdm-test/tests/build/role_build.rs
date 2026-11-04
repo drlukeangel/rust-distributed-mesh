@@ -58,7 +58,7 @@ async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, 
     for n in &nodes {
         let name = location(n);
         assert_eq!(n["type"], expected[&name], "{label}: {name:?} has the explicit fixture type: {n}");
-        assert_eq!(n["status"], "ready", "{label}: {n}");
+        assert_eq!(n["state"], "ready", "{label}: {n}");
     }
     (build_id, nodes)
 }
@@ -121,7 +121,7 @@ async fn roles_are_born_by_build_under_their_type() {
 
     // The second Build deletes the compute node; the other nodes retain ID and incarnation.
     let births = |ns: &[Value]| -> BTreeMap<String, String> {
-        ns.iter().map(|n| (n["node_id"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
+        ns.iter().map(|n| (n["node_id"].as_str().unwrap().to_string(), n["incarnation"].as_str().unwrap_or("").to_string())).collect()
     };
     let before = births(&nodes);
     // The initial fabric refuses a shrink until it has first reached ready (states.md "The initial fabric before ready").
@@ -156,21 +156,21 @@ async fn roles_are_born_by_build_under_their_type() {
         assert!(under_drive(&spans, &step, first.as_str()), "{node:?}'s deployment runs under a drive of the Build that asked for it");
         let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
-            .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
+            .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation"])
             .unwrap_or_else(|| panic!("{node:?} wrote no boot span"))
             .clone();
         assert_eq!(boot["attributes"]["type"], *t, "{node:?}'s boot names its type: {boot}");
         assert!(descends_from(&spans, &boot, &step), "{node:?} booted under the step that launched it");
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
-            .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
+            .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation"])
             .unwrap_or_else(|| panic!("{node:?} wrote no ready span"))
             .clone();
         assert_eq!(ready["attributes"]["type"], *t, "{node:?}'s ready span names its type: {ready}");
     }
     let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
         .into_iter()
-        .find(|s| s["attributes"]["node_id"] == compute["node_id"] && s["attributes"]["incarnation_id"] == compute["incarnation_id"] && s["attributes"]["build_id"] == second.as_str())
+        .find(|s| s["attributes"]["node_id"] == compute["node_id"] && s["attributes"]["incarnation_id"] == compute["incarnation"] && s["attributes"]["build_id"] == second.as_str())
         .unwrap_or_else(|| panic!("no removal of mesh1.compute.1 under build {second}"))
         .clone();
     assert!(under_drive(&spans, &delete, second.as_str()), "the compute's removal runs under a drive of the second Build");
@@ -212,7 +212,7 @@ async fn a_build_with_explicit_role_bindings_launches_every_role_from_the_one_no
         assert!(under_drive(&spans, &step, build_id.as_str()), "{node:?}'s launch runs under a drive of the Build that asked for it");
         let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
-            .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
+            .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation"])
             .unwrap_or_else(|| panic!("{node:?} wrote no boot span"))
             .clone();
         assert!(descends_from(&spans, &boot, &step), "{node:?} booted under the DeployRuntime step that launched it");

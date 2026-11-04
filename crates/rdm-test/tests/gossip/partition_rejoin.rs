@@ -66,7 +66,7 @@ fn alive(pid: u64) -> bool {
 }
 
 fn live(nodes: &[Value]) -> Vec<Value> {
-    nodes.iter().filter(|n| !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
+    nodes.iter().filter(|n| !matches!(n["state"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
 }
 
 /// A repair attempt on a held member whose coverage was stale, after `since`.
@@ -125,7 +125,7 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
 /// Every pre-cut member is live and ready in the view of `base`.
 fn holds_all(view: &[Value], everyone: &[PathName]) -> bool {
     let view = live(view);
-    everyone.iter().all(|name| view.iter().any(|n| location(n) == *name && n["status"] == "ready"))
+    everyone.iter().all(|name| view.iter().any(|n| location(n) == *name && n["state"] == "ready"))
 }
 
 async fn drop_cut(partition: Partition) -> u64 {
@@ -163,7 +163,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // Every admin of both meshes holds all eight members ready before anything is cut.
     let everyone: Vec<PathName> = nodes.iter().map(|n| location(&n)).collect();
     // The topology spans name an admin by its node id.
-    let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| (s(&n["node_id"]), s(&n["mesh"]))).collect();
+    let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| (s(&n["node_id"]), s(&rdm_test::estate::mesh_of(&n)))).collect();
     // Each admin is asked at its own location: `node.get` answers as that admin's view holds it.
     let bases: Vec<(PathName, PathName)> = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(n), location(n))).collect();
     assert_eq!(admins.len(), 4, "{nodes:#?}");
@@ -172,9 +172,9 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     }
     let nodes = estate.node_values().await;
     // The mesh of a node named by its id (a span's) or by its location (a view's).
-    let mesh_of = |id: &str| nodes.iter().find(|x| x["node_id"] == id).map(|x| s(&x["mesh"])).unwrap();
-    let mesh_at = |at: &PathName| nodes.iter().find(|x| location(x) == *at).map(|x| s(&x["mesh"])).unwrap();
-    let side = |m: &str| -> Vec<PathName> { nodes.iter().filter(|n| n["mesh"] == m).map(|n| location(&n)).collect() };
+    let mesh_of = |id: &str| nodes.iter().find(|x| x["node_id"] == id).map(|x| s(&rdm_test::estate::mesh_of(&x))).unwrap();
+    let mesh_at = |at: &PathName| nodes.iter().find(|x| location(x) == *at).map(|x| s(&rdm_test::estate::mesh_of(&x))).unwrap();
+    let side = |m: &str| -> Vec<PathName> { nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == m).map(|n| location(&n)).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
     let mut pids: BTreeMap<PathName, u64> = BTreeMap::new();
     for n in &nodes {
@@ -183,7 +183,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         let pid = if name == Estate::path("mesh1.node-admin", "1") { estate.bootstrap_pid().expect("the bootstrap admin runs") as u64 } else { estate.pid_of(&name).await };
         pids.insert(name, pid);
     }
-    let before: BTreeMap<PathName, (String, String)> = nodes.iter().map(|n| (location(&n), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect();
+    let before: BTreeMap<PathName, (String, String)> = nodes.iter().map(|n| (location(&n), (s(&n["node_id"]), s(&n["incarnation"])))).collect();
     let fabric_primary_before = advertised_fabric_primaries(&nodes);
 
     // Control: before the cut nothing is stale, so no member is re-fed.
@@ -208,7 +208,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         async move {
             for (name, base) in &bases {
                 for n in estate.node_values_at(base).await {
-                    seen.lock().unwrap().entry(format!("{name:?} sees {:?}", location(&n))).or_default().insert(s(&n["status"]));
+                    seen.lock().unwrap().entry(format!("{name:?} sees {:?}", location(&n))).or_default().insert(s(&n["state"]));
                 }
             }
             let spans = estate.spans();
@@ -311,7 +311,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let after = estate.node_values().await;
     for n in &after {
         let name = location(&n);
-        assert_eq!(before.get(&name), Some(&(s(&n["node_id"]), s(&n["incarnation_id"]))), "{name:?} is the same birth after the heal");
+        assert_eq!(before.get(&name), Some(&(s(&n["node_id"]), s(&n["incarnation"]))), "{name:?} is the same birth after the heal");
         assert!(alive(pids[&name]), "{name:?} (pid {}) lived through the cut", pids[&name]);
     }
     let marks_heal = lifecycle_marks(&spans, cut_at, now_ns());
@@ -320,7 +320,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let _ = (&fabric_primary_before, t_start);
 
     // ---- deletion: a node is deleted through a Build (a legal removal, never an admin)
-    let victim = after.iter().find(|n| n["type"] == "node" && n["mesh"] == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary node of mesh2");
+    let victim = after.iter().find(|n| n["type"] == "node" && rdm_test::estate::mesh_of(&n) == "mesh2" && n["is_primary"] == false).cloned().expect("a non-primary node of mesh2");
     let (victim_name, victim_id) = (location(&victim), s(&victim["node_id"]));
     let delete_at = now_ns();
     let mut delete = estate.delete_node(&victim_name).await.unwrap_or_else(|e| panic!("the node.delete of {victim_name:?} was refused: {e}"));
@@ -342,8 +342,8 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // ---- cut 2: the deleted birth is held by no one; the peer mesh's admins are the control
     let nodes2 = estate.node_values().await;
     let (m1, m2) = (
-        nodes2.iter().filter(|n| n["mesh"] == "mesh1").map(|n| location(&n)).collect::<Vec<_>>(),
-        nodes2.iter().filter(|n| n["mesh"] == "mesh2").map(|n| location(&n)).collect::<Vec<_>>(),
+        nodes2.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1").map(|n| location(&n)).collect::<Vec<_>>(),
+        nodes2.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2").map(|n| location(&n)).collect::<Vec<_>>(),
     );
     assert!(!m2.contains(&victim_name) && !m1.contains(&victim_name), "the deleted {victim_name:?} ({victim_id}) is absent from the control admin's view: {:?}", nodes2.iter().filter(|n| n["node_id"] == victim_id.as_str() || location(n) == victim_name).collect::<Vec<_>>());
     let cut2 = Partition::start(&udp_ports(&nodes2, &m1), &udp_ports(&nodes2, &m2)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: {why}"));
@@ -369,7 +369,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     // ---- deletion of a node-admin: one non-primary admin of the peer mesh, a Build removal
     // (that mesh keeps its primary admin; never the fabric primary)
     let nodes3 = estate.node_values().await;
-    let admin_victim = nodes3.iter().find(|n| n["type"] == "node-admin" && n["mesh"] == "mesh2" && n["is_primary"] == false && n["is_fabric_primary"] != true).cloned().expect("a non-primary admin of mesh2");
+    let admin_victim = nodes3.iter().find(|n| n["type"] == "node-admin" && rdm_test::estate::mesh_of(&n) == "mesh2" && n["is_primary"] == false && n["is_fabric_primary"] != true).cloned().expect("a non-primary admin of mesh2");
     let (av_name, av_id) = (location(&admin_victim), s(&admin_victim["node_id"]));
     let av_pid = pids[&av_name];
     let survivors: Vec<(String, String)> = admins.iter().filter(|(n, _)| *n != av_id).cloned().collect();
@@ -391,8 +391,8 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     assert!(delete2_marks.iter().any(|n| n.contains("node.delete")), "the admin's deletion fired: {delete2_marks:?}");
     let nodes4 = estate.node_values().await;
     let (a1, a2) = (
-        nodes4.iter().filter(|n| n["mesh"] == "mesh1").map(|n| location(&n)).collect::<Vec<_>>(),
-        nodes4.iter().filter(|n| n["mesh"] == "mesh2").map(|n| location(&n)).collect::<Vec<_>>(),
+        nodes4.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1").map(|n| location(&n)).collect::<Vec<_>>(),
+        nodes4.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2").map(|n| location(&n)).collect::<Vec<_>>(),
     );
     assert!(!a2.contains(&av_name));
     let cut3 = Partition::start(&udp_ports(&nodes4, &a1), &udp_ports(&nodes4, &a2)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: {why}"));

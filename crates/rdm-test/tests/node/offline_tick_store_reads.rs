@@ -19,7 +19,6 @@ use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
 use rdm_node::storage_error::StorageError;
 use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

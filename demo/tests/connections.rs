@@ -109,7 +109,7 @@ async fn held(estate: &Estate, node: &PathName, what: &str, holds: impl Fn(&Conn
     let row = estate.node_value(node).await;
     let destination = id_at(estate, &broker()).await.to_string();
     let node_id: NodeId = serde_json::from_value(row["node_id"].clone()).expect("a node id");
-    let incarnation: IncarnationId = serde_json::from_value(row["incarnation_id"].clone()).expect("an incarnation id");
+    let incarnation: IncarnationId = serde_json::from_value(row["incarnation"].clone()).expect("an incarnation id");
     let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id, incarnation };
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {

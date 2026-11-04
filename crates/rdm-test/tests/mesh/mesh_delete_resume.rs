@@ -145,8 +145,8 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // goes, so the admin in its role after the primary's loss reads mesh2 deleting from its mesh's own rows.
     estate.until_fabric_ready(Duration::from_secs(90)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).unwrap_or_else(|| panic!("mesh2 has a minted id"));
-    let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
-    let lost = (location(&primary), s(&primary["node_id"]), s(&primary["incarnation_id"]));
+    let primary = before.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
+    let lost = (location(&primary), s(&primary["node_id"]), s(&primary["incarnation"]));
     let ids: BTreeMap<PathName, String> = before.iter().map(|n| (location(n), s(&n["node_id"]))).collect();
     // A member's delete is keyed by its node id (mesh-delete.md step 3).
     let member = |name: &str| json!({"Node": ids[&Estate::path("mesh2.node", name)]});
@@ -205,7 +205,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let elect_by = std::time::Instant::now() + Duration::from_secs(60);
     while !survivor_primary && std::time::Instant::now() < elect_by {
         let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
-        survivor_primary = nodes.iter().any(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true && n["status"] == "ready" && s(&n["node_id"]) != lost.1);
+        survivor_primary = nodes.iter().any(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true && n["state"] == "ready" && s(&n["node_id"]) != lost.1);
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let resubmitted_ns = now_ns();
@@ -234,8 +234,8 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
             // The lost primary's Deleted record may still be held unheard until mesh-left. The new
             // mesh-primary is the one mesh2 birth that is alive.
             let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
-            let mesh2: Vec<(PathName, String)> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
-            let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node").collect();
+            let mesh2: Vec<(PathName, String)> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["state"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
+            let deleting: Vec<&Value> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node").collect();
             if mesh2.len() == 1 && deleting.is_empty() {
                 last = mesh2.into_iter().next();
             }

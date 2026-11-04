@@ -71,16 +71,16 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_whi
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary");
-    assert_eq!(fp["mesh"], "mesh1", "the fabric-primary has explicit mesh1 metadata");
-    let primary_view = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary");
+    assert_eq!(rdm_test::estate::mesh_of(&fp), "mesh1", "the fabric-primary has explicit mesh1 metadata");
+    let primary_view = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2's primary");
     let mesh2_primary = location(primary_view);
     let primary_id = s(&primary_view["node_id"]);
     let victim = PathName::new("mesh2.node", "1").unwrap();
     let victim_view = nodes.iter().find(|n| location(n) == victim).expect("fixture victim");
     let victim_id = s(&victim_view["node_id"]);
-    let victim_incarnation = s(&victim_view["incarnation_id"]);
+    let victim_incarnation = s(&victim_view["incarnation"]);
     assert!(!victim_incarnation.is_empty(), "the victim has an incarnation");
-    let mesh1: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(location).collect();
+    let mesh1: Vec<PathName> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1").map(location).collect();
     let floor = rdm_transport::topology::staleness_floor();
 
     let cut = match Partition::start(&udp_ports(&nodes, &[mesh2_primary.clone()]), &udp_ports(&nodes, &mesh1)) {
@@ -104,7 +104,7 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_whi
     let fp = location(fp);
     let recovered = wait_for(&format!("{victim:?} is ready under a new node id"), Duration::from_secs(60), || async {
         let v = estate.node_values_at(&fp).await;
-        v.iter().find(|n| location(n) == victim && n["status"] == "ready" && s(&n["node_id"]) != victim_id).map(|n| s(&n["node_id"]))
+        v.iter().find(|n| location(n) == victim && n["state"] == "ready" && s(&n["node_id"]) != victim_id).map(|n| s(&n["node_id"]))
     })
     .await;
     estate.stop().await;

@@ -354,7 +354,7 @@ impl Run {
         assert_eq!(ident, view["node_id"], "the node the Build decided is the node that serves: one birth");
         assert_eq!(self.runtimes(node).await, 1, "exactly one runtime serves {node:?}: release made no second birth");
         assert_eq!(self.fabric_build_id().await, build_id, "the current build_id names the accepted Build");
-        json!({"build_state": b["state"], "step_events": counts, "node": {"status": view["status"], "node_id": view["node_id"], "incarnation_id": view["incarnation_id"]}, "runtimes": 1, "fabric_build_id": build_id})
+        json!({"build_state": b["state"], "step_events": counts, "node": {"status": view["state"], "node_id": view["node_id"], "incarnation_id": view["incarnation"]}, "runtimes": 1, "fabric_build_id": build_id})
     }
 
     /// After a released removal: complete once, each delete step once, the node gone, no runtime left.
@@ -693,7 +693,7 @@ async fn event_cut(run: &Run, delete_order: &[String], event: &'static str, node
     // hierarchy checklist (`routable` goes false from the NodeDeleting receipt alone, within one checklist),
     // so the executor's view is not a witness of the publish. The witness is the event's own span,
     // started only after the release (checked on the exported spans).
-    h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["status"], "routable": v["routable"]})).unwrap_or(Value::Null);
+    h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["state"], "routable": v["routable"]})).unwrap_or(Value::Null);
     let rel = faults.release(&id).await;
     run.complete(&mut stream).await;
     let after = run.after_delete(&faults, &build_id, node, &node_id, delete_order).await;
@@ -811,9 +811,9 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     assert!(b["state"] != "complete", "`{id}`: the Build is not complete while the joining admin is held: {b}");
     let view = run.estate.node_value_opt(admin).await;
     if let Some(v) = &view {
-        assert_ne!(v["status"], "ready", "`{id}`: the held admin is not Ready: {v}");
+        assert_ne!(v["state"], "ready", "`{id}`: the held admin is not Ready: {v}");
     }
-    let during = json!({"build_state": b["state"], "operation": op.value(), "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["status"]})), "cut_still_held": faults.cut(id).await["held"]});
+    let during = json!({"build_state": b["state"], "operation": op.value(), "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["state"]})), "cut_still_held": faults.cut(id).await["held"]});
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), during };
     let rel = faults.release(id).await;
     run.complete(&mut stream).await;

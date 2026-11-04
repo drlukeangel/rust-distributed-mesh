@@ -66,7 +66,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let (victim_at, witness_at) = (victim(), witness_node());
     let witness = rdm_test::estate::path_target(&witness_at);
     let victim = before.iter().find(|n| location(n) == victim_at).cloned().unwrap();
-    let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));
+    let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation"]));
     let exact_victim = format!("exact:{victim_id}");
     estate.artifact("nodes-before.json", &json!(before));
 
@@ -74,11 +74,11 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     estate.witness_holds_birth(&witness_at, &victim_at).await;
     let found = estate.probe(&["resolve", "--target", &witness, "--query", &exact_victim]);
     assert_eq!(resolution(&found), "found", "{found}");
-    assert_eq!(found["reply"]["incarnation_id"], victim["incarnation_id"], "{found}");
+    assert_eq!(found["reply"]["incarnation_id"], victim["incarnation"], "{found}");
     // States.md "Routing": application routing selects a birth only while it is ready and its
     // mesh is ready.
     let meshes = estate.fabric_view().await.meshes;
-    assert!(before.iter().all(|n| n["status"] == "ready") && meshes.iter().all(|m| m.status == ScopeStatus::Ready), "every live node is routable before the delete: {before:#?} {meshes:?}");
+    assert!(before.iter().all(|n| n["state"] == "ready") && meshes.iter().all(|m| m.status == ScopeStatus::Ready), "every live node is routable before the delete: {before:#?} {meshes:?}");
     // The victim's data dir, read while an admin still advertises it.
     let victim_dir = std::path::PathBuf::from(estate.data_dir(&victim_at).await);
     assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
@@ -101,7 +101,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // Every ordinary node of the peer mesh, not only its primary, holds mesh2 at the version that
     // carries the departure (gossip.md §3.3, Q130): a node whose pull came back older than a delta it
     // dropped while the pull was in flight pulls again until it does.
-    for node in after.iter().filter(|n| n["mesh"] == "mesh1" && n["type"] == "node").map(|n| location(&n)) {
+    for node in after.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node").map(|n| location(&n)) {
         estate.holds_departure(&node, "mesh2", &victim_id).await;
         let held = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&node), "--query", &exact_victim]);
         assert_eq!(resolution(&held), "gone", "{node:?} holds the departure of {victim_at:?}: {held}");
@@ -120,7 +120,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let mut spawn = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node in mesh1: {e}"));
     Estate::complete(&mut spawn).await;
     let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
-    let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
+    let newcomer = late.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
     estate.holds_departure(&location(&newcomer), "mesh2", &victim_id).await;
     let late_gone = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&location(&newcomer)), "--query", &exact_victim]);
     assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
@@ -129,7 +129,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let mut spawn2 = estate.create_node("mesh2", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node in mesh2: {e}"));
     Estate::complete(&mut spawn2).await;
     let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
-    let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
+    let newcomer2 = late2.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
     estate.holds_departure(&location(&newcomer2), "mesh2", &victim_id).await;
     let own_mesh_gone = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&location(&newcomer2)), "--query", &exact_victim]);
     assert_eq!(resolution(&own_mesh_gone), "gone", "the newcomer in the executor's own mesh holds the departure: {own_mesh_gone}");

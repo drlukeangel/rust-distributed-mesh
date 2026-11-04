@@ -130,7 +130,7 @@ async fn seed_cell(cell: &str, provider: &str) {
     let trace = create["trace_id"].as_str().unwrap().to_string();
     let after = estate_dir(cell).join("nodes-after.json");
     let nodes: Value = serde_json::from_str(&std::fs::read_to_string(&after).expect("nodes-after.json")).unwrap();
-    let ready = |kind: &str| nodes.as_array().unwrap().iter().filter(|n| n["type"] == kind && n["status"] == "ready").count();
+    let ready = |kind: &str| nodes.as_array().unwrap().iter().filter(|n| n["type"] == kind && n["state"] == "ready").count();
     assert_eq!((ready("node-admin"), ready("node")), (2, 3), "the seed shape is MN = 2 admins + 3 nodes: {nodes}");
     write_result(
         cell,

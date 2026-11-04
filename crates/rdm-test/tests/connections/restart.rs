@@ -56,7 +56,7 @@ async fn recovered(estate: &Estate, node: &PathName) -> Value {
     estate
         .until_node(node, &format!("{node:?} is recovered as a new node at its separate path and name"), crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
         })
         .await
 }
@@ -92,7 +92,7 @@ async fn a_recovered_source_holds_no_connection_and_reads_none_back() {
 
     estate.stop().await;
     let spans = estate.spans();
-    let boot = named(&spans, "rdm.mesh.node.create.via-boot").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation_id"]).expect("recovered exact birth boot");
+    let boot = named(&spans, "rdm.mesh.node.create.via-boot").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation"]).expect("recovered exact birth boot");
     let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().filter(|sp| sp["attributes"]["node_path"] == source().path && sp["attributes"]["node_name"] == source().name && sp["parent_span_id"] == boot["span_id"] && sp["trace_id"] == boot["trace_id"]).last().cloned().expect("the recovered source opened its connections store");
     assert!(named(&spans, "rdm.node_admin.connection.update.via-hydrate").is_empty(), "no node reads its connections back");
     assert_ne!(after["node_id"], serde_json::Value::Null, "{after}");

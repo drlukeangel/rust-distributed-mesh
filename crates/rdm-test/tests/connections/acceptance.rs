@@ -253,14 +253,14 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     // 1. The first open: Direct NotSent, the carrier found, the tunnel admitted by the destination.
     let first = stream(&estate, &*SOURCE, &*DEST, "consumer-a");
     assert_eq!((first["streamed"].as_bool(), first["kind"].as_str()), (Some(true), Some(format!("proxy via {}", id_at(&estate, &CARRIER).await).as_str())), "the first open goes through the carrier: {first}");
-    assert_eq!((first["peer"].clone(), s(&first["peer_incarnation"]), s(&first["answered"])), (json!(&*DEST), s(&dest["incarnation_id"]), format!("echo {}: consumer-a", id_at(&estate, &DEST).await)), "the destination's exact birth answered: {first}");
+    assert_eq!((first["peer"].clone(), s(&first["peer_incarnation"]), s(&first["answered"])), (json!(&*DEST), s(&dest["incarnation"]), format!("echo {}: consumer-a", id_at(&estate, &DEST).await)), "the destination's exact birth answered: {first}");
     let held = wait_for("the source holds its Proxy once its row landed", Duration::from_secs(15), || async {
         let snap = snapshot(&estate, &*SOURCE);
         (snap["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(snap)
     })
     .await;
     let proxy = &held["own_active_proxies"][0];
-    assert_eq!((location(&proxy["carrier"]), s(&proxy["carrier"]["incarnation"]), s(&proxy["destination"]["incarnation"])), (CARRIER.clone(), s(&carrier["incarnation_id"]), s(&dest["incarnation_id"])), "the Proxy names the carrier and both births: {proxy}");
+    assert_eq!((location(&proxy["carrier"]), s(&proxy["carrier"]["incarnation"]), s(&proxy["destination"]["incarnation"])), (CARRIER.clone(), s(&carrier["incarnation"]), s(&dest["incarnation"])), "the Proxy names the carrier and both births: {proxy}");
 
     // 2. Another consumer's open: through the held Proxy at once.
     let second = stream(&estate, &*SOURCE, &*DEST, "consumer-b");
@@ -275,7 +275,7 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     assert!(failed.first().is_some_and(|r| r["state"] == "Failed"), "the blocked dial writes its Direct Failed: {failed:?}");
     assert!(failed.iter().all(|r| r["state"] == "Failed"), "nothing but Failed toward the destination while blocked: {failed:?}");
     let still = estate.node_value(&*DEST).await;
-    assert_eq!(s(&still["status"]), "ready", "a failed direct attempt marks nothing on the destination: {still}");
+    assert_eq!(s(&still["state"]), "ready", "a failed direct attempt marks nothing on the destination: {still}");
     estate.stop().await;
 
     // 4. Spans: the two tunnels, the first a cold discovery that names its cost; no Direct dial in
@@ -576,12 +576,12 @@ async fn foreign_dialer(name: &PathName, target: &Value, cert: Vec<u8>) -> (rdm_
     let ep = rdm_transport::endpoint::bind_with_alpns(key, "127.0.0.1:0".parse().unwrap(), &[rdm_test::node::APP_PROTOCOL.to_vec()]).await.expect("the dialer binds");
     let me = rdm_transport::connections::Birth { mesh: "mesh1".to_owned(), r#type: "node".into(), path: name.path.clone(), name: name.name.clone(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
     let resolver = std::sync::Arc::new(rdm_transport::StaticResolver::new());
-    resolver.insert(rdm_transport::ResolvedNode { mesh: s(&target["mesh"]), r#type: (target["type"].as_str().unwrap()).to_string(),
+    resolver.insert(rdm_transport::ResolvedNode { mesh: s(&rdm_test::estate::mesh_of(&target)), r#type: (target["type"].as_str().unwrap()).to_string(),
         node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(),
         path: location(target).path, name: location(target).name,
         endpoint_id: s(&target["endpoint_id"]).parse().expect("the target's endpoint key"),
         transport_addr: s(&target["transport_addr"]).parse().expect("the target's transport address"),
-        incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation_id"])).unwrap(),
+        incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation"])).unwrap(),
     });
     let sink = std::sync::Arc::new(rdm_transport::connections::MemoryConnectionsSink::new(me));
     let (registry, handlers) = rdm_transport::connections::ConnectionsRegistry::new(ep.clone(), resolver, sink, &[rdm_test::node::app_protocol_proxy()], cert).expect("the dialer's registry");
@@ -598,7 +598,7 @@ async fn foreign_dialer(name: &PathName, target: &Value, cert: Vec<u8>) -> (rdm_
 async fn refused_dial(estate: &Estate, name: &PathName, target_name: &PathName, cert: Vec<u8>) -> (String, Value) {
     let target = estate.node_value(target_name).await;
     let (registry, router, short) = foreign_dialer(name, &target, cert).await;
-    let birth = rdm_transport::connections::Birth { mesh: s(&target["mesh"]), r#type: (target["type"].as_str().unwrap()).to_string(), path: target_name.path.clone(), name: target_name.name.clone(), node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(), incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation_id"])).unwrap() };
+    let birth = rdm_transport::connections::Birth { mesh: s(&rdm_test::estate::mesh_of(&target)), r#type: (target["type"].as_str().unwrap()).to_string(), path: target_name.path.clone(), name: target_name.name.clone(), node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(), incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation"])).unwrap() };
     let reason = match registry.probe_direct(&birth, rdm_test::node::APP_PROTOCOL).await {
         Err(rdm_transport::connections::ConnectError::Refused { reason }) => reason,
         other => panic!("the acceptor refuses the dial by name: {other:?}"),
@@ -853,7 +853,7 @@ async fn recovered(estate: &Estate, node: &PathName) -> Value {
     estate
         .until_node(node, &format!("{node:?} is recovered as a new node at its path.name"), crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
+            (n["state"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
         })
         .await
 }
@@ -876,7 +876,7 @@ async fn a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and
     let cell = "a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries";
     let mut estate = born(cell).await;
     let old = estate.node_value(&*DEST).await;
-    let old_inc = s(&old["incarnation_id"]);
+    let old_inc = s(&old["incarnation"]);
     carrier_connection_of(&estate, &old_inc).await;
     block_direct(&estate, &*SOURCE, &*DEST, true);
     let first = stream(&estate, &*SOURCE, &*DEST, "old-birth");
@@ -884,7 +884,7 @@ async fn a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and
     wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, &*SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
 
     let new = recovered(&estate, &*DEST).await;
-    let new_inc = s(&new["incarnation_id"]);
+    let new_inc = s(&new["incarnation"]);
     assert_ne!(new_inc, old_inc, "a new birth");
     for witness in [&*SOURCE, &*CARRIER] {
         estate.witness_holds_birth(witness, &*DEST).await;
@@ -928,15 +928,15 @@ async fn a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_nev
     let cell = "a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries";
     let mut estate = born(cell).await;
     let dest = estate.node_value(&*DEST).await;
-    let old_carrier = s(&estate.node_value(&*CARRIER).await["incarnation_id"]);
-    carrier_connection_of(&estate, &s(&dest["incarnation_id"])).await;
+    let old_carrier = s(&estate.node_value(&*CARRIER).await["incarnation"]);
+    carrier_connection_of(&estate, &s(&dest["incarnation"])).await;
     block_direct(&estate, &*SOURCE, &*DEST, true);
     let first = stream(&estate, &*SOURCE, &*DEST, "old-carrier");
     assert_eq!(first["kind"].as_str(), Some(format!("proxy via {}", id_at(&estate, &CARRIER).await).as_str()), "{first}");
     wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, &*SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
 
     let new = recovered(&estate, &*CARRIER).await;
-    assert_ne!(s(&new["incarnation_id"]), old_carrier, "a new carrier birth");
+    assert_ne!(s(&new["incarnation"]), old_carrier, "a new carrier birth");
     estate.witness_holds_birth(&*SOURCE, &*CARRIER).await;
 
     let second = stream(&estate, &*SOURCE, &*DEST, "after-carrier-replaced");

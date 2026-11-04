@@ -58,7 +58,7 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     }
     // A node that survived the step kept its birth (nothing restarted).
     let births = |ns: &[Value]| -> BTreeMap<String, String> {
-        ns.iter().map(|n| (json!(rdm_test::estate::location(n)).to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
+        ns.iter().map(|n| (json!(rdm_test::estate::location(n)).to_string(), n["incarnation"].as_str().unwrap_or("").to_string())).collect()
     };
     let (old, new) = (births(before), births(&nodes));
     for (name, birth) in &new {

@@ -75,14 +75,14 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     let fp = PathName::new("mesh1.node-admin", "1").unwrap();
     assert_eq!(nodes.iter().find(|n| n["is_fabric_primary"] == true).map(location), Some(fp.clone()), "the Day-0 admin is fabric-primary: {nodes:#?}");
     let old_node_id = s(&nodes.iter().find(|n| location(n) == fp).unwrap()["node_id"]);
-    let backbone_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2 has a primary");
+    let backbone_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh2 has a primary");
     let backbone = s(&backbone_row["node_id"]);
     let backbone_location = location(backbone_row);
     estate.enter(&backbone_location).await;
 
     // Lose the fabric-primary's mesh: every one of its processes.
     let mut pids = Vec::new();
-    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && location(n) != fp) {
+    for n in nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && location(n) != fp) {
         pids.push(estate.pid_of(&location(n)).await);
     }
     for pid in pids {
@@ -98,7 +98,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
             let ns = Estate::values(views);
             let primaries: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(location).collect();
             assert!(primaries.iter().all(|h| h == &fp), "only the node at {fp:?} is ever fabric-primary: {primaries:?}");
-            ns.iter().find(|n| location(n) == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|n| s(&n["node_id"]))
+            ns.iter().find(|n| location(n) == fp && s(&n["node_id"]) != old_node_id && n["state"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|n| s(&n["node_id"]))
         })
         .await;
     // The restored mesh-primary recovers the rest of its mesh; the fabric is ready again.
@@ -166,7 +166,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     .await;
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: ["mesh3", "mesh1", "mesh2"].map(|m| MeshDesired::of(m, [("node-admin", 2), ("node", 1)])).to_vec() };
     estate.resize(&desired).await;
-    let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["status"] == "ready");
+    let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["state"] == "ready");
     let nodes = estate
         .until_view("three meshes settle on the computed roles", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);

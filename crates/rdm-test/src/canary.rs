@@ -15,7 +15,7 @@ const SETTLE: Duration = Duration::from_secs(120);
 // The canary restarts the `node` type primary (`is_primary == true`).
 
 fn ready(node: &Value) -> bool {
-    node["status"] == "ready"
+    node["state"] == "ready"
 }
 
 /// The runtime `node` runs in: its pid (process provider) or its container id (container provider).
@@ -48,8 +48,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     // 3. Capture identity, ports, deployment id and the advertised admin endpoint.
     let fabric_before = estate.fabric_view().await;
     let control_before = fabric_before.meshes[0].admin_api_base.clone().expect("advertised admin endpoint");
-    let incarnation_before = before["incarnation_id"].as_str().expect("incarnation_id").to_string();
-    let deployment_before = before["deployment_id"].as_str().expect("deployment_id").to_string();
+    let incarnation_before = before["incarnation"].as_str().expect("incarnation_id").to_string();
+    let deployment_before = before["runtime"]["deployment_id"].as_str().expect("deployment_id").to_string();
     estate.artifact("nodes-before.json", &json!(estate.node_values().await));
     let process_before = runtime_of(&estate, node_name).await;
     let transport_before = before["transport_addr"].clone();
@@ -77,7 +77,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let after = estate
         .until_node(node_name, "rpc.2 ready after its restart", SETTLE, |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (ready(&n) && n["stopped"] == false).then_some(n)
+            (ready(&n) && n["state"] != "stopped").then_some(n)
         })
         .await;
     estate.artifact("nodes-after.json", &json!(estate.node_values().await));
@@ -86,8 +86,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(after["node_id"], before["node_id"], "same logical node id");
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "same transport identity (data dir kept)");
     assert_eq!(crate::estate::location(&after), crate::estate::location(&before));
-    assert_eq!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "the same runtime deployment: nothing was deployed");
-    assert_eq!(after["incarnation_id"].as_str(), Some(incarnation_before.as_str()), "the same incarnation: stop then start on the stopped process");
+    assert_eq!(after["runtime"]["deployment_id"].as_str(), Some(deployment_before.as_str()), "the same runtime deployment: nothing was deployed");
+    assert_eq!(after["incarnation"].as_str(), Some(incarnation_before.as_str()), "the same incarnation: stop then start on the stopped process");
 
     // 6. The process never exited: it keeps its endpoint and its port.
     assert_eq!(after["transport_addr"], transport_before, "a stop and a start keep the transport port");
@@ -99,7 +99,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(get["outcome"], "Reply", "{get}");
     assert_eq!(get["reply"]["result"]["value"], "before-restart", "{get}");
     assert_eq!(get["reply"]["executing_node"], node_id.as_str(), "{get}");
-    assert_eq!(get["reply"]["incarnation_id"], after["incarnation_id"], "served by the same incarnation: {get}");
+    assert_eq!(get["reply"]["incarnation_id"], after["incarnation"], "served by the same incarnation: {get}");
 
     // 8. A request cut before full send is reset with 499 and reports NotSent; it was never dispatched.
     let cut = estate.probe(&["put", "--target", &exact, "--key", "42", "--value", "never", "--cut-before-finish"]);
@@ -164,7 +164,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "node_id": node_id,
         "endpoint_id": after["endpoint_id"],
         "incarnation_before": incarnation_before,
-        "incarnation_after": after["incarnation_id"],
+        "incarnation_after": after["incarnation"],
         "transport_before": transport_before,
         "transport_after": after["transport_addr"],
         "birth_build": birth_build,
