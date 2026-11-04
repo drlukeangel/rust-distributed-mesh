@@ -1,17 +1,16 @@
 //! product=mesh, feature=storage-backend, subfeature=memory-estate, rung=M1, provider=process.
 //!
 //! The runtime proof of the storage seam (i143 1b): a node-admin booted in this process on the
-//! memory storage backend (`rdm_admin::storage_backend::MemoryBackend`) runs the node lifecycle with
+//! memory storage backend (`rdm_admin::storage_backend::MemoryBackend`) runs its Day-0 Build with
 //! every durable read and write of its own going through the six boundaries it opened. Built with the
 //! file backend off (`--no-default-features`), the file store is absent from this executable; built
-//! with it on, the admin still opens nothing but the memory boundaries. The node the admin launches
-//! is the gate's `rdm-node`, whose own connections rows are its node backend's (the file one).
+//! with it on, the admin still opens nothing but the memory boundaries. The memory backend serves a
+//! single-process fabric only (storage.md §2): the admin is the fabric's one process.
 
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, NodeStatus, Nodes, PathName, ScopeStatus};
-use rdm_test::executables::{Current, Executables};
+use rdm_client::{BuildCarrier, BuildId, Fabrics, ScopeStatus};
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{bin_dir, named, Estate};
 use rdm_transport::{NodeRpcClient, ResolvedNode, StaticResolver};
@@ -91,21 +90,6 @@ fn spans_in(dir: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// `node`'s status as the admin's `mesh.nodes.get` of mesh1 lists it, once it is `want`.
-async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
-    tokio::time::timeout(WRONG, async {
-        loop {
-            let listed = nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
-            if listed.iter().any(|n| &n.location() == node && n.state == want) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("{node:?} never listed {want:?}"));
-}
-
 /// The fabric's own status, as the admin's `fabric.get` answers it, once it is ready: the
 /// initial fabric's first ready, until which the Day-0 Build is in progress (Q170). A node's
 /// own ready and a Build's `Complete` are not it: a
@@ -124,22 +108,18 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
     .unwrap_or_else(|_| panic!("the fabric never first reached ready"));
 }
 
-/// CONTRACT (i143 1b, Arch: "the single-admin memory estate (birth, node.create, node.stop,
-/// node.restart, build.get, from the scenario crate, file feature off) is the runtime proof"; node.restart
-/// is removed, Q183: its node.stop then node.start is the stop and start below): a
-/// Day-0 node-admin started on the memory storage backend comes up ready in both roles, its storage
-/// step spanned `writes_to = "memory"`; `node.create` of two nodes in mesh1 completes and lists
-/// them ready; once the fabric has first reached ready, `node.stop` of the
-/// first stops it (its node-type primary role moving to the second) and `node.start` brings it back;
-/// `build.get [id]` of the
-/// create's Build answers it Complete with its step receipts. Through all of it the admin
-/// writes nothing of its own to disk:
-/// its data dir holds no store (no `nodes/`), and every file under the fabric's
-/// store dir is the node's own `connections/` rows. Must NOT happen: a row of the admin's
-/// fabric, mesh, node, status or Build state on the file store.
+/// CONTRACT (i143 1b; storage.md §2: "A backend that keeps its stores in one process, the testkit's
+/// `memory` backend, serves a single-process fabric only"; Q356: a node's own record is written by the
+/// node, in its own process): a Day-0 node-admin started on the memory storage backend, the fabric's one
+/// process, comes up ready in both roles, its storage step spanned `writes_to = "memory"`; its Day-0
+/// Build runs to its end, the fabric first reaches ready, and `build.get [id]` of that Build answers it
+/// Complete with its events, `rdm.build.started` to `rdm.build.ended`. Through all of it the admin writes nothing of its own to disk: its
+/// data dir holds no store (no `nodes/`), and nothing is written under the fabric's store dir but the
+/// root's layout marker and connections file. Must NOT happen: a row of the admin's fabric, mesh, node,
+/// status or Build state on the file store.
 #[test]
-fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing_to_the_file_store() {
-    let cell = "a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing_to_the_file_store";
+fn a_single_process_fabric_on_the_memory_backend_runs_its_day0_build_and_writes_nothing_to_the_file_store() {
+    let cell = "a_single_process_fabric_on_the_memory_backend_runs_its_day0_build_and_writes_nothing_to_the_file_store";
     let artifacts = std::env::temp_dir().join("i143-testkit").join(cell);
     let exporter = rdm_transport::jsonl_span_exporter(&artifacts, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", artifacts.display()));
     let (capture, layer) = rdm_transport::span_capture(cell, exporter);
@@ -168,33 +148,17 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         resolver.insert(admin);
         let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
         let carrier = BuildCarrier::at_node(client, me.node.node_id.clone());
-        let (nodes, builds, fabrics) = (Nodes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
-        let node = PathName::new("mesh1.node", "1").unwrap();
-        // The admin started its Day-0 Build by starting: it is followed to its end before anything is
-        // submitted, as an estate's is.
+        let fabrics = Fabrics::new(carrier.clone());
+        // The admin started its Day-0 Build by starting: it is followed to its end, as an estate's is.
         let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabric.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
         let day_zero = BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names {day_zero}, not a Build id: {e}"));
         Estate::until_complete(&mut carrier.resubmit(&day_zero).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
-
-        // Each create names its path and the executable it runs (proposal executable-bindings-at-create.md
-        // rule 1): the complete topology with one more node, read from the admin now.
-        let executables = Executables::testkit("process");
-        // Both nodes in one node.create: a stop moves the stopped node's node-type primary role to a
-        // secondary of its type.
-        let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
-        let mut two_more = current.counts_of("mesh1");
-        *two_more.counts.entry("node".into()).or_insert(0) += 2;
-        let request = current.added(current.resized(&[two_more], false, &executables));
-        let created = Estate::workflow("node.create of two nodes in mesh1", nodes.create(request).await).await.expect("a create opens a Build");
-        until_status(&nodes, &node, NodeStatus::Ready).await;
-        until_status(&nodes, &rdm_core::PathName::new("mesh1.node", "2").unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;
-        Estate::workflow("node.stop of mesh1.node.1", nodes.stop(&node).await).await;
-        Estate::workflow("node.start of mesh1.node.1", nodes.start(&node).await).await;
-        until_status(&nodes, &node, NodeStatus::Ready).await;
-        let build = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("build.get [id] of the create's Build {}: {e}", created.build_id));
-        assert_eq!(build.phase, BuildPhase::Complete, "the create's Build is Complete: {build:#?}");
-        assert!(build.events.iter().any(|e| e["type"] == "rdm.build.step"), "build.get answers the create's step events: {build:#?}");
+        let build = carrier.build(&day_zero).await.unwrap_or_else(|e| panic!("build.get [id] of the Day-0 Build {day_zero}: {e}"));
+        assert_eq!(build.phase, BuildPhase::Complete, "the Day-0 Build is Complete: {build:#?}");
+        let types: Vec<&str> = build.events.iter().filter_map(|e| e["type"].as_str()).collect();
+        assert_eq!(types.first().copied(), Some("rdm.build.started"), "build.get answers the Day-0 Build's events from its start: {build:#?}");
+        assert_eq!(types.last().copied(), Some("rdm.build.ended"), "build.get answers the Day-0 Build's events to its end: {build:#?}");
         running.leave().await;
     });
     eprintln!("memory estate: boot to leave in {} ms", started.elapsed().as_millis());
