@@ -1081,23 +1081,24 @@ impl Prepared {
     }
 }
 
-/// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "the adoption launch is created at a new path.name of
-/// the node-admin type in an existing, not-yet-deleted mesh, never at the lost fabric-primary's, which the
-/// delete removes"): on a prepared root whose one admin, the fabric-primary, is lost while a fabric.delete
-/// is in force, an adoption launch at the lost fabric-primary's path.name is refused by name, naming the
-/// delete and the path.name the delete removes, before it claims anything. Must NOT happen: a claim, or
-/// the lost birth's row touched.
+/// CONTRACT (Q370; fabric-recovery.md "Nothing alive": "A fabric.delete in force when no node-admin was
+/// alive is the current Build (build.md §1): an outside caller launches the fabric-primary at its original
+/// path and name in its mesh (the adoption launch)"): on a prepared root whose one admin, the
+/// fabric-primary, is lost while a fabric.delete is in force, an adoption launch at the lost
+/// fabric-primary's path.name runs its adoption checks clear and goes on running, as without a delete.
+/// Must NOT happen: the launch refused for its path.name, or ended before its checks.
 #[test]
-fn under_a_fabric_delete_an_adoption_launch_at_the_lost_fabric_primarys_path_name_is_refused_by_name() {
+fn under_a_fabric_delete_an_adoption_launch_at_the_lost_fabric_primarys_path_name_is_adopted() {
     let root = Prepared::adoptable("under_a_fabric_delete_an_adoption_launch_at_the_lost_path_name");
     root.delete_in_force(false);
     let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &minted_custody());
-    let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch at the lost path.name under a delete did not end");
-    assert!(!status.success(), "{status:?} {err}");
-    assert!(err.contains("refusing to start") && err.contains("fabric.delete") && err.contains("path=mesh1.node-admin name=1") && err.contains("new path and name"), "the refusal names the delete and the path.name it removes: {err}");
-    assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CHECK), "the refused launch ran its checks");
-    let (at, _) = root.row_and_node("");
-    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::Ready)), "the lost birth's row is untouched");
+    let check = check_of(&root.dir, a.pid, ADOPTS_WITHIN);
+    let ended = a.child.try_wait().ok().flatten();
+    unsafe { libc::kill(a.pid as i32, libc::SIGTERM) };
+    let refused = exited_within(&mut a, ADOPTS_WITHIN).map(|(_, err)| err).unwrap_or_default();
+    let check = check.unwrap_or_else(|| panic!("the adoption launch at the lost path.name under a delete ran no checks: {refused}"));
+    assert_eq!(attr_of(&check, "outcome"), "clear", "{check}");
+    assert!(ended.is_none() && !refused.contains("refusing to start"), "the adoption launch at the lost path.name under a delete is not refused: {ended:?} {refused}");
 }
 
 /// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "If no not-yet-deleted mesh remains, the remaining

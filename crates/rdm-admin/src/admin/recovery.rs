@@ -261,11 +261,14 @@ impl RecoverySubmitter {
         if runner.repairs_stopped.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(RecoveryEnd::Failed { reason: format!("{} stopped reconciling: it starts no repair", self.me_id) });
         }
-        // Under an in-force fabric.delete nothing is recovered for being absent and nothing is re-created
-        // (fabric-delete.md "Failure": "its executor continues the delete as fabric-primary and
-        // re-creates nothing"; fabric-recovery.md step 4, Q155): the delete's own node.delete of the
+        // Under an in-force fabric.delete nothing is recovered for being absent and nothing is re-created but a
+        // node-admin: fabric recovery re-creates the fabric-primary at its original path and name and the
+        // restored fabric-primary continues the delete (fabric-delete.md "Failure"; fabric-recovery.md step 4),
+        // and node recovery re-creates a lost mesh-primary at its path and name, which deletes its mesh
+        // (mesh-delete.md "Resume after the primary's loss"; Q370). The delete's own node.delete of any other
         // birth is its end. Refused naming the delete before anything is read or written.
-        if let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(|e| format!("{}: the Build store could not be read for an in-force fabric.delete: {e}", self.me_id))? {
+        let recovered = matches!(route, "fabric-recovery" | "fabric-recovery-backbone") || (route == "node-recovery" && rdm_core::is_node_admin(&node.r#type));
+        if let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(|e| format!("{}: the Build store could not be read for an in-force fabric.delete: {e}", self.me_id))?.filter(|_| !recovered) {
             span.in_scope(|| {
                 tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str())
                     .in_scope(|| tracing::info!("a fabric.delete is in force: nothing is recovered and nothing is re-created"))

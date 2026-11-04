@@ -1296,6 +1296,17 @@ impl DriveEnv {
                     own_open = false;
                     continue;
                 }
+                // Under a fabric.delete a mesh whose node-admin primary is lost is not deleted in process: node
+                // recovery re-creates its mesh-primary at its path and name, as without a delete, and that
+                // mesh-primary deletes its mesh (mesh-delete.md "Resume after the primary's loss", Q370). Its
+                // delete is dispatched once the view holds the re-created primary.
+                if let BuildOperation::ShutdownMesh { mesh, .. } = op {
+                    if p.deletes_fabric() && *mesh != self.me_mesh && !t.node_type_primary(mesh, "node-admin").is_some_and(|n| n.status.is_live()) {
+                        held.push(format!("operation {} deletes mesh {mesh}, which holds no live node-admin primary: its node recovery re-creates the mesh-primary at its path and name, and the mesh's delete is dispatched to it (Q370)", op.key()));
+                        own_open = false;
+                        continue;
+                    }
+                }
                 match crate::executor::executor_for(op, &t) {
                     Some(to) if to == self.birth.node_id => {
                         if own_open {

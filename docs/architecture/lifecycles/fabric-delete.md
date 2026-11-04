@@ -28,14 +28,7 @@ itself is then deleted by a separate `node.delete`, called from outside the fabr
    mesh.delete keeps its mesh-primary alive until every other member is deleted and it has
    reported mesh.deleted. On its own mesh the fabric-primary stays, because no other
    mesh is left to take it, so that mesh.delete skips its
-   [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) step. A mesh whose mesh-primary does not
-   answer its mesh.delete is reached the way an unheard mesh-primary is reached in a live fabric
-   ([node investigation](node-investigation.md): its exact birth, direct then via peers of its
-   mesh), and during fabric.delete the outcome is a delete, never a node.create of a node-admin: a
-   node-admin that answers runs that mesh's [mesh.delete](mesh-delete.md); if no node-admin
-   answers, the fabric-primary tickles each remaining node of the mesh directly and on any
-   successful connection runs [node.delete](node-delete.md) for that node, as executor. Nothing of
-   the fabric's topology is left behind.
+   [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) step. A mesh whose mesh-primary does not answer its mesh.delete is reached the way an unheard mesh-primary is reached in a live fabric ([node investigation](node-investigation.md): its exact birth, direct then via peers of its mesh). A lost mesh-primary is re-created at its path and name, as without a delete, and it runs its mesh's [mesh.delete](mesh-delete.md) (Q370). Nothing of the fabric's topology is left behind.
 2. After each other mesh's mesh.deleted, run [node.delete](node-delete.md) of that mesh's
    mesh-primary. The fabric-primary is the executor and shows its exit.
 3. The fabric-primary, still alive, reports fabric.deleted. The primary runs the workflow
@@ -72,7 +65,6 @@ its node.delete step event: a runtime inside the workflow whose delete has no `c
 reported deleted. A node the fabric-primary cannot reach, directly or through a node-admin, and
 cannot show exited is named in the Build's `incomplete` section.
 
-A fabric-primary lost mid-delete is fabric recovery's: its executor continues the delete as
-fabric-primary and re-creates nothing ([fabric recovery](fabric-recovery.md) step 4, Q155); a mesh
+A fabric-primary lost mid-delete is fabric recovery's: fabric recovery re-creates it at its original path and name, and the restored fabric-primary continues the delete (Q370) ([fabric recovery](fabric-recovery.md) step 4, Q155); a mesh
 left with no node-admin is deleted in process at the executor, as any mesh with no mesh-primary is.
 Once a runtime's node.delete step event is durable, nothing recovers it for being absent.

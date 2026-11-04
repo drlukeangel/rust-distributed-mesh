@@ -1291,16 +1291,6 @@ pub async fn create_day0_row(storage: &dyn NodesStorage, written: &WrittenRows, 
     create_own_row(None, storage, written, name, mesh, node_id, &rdm_core::OperationId::node("fabric-create", node_id), RowFor::Create, None, executable, Some(crate::accepted::root_storage())).await
 }
 
-/// The adoption launch's first write of its own record at its new `(path, name)` under an in-force fabric.delete (Q159;
-/// fabric-recovery.md "Nothing alive": "the adoption launch is created at a new path and name of the
-/// node-admin type in an existing, not-yet-deleted mesh ... this is the one create a delete admits"): the
-/// node.create's write ([`RowFor::Create`]), the first write of its birth, operation `fabric-recovery`,
-/// one `rdm.node_admin.node.create.via-node-row` span, `moment` `create`. Another node's live record at the
-/// name is `NameHeld` naming it, and nothing is written.
-pub async fn create_adopted_row(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, mesh: &str, node_id: &NodeId) -> Result<RowCreated, RowRefused> {
-    create_own_row(None, storage, written, name, mesh, node_id, &rdm_core::OperationId::node("fabric-recovery", node_id), RowFor::Create, None, None, None).await
-}
-
 /// [`create_day0_row`] as a child of `boot` without entering `boot` (the boot root is never entered so
 /// background tasks spawned during start do not inherit it and its close time stays at `via-ready`).
 pub async fn create_day0_row_in_boot(boot: &tracing::Span, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, mesh: &str, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<RowCreated, RowRefused> {

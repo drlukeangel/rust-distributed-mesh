@@ -8,10 +8,8 @@
 //! at that path and name is Ready the workflow restores it as mesh-primary and fabric-primary
 //! (node.primary.update's call on it): the node installs both roles, acknowledges, and records them on
 //! its own row; the workflow completes on the acknowledgement.
-//! Under an in-force fabric.delete it re-creates and restores nothing: the executor holds the
-//! fabric-primary's roles to the end and continues the delete (step 4, Q155). It takes the fabric-primary
-//! role and the lost mesh's mesh-primary role by one recorded transition at the next revision, keeping its own mesh's, from its own mesh or from the
-//! backbone alike (Q160).
+//! Under an in-force fabric.delete it runs the same way, and the restored fabric-primary continues the
+//! delete; no other node takes the fabric-primary role (step 4, Q370).
 //!
 //! Every fact the workflow acts on is read again from the view, the records and the Build on each pass:
 //! an executor that replaces a lost one starts it over and resumes from what is recorded.
@@ -59,15 +57,6 @@ pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option
     };
     let executor = if at.is_some() { own.clone().or_else(backbone) } else { None };
     Some(FabricRecovery { own_mesh: own.is_some(), executor, target, at })
-}
-
-/// Fold the lost fabric-primary `target` into `digest_view` and `records` for the executor `me` taking
-/// over from it under an in-force fabric.delete (fabric-recovery.md step 4, Q155): the lost birth is
-/// marked gone and offline, so a birth known only from forwarded topology (`Heard::Topology`) is not read
-/// as a live primary of its mesh.
-pub fn fold_lost_fabric_primary(digest_view: &DigestView, records: &crate::admin::Records, target: &Primary) {
-    digest_view.primaries.mark_gone(target.incarnation.clone());
-    records.offline.lock().unwrap().insert((target.node_id.clone(), target.incarnation.clone()));
 }
 
 /// A hook that reads fabric recovery in a view (the records and the digest view are the admin's own).
@@ -133,9 +122,6 @@ pub struct FabricRecoveryService {
     /// node-admin on the fabric-primary's data dir"): at the fabric-primary's path and name with no admin to
     /// run the workflow ("Nothing alive": "It is the only node, the fabric-primary"), it restores itself.
     launched_to_recover: bool,
-    /// Whether that launch is the adoption under an in-force fabric.delete, at its own new path and name
-    /// (Q159): it runs the workflow when no admin does, whatever the lost birth's path and name.
-    launched_at_new_path: bool,
     /// The birth whose workflow runs here now.
     running: Mutex<Option<rdm_core::framing::Birth>>,
     /// The birth the workflow running here asks the primary watch's verdict on (Q337), until the watch
@@ -158,14 +144,7 @@ impl FabricRecoveryService {
     /// A service for the admin these name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(me: PathName, me_id: NodeId, me_incarnation: crate::model::IncarnationId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, primary_update: crate::primary_update::PrimaryUpdateSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
-        Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, me_incarnation, topology, digest_view, records, looker, recovery, primary_update, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
-    }
-
-    /// This service's admin is the adoption launch under an in-force fabric.delete, at its own new path and name
-    /// (Q159), when `yes`.
-    pub fn adopted_at_new_path(mut self, yes: bool) -> Self {
-        self.launched_at_new_path = yes;
-        self
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, me_incarnation, topology, digest_view, records, looker, recovery, primary_update, launched_to_recover, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
     }
 
     /// Whether this admin runs the workflow `fr`: its executor, or the admin a person launched at the
@@ -174,7 +153,7 @@ impl FabricRecoveryService {
         let me = self.held_name();
         // Launched on the fabric-primary's own data dir, its path and name is the fabric-primary's, whether or
         // not this admin knows the lost birth's.
-        fr.executor.as_ref().is_some_and(|e| e.node_id == self.me_id && e.incarnation == self.me_incarnation) || (self.launched_to_recover && fr.executor.is_none() && (self.launched_at_new_path || fr.at.as_ref().is_none_or(|at| *at == me)) && self.me_id != fr.target.node_id)
+        fr.executor.as_ref().is_some_and(|e| e.node_id == self.me_id && e.incarnation == self.me_incarnation) || (self.launched_to_recover && fr.executor.is_none() && fr.at.as_ref().is_none_or(|at| *at == me) && self.me_id != fr.target.node_id)
     }
 
     fn held_name(&self) -> PathName {
@@ -311,25 +290,9 @@ impl FabricRecoveryService {
                 return "the lost birth's path and name are not known here".into();
             };
             span.record("at_path", at.path.as_str()).record("at_name", at.name.as_str()).record("arm", if fr.own_mesh { "own-mesh" } else { "backbone" });
-            // Under an in-force fabric.delete the workflow re-creates and restores nothing: the delete is the
-            // current Build and names no node, so the executor holds the fabric-primary's roles to the end and
-            // continues the delete; no hand-back follows (fabric-recovery.md step 4, Q155).
-            match crate::build_state::fabric_delete_in_force(&*self.recovery.builds).await {
-                Ok(Some((delete, _))) => {
-                    span.record("arm", if fr.own_mesh { "own-mesh-under-delete" } else if fr.executor.is_none() { "launched-under-delete" } else { "backbone-under-delete" });
-                    if let Some(end) = self.hold_under_delete(span, target, &delete).await {
-                        return end;
-                    }
-                    tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
-                    continue;
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::info!(error = %e, "the Build log could not be read for a fabric.delete in force: nothing is re-created on this pass");
-                    tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
-                    continue;
-                }
-            }
+            // Under an in-force fabric.delete the workflow runs the same way: it re-creates the fabric-primary at
+            // its original path and name and restores both roles to it, and the restored fabric-primary continues
+            // the delete; no other node takes the fabric-primary role (fabric-recovery.md step 4, Q370).
             let view = self.topology.read().await.clone();
             let lost = view.births().find(|n| n.node_id == target.node_id && n.incarnation_id.as_ref() == Some(&target.incarnation)).cloned();
             // Ready in the view, or re-created by this workflow's completed attempt, whose create
@@ -415,40 +378,6 @@ impl FabricRecoveryService {
                 _ => {}
             }
             tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
-        }
-    }
-
-    /// Under the in-force fabric.delete `delete` (fabric-recovery.md step 4, Q155): the executor, of the
-    /// lost birth's own mesh, from the backbone, or the admin a person launched ("Nothing alive"), takes
-    /// by one recorded transition, at the next revision, the fabric-primary role and the lost mesh's
-    /// mesh-primary role, keeping its own mesh's, installed on its own node with no call; its drive then
-    /// continues the delete as fabric-primary from the delete's events. Nothing is re-created and no
-    /// hand-back follows. `Some` ends the workflow (the roles held); `None` holds nothing on this pass (the
-    /// next pass reads again).
-    async fn hold_under_delete(&self, span: &tracing::Span, target: &Primary, delete: &crate::build_state::BuildProjection) -> Option<String> {
-        let me = self.topology.read().await.own(&self.me_id).filter(|node| node.incarnation_id.as_ref() == Some(&self.me_incarnation)).cloned()?;
-        let mesh_revision = self.digest_view.primaries.mesh(&target.mesh).map(|m| m.revision).unwrap_or(0) + 1;
-        fold_lost_fabric_primary(&self.digest_view, &self.records, target);
-        // One recorded transition at the next revision (fabric-recovery.md step 4): the fabric-primary role
-        // and the lost mesh's mesh-primary role, on the primary records.
-        let installed = if me.mesh == target.mesh {
-            self.restore(target, &me).await
-        } else {
-            match self.primary_update.get().cloned() {
-                Some(h) => h.take_under_delete(target, mesh_revision, &me).await,
-                None => Err(rdm_core::reply::handover::not_ready("this admin's node.primary.update is not served yet".into())),
-            }
-        };
-        match installed {
-            Ok(entries) => {
-                span.record("restored", me.node_id.as_str());
-                tracing::info!(build_id = %delete.build_id.log(), "under an in-force fabric.delete the executor holds the fabric-primary's roles by the recorded transition, and continues the delete; nothing is re-created");
-                Some(format!("holds the fabric-primary's roles under fabric.delete {}: {}", delete.build_id, rdm_node::member_handover::entries_named(&entries)))
-            }
-            Err(reply) => {
-                tracing::info!(build_id = %delete.build_id.log(), refused = ?reply, "the executor could not hold the fabric-primary's roles on this pass");
-                None
-            }
         }
     }
 

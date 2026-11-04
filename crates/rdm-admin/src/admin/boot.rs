@@ -628,15 +628,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (Some(l), _) => (l.location(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
         (None, Some(lost)) if adoption.is_some() => {
             // The adoption launch: a new birth with its own node.id, at the lost fabric-primary's path and name,
-            // or, under an in-force fabric.delete, at its own new path and name (Q159). Its start writes nothing
-            // (Q342, no lock).
+            // under an in-force fabric.delete as without one (Q370). Its start writes nothing (Q342, no lock).
             let node_id = minted_node_id.clone();
             let a = adoption.as_ref().expect("an adoption launch read its store");
-            let at = match (&a.delete, &cfg.adopt) {
-                (Some(_), Some(new)) => new.clone(),
-                _ => lost.location(),
-            };
-            adoption_launch = Some(Arc::new(super::adoption::start(&at, a)));
+            let at = lost.location();
+            adoption_launch = Some(Arc::new(super::adoption::start(a)));
             // An adoption launch is the externally started Day-0 adoption (deployment-provider.md §3), and no
             // launcher records its runtime: right after its claim it adopts its current runtime and keeps its
             // runtime row on the fabric's store root, its nodes store, so a later adoption launch resolves it
@@ -861,13 +857,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         let checked = super::adoption::check(launch, &answers).instrument(boot.clone()).await;
         let released: Result<(), super::adoption::Refused> = match checked {
             Err(refusal) => Err(refusal),
-            // Under an in-force fabric.delete (Q159) nothing of the lost birth is released or re-created: the
-            // launch claims its own new path and name, the one create a delete admits; the teardown deletes the
-            // lost birth with its mesh.
-            Ok(_) if launch.under_delete.is_some() => super::adoption::take_new_name(&name, &cfg.mesh, &node_id, &*nodes_storage, &caches.nodes)
-                .instrument(boot.clone())
-                .await
-                .map_err(|e| super::adoption::Refused { reason: e, answered: None }),
             Ok(_) => async {
                 let lost = &launch.lost;
                 let own_runtime = nodes_storage.runtime(&lost.node_id, &lost.incarnation_id).await.map_err(storage_err)?;
@@ -2546,8 +2535,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         primary_update_slot.clone(),
                                                         cfg.fabric_primary || cfg.adopt.is_some(),
                                                         stop_gate.clone(),
-                                                    )
-                                                    .adopted_at_new_path(adoption_launch.as_ref().is_some_and(|c| c.under_delete.is_some())),
+                                                    ),
                                                 );
                                                 {
                                                     let (

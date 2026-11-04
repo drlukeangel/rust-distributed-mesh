@@ -15,13 +15,10 @@
 //!
 //! The launch writes the mesh and node records its own operations require, never as mesh-primary.
 //!
-//! Under an in-force fabric.delete (Q159; "Nothing alive", its delete bullet) the launch is created at a
-//! new path and name of the node-admin type in an existing, not-yet-deleted mesh, never at the lost
-//! fabric-primary's, which the delete removes: the one create a delete admits. It takes the fabric-primary
-//! role by one recorded transition and drives the delete from its events; it releases and re-creates
-//! nothing of the lost birth, whose row the teardown deletes; it claims its own path and name
-//! ([`take_new_name`]). With no not-yet-deleted mesh left the launch is refused by name:
-//! the remaining work is the dead fabric-primary's own node.delete from outside, and nothing is created.
+//! Under an in-force fabric.delete ("Nothing alive", its delete bullet; Q370) the launch is the same, at the
+//! lost fabric-primary's path and name, and the restored fabric-primary continues the delete. With no
+//! not-yet-deleted mesh left the launch is refused by name: the remaining work is the dead fabric-primary's
+//! own node.delete from outside, and nothing is created.
 
 use super::*;
 use crate::build_state::BuildProjection;
@@ -38,8 +35,8 @@ pub struct Adoptable {
     pub mesh: crate::storage::MeshRecord,
     /// The lost fabric-primary's birth at the launch's path and name, as its node row records it.
     pub lost: crate::storage::NodeRecord,
-    /// The fabric.delete in force (Q159): the launch is then at a new path and name and drives the
-    /// delete from its events. `None` when no fabric.delete is in force.
+    /// The fabric.delete in force: the launch, at the lost fabric-primary's path and name, continues it
+    /// (Q370). `None` when no fabric.delete is in force.
     pub delete: Option<BuildProjection>,
 }
 
@@ -99,7 +96,7 @@ pub async fn read(
         Err(e) => return Err(format!("{of}: {e}")),
     }
     let delete = crate::build_state::fabric_delete_in_force(builds).await.map_err(|e| format!("{of}: the Build journal on the store root could not be read for a fabric.delete in force: {e}"))?.map(|(d, _)| d);
-    // Under a delete, the launch is created in an existing, not-yet-deleted mesh; with none left, nothing
+    // Under a delete, the launch is in its mesh while that mesh is not yet deleted; with none left, nothing
     // is created (Q159).
     if let Some(d) = &delete {
         let all = meshes.meshes().await.map_err(|e| format!("{of}: mesh.storage could not read the meshes: {e}"))?;
@@ -127,22 +124,10 @@ pub async fn read(
     let Some((_, row, birth)) = recorded else {
         return Err(format!("{of}: the node rows on the store root {} record no fabric-primary: an adoption launch is at the lost fabric-primary's (path, name)", root.display()));
     };
-    match &delete {
-        None if row.location() != *name => {
-            return Err(format!("{of}: the node rows record fabric-primary node_id={} at path={} name={}; an adoption launch uses that location", row.node_id, row.path, row.name));
-        }
-        None => {}
-        Some(d) if row.location() == *name => {
-            return Err(format!(
-                "{of}: fabric.delete {} is in force and the supplied location is the lost fabric-primary's location, which the delete removes: under a delete the adoption launch is created at a new path and name of the node-admin type in an existing, not-yet-deleted mesh (Q159)",
-                d.build_id
-            ));
-        }
-        Some(d) => {
-            if let Some(held) = rows.iter().find(|r| r.location() == *name && r.status != NodeStatus::Deleted) {
-                return Err(format!("{of}: fabric.delete {} is in force and the supplied location is held by {}: the adoption launch under a delete is created at a new path and name (Q159)", d.build_id, held.node_id));
-            }
-        }
+    // The launch is at the lost fabric-primary's path and name, under an in-force fabric.delete as without
+    // one (fabric-recovery.md "Nothing alive", Q370).
+    if row.location() != *name {
+        return Err(format!("{of}: the node rows record fabric-primary node_id={} at path={} name={}; an adoption launch uses that location", row.node_id, row.path, row.name));
     }
     // Its address is the node's own part of its record at that birth (Q333).
     let own = nodes.properties(&row.node_id).await.map_err(|e| format!("{of}: nodes.storage could not read the own part of the record of {}: {e}", row.node_id))?;
@@ -164,23 +149,18 @@ pub async fn read(
     Ok(Adoptable { fabric: record, provider, mesh, lost, delete })
 }
 
-/// An adoption launch's start: the lost birth it recovers, and, under an in-force fabric.delete, its own
-/// new path and name.
+/// An adoption launch's start: the lost birth it recovers.
 #[derive(Debug, Clone)]
 pub struct AdoptionLaunch {
     /// The lost fabric-primary's birth.
     pub lost: crate::storage::NodeRecord,
-    /// Under an in-force fabric.delete (Q159): the launch's own new path and name. `None` for the adoption at
-    /// the lost birth's path and name.
-    pub under_delete: Option<PathName>,
 }
 
-/// The start of the adoption launch `me`: nothing is written. The adoption is fabric recovery, never a
-/// Build or part of one, and nothing on the store orders two launches (Q342, no lock); under an in-force
-/// fabric.delete the launch takes the fabric-primary role by one recorded transition and drives the
-/// delete from its events.
-pub fn start(me: &PathName, a: &Adoptable) -> AdoptionLaunch {
-    AdoptionLaunch { lost: a.lost.clone(), under_delete: a.delete.as_ref().map(|_| me.clone()) }
+/// The start of the adoption launch: nothing is written. The adoption is fabric recovery, never a Build or
+/// part of one, and nothing on the store orders two launches (Q342, no lock); under an in-force
+/// fabric.delete the restored fabric-primary continues the delete (Q370).
+pub fn start(a: &Adoptable) -> AdoptionLaunch {
+    AdoptionLaunch { lost: a.lost.clone() }
 }
 
 /// Who answers an adoption launch before its first mutation (fabric-recovery.md "Nothing alive").
@@ -202,7 +182,6 @@ pub async fn check(c: &AdoptionLaunch, answers: &dyn Answers) -> Result<Finding,
         "rdm.node_admin.fabric.update.via-adoption-check",
         lost_node_id = %c.lost.node_id,
         lost_incarnation_id = %c.lost.incarnation_id.as_str(),
-        under_delete = c.under_delete.is_some(),
         verdict = tracing::field::Empty,
         answered = tracing::field::Empty,
         outcome = tracing::field::Empty,
@@ -260,15 +239,8 @@ impl std::fmt::Display for Refused {
 /// A launch refused by its checks (`refused`): its adoption recorded failed on its span, and nothing is
 /// written. Under an in-force fabric.delete the delete stays in force for the admin that answered.
 pub fn fail(c: &AdoptionLaunch, refused: &Refused) {
-    tracing::info_span!("rdm.node_admin.build.update.via-adoption-failed", node_id = %c.lost.node_id, reason = %refused.reason, under_delete = c.under_delete.is_some(), outcome = "nothing-written")
+    tracing::info_span!("rdm.node_admin.build.update.via-adoption-failed", node_id = %c.lost.node_id, reason = %refused.reason, outcome = "nothing-written")
         .in_scope(|| tracing::info!("the adoption launch is refused by its checks: it writes nothing"));
-}
-
-/// Under an in-force fabric.delete (Q159), the launch `me_id` claims its own new path and name `me`, the one
-/// create a delete admits ([`crate::node_rows::create_adopted_row`]): nothing of the lost birth is written,
-/// its row deleted by the teardown.
-pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
-    crate::node_rows::create_adopted_row(nodes, written, me, mesh, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={}: {e}", me.path, me.name))
 }
 
 /// The launch, `me_id`, releases the lost birth's name and takes it ([`crate::node_rows::take_inherited_name`]:
@@ -509,8 +481,8 @@ mod tests {
             // on the store orders two launches (Q342, no lock).
             let me_1 = NodeId::mint();
             let before = builds_store.read_build(&build_id).await.unwrap();
-            let launched = start(&path, &adoptable);
-            let _second = start(&path, &adoptable);
+            let launched = start(&adoptable);
+            let _second = start(&adoptable);
             let after = builds_store.read_build(&build_id).await.unwrap();
             assert_eq!(after, before, "a launch writes nothing on the Build, and a second launch starts too: nothing on the store orders launches");
 

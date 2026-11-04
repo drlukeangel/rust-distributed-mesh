@@ -278,6 +278,23 @@ impl Estate {
         self.enter(&node.location()).await;
     }
 
+    /// Learn the birth a live runtime under the estate root printed at `at` (`rdm_client::BIRTH_LINE`, the
+    /// last one in its data dir's `stdout.log`): a node-admin a provider launched at a path and name (fabric
+    /// recovery re-creates the fabric-primary there with a new node id, fabric-recovery.md step 4) is reached
+    /// by that path and name as an admin this estate started is, never by the birth the path held before.
+    /// Whether a birth was learned.
+    pub async fn learn_launched_at(&self, at: &PathName) -> bool {
+        let launched = self.live_runtimes().into_iter().filter_map(|(dir, _)| {
+            let out = std::fs::read_to_string(dir.join("stdout.log")).ok()?;
+            out.lines().filter_map(|l| rdm_client::birth_of_line(l)?.ok()).last()
+        });
+        let Some(birth) = launched.filter(|b| b.location() == *at).last() else { return false };
+        let peers = self.peers().await;
+        peers.learn_birth(&birth).unwrap_or_else(|e| panic!("the runtime launched at {at:?} printed a birth that cannot be dialled: {e}"));
+        self.births.lock().unwrap().insert(at.clone(), birth);
+        true
+    }
+
     /// The admin the typed objects start at.
     pub async fn entry(&self) -> PathName {
         self.carrier().await;

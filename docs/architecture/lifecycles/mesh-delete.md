@@ -69,7 +69,7 @@ keeps its `Deleted` record (D67). When the mesh-primary is lost during mesh.dele
 2. Every silent node-admin of the mesh's records is deleted, the lost primary among them, its
    node.delete's `TerminateRuntime` its roster receipt. The mesh's section then goes to the new
    mesh-primary: the surviving admin the election named or, when none survives, the one node-admin
-   the fabric-primary creates for it, the only new node a deleting mesh may gain. Under an in-force fabric.delete no node-admin is created: the mesh is deleted in process at the executor holding the fabric-primary's roles (fabric-recovery.md step 4, Q160).
+   the fabric-primary creates for it, the only new node a deleting mesh may gain. Under an in-force fabric.delete a lost mesh-primary is re-created at its path and name, as without a delete, and it deletes its mesh (Q370).
 3. The new mesh-primary is dispatched the mesh's section and runs only the tiers without a terminal
    event. Completed members' events stand.
 4. The new mesh-primary reports mesh.deleted. Its manifest covers the mesh's records, the lost
