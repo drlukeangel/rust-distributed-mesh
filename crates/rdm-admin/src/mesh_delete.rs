@@ -250,13 +250,6 @@ pub fn manifest_of(key: &MeshDeleteKey, roster: &[RosterBirth], final_primary: &
     ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: final_primary.clone(), final_runtime, receipts }
 }
 
-/// The span of a resume refused because the runtime of the lost final primary `predecessor` is not
-/// known here.
-pub fn span_unproven(key: &MeshDeleteKey, predecessor: &RosterBirth, reason: &str) {
-    tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-primary", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), operation = %key.operation, predecessor = %format!("{} {}", predecessor.node_id, predecessor.incarnation_id), reason = %reason)
-        .in_scope(|| tracing::info!("the lost final primary's runtime is not known here: the resume is refused"));
-}
-
 /// node.runtime.inspect of the lost birth `lost` (mesh-delete.md, "Resume after the primary's loss",
 /// step 1: the lost final primary; "when none survives": another node-admin of the leaving mesh; a
 /// member of an unanswered mesh during fabric.delete), read from the durable runtime row this admin
