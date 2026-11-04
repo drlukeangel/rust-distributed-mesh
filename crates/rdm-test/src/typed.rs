@@ -184,6 +184,15 @@ impl Estate {
         held.members.iter().map(|d| serde_json::json!({"path": d.node.path, "name": d.node.name, "type": d.node.r#type, "node_id": d.node.node_id.to_string(), "incarnation": d.node.incarnation, "state": serde_json::to_value(d.status).unwrap_or_default()})).collect()
     }
 
+    /// The `admin_api_base` each node-admin's digest carries, by node id, as the node `node` holds the
+    /// digests ([`Self::held_topology_at`]): the contact a node-admin advertises on gossip, which
+    /// `fabric.get` and `MeshView` answer for a primary. `node.get` carries none (the node record does not
+    /// hold it, Q366). Empty when the node does not answer within 2 s.
+    pub async fn admin_api_bases_at(&self, node: &PathName) -> std::collections::BTreeMap<String, String> {
+        let Some(held) = self.held_topology_at(node).await else { return Default::default() };
+        held.members.iter().filter_map(|d| Some((d.node.node_id.to_string(), d.admin_api_base.clone()?))).collect()
+    }
+
     /// What the node `node` holds itself, never a primary's atlas (query.md §2: a node queries its own
     /// topology): every birth it holds of every mesh, with the status it holds for each, and the
     /// primaries it records, read over `node.topology.get` (op `0x1E`) of every mesh. A cell asking what

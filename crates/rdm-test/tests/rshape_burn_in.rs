@@ -1905,7 +1905,7 @@ impl Run {
             let have = self.births.iter().any(|b| b["node"] == a["name"] && b["incarnation_id"] == a["incarnation"]);
             if !have {
                 let pid = node_pid(f, &name).await;
-                self.births.push(json!({"label": label, "node": name, "node_id": a["node_id"], "incarnation_id": a["incarnation"], "endpoint_id": a["endpoint_id"], "pid": pid, "admin_api_base": a["admin_api_base"]}));
+                self.births.push(json!({"label": label, "node": name, "node_id": a["node_id"], "incarnation_id": a["incarnation"], "endpoint_id": a["endpoint_id"], "pid": pid}));
             }
         }
         let probe = self.writer_probe(f, label, &st).await;

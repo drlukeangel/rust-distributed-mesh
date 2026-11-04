@@ -403,7 +403,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("the view names a fabric primary");
     let kept_mesh = fabric_primary.path.split('.').next().unwrap().to_string();
     let cut_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
-    let kept = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == kept_mesh.as_str() && n["type"] == "node-admin" && n["state"] == "ready" && n["admin_api_base"].is_string()).expect("a kept admin answers").clone();
+    let kept = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == kept_mesh.as_str() && n["type"] == "node-admin" && n["state"] == "ready").expect("a kept admin answers").clone();
     let kept_admin = location(&kept);
     estate.enter(&kept_admin).await;
     let nodes = estate.node_values().await;
@@ -1143,7 +1143,9 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
         let ins = container_faults::inspect(&id).unwrap_or_else(|e| panic!("{name:?}: {e}"));
         containers_before.insert(name, (id, ins));
     }
-    let admin_bases: BTreeMap<PathName, String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(&n), s(&n["admin_api_base"]))).collect();
+    // Each node-admin's advertised contact, as the fabric-primary holds its digest.
+    let advertised = estate.admin_api_bases_at(&primary).await;
+    let admin_bases: BTreeMap<PathName, String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(&n), advertised.get(&s(&n["node_id"])).cloned().unwrap_or_default())).collect();
     let run_bases: BTreeSet<String> = admin_bases.values().cloned().collect();
     assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
     let survivors: Vec<PathName> = admin_bases.keys().filter(|n| n.path.starts_with(&format!("{survivor_mesh}."))).cloned().collect();
@@ -1240,7 +1242,8 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     let new_primary = s(&fabric_now["fabric_primary"]);
     let new_base = s(&fabric_now["admin_api_base"]);
     assert!(survivor_admin_ids.contains(&new_primary), "the new primary {new_primary} is an admin of {survivor_mesh}");
-    assert!(after.iter().any(|n| s(&n["node_id"]) == new_primary && s(&n["admin_api_base"]) == new_base), "the new primary {new_primary} is a ready admin of the surviving view and its advertised endpoint is its own: {after:#?}");
+    let advertised_after = estate.admin_api_bases_at(&survivors[0]).await;
+    assert!(after.iter().any(|n| s(&n["node_id"]) == new_primary) && advertised_after.get(&new_primary) == Some(&new_base), "the new primary {new_primary} is a ready admin of the surviving view and its advertised endpoint is its own: {after:#?}");
     assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base}");
     // Every surviving container is the one it was.
     let mut survivors_inspected: BTreeMap<PathName, Value> = BTreeMap::new();
