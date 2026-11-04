@@ -2220,8 +2220,11 @@ impl DeploymentPipeline<'_> {
 
     /// Terminate the runtime of a deleted birth heard again (node-investigation.md: "The node that refused
     /// it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): the existing
-    /// `TerminateRuntime` step on its exact runtime, under `node.terminate:<path>@<incarnation>`. Its
-    /// departure and Deleted row stand: nothing else is written.
+    /// `TerminateRuntime` step on its exact runtime, under `node.terminate:<path>@<incarnation>`. Then
+    /// its Deleted row is written again: a returned birth writes its own record (Q356) from the copy it
+    /// held before it was lost, so its lines after the delete read it live at its path and name; once
+    /// its runtime is ended, its mesh-primary writes the record it cannot (Q356), and the deleted birth's
+    /// name is released (node-investigation.md, node.delete).
     pub fn terminate_returned<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("terminate", req.build_id.as_ref(), &req.node.location());
@@ -2230,6 +2233,9 @@ impl DeploymentPipeline<'_> {
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::TerminateRuntime.name(), reason: format!("path {name_path:?}, name {name_name:?} has no known birth", name_path = &name.path, name_name = &name.name), code: rdm_core::outcome::Code::FailedPrecondition })?;
             let mut run = self.begin(req.build_id.as_ref(), name, req.operation.clone()).await?;
             let receipt = self.terminate_step_when(&mut run, &req.node, &req.handle, Terminate::Unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
+            if let Some(rows) = self.sink.node_rows() {
+                rows.deleted_returned(&req.node, &req.operation).await.map_err(|e| PipelineError { step: DeleteStep::NodeDeleted.name(), reason: format!("{}: the Deleted row of the returned birth is not written again: {e}", req.node.node_id), code: rdm_core::outcome::Code::Unavailable })?;
+            }
             self.complete(&mut run).await?;
             Ok(receipt)
         }

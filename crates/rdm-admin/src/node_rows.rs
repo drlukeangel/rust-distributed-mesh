@@ -224,6 +224,14 @@ impl NodeRows {
         self.deleted_record(&record.location(), &record.node_id, operation, rdm_core::is_node_admin(&record.r#type)).await
     }
 
+    /// The `Deleted` record of a deleted birth heard again, once its runtime is ended
+    /// ([`crate::deployment::pipeline::DeploymentPipeline::terminate_returned`]): its own lines after
+    /// its delete read it live, and its re-created birth holds its path and name, so the record is
+    /// written with no name check (Q356: its mesh-primary writes the record it cannot).
+    pub async fn deleted_returned(&self, record: &Node, operation: &rdm_core::OperationId) -> Result<(), RowRefused> {
+        self.deleted_record_as(&record.location(), &record.node_id, operation, rdm_core::is_node_admin(&record.r#type), false).await
+    }
+
     /// The `Deleted` record of a birth the view holds no more (a mesh leave's member that left the view
     /// after its exact Exited receipt, mesh-delete.md steps 3 and 7): the record of `node_id` at `name`.
     pub async fn deleted_birth(&self, name: &PathName, node_id: &NodeId, operation: &rdm_core::OperationId) -> Result<(), RowRefused> {
@@ -233,6 +241,11 @@ impl NodeRows {
     /// The `Deleted` record of `node_id` at `name`, from its latest line, or the refusal that names why
     /// it is not written.
     async fn deleted_record(&self, name: &PathName, node_id: &NodeId, operation: &rdm_core::OperationId, acting: bool) -> Result<(), RowRefused> {
+        self.deleted_record_as(name, node_id, operation, acting, true).await
+    }
+
+    /// [`Self::deleted_record`], with the check that no other node holds `name` when `name_checked`.
+    async fn deleted_record_as(&self, name: &PathName, node_id: &NodeId, operation: &rdm_core::OperationId, acting: bool, name_checked: bool) -> Result<(), RowRefused> {
         let me = self.held_name_in(&*self.view.read().await);
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
@@ -248,7 +261,8 @@ impl NodeRows {
             async {
                 let mesh = rdm_core::path::mesh_of(&name.path);
                 let me = self.writer_in(&*self.view.read().await, name, &mesh, node_id, acting)?;
-                write_deleted(&*self.storage, name, node_id).await.map(|row| row.is_some()).map_err(|e| match e {
+                let written = if name_checked { write_deleted(&*self.storage, name, node_id).await } else { write_record_deleted(&*self.storage, node_id).await };
+                written.map(|row| row.is_some()).map_err(|e| match e {
                     DeletedRefused::NameHeld(held) => RowRefused::NameHeld(held),
                     DeletedRefused::Unwritten(why) => RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: nodes.storage refused the Deleted record of path {name_path:?}, name {name_name:?} ({node_id}): {why}", me_path = &me.path, me_name = &me.name, name_path = &name.path, name_name = &name.name)),
                 })
@@ -348,6 +362,14 @@ pub async fn write_deleted(storage: &dyn NodesStorage, name: &PathName, node_id:
     if let Some(by) = record_at(storage, name).await.map_err(unwritten)?.filter(|by| by.node_id != *node_id) {
         return Err(DeletedRefused::NameHeld(NameHeld { path: name.path.clone(), name: name.name.clone(), by: by.node_id }));
     }
+    write_record_deleted(storage, node_id).await
+}
+
+/// The `Deleted` record of `node_id` from its latest line, with no check of who holds its path and
+/// name: the record is that node's own, and writing it takes nothing from another node. `None` when
+/// the node wrote no record.
+async fn write_record_deleted(storage: &dyn NodesStorage, node_id: &NodeId) -> Result<Option<NodeRecord>, DeletedRefused> {
+    let unwritten = |e: crate::storage_error::StorageError| DeletedRefused::Unwritten(e.to_string());
     let Some(mut row) = storage.node(node_id).await.map_err(unwritten)?.map(|l| l.record) else {
         return Ok(None);
     };

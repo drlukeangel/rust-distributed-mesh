@@ -308,9 +308,14 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     })
     .await;
     let at_path = estate.node_value(&path).await;
+    // The resumed birth's record reads deleted on the store once its runtime is ended: its own lines
+    // after its delete do not stand (Q356: its mesh-primary writes the record it cannot).
+    let nodes_file = estate.fabric_store_root().join(rdm_admin::store_root::NODES_FILE);
+    let stored = rdm_admin::store_log::read_record(&nodes_file, "node-record", Some(&node_id));
     estate.stop().await;
     let spans = estate.spans();
 
+    assert_eq!(stored.as_ref().map(|r| s(&r["data"]["state"])).as_deref(), Some("deleted"), "the resumed birth's record reads deleted on the store after its runtime is terminated: {stored:?}");
     assert_eq!((s(&at_path["node_id"]), s(&at_path["state"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds {path:?}: {at_path}");
     let decisions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-refused-caller").into_iter().filter(|sp| attr(sp, "node_id") == node_id).collect();
     assert!(decisions.iter().all(|d| attr(d, "decision") != "re-admit"), "a birth that comes back during its replacement's birth is never re-admitted: {decisions:#?}");
