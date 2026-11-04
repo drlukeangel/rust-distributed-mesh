@@ -581,6 +581,20 @@ impl AdminRunner {
             // row's in its place (proposal executable-bindings-at-create.md rule 5: one whose entry
             // differs from its row is replaced; rule 6 is a recovery's create, which names none).
             TargetOutcome::Clear { gone: Some(prev) } => {
+                // The create's own birth, which it made Ready, lost since (Q372): a node like any other,
+                // its mesh-primary's investigation and, on its verdict, node recovery (a new node.id,
+                // Q335, Q358). The resubmitted Build runs no step of this create again (build.md §4): its
+                // create ends complete, and the dead birth is left to its recovery.
+                if prev.node_id == *node_id {
+                    let ready = self.builds.read_build(build_id).await.map(|b| b.completed(&operation.to_string(), crate::deployment::pipeline::CreateStep::WaitForNodeReady.name())).unwrap_or(false);
+                    if ready {
+                        let r = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete };
+                        self.builds.write_step(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: its birth {node_id} reached Ready and is lost since; its Complete could not be recorded: {e}")))?;
+                        tracing::info_span!("rdm.node_admin.node.create.via-ready-birth-lost", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id, "otel.kind" = "internal")
+                            .in_scope(|| tracing::info!("the create made its birth Ready, and the birth is lost since: the create ends complete, and the birth is its mesh-primary's to investigate and recover"));
+                        return Ok(());
+                    }
+                }
                 if let Some(seam) = &self.target_seam {
                     seam.before_target_act(node, &prev.node_id).await;
                 }
