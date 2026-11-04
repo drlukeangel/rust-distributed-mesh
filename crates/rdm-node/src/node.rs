@@ -343,7 +343,7 @@ pub async fn stop_requested() {
 /// fabric recovers from). `binary` names the process in the exit line.
 pub async fn wait_for_signal(binary: &str) {
     let stopped = async {
-        let reason = rdm_gossip::topology::until_transport_stopped().await;
+        let reason = rdm_gossip::channel::until_transport_stopped().await;
         tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
             .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
         eprintln!("{binary}: the mesh transport stopped: {reason}");
@@ -949,7 +949,7 @@ fn set_own_status(status: &Mutex<MemberStatus>, digest: &MeshDigest, to: MemberS
 /// The digest cadence of a node: its digest as it stands, its status and its in-flight count.
 fn spawn_publisher(topology_view: &TopologyView, digest: &MeshDigest, status: &Arc<Mutex<MemberStatus>>, server: &NodeRpcServer) -> tokio::task::JoinHandle<()> {
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
-    topology_view.publish_every(rdm_gossip::topology::gossip_interval(), move || {
+    topology_view.publish_every(rdm_core::cadence::gossip_interval(), move || {
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
         d.in_flight = Some(rdm_transport::ServerStats::get(&stats.in_flight));
@@ -1247,7 +1247,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
             .iter()
             .flat_map(|m| m.members.iter())
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == topology_view.mesh_name())
-            .filter_map(rdm_gossip::topology::gossip_addr)
+            .filter_map(rdm_gossip::location::gossip_addr)
             .collect();
         let _ = topology_view.join_peers_as("node.mesh_join", mesh_peers).await;
     }

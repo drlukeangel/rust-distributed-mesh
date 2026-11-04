@@ -1001,7 +1001,8 @@ mod tests {
     use crate::deployment::process::ProcessDeploymentProvider;
     use crate::lifecycle::{HookRegistry, LifecycleTransitionPipeline, MemoryReceiptLog};
     use crate::model::{Fabric, ScopeStatus};
-    use rdm_gossip::topology::{Backbone, TopologyView};
+    use rdm_gossip::backbone::Backbone;
+    use rdm_gossip::topology::TopologyView;
     use std::net::SocketAddr;
 
     /// One fabric-primary's `AdminRunner`, `mesh1.node-admin.1`, in process: its Build state a run's step

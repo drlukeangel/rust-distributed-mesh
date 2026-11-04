@@ -200,7 +200,7 @@ impl NodeConfigs {
     /// Record this admin's own roles on its own record (Q356; node-primary-update.md step 5): the
     /// roles `primaries` names its birth `birth` in `mesh` ([`rdm_node::node_records::write_own_roles`]),
     /// written at each change of the view, from its start's record on, until the view is dropped.
-    pub async fn record_own_roles(&self, primaries: rdm_gossip::topology::PrimaryView, birth: crate::storage::BirthRef, mesh: String) {
+    pub async fn record_own_roles(&self, primaries: rdm_gossip::primary::PrimaryView, birth: crate::storage::BirthRef, mesh: String) {
         let (Some(channels), Some(writer)) = (self.own_channels.get().cloned(), self.own_properties.get().cloned()) else { return };
         let mut changed = primaries.subscribe();
         let mut written = (None, None);

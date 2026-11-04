@@ -92,7 +92,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
     // Nobody but the node at path mesh1.node-admin, name 1 is ever fabric-primary; the workflow restores a new birth there.
-    let floor = rdm_gossip::topology::staleness_floor();
+    let floor = rdm_core::cadence::staleness_floor();
     let restored_id = estate
         .until_view("the node re-created at path mesh1.node-admin, name 1 is restored as mesh-primary and fabric-primary", floor * 20 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
@@ -144,7 +144,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     estate
-        .until_view("a new birth restores two ready nodes", rdm_gossip::topology::staleness_floor() + Duration::from_secs(60), |views| {
+        .until_view("a new birth restores two ready nodes", rdm_core::cadence::staleness_floor() + Duration::from_secs(60), |views| {
             let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.state == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.node_id == gone.node_id && n.incarnation == gone.incarnation)).then_some(())
         })

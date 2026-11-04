@@ -67,7 +67,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-heartbeat").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let (a, b) = (node().await, node().await);
-        rdm_gossip::topology::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
+        rdm_gossip::location::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
         let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
         // Each node joins under its node id, as every node does; its digest names its (path, name).
         let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));

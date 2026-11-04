@@ -13,7 +13,7 @@
 //! RECEIVER         MeshTopologyDelta -> applied only at exactly base_version, else the source desyncs
 //! ```
 
-use crate::topology::{Frame, MAX_FRAME};
+use crate::frame::{Frame, MAX_FRAME};
 use rdm_core::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};

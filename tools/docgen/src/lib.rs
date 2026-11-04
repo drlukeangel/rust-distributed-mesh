@@ -247,7 +247,7 @@ mod tests {
         }
         let doc = variant_doc(&root, "crates/rdm-core/src/digest.rs", "MemberStatus", "ConnectionsDeleting");
         assert_eq!(doc.last().map(String::as_str), Some("/// Position 2 on the wire; serialized as `connections-deleting`."), "a kebab-case status carried on the wire names its position and its serialized form");
-        let doc = variant_doc(&root, "crates/rdm-gossip/src/topology.rs", "Frame", "Digest");
+        let doc = variant_doc(&root, "crates/rdm-gossip/src/frame.rs", "Frame", "Digest");
         assert_eq!(doc.last().map(String::as_str), Some("/// Schema index 0, never a wire kind."), "a frame's index is never a wire kind");
     }
 

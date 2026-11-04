@@ -251,7 +251,7 @@ async fn build_service_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOn
         turns: rdm_admin::stop_gate::StopGate::new(),
         send: rdm_transport::Send::default(),
     });
-    Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_gossip::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_gossip::primary::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
 /// The `BuildService` of `mesh1.node-admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -281,7 +281,7 @@ async fn build_service_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildService> {
         turns: rdm_admin::stop_gate::StopGate::new(),
         send: rdm_transport::Send::default(),
     });
-    Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_gossip::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_gossip::primary::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
 /// The one admin of the fixture that runs a section is the fabric-primary itself.

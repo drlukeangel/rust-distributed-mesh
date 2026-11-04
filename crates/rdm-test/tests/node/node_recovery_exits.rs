@@ -399,7 +399,7 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_run_again_by_the_nex
     }
     assert!(failed[1..].iter().all(|sp| s(&sp["attributes"]["again"]) == "true"), "each later run is the failed recovery run again: {failed:#?}");
     // No wait of its own: each run starts on the tick after the failed one ended, never beside it.
-    let gossip = rdm_gossip::topology::gossip_interval();
+    let gossip = rdm_core::cadence::gossip_interval();
     let gaps: Vec<Duration> = failed.windows(2).map(|p| Duration::from_nanos(start(&p[1]).saturating_sub(end(&p[0])))).collect();
     assert!(failed.windows(2).all(|p| start(&p[1]) >= end(&p[0])), "never two runs of the birth at once: {failed:#?}");
     assert!(gaps.iter().all(|g| *g <= gossip * 2), "each run again starts within a tick of the failed one's end ({gossip:?}): gaps {gaps:?}");
@@ -413,7 +413,7 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_run_again_by_the_nex
     assert_eq!(s(&done["attributes"]["mesh"]), "mesh1", "{done}");
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
     // Once it completed, nothing runs it again: the node stands at the path.
-    tokio::time::sleep(rdm_gossip::topology::staleness_floor()).await;
+    tokio::time::sleep(rdm_core::cadence::staleness_floor()).await;
     let spans = estate.spans();
     let after_done: Vec<Value> = submits(&spans).into_iter().filter(|sp| start(sp) >= end(&done)).collect();
     assert!(after_done.is_empty(), "no recovery of the birth runs after the one that completed: {after_done:#?}");
@@ -765,7 +765,7 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery() {
     let (estate, birth_build) = fabric_of("a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    let floor = rdm_gossip::topology::staleness_floor();
+    let floor = rdm_core::cadence::staleness_floor();
     let nodes = estate.node_values().await;
     let fp_row = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
     assert_eq!(rdm_test::estate::mesh_of(&fp_row), "mesh1", "the day-0 admin keeps the fabric-primary role: {fp_row}");
@@ -1168,7 +1168,7 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     let after = until_new_birth(&estate, node, &before, SETTLE).await;
     let resumed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let cont = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
-    let floor = rdm_gossip::topology::staleness_floor();
+    let floor = rdm_core::cadence::staleness_floor();
     let mut samples = Vec::new();
     let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(30);
     while std::time::Instant::now() < until && alive(pid as u64) {
@@ -1227,7 +1227,7 @@ async fn a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified
     assert_eq!(rt.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
     let after = until_new_birth(&estate, node, &before, SETTLE).await;
     let cont = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
-    let floor = rdm_gossip::topology::staleness_floor();
+    let floor = rdm_core::cadence::staleness_floor();
     let decided = |spans: &[Value]| spans.iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-refused-caller" && sp["attributes"]["node_id"] == old_id.as_str()).map(|sp| sp["attributes"].clone()).collect::<Vec<Value>>();
     let until = std::time::Instant::now() + floor * 2 + Duration::from_secs(30);
     while std::time::Instant::now() < until && (alive(pid as u64) || decided(&estate.spans()).is_empty()) {

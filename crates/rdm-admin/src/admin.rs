@@ -38,7 +38,10 @@ use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rdm_core::launch::Launch;
 use rdm_core::{MemberStatus, MeshDigest, MeshNode};
-use rdm_gossip::topology::{gossip_interval, Backbone, DigestView, TopologyView};
+use rdm_core::cadence::gossip_interval;
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::digest_view::DigestView;
+use rdm_gossip::topology::TopologyView;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tracing::Instrument;
 use std::net::SocketAddr;
@@ -121,7 +124,7 @@ mod tests {
         });
         let me_id = primary.node.node_id.clone();
         let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
-        let floor = rdm_gossip::topology::staleness_floor();
+        let floor = rdm_core::cadence::staleness_floor();
         let mut watched = watched_births(&view, &me_id, "mesh1", &[]);
         let marks = crate::offline::held_marks(&crate::offline::UnreachableMarks::default(), &view, &digest_view, now);
         crate::offline::watch_marked(&mut watched, &marks, &view, "mesh1", &me_id);
@@ -139,7 +142,7 @@ mod tests {
     /// peer-mesh admin on the backbone read as the one cut off.
     #[test]
     fn an_investigator_hears_no_other_node_only_when_every_other_birth_is_unheard_past_the_floor() {
-        let floor = rdm_gossip::topology::staleness_floor();
+        let floor = rdm_core::cadence::staleness_floor();
         let digest_view = DigestView::default();
         let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
         let mate = digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
@@ -387,7 +390,7 @@ mod tests {
             let election = DigestView::default();
             let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &election.primaries).await.unwrap();
             assert!((3..=4).contains(&taken), "{backend}: the mesh-primary's, the fabric-primary's and the rpc type's primary, the Deleted record's superseded: {taken}");
-            let held = |role, revision, d: &MeshDigest| matches!(election.primaries.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_gossip::topology::RoleTaken::Same);
+            let held = |role, revision, d: &MeshDigest| matches!(election.primaries.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_gossip::primary::RoleTaken::Same);
             assert!(held(rdm_core::PrimaryRole::of_type("node-admin"), 3, &admin) && held(rdm_core::PrimaryRole::FabricPrimary, 1, &admin) && held(rdm_core::PrimaryRole::of_type("node"), 2, &rpc), "{backend}: each recorded primary is held at its revision");
         }
     }
@@ -927,12 +930,12 @@ mod tests {
         let (h_birth, o_birth) = (birth(1), birth(2));
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let h_primaries = rdm_gossip::topology::PrimaryView::default();
+        let h_primaries = rdm_gossip::primary::PrimaryView::default();
         h_primaries.take(rdm_core::PrimaryRole::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
         hw.sweep(&h_primaries).await;
         assert_eq!(storage.fabric().await.unwrap().map(|r| r.identity()), Some(holder.clone()), "the holder's fabric-primary writes its identity at the free key");
-        let o_primaries = rdm_gossip::topology::PrimaryView::default();
+        let o_primaries = rdm_gossip::primary::PrimaryView::default();
         o_primaries.take(rdm_core::PrimaryRole::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
         for _sweep in 0..2 {
@@ -1376,7 +1379,7 @@ mod tests {
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
-            digest_view.statuses.take(&rdm_gossip::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
+            digest_view.statuses.take(&rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
             crate::storage::NodesStorage::put_node(&*nodes, &crate::storage::NodeRecord { runtime: fact.clone(), ..record_of(&member) }).await.unwrap();
@@ -2810,7 +2813,7 @@ mod tests {
     /// ready, or a mesh not held ready, answering routable.
     #[test]
     fn the_view_routes_a_birth_only_while_it_and_its_mesh_are_ready() {
-        use rdm_gossip::topology::Frame;
+        use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let held = |mesh: &str, status: &str| {
             let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.node-admin.1"), forwarded_by: None, changed_at_rafka_ms: 10 };
@@ -2899,7 +2902,7 @@ mod tests {
     #[test]
     fn the_hand_off_gives_the_declared_mesh_state_this_admin_applied_ahead_of_the_gossip_view() {
         use rdm_core::status::MeshState;
-        use rdm_gossip::topology::Frame;
+        use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let records = Records::default();
         assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Pending, "a mesh this admin holds no state for is new: Pending");
@@ -2922,7 +2925,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_view_rebuild_is_due_on_receipt_of_a_routing_fact() {
         use futures_util::FutureExt;
-        use rdm_gossip::topology::Frame;
+        use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let records = Records::default();
         let rpc = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
@@ -3021,7 +3024,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_stopped_admins_view_rebuild_is_held_at_its_own_wait_and_resumes_when_the_gate_opens() {
         use futures_util::FutureExt;
-        use rdm_gossip::topology::Frame;
+        use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let records = Records::default();
         let mut wake = ViewWake::new(&digest_view, &records);
@@ -3488,7 +3491,7 @@ mod tests {
     }
 
     /// An entry answer from `served_by` holding `frames`.
-    fn entry_answer(frames: Vec<rdm_gossip::topology::Frame>) -> crate::wire::JoinAnswer {
+    fn entry_answer(frames: Vec<rdm_gossip::frame::Frame>) -> crate::wire::JoinAnswer {
         crate::wire::JoinAnswer {
             served_by: NodeId::parse("100000000000").unwrap(),
             control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
@@ -3496,8 +3499,8 @@ mod tests {
         }
     }
 
-    fn mesh_status(mesh: &str, status: &str) -> rdm_gossip::topology::Frame {
-        rdm_gossip::topology::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
+    fn mesh_status(mesh: &str, status: &str) -> rdm_gossip::frame::Frame {
+        rdm_gossip::frame::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
     }
 
     /// CONTRACT (i144 Q56; node-create.md "A node-admin created into a live mesh" step 2: the joining

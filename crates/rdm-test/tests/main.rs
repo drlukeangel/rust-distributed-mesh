@@ -341,10 +341,10 @@ mod envelope_receive;
 mod trace_context;
 
 /// Encoding arguments for a synthetic sender: its supplied owned birth and declared fixture revision.
-async fn forward_gossip_probe(topology_view: &rdm_gossip::topology::TopologyView, frame: &rdm_gossip::topology::Frame) -> anyhow::Result<()> {
+async fn forward_gossip_probe(topology_view: &rdm_gossip::topology::TopologyView, frame: &rdm_gossip::frame::Frame) -> anyhow::Result<()> {
     if frame.context().is_some() { return topology_view.forward(frame).await; }
     let author = match frame.data() {
-        rdm_gossip::topology::Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
+        rdm_gossip::frame::Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
         _ => topology_view.author_birth().expect("the synthetic publisher supplied its owned birth"),
     };
     topology_view.forward(&frame.clone().authored(&author, 1, 1)).await

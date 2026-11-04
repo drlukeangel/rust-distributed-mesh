@@ -4,7 +4,8 @@
 
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_gossip::topology::{Backbone, TopologyView};
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::topology::TopologyView;
 use rdm_admin::admin::GossipLifecycle;
 use rdm_admin::deployment::pipeline::LifecycleEvents;
 use std::net::SocketAddr;

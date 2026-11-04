@@ -43,7 +43,7 @@ pub(crate) struct SilentNode {
 /// first held it, and is tickled only once the view holds it off ready (its caller's
 /// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the view holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
-pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, digest_view: &rdm_gossip::topology::DigestView, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
+pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, digest_view: &rdm_gossip::digest_view::DigestView, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
     watched
         .into_iter()
         .map(|n| {
@@ -110,7 +110,7 @@ pub type UnreachableMarks = std::sync::Arc<std::sync::Mutex<std::collections::Ha
 /// (one investigation per silence). `from` names whose call it was: this admin's own, or the birth
 /// that reported it (`ReportCallFailed`). One span, `rdm.node_admin.node.update.via-call-failed`;
 /// the outcome is `marked`, `already-marked` or `kept-lifecycle-status`.
-pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_gossip::topology::DigestView>, node: &crate::model::Node, from: &str, reason: &str) -> &'static str {
+pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_gossip::digest_view::DigestView>, node: &crate::model::Node, from: &str, reason: &str) -> &'static str {
     let Some(incarnation) = node.incarnation_id.clone() else { return "no-birth" };
     let recorded = digest_view.and_then(|d| d.member_status(&node.node_id, &incarnation));
     let outcome = if !marks_over(recorded) {
@@ -153,7 +153,7 @@ pub struct MarkOrReport {
     /// The marks its tick reads.
     pub marks: UnreachableMarks,
     /// Its digest view: the status its mesh-primary recorded for the birth.
-    pub digest_view: rdm_gossip::topology::DigestView,
+    pub digest_view: rdm_gossip::digest_view::DigestView,
     /// This admin's node id.
     pub me_id: crate::model::NodeId,
 }
@@ -228,7 +228,7 @@ pub(crate) fn end_spent_mark(marks: &UnreachableMarks, receiver: &rdm_transport:
 /// `digest_view` heard the birth after the mark; a spent-call mark never on a digest (it ends when the
 /// birth answers, which its investigation's tickle reads and ends). The ended ones are dropped from
 /// `marks`. The tick watches its own mesh's ([`watch_marked`]); the primary watch reads a mesh-primary's.
-pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, digest_view: &rdm_gossip::topology::DigestView, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
+pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, digest_view: &rdm_gossip::digest_view::DigestView, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
     let mut marks = marks.lock().unwrap();
     marks.retain(|id, m| {
         let held = view.births().any(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation));
@@ -673,7 +673,7 @@ pub enum Ladder {
 /// heard on its own word (its own mesh's channel or the backbone) within `floor`, so its view marks
 /// every other birth silent and it is the one cut off (Q153). A birth held only from a topology copy
 /// is not heard: a copy refreshes no node's coverage (gossip.md section 6).
-pub fn hears_none(view: &rdm_gossip::topology::DigestView, me: &crate::model::NodeId, floor: std::time::Duration) -> bool {
+pub fn hears_none(view: &rdm_gossip::digest_view::DigestView, me: &crate::model::NodeId, floor: std::time::Duration) -> bool {
     let since = std::time::Instant::now().checked_sub(floor).unwrap_or_else(std::time::Instant::now);
     view.heard_direct_since(since).iter().all(|d| &d.node.node_id == me)
 }
@@ -1826,7 +1826,7 @@ pub(crate) mod tests {
             n.incarnation_id = Some(d.node.incarnation.clone());
             n
         };
-        let digest_view = rdm_gossip::topology::DigestView::default();
+        let digest_view = rdm_gossip::digest_view::DigestView::default();
         let t0 = std::time::Instant::now();
         let (silent, fresh, re_born, unheld) = (digest(crate::model::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), digest(crate::model::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), digest(crate::model::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node"), digest(crate::model::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node"));
         digest_view.record_at(silent.clone(), t0);

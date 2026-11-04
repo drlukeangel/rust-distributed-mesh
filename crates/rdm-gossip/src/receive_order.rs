@@ -50,7 +50,7 @@
 //! Receipt emits `via-reserved` before any identity view, apply span or carrier runs. No reserved
 //! body installs a projection, records a fact, registers a contact or commands investigation.
 
-use crate::topology::Frame;
+use crate::frame::Frame;
 use crate::snapshot::PublisherId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -549,7 +549,7 @@ mod tests {
     /// category, subject, ordering and identity; a new variant without a rule fails by name.
     #[test]
     fn every_frame_kind_has_a_row_in_the_receive_rules() {
-        let source = include_str!("topology.rs");
+        let source = include_str!("frame.rs");
         let declaration = source.split_once("pub enum Frame {").unwrap().1.split_once("\n}\n").unwrap().0;
         let spec = include_str!("../../../docs/architecture/gossip.md");
         let table = spec.split_once("| frame / type | category | source / subject | sequence / data validity | id / identity |").unwrap().1.split_once("\n\n").unwrap().0;
@@ -574,7 +574,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::topology::StatusEvent;
+    use crate::status::StatusEvent;
     use crate::snapshot::PublisherId;
     use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
 
@@ -701,7 +701,7 @@ mod tests {
     /// node's heartbeats ignored against its previous birth's sequence.
     #[test]
     fn a_heartbeat_below_the_held_digest_seq_of_its_birth_is_ignored_and_a_new_incarnation_starts_again() {
-        let digest_view = crate::topology::DigestView::default();
+        let digest_view = crate::digest_view::DigestView::default();
         let d = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         let at = |seq| MeshDigest { digest_seq: seq, ..d.clone() };
         assert!(digest_view.record(at(7)));

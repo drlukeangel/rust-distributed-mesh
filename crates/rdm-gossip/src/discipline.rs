@@ -23,7 +23,7 @@
 use rdm_transport::clock::{Ignored, Observed, SharedClock};
 use rdm_core::{MemberStatus, MeshDigest, PublisherId};
 
-use crate::topology::PrimaryView;
+use crate::primary::PrimaryView;
 
 /// What a received frame is to the clock.
 #[derive(Debug, PartialEq, Eq)]

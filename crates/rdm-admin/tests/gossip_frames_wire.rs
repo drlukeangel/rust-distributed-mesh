@@ -9,7 +9,7 @@
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
-use rdm_gossip::topology::Frame;
+use rdm_gossip::frame::Frame;
 use rdm_gossip::snapshot::{chunks_of, Full, PublisherId};
 use serde_json::{json, Value};
 use std::path::PathBuf;

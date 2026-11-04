@@ -1,6 +1,9 @@
 //! Live cells for lifecycle operation identity alongside the carried projection revision.
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rdm_gossip::topology::{learn_addresses, Frame, TopologyView, StatusEvent};
+use rdm_gossip::location::learn_addresses;
+use rdm_gossip::frame::Frame;
+use rdm_gossip::topology::TopologyView;
+use rdm_gossip::status::StatusEvent;
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {

@@ -98,7 +98,7 @@ fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<MemberStatus>>> {
 }
 
 /// Resolves once `pred` holds of `digest_view`, re-checked on every change the digest view hears.
-async fn until(digest_view: &rdm_gossip::topology::DigestView, what: &str, pred: impl Fn(&rdm_gossip::topology::DigestView) -> bool) {
+async fn until(digest_view: &rdm_gossip::digest_view::DigestView, what: &str, pred: impl Fn(&rdm_gossip::digest_view::DigestView) -> bool) {
     let waited = async {
         let mut heard = digest_view.heard_changes();
         loop {

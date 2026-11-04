@@ -346,7 +346,7 @@ mod tests {
 
         // The one schedule (node-rpc.md §43): the first delay the gossip interval, capped at the floor,
         // each with its ±25 % jitter.
-        let (cadence, floor) = (rdm_gossip::topology::gossip_interval(), rdm_gossip::topology::staleness_floor());
+        let (cadence, floor) = (rdm_core::cadence::gossip_interval(), rdm_core::cadence::staleness_floor());
         assert!(backoff_for(1) >= cadence.mul_f64(0.75) && backoff_for(1) <= cadence.mul_f64(1.25), "the first delay is the gossip interval");
         assert!(backoff_for(20) <= floor.mul_f64(1.25), "every delay is capped at the staleness floor");
     }

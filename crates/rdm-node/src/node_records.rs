@@ -44,7 +44,7 @@ impl Drop for PropertyFreeze {
 /// The roles this birth holds as `primaries` names them: `is_primary` at the revision its type's primary
 /// record in `mesh` names this birth (a node-admin's: the mesh-primary's), `is_fabric_primary` at the
 /// fabric-primary record's; `None` where the view names another birth or none.
-pub fn own_roles(primaries: &rdm_gossip::topology::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str) -> (Option<u64>, Option<u64>) {
+pub fn own_roles(primaries: &rdm_gossip::primary::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str) -> (Option<u64>, Option<u64>) {
     let mine = |p: Option<rdm_core::Primary>| p.filter(|p| p.node_id == birth.node_id && p.incarnation == birth.incarnation_id).map(|p| p.revision);
     (mine(primaries.node_type_primary(mesh, r#type)), mine(primaries.fabric()))
 }
@@ -54,7 +54,7 @@ pub fn own_roles(primaries: &rdm_gossip::topology::PrimaryView, birth: &crate::n
 /// wrote; a role given up is cleared the same way. The write records the role; it does not grant it. A
 /// write the store refuses leaves `written` as it was, so the view's next change writes again. Nothing is
 /// written before the start's record ([`NodePropertyWriter::bound`]).
-pub async fn write_own_roles(writer: &NodePropertyWriter, primaries: &rdm_gossip::topology::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str, config: std::collections::BTreeMap<String, String>, written: &mut (Option<u64>, Option<u64>)) {
+pub async fn write_own_roles(writer: &NodePropertyWriter, primaries: &rdm_gossip::primary::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str, config: std::collections::BTreeMap<String, String>, written: &mut (Option<u64>, Option<u64>)) {
     let roles = own_roles(primaries, birth, mesh, r#type);
     if roles == *written {
         return;

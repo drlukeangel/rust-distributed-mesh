@@ -312,8 +312,8 @@ mod tests {
 
         // Channel (line 21): f(FabricId, MeshId), distinct from mesh1's channel.
         assert_ne!(
-            rdm_gossip::topology::mesh_channel(&fabric_id, &mesh1_id),
-            rdm_gossip::topology::mesh_channel(&fabric_id, &mesh2_id),
+            rdm_gossip::channel::mesh_channel(&fabric_id, &mesh1_id),
+            rdm_gossip::channel::mesh_channel(&fabric_id, &mesh2_id),
             "mesh2's channel f(FabricId, MeshId) is distinct from mesh1's"
         );
 

@@ -4,7 +4,7 @@
 //! `DELETED_RETENTION` while keeping the final mesh topology in `SnapshotReceiver` and `Forwarder`.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rdm_gossip::topology::Frame;
+use rdm_gossip::frame::Frame;
 use rdm_gossip::snapshot::SnapshotReceiver;
 
 fn fabric() -> FabricId {

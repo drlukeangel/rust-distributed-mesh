@@ -217,7 +217,8 @@ pub const PROVIDER_BANNED_TOKENS: &[&str] = &["NodeSpec", "StorageMeta", "Placem
 pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "custody.rs", "digest.rs", "dto.rs", "ids.rs", "launch.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "role.rs", "runtime.rs"];
 pub const NON_WIRE_TRANSPORT_FILES: &[&str] = &["clock.rs", "discipline.rs", "evidence_capture.rs", "export.rs", "forward_path.rs", "framer.rs", "iroh_obs.rs", "lib.rs", "load.rs", "log_sink.rs", "logs.rs", "ops.rs", "pipeline.rs", "receive_order.rs", "span_capture.rs", "telemetry.rs", "test_span_capture.rs", "transport_diag.rs", "watchdog.rs"];
 pub const WIRE_SOURCES: &[&str] = &[
-    "crates/rdm-gossip/src/topology.rs",
+    "crates/rdm-gossip/src/frame.rs",
+    "crates/rdm-gossip/src/channel.rs",
     "crates/rdm-gossip/src/snapshot.rs",
     "crates/rdm-transport/src/chunking.rs",
     "crates/rdm-transport/src/wire.rs",
@@ -245,7 +246,7 @@ pub const JSON_CODEC_TOKENS: &[&str] = &[
 ];
 
 /// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
-pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-gossip/src/topology.rs", "crates/rdm-gossip/src/envelope.rs"];
+pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-gossip/src/frame.rs", "crates/rdm-gossip/src/channel.rs", "crates/rdm-gossip/src/envelope.rs"];
 pub const WIRE_CODEC: &str = "crates/rdm-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rdm-admin/tests/gossip_frames_wire.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
@@ -748,7 +749,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         }
         Ratchet::GossipEnvelopeWireIsAtomic => {
             require(root, "crates/rdm-gossip/src/envelope.rs", &["pub const TYPES: [&str; 19]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace", "pub const CHUNK_TYPE: &str = \"rdm.gossip.chunk\""], ratchet, &mut out);
-            require(root, "crates/rdm-gossip/src/topology.rs", &["rdm.mesh.topology.update.via-context-dropped", "rdm_transport::set_remote_parent"], ratchet, &mut out);
+            require(root, "crates/rdm-gossip/src/channel.rs", &["rdm.mesh.topology.update.via-context-dropped", "rdm_transport::set_remote_parent"], ratchet, &mut out);
             require(root, "crates/rdm-gossip/src/gossip.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.topology.reject.via-chunk-incomplete"], ratchet, &mut out);
             require(root, "crates/rdm-gossip/tests/digest_frames_wire.rs", &["fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
             require(root, "crates/rdm-test/tests/gossip/trace_context.rs", &["fn a_received_frames_span_shares_its_authors_trace_id", "fn a_malformed_traceparent_is_dropped_by_name_and_the_frame_applies"], ratchet, &mut out);
@@ -762,7 +763,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_non_test_tokens(root, &files, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
-            require(root, "crates/rdm-gossip/src/topology.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.topology.reject.via-undecodable-frame", "Concern { role: PrimaryRole, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-gossip/src/frame.rs", &["crate::envelope::encode", "crate::envelope::decode", "Concern { role: PrimaryRole, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-gossip/src/channel.rs", &["rdm.mesh.topology.reject.via-undecodable-frame"], ratchet, &mut out);
             require(root, "crates/rdm-gossip/src/envelope.rs", &["rdm_transport::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.stopped"], ratchet, &mut out);
             require(root, PRIMARY_FRAME_CELLS, &["fn primary_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);

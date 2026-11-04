@@ -20,7 +20,8 @@ use rdm_core::outcome::RpcOutcome;
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{PrimaryRole};
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
-use rdm_gossip::topology::{TopologyView, PrimaryView, RoleTaken};
+use rdm_gossip::topology::TopologyView;
+use rdm_gossip::primary::{PrimaryView, RoleTaken};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use tracing::Instrument as _;
 

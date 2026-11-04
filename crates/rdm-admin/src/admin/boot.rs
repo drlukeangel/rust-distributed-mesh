@@ -2580,7 +2580,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             // on it.
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
                                             let mut tickle = crate::offline::OfflineTickle::observed_by(me_id.to_string(), stop.clone());
-                                            let floor = rdm_gossip::topology::staleness_floor();
+                                            let floor = rdm_core::cadence::staleness_floor();
                                             let mut heard_changes = recovery.digest_view.heard_changes();
                                             let mut tenure_rows = TenureRows::default();
                                             loop {
@@ -2989,7 +2989,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 // Every mesh the Build names.
                                                 let named = current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names()).unwrap_or_default();
-                                                let adopted_ready = backbone.adopted_mesh_status().is_some_and(|h| h.status == rdm_gossip::topology::MESH_READY);
+                                                let adopted_ready = backbone.adopted_mesh_status().is_some_and(|h| h.status == rdm_gossip::status::MESH_READY);
                                                 records.set_heard_ready(
                                                     records
                                                         .planned()
@@ -2997,7 +2997,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .chain(named.iter())
                                                         .chain(std::iter::once(&mesh))
                                                         .filter(|m| {
-                                                            topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_gossip::topology::MESH_READY)
+                                                            topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_gossip::status::MESH_READY)
                                                                 || (**m == mesh && adopted_ready)
                                                         })
                                                         .cloned()
@@ -3135,7 +3135,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_checklist);
                                                 // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
                                                 fabric_states.address_changed_mesh_primaries(&t, fabric_primary);
-                                                let addr = rdm_gossip::topology::gossip_addr;
+                                                let addr = rdm_gossip::location::gossip_addr;
                                                 let admins: Vec<_> = heard.iter().filter(|d| rdm_core::is_node_admin(&d.node.r#type) && d.node.location() != me).filter_map(addr).collect();
                                                 backbone.join_admins(admins).await;
                                                 // The turn dials no member of its own mesh: a member joins through this admin, and a
@@ -3200,7 +3200,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 drop(turn);
                                                 tokio::select! {
-                                                    _ = backbone.publication_wake(&topology_view, tokio::time::Instant::now() + rdm_gossip::topology::backbone_gossip_interval()) => {}
+                                                    _ = backbone.publication_wake(&topology_view, tokio::time::Instant::now() + rdm_core::cadence::backbone_gossip_interval()) => {}
                                                     _ = roles_moved.notified() => {}
                                                 }
                                             }

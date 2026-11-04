@@ -332,7 +332,7 @@ async fn fabric_builds(executor: &rdm_core::framing::Birth, local: std::sync::Ar
         .bind()
         .await
         .unwrap();
-    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_gossip::topology::LocationView::new(&endpoint, executor.node_id.as_str()).unwrap(), executor.node_id.clone(), rdm_admin::fabric_builds::PrimarySource::unrecorded());
+    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_gossip::location::LocationView::new(&endpoint, executor.node_id.as_str()).unwrap(), executor.node_id.clone(), rdm_admin::fabric_builds::PrimarySource::unrecorded());
     (endpoint, builds)
 }
 

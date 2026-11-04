@@ -139,7 +139,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let held_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await as u32;
     let held_rt = rdm_test::process_faults::ExactRuntime { deployment_id: String::new(), control_domain: rdm_test::process_faults::local_control_domain(), pid: held_pid, start: rdm_test::process_faults::start_token(held_pid).expect("mesh1.node.3 has a start token") };
     let hung = held_rt.hang().expect("the hang is acknowledged by the OS");
-    estate.until_node(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1.node.3 is silent in the view", rdm_gossip::topology::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.state, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1.node.3 is silent in the view", rdm_core::cadence::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.state, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     hung.release();
     estate.until_node(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1.node.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.state == NodeStatus::Ready).map(|_| ())).await;

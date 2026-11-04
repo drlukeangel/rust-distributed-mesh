@@ -963,7 +963,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         // Step 5 (node-delete.md:37-39): block the old `(node.id, incarnation)` in the peer-location
         // view; peers refuse a late digest of the deleted birth once a successor holds its (path, name),
         // the successor at its own new endpoint (Q358).
-        let peer_view = rdm_gossip::topology::DigestView::default();
+        let peer_view = rdm_gossip::digest_view::DigestView::default();
         let deleted_endpoint = EndpointId("deleted-birth-endpoint-key".into());
         let old_digest = rdm_core::MeshDigest {
             fabric_id: template.fabric_id.clone(),

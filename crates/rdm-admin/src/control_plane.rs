@@ -47,7 +47,7 @@ pub struct ControlPlane {
     pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
     /// This admin's primary view: a node-admin it holds as its mesh's primary replaced by the election is
     /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
-    pub primaries: std::sync::OnceLock<rdm_gossip::topology::PrimaryView>,
+    pub primaries: std::sync::OnceLock<rdm_gossip::primary::PrimaryView>,
     /// How long a peer mesh has gone unheard on the backbone, in milliseconds, once at or past the
     /// staleness floor (`DigestView::mesh_unheard`; gossip.md: its mesh-primary is marked silent at the
     /// floor, as any birth): a node of a mesh held unheard is not restarted, stopped or deleted from

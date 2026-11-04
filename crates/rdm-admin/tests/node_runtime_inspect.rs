@@ -112,7 +112,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
 
     rt.block_on(async {
         let provider = ProcessDeploymentProvider::new();
-        let digest_view = rdm_gossip::topology::DigestView::default();
+        let digest_view = rdm_gossip::digest_view::DigestView::default();
         let store = MemoryNodesStorage::default();
 
         // 1. Live process (this process's own exact PID + start token in this host's control domain) -> Running.

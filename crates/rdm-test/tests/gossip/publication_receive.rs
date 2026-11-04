@@ -1,6 +1,10 @@
 //! Snapshot/delta receiver contracts, through the live channel and real `TopologyService`.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_gossip::topology::{learn_addresses, mesh_channel, backbone_channel, Backbone, Frame, TopologyView};
+use rdm_gossip::location::learn_addresses;
+use rdm_gossip::channel::{mesh_channel, backbone_channel};
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::frame::Frame;
+use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{Chunk, PublisherId, Taken};
 use std::time::Duration;
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {

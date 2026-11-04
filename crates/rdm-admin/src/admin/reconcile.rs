@@ -292,7 +292,7 @@ pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepte
 /// refused by name and adopts nothing.
 pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &Records, mesh: &str, mesh_id: &MeshId) {
     let held = answer.statuses.iter().find_map(|f| match f.data() {
-        rdm_gossip::topology::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
+        rdm_gossip::frame::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
         _ => None,
     });
     let Some((status, publisher)) = held else { return };
@@ -500,7 +500,7 @@ mod tests {
                 name: Some(me.clone()),
                 cert_policy: None,
             },
-            statuses: vec![rdm_gossip::topology::Frame::MeshStatus {
+            statuses: vec![rdm_gossip::frame::Frame::MeshStatus {
                 mesh: "mesh1".to_string(),
                 status: "ready".to_string(),
                 publisher: "mesh1.node-admin.2".to_string(),

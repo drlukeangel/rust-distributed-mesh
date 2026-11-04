@@ -289,7 +289,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
             .await
             .unwrap();
 
-        let digest_view = rdm_gossip::topology::DigestView::default();
+        let digest_view = rdm_gossip::digest_view::DigestView::default();
         let target_b = target.clone();
         let found_b = investigate(&target, &view, &tickle_client, async move {
             let (outcome, handle) =

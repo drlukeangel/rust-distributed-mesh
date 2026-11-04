@@ -202,7 +202,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     let dead: BTreeMap<String, u64> = [(old_name.clone(), now_ns())].into_iter().collect();
     // Tracked by NodeId: node recovery may create the killed path again under a new NodeId.
     let successor = estate
-        .until_view("mesh2 elects a successor", rdm_gossip::topology::staleness_floor() * 2 + rdm_gossip::topology::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
+        .until_view("mesh2 elects a successor", rdm_core::cadence::staleness_floor() * 2 + rdm_core::cadence::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
             let p = primary(&Estate::values(views), "mesh2");
             (!s(&p["node_id"]).is_empty() && s(&p["node_id"]) != old_id).then(|| s(&p["node_id"]))
         })
@@ -231,7 +231,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     // The killed primary is recovered at its path by the fabric-primary (node-recovery.md step 3, Q111),
     // its own workflow (Q342): step 4 starts once it has completed.
     estate
-        .until_view(&format!("{old_name} is recovered as a new node"), rdm_gossip::topology::staleness_floor() * 4 + Duration::from_secs(60), |views| {
+        .until_view(&format!("{old_name} is recovered as a new node"), rdm_core::cadence::staleness_floor() * 4 + Duration::from_secs(60), |views| {
             Estate::values(views).iter().any(|n| location(n) == location(&old) && s(&n["node_id"]) != old_id && n["state"] == "ready").then_some(())
         })
         .await;
@@ -278,7 +278,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     // peer mesh's admin may briefly name itself in its own view (and, gated,
     // publishes nothing). The converged view names the one publisher.
     let next = estate
-        .until_view("a new fabric primary alone publishes the fabric's status", rdm_gossip::topology::staleness_floor() * 2 + rdm_gossip::topology::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
+        .until_view("a new fabric primary alone publishes the fabric's status", rdm_core::cadence::staleness_floor() * 2 + rdm_core::cadence::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
             let n = Estate::values(views);
             // Tracked by NodeId: node recovery may create the lost path again under a new NodeId.
             let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["node_id"]))?;
@@ -398,7 +398,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // no primary: only from then does its view name no fabric-primary. Another member's stale mark comes
     // first and is not this: a refusal before it names the fabric-primary the admin still holds (build.md:
     // `not-fabric-primary`, naming the fabric-primary in its own view), and the carrier follows it there.
-    wait_for(&format!("{lone_name} marks the fabric-primary {fp_name} stale and its view names no primary of mesh1"), rdm_gossip::topology::staleness_floor() + Duration::from_secs(20), || {
+    wait_for(&format!("{lone_name} marks the fabric-primary {fp_name} stale and its view names no primary of mesh1"), rdm_core::cadence::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
         let (lone_name, fp_name) = (lone_name.clone(), fp_name.clone());
         async move {
@@ -431,7 +431,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let accepted_by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.create.via-accepted").into_iter().filter(|sp| attr(sp, "node") == lone_name && start(sp) >= asked_at).map(|sp| attr(sp, "build_id")).collect();
     assert!(accepted_by_lone.is_empty(), "the isolated {lone_name} accepted no Build: {accepted_by_lone:?}");
     // Held past the decision: every view an admin answers holds at most one primary per node type.
-    let until = std::time::Instant::now() + rdm_gossip::topology::staleness_floor() * 2;
+    let until = std::time::Instant::now() + rdm_core::cadence::staleness_floor() * 2;
     while std::time::Instant::now() < until {
         for admin in &admins {
             if let Some(view) = estate.node_views_at(admin).await {

@@ -11,7 +11,9 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, PublisherId};
-use rdm_gossip::topology::{learn_addresses, Backbone, TopologyView};
+use rdm_gossip::location::learn_addresses;
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::topology::TopologyView;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 

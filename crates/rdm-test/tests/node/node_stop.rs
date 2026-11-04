@@ -465,7 +465,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
     // The config the node's record holds is what node.get answers (Q203: no digest carries it); read
     // until the started birth is ready, within a staleness floor.
-    let until = std::time::Instant::now() + rdm_gossip::topology::staleness_floor();
+    let until = std::time::Instant::now() + rdm_core::cadence::staleness_floor();
     let after = loop {
         let v = view_of(&estate.nodes_obj().await, &path).await;
         if (v.config == told && v.state == NodeStatus::Ready) || std::time::Instant::now() >= until {
@@ -1738,7 +1738,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
     // at the cut has ended at its time limit. The arm acts on the primary watch's verdict (Q337): it is
     // open while the watch investigates the fabric-primary, whose tickle's own span closes only when the
     // probe ends, so its start is read from the provider inspection the investigation closes right before it.
-    let floor = rdm_gossip::topology::staleness_floor();
+    let floor = rdm_core::cadence::staleness_floor();
     wait_for(&format!("{victim:?}'s watch starts its direct tickle of {fp:?} while its own-mesh arm waits on it"), floor * 6 + Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.node.resolve.via-provider-inspection")
             .into_iter()

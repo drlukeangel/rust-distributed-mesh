@@ -35,7 +35,7 @@ pub trait LeaveSeam: Send + Sync {
 /// Whether an executable that IS a node-admin withholds one of its final mesh topologies or leadership
 /// announcements from a channel (R-NS2: "Final mesh topologies and leadership announcements are best-effort
 /// dissemination. A stop does not wait for their delivery"): its backbone asks it before each send of
-/// an announcement `rdm_gossip::topology::Withhold` names, on each channel (`"backbone"` or
+/// an announcement `rdm_gossip::backbone::Withhold` names, on each channel (`"backbone"` or
 /// `"mesh"`); a `true` answer skips that one send and nothing else: the frame, the channel and the
 /// delivery path are untouched. The product passes none, so every announcement is sent.
 pub trait AnnouncementSeam: Send + Sync {

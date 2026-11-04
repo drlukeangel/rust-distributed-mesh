@@ -2,7 +2,11 @@
 use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId, PrimaryRole, Primary};
-use rdm_gossip::topology::{learn_addresses, mesh_channel, Frame, TopologyView, StatusEvent};
+use rdm_gossip::location::learn_addresses;
+use rdm_gossip::channel::mesh_channel;
+use rdm_gossip::frame::Frame;
+use rdm_gossip::topology::TopologyView;
+use rdm_gossip::status::StatusEvent;
 use rdm_gossip::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use std::{sync::{Arc, OnceLock}, time::Duration};

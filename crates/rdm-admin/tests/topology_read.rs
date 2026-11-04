@@ -174,7 +174,7 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_view_h
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
     open(&server, &fabric);
-    let backbone = rdm_gossip::topology::Backbone::join(&server.gossip, &server.ep, &server.topology_view, "mesh1", rdm_core::PublisherId { incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
+    let backbone = rdm_gossip::backbone::Backbone::join(&server.gossip, &server.ep, &server.topology_view, "mesh1", rdm_core::PublisherId { incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     server.topology_view.digest_view.record(member_of(&fabric, "mesh1", "node", 2));
     let t = target_of(&caller, &server);
@@ -284,7 +284,7 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     for c in &chunks {
         let len = Topology::encode_reply(c).unwrap().len();
         assert!(len <= Topology::MAX_REPLY_FRAME_BYTES, "a chunk of {len} bytes is over the ceiling");
-        assert!(len <= rdm_gossip::topology::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
+        assert!(len <= rdm_gossip::frame::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
     }
     hold(&server.topology_view, &source);
     let t = target_of(&caller, &server);

@@ -155,7 +155,7 @@ pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&cr
 /// birth) when it carries a runtime fact, else the runtime on the node's record in `nodes`, a point read
 /// ([`runtime_of`]). A birth lost before this admin heard it has no digest here; its record still holds
 /// the runtime the node wrote at its start. `Err` names what was missing.
-pub async fn birth_runtime(digest_view: &rdm_gossip::topology::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Result<BirthRuntime, String> {
+pub async fn birth_runtime(digest_view: &rdm_gossip::digest_view::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Result<BirthRuntime, String> {
     let Some(incarnation) = n.incarnation_id.clone() else { return Err(format!("{} holds no recorded birth: there is no exact runtime to inspect", n.node_id)) };
     let id = n.node_id.as_str();
     let exact = |d: &rdm_core::digest::MeshDigest| d.node.incarnation == incarnation;
@@ -179,7 +179,7 @@ pub async fn birth_runtime(digest_view: &rdm_gossip::topology::DigestView, nodes
 /// ([`crate::deployment::provider::inspect_runtime`]); beside its answer, the exact runtime handle
 /// the provider was asked about (node-runtime-inspect.md "Target"; the inspect span's `handle`),
 /// `None` when no fact was held or the provider refused to adopt it, so nothing was asked.
-pub async fn inspect_birth_with_handle(provider: &dyn crate::deployment::provider::DeploymentProvider, digest_view: &rdm_gossip::topology::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> (crate::deployment::provider::Inspected, Option<crate::deployment::provider::DeploymentHandle>) {
+pub async fn inspect_birth_with_handle(provider: &dyn crate::deployment::provider::DeploymentProvider, digest_view: &rdm_gossip::digest_view::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> (crate::deployment::provider::Inspected, Option<crate::deployment::provider::DeploymentHandle>) {
     match birth_runtime(digest_view, nodes, n).await {
         Err(why) => (crate::deployment::provider::Inspected::Unavailable(why), None),
         Ok(b) => {
@@ -304,7 +304,7 @@ pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment
 
 /// [`inspect_birth_with_handle`]'s answer as the investigation's verdict: the provider's inspection of
 /// the exact runtime of `n`'s birth, unproven by name when no runtime fact is held.
-pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, digest_view: &rdm_gossip::topology::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
+pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, digest_view: &rdm_gossip::digest_view::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
     inspect_birth_with_handle(provider, digest_view, nodes, n).await.0.into()
 }
 
@@ -459,18 +459,18 @@ mod tests {
         let (node, _) = world();
         let inc = node.incarnation_id.clone().unwrap();
         let nodes = crate::storage::MemoryNodesStorage::default();
-        let empty = rdm_gossip::topology::DigestView::default();
+        let empty = rdm_gossip::digest_view::DigestView::default();
         let none = birth_runtime(&empty, Some(&nodes), &node).await.unwrap_err();
         assert!(none.contains("no digest of this exact birth") && none.contains("no node record"), "{none}");
         nodes.put_node(&{ let mut r = rdm_node::nodes_storage::NodeRecord { runtime: fact(2), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(node.path.clone(), node.name.clone()).unwrap(), &node.r#type.clone().to_string(), node.node_id.clone(), inc.clone(), rdm_core::model::NodeStatus::Ready) }; r.storage.data_dir = Some("/data/from-the-row".into()); r }).await.unwrap();
         let from_row = BirthRuntime { fact: fact(2), data_dir: Some("/data/from-the-row".into()), incarnation: inc.clone() };
         assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the node record");
         for (held_digest, why) in [(digest(&node, IncarnationId::mint(), Some(fact(3))), "a digest of another birth"), (digest(&node, inc.clone(), None), "a digest with no runtime fact")] {
-            let digest_view = rdm_gossip::topology::DigestView::default();
+            let digest_view = rdm_gossip::digest_view::DigestView::default();
             assert!(digest_view.record(held_digest));
             assert_eq!(birth_runtime(&digest_view, Some(&nodes), &node).await, Ok(from_row.clone()), "{why}: the node record");
         }
-        let digest_view = rdm_gossip::topology::DigestView::default();
+        let digest_view = rdm_gossip::digest_view::DigestView::default();
         assert!(digest_view.record(digest(&node, inc.clone(), Some(fact(1)))));
         assert_eq!(birth_runtime(&digest_view, Some(&nodes), &node).await, Ok(BirthRuntime { fact: fact(1), data_dir: Some("/data/from-the-digest".into()), incarnation: inc }), "the exact birth's digest carries the runtime recorded at launch");
     }

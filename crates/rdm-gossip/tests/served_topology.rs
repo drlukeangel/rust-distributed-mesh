@@ -9,7 +9,9 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_gossip::topology::{Backbone, Frame, TopologyView};
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::frame::Frame;
+use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{chunks_of, Chunk, PublisherId, SourceSnapshot, Taken};
 use serde_json::Value;
 

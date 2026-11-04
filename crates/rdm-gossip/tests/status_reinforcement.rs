@@ -10,9 +10,10 @@
 
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_gossip::snapshot::PublisherId;
-use rdm_gossip::topology::{
-    forward_of, Backbone, Frame, TopologyView, StatusView, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,
-};
+use rdm_gossip::frame::{forward_of, Frame};
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::topology::TopologyView;
+use rdm_gossip::status::{StatusView, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
@@ -65,7 +66,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // A changed mesh status: the frame at once, then exactly four repeats one second apart, then
         // nothing however long the clock runs; every send is the same fact at the same instant.
         // The mesh's first state is a heard Pending with no instant (Q272): stamped here, once.
-        let first_state = rdm_gossip::topology::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
+        let first_state = rdm_gossip::status::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
         let mut mesh = StatusPublisher::new(me, StatusScope::Mesh("mesh1".into()));
         mesh.set_role(true);
         let first = mesh.observe("pending", Some(first_state.clone()), true, base, 1_000).expect("a change is sent at once");
@@ -118,7 +119,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // is sent until its checklist completes; then the adopted fact is sent, the old instant, five sends.
         let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         successor.set_role(true);
-        let heard = rdm_gossip::topology::StatusFact { status: "ready".into(), changed_at_rafka_ms: 2 };
+        let heard = rdm_gossip::status::StatusFact { status: "ready".into(), changed_at_rafka_ms: 2 };
         assert!(successor.observe("ready", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
         assert!(successor.awaiting_checklist(), "the adopted status waits for its checklist");
         assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "no timer republishes an adopted status");
@@ -302,7 +303,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 #[test]
 fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
     let base = Instant::now();
-    let fact = |status: &str, at: u64| rdm_gossip::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
+    let fact = |status: &str, at: u64| rdm_gossip::status::StatusFact { status: status.into(), changed_at_rafka_ms: at };
     let publisher = || {
         let mut p = StatusPublisher::new("mesh2.node-admin.1", StatusScope::Mesh("mesh2".into()));
         p.set_role(true);

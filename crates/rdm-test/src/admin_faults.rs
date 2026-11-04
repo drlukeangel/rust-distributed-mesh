@@ -83,7 +83,7 @@ pub enum CutSpec {
     /// until the release. The joiner arms it from `<root>/faults/<location-index>.boot.json` before its first line.
     TopologyRead,
     /// The admin withholds `announcement`, one of its final mesh topologies or leadership announcements
-    /// (`rdm_gossip::topology::Withhold`: `stopping-aggregate`, `primary-updated`,
+    /// (`rdm_gossip::backbone::Withhold`: `stopping-aggregate`, `primary-updated`,
     /// `aggregate-in-flight`), from `channel` (`mesh`, `backbone` or `any`) while the cut is armed:
     /// each such send is skipped, so the frame is never offered to the channel. It models the
     /// announcement lost on its way out (R-NS2: best-effort dissemination), not in a peer queue.

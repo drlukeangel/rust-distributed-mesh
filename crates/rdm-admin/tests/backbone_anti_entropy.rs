@@ -16,7 +16,9 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, MeshId, NodeId};
-use rdm_gossip::topology::{gossip_addr, learn_addresses, Backbone, TopologyView};
+use rdm_gossip::location::{gossip_addr, learn_addresses};
+use rdm_gossip::backbone::Backbone;
+use rdm_gossip::topology::TopologyView;
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rdm_admin::build::BuildId;

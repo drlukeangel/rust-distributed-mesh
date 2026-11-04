@@ -49,7 +49,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_gossip::topology::staleness_floor();
+    let floor = rdm_core::cadence::staleness_floor();
     let nodes = estate
         .until_view("two ready node-admins and two ready nodes, one node not a primary", Duration::from_secs(60), |views| {
             let v = Estate::values(views);

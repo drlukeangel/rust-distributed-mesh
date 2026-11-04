@@ -14,7 +14,10 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_gossip::topology::{learn_addresses, Frame, TopologyView, MeshStatus};
+use rdm_gossip::location::learn_addresses;
+use rdm_gossip::frame::Frame;
+use rdm_gossip::topology::TopologyView;
+use rdm_gossip::status::MeshStatus;
 use serde_json::Value;
 use std::time::Duration;
 
