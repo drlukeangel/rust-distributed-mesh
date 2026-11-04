@@ -299,10 +299,11 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
 /// what it needs from its mesh-primary or the fabric-primary", as Q292 amends it: a starting admin reads
 /// the named Build's committed records from the Build storage; Q234: the hydration sync,
 /// node.topology.get from the node's mesh-primary, carries what it needs): a Day-0 node-admin (mesh1.node-admin.1, the fabric-primary and
-/// mesh1's mesh-primary) is ready, then the first line of each of the fabric's four topology stores
-/// but its Build records (`fabric`, `meshes`, `nodes` .jsonl) no longer matches its checksum, so no fold
-/// from byte 0 reads any of them (mesh1.node-admin.1, their writer, has read past it); the Build records are
-/// the one store a starting admin reads (Q292). mesh1.node-admin.2, launched by it,
+/// mesh1's mesh-primary) is ready, then the first line of the fabric's `fabric` and `meshes` .jsonl no
+/// longer matches its checksum, so no fold from byte 0 reads either (mesh1.node-admin.1, their one writer,
+/// has read past it); the Build records are the one store a starting admin reads (Q292). The `nodes`
+/// store is not one of them: each node writes its own record there and its primaries read it (Q356,
+/// storage.md §2), so mesh1.node-admin.1 reads mesh1.node-admin.2's record at its join. mesh1.node-admin.2, launched by it,
 /// starts: it comes up Ready, holding its own row from its hydration sync, the fabric-primary's and
 /// mesh1's mesh-primary's records naming mesh1.node-admin.1's birth (the recorded primaries its
 /// mesh-primary serves), and the current Build the join named, its committed records read from the
@@ -313,17 +314,17 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
 /// floor checked against a fold of the store, the derivation's install folding the builds store, or,
 /// once it is Ready, its hierarchy's turns folding `builds.jsonl`.
 #[test]
-fn a_launched_admin_is_ready_with_its_fabric_meshes_and_nodes_stores_unreadable() {
-    let cell = "a_launched_admin_is_ready_with_its_fabric_meshes_and_nodes_stores_unreadable";
+fn a_launched_admin_is_ready_with_its_fabric_and_meshes_stores_unreadable() {
+    let cell = "a_launched_admin_is_ready_with_its_fabric_and_meshes_stores_unreadable";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let (base, root, launch, store) = root_and_launch("admin-unread-all").await;
         let root_birth = root.digest.lock().unwrap().node.clone();
-        unreadable_from_byte_0(&store, &TOPOLOGY_STORES[..3]);
+        unreadable_from_byte_0(&store, &TOPOLOGY_STORES[..2]);
         let folds_before = topology_folds(&spans).len();
 
-        let admin = start_launched(&launch).await.unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts with its fabric, meshes and nodes stores unreadable: {e}"));
+        let admin = start_launched(&launch).await.unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts with its fabric and meshes stores unreadable: {e}"));
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let since = start_folds(&spans, folds_before);
 
