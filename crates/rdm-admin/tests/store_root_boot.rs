@@ -817,7 +817,7 @@ impl Prepared {
             let nodes = rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let mut row = nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap().expect("the lost birth's row");
             (row.is_primary, row.is_fabric_primary) = (Some(1), Some(1));
-            nodes.put_node(&row).await.unwrap();
+            rdm_admin::storage::NodesStorage::put_node(&nodes, &row).await.unwrap();
             use rdm_admin::fabric_storage::FabricStorage as _;
             let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let mut record = fabric.fabric().await.unwrap().expect("the Fabric record");
@@ -835,7 +835,7 @@ impl Prepared {
             let nodes = rdm_admin::storage::FileNodesStorage::open(&root, &rdm_admin::store_log::LogWriter::mint()).await.unwrap();
             let at = nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap();
             let of = match rdm_admin::model::NodeId::parse(node_id) {
-                Ok(id) => nodes.node(&id).await.unwrap(),
+                Ok(id) => nodes.node(&id).await.unwrap().map(|l| l.record),
                 Err(_) => None,
             };
             (at, of)

@@ -4,7 +4,7 @@ use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{DeploymentProvider, Inspected};
 use rdm_admin::model::{IncarnationId, Node, NodeId, NodeStatus};
 use rdm_admin::node_investigation::{inspect_birth_with_handle, span_inspection};
-use rdm_admin::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
+use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
 use rdm_core::runtime::ExitRecord;
 use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
 use std::collections::BTreeMap;
@@ -121,13 +121,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         let running_dep = rdm_core::fixture_crockford60("dep-running-1");
         let running_fact = RuntimeFact::of_this_process(&running_dep).expect("of_this_process");
         store
-            .put_runtime(&RuntimeRow { r#type: running_node.r#type.clone(), mesh: running_node.mesh.clone(),
-                node_id: running_node.node_id.clone(),
-                path: running_node.path.clone(), name: running_node.name.clone(),
-                incarnation_id: running_inc,
-                runtime: running_fact,
-                data_dir: None,
-            })
+            .put_node(&rdm_node::nodes_storage::NodeRecord { runtime: running_fact, ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(running_node.path.clone(), running_node.name.clone()).unwrap(), &running_node.r#type.clone().to_string(), running_node.node_id.clone(), running_inc, rdm_core::model::NodeStatus::Ready) })
             .await
             .unwrap();
 
@@ -156,11 +150,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         .write(&dir)
         .unwrap();
         store
-            .put_runtime(&RuntimeRow { r#type: exited_node.r#type.clone(), mesh: exited_node.mesh.clone(),
-                node_id: exited_node.node_id.clone(),
-                path: exited_node.path.clone(), name: exited_node.name.clone(),
-                incarnation_id: exited_inc,
-                runtime: RuntimeFact {
+            .put_node(&{ let mut r = rdm_node::nodes_storage::NodeRecord { runtime: RuntimeFact {
                     deployment_id: exited_dep,
                     provider: RuntimeProvider::Process,
                     control_domain: provider.control_domain(),
@@ -168,9 +158,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
                         pid: 999_999,
                         start: 1,
                     },
-                },
-                data_dir: Some(dir.display().to_string()),
-            })
+                }, ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(exited_node.path.clone(), exited_node.name.clone()).unwrap(), &exited_node.r#type.clone().to_string(), exited_node.node_id.clone(), exited_inc, rdm_core::model::NodeStatus::Ready) }; r.storage.data_dir = Some(dir.display().to_string()); r })
             .await
             .unwrap();
 
@@ -190,11 +178,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         let foreign_node = allocated_birth(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node");
         let foreign_inc = foreign_node.incarnation_id.clone().unwrap();
         store
-            .put_runtime(&RuntimeRow { r#type: foreign_node.r#type.clone(), mesh: foreign_node.mesh.clone(),
-                node_id: foreign_node.node_id.clone(),
-                path: foreign_node.path.clone(), name: foreign_node.name.clone(),
-                incarnation_id: foreign_inc,
-                runtime: RuntimeFact {
+            .put_node(&rdm_node::nodes_storage::NodeRecord { runtime: RuntimeFact {
                     deployment_id: rdm_core::fixture_crockford60("dep-foreign-3"),
                     provider: RuntimeProvider::Process,
                     control_domain: "process:foreign-host:999".into(),
@@ -202,9 +186,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
                         pid: 12345,
                         start: 100,
                     },
-                },
-                data_dir: None,
-            })
+                }, ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(foreign_node.path.clone(), foreign_node.name.clone()).unwrap(), &foreign_node.r#type.clone().to_string(), foreign_node.node_id.clone(), foreign_inc, rdm_core::model::NodeStatus::Ready) })
             .await
             .unwrap();
 

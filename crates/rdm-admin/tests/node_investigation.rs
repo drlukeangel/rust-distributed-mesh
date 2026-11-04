@@ -10,7 +10,7 @@ use rdm_admin::node_investigation::{
 };
 use rdm_admin::offline::TickleClient;
 use rdm_admin::storage::{
-    ConnectionsStorage, MemoryConnectionsStorage, MemoryNodesStorage, NodesStorage, RuntimeRow,
+    ConnectionsStorage, MemoryConnectionsStorage, MemoryNodesStorage, NodesStorage,
 };
 use rdm_admin::topology::Topology;
 use rdm_core::catalog::OpOwner;
@@ -277,11 +277,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
 
         let nodes_store = MemoryNodesStorage::default();
         nodes_store
-            .put_runtime(&RuntimeRow { r#type: target.r#type.clone(), mesh: target.mesh.clone(),
-                node_id: target_id.clone(),
-                path: target.path.clone(), name: target.name.clone(),
-                incarnation_id: target_inc.clone(),
-                runtime: rdm_core::RuntimeFact {
+            .put_node(&{ let mut r = rdm_node::nodes_storage::NodeRecord { runtime: rdm_core::RuntimeFact {
                     deployment_id: dep_id,
                     provider: rdm_core::RuntimeProvider::Process,
                     control_domain: provider.control_domain(),
@@ -289,9 +285,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
                         pid: 999_999,
                         start: 1,
                     },
-                },
-                data_dir: Some(dir.display().to_string()),
-            })
+                }, ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(target.path.clone(), target.name.clone()).unwrap(), &target.r#type.clone().to_string(), target_id.clone(), target_inc.clone(), rdm_core::model::NodeStatus::Ready) }; r.storage.data_dir = Some(dir.display().to_string()); r })
             .await
             .unwrap();
 

@@ -332,12 +332,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         }));
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let mut subject_row =
-            rdm_node::nodes_storage::fixture_record(&subject_name.clone(), "node", subject_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-        subject_row.births.push(rdm_admin::storage::BirthFacts::new(
-            subject_inc.clone(),
-            subject_name.clone(),
-        ));
+        let subject_row = rdm_node::nodes_storage::fixture_record(&subject_name, "node", subject_id.clone(), subject_inc.clone(), NodeStatus::Ready);
         nodes_storage
             .put_node(&subject_row)
             .await
@@ -453,7 +448,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
                 .await
                 .expect("read storage")
                 .expect("subject row")
-                .status,
+                .record.state,
             NodeStatus::Ready,
             "Connections([id]) sets no node-wide status on the node row"
         );
@@ -499,9 +494,9 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .expect("read storage")
             .expect("subject row written for All scope");
         assert_eq!(
-            row.status,
-            NodeStatus::ConnectionsDeleted,
-            "All scope transitions the subject row through ConnectionsDeleting to ConnectionsDeleted"
+            row.record.state,
+            NodeStatus::Ready,
+            "the mesh-primary writes no state on the member\'s record: the member writes its own (Q356)"
         );
 
         let _ = peer_router.shutdown().await;

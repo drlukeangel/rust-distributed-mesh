@@ -1263,9 +1263,9 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
 
         let nodes_storage = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
         let rows = rdm_admin::node_rows::NodeRows::new(boot.clone(), fp_id.clone(), topology.clone(), nodes_storage);
-        rows.create_row(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &NodeId::mint(), &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), None, None, rdm_admin::node_rows::RowFor::Create)
+        rows.check_create(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &NodeId::mint(), None, None)
         .await
-        .expect("the renamed mesh-primary claims the node row");
+        .expect("the renamed mesh-primary passes the create's check");
 
         let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
         // Its step log, as boot wires it: each step it runs written as its own `rdm.build.step` event.

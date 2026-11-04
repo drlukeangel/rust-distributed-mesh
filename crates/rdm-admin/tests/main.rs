@@ -209,13 +209,10 @@ pub async fn records_of_views(views: &[&rdm_admin::topology::Topology]) -> std::
     for n in views.iter().flat_map(|t| t.nodes.iter()).filter(|n| seen.insert(n.node_id.clone())) {
         let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
-            row.birth_mut(incarnation, &n.location());
+            row.incarnation = incarnation.clone();
         }
-        // A later view's other birth at a path an earlier one claimed (a re-created node) keeps its
-        // record beside that claim: put, not claimed.
-        if rows.write_record(&row).await.is_err() {
-            rdm_admin::storage::NodesStorage::put_node(&*rows, &row).await.unwrap_or_else(|e| panic!("{:?}'s record is put: {e}", n.name));
-        }
+        // Each birth's own record, as it writes it at its start (Q356).
+        rdm_admin::storage::NodesStorage::put_node(&*rows, &row).await.unwrap_or_else(|e| panic!("{:?}'s record is put: {e}", n.name));
     }
     rows
 }

@@ -275,9 +275,10 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let held_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let held_id = NodeId::mint();
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
-        let mut held_row = rdm_node::nodes_storage::fixture_record(&held_path.clone(), "node", held_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-        held_row.birth_mut(&IncarnationId::mint(), &held_path);
-        store.put_node(&held_row).await.unwrap();
+        // Another live node of the view holds mesh1.node.1 (node-create.md: the mesh-primary checks the
+        // path and name against its view and the creates it has in flight, Q227).
+        let mut held_node = Node::allocated(held_path.clone(), "mesh1", "node");
+        (held_node.node_id, held_node.incarnation_id, held_node.status) = (held_id.clone(), Some(IncarnationId::mint()), NodeStatus::Ready);
 
         let view = Arc::new(RwLock::new(Topology {
             fabric: Fabric {
@@ -291,7 +292,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
                 name: "mesh1".into(),
                 status: ScopeStatus::Ready,
             }],
-            nodes: vec![admin],
+            nodes: vec![admin, held_node],
         }));
         let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(
             me.clone(),
@@ -475,18 +476,8 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let written_row = rdm_admin::node_rows::record_at(&*store, &new_path)
             .await
             .unwrap()
-            .expect("node row written at claim");
+            .expect("the node's own record at its path, written at its start");
         assert_eq!(written_row.node_id, created.node.node_id);
-        assert_eq!(
-            written_row.executable.as_ref().map(|e| e.sha256.as_str()),
-            Some(binding.sha256.as_str()),
-            "executable sha256 recorded on the row at claim"
-        );
-        assert_eq!(
-            written_row.initial_properties.as_ref().and_then(|p| p.config.get("role")).map(String::as_str),
-            Some("worker"),
-            "create spec config recorded in the claim's launch snapshot"
-        );
 
         // Hooks contract (node-create.md:5-6, 20): FirstStart is the start_kind for node.create's
         // composed node.start (`pre_node_ready` blocking with `FirstStart`, `on_node_ready` notice).
@@ -689,15 +680,10 @@ impl DeploymentProvider for StepFaultProvider {
             if let Some(report) = report {
                 self.joins.report(&report);
                 let d = &report.digest;
-                let bound = rdm_node::nodes_storage::NodeRecord {
-                    birth: rdm_node::node_records::RecordBirth { node_id: d.node.node_id.clone(), incarnation_id: d.node.incarnation.clone() },
-                    config: Default::default(),
-                    tags: Default::default(),
-                    endpoint_id: Some(d.node.endpoint_id.clone()),
-                    transport_addr: Some(d.node.transport_addr),
-                    listeners: report.listeners.clone(),
-                };
-                rdm_admin::storage::NodesStorage::put_properties(&*self.store, &bound).await.unwrap();
+                // The node's own record, its first line at its start (Q356).
+                let mut bound = rdm_node::nodes_storage::fixture_record(&d.node.location(), &d.node.r#type, d.node.node_id.clone(), d.node.incarnation.clone(), NodeStatus::Pending);
+                (bound.endpoint_id, bound.transport_addr, bound.listeners) = (d.node.endpoint_id.clone(), d.node.transport_addr, report.listeners.clone());
+                rdm_admin::storage::NodesStorage::put_node(&*self.store, &bound).await.unwrap();
             }
         }
         self.inspect_status.lock().unwrap().clone()
@@ -878,23 +864,6 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             ..Timeouts::default()
         };
 
-        // 1. Cut after claiming the name at PrepareStorage before DeployRuntime:
-        //    When the provider proves the claimed allocation was NeverLaunched, the next run
-        //    continues the exact allocated identity (node_id, incarnation, deployment_id).
-        let cut_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let pre_node_id = NodeId::mint();
-        let pre_incarnation = IncarnationId::mint();
-        let pre_deployment = rdm_admin::model::DeploymentId::mint();
-        let allocated = rdm_admin::storage::Allocation { predecessor: None,
-            build_id: Some(build_id.clone()),
-            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&cut_path)),
-            incarnation: pre_incarnation.clone(),
-            deployment_id: pre_deployment.clone(),
-        };
-        rows.create_row(&cut_path, "mesh1", "node", &pre_node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&cut_path)), Some(&allocated), None, rdm_admin::node_rows::RowFor::Create)
-        .await
-        .expect("the cut run claims the name with its allocated identity");
-
         let template_exec1 = make_template(41001);
         let pipeline = DeploymentPipeline {
             provider: &*provider,
@@ -906,21 +875,6 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             template: &template_exec1,
             timeouts: fast_timeouts.clone(),
         };
-        let created_cut = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(cut_path))), node_id: (rdm_core::fixture_node_id(&(cut_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: Some(build_id.clone()),
-                path: cut_path.path.clone(), name: cut_path.name.clone(),
-                spec: &NODE_SPEC,
-                data_dir: None,
-                held_runtimes: Vec::new(),
-                entry: None,
-            })
-            .await
-            .expect("resumed create after cut at PrepareStorage continues the never-launched birth");
-        assert_eq!(created_cut.node.node_id, pre_node_id);
-        assert_eq!(created_cut.node.incarnation_id, Some(pre_incarnation));
-        assert_eq!(created_cut.node.deployment_id, Some(pre_deployment));
-
         // 2. Lost reply at WaitForBind, then Kill (Exited) at WaitForBind, then Kill at WaitForNodeReady,
         //    then SIGSTOP (OsStopped) across runs and resume to Complete:
         let fault_path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();

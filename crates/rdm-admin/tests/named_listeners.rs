@@ -5,7 +5,6 @@ use rdm_admin::join::{Deployed, JoinService, Joins};
 use rdm_admin::model::{
     EndpointId, FabricId, IncarnationId, NodeId, ProviderKind,
 };
-use rdm_admin::node_rows::WrittenRows;
 use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
 use rdm_admin::wire::{JoinAnswer, JoinControl};
 use rdm_core::join::{JoinReply, JoinRequest};
@@ -136,11 +135,10 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
         let installed: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
         let installed_for_service = installed.clone();
         let nodes_storage: Arc<dyn NodesStorage> = Arc::new(MemoryNodesStorage::default());
-        let written_rows = Arc::new(WrittenRows::default());
 
         let admin_id = NodeId::mint();
         let service = JoinService {
-            nodes: Some((nodes_storage.clone(), written_rows)),
+            nodes: Some(nodes_storage.clone()),
             me_path: format!("{}.{}", "mesh1", "node-admin"), me_name: (1).to_string(),
             joins: joins.clone(),
             answer: { let admin_id = admin_id.clone(); Arc::new(move || {
@@ -256,16 +254,11 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
             .node(&dep.node_id)
             .await
             .expect("read storage")
-            .is_none());
-        assert!(nodes_storage
-            .properties(&dep.node_id)
-            .await
-            .expect("read storage")
             .is_none(), "a refused report records no listener");
 
         // 2. Valid listener report (each declared listener once on its assigned IP with a nonzero
         //    OS-selected port) is admitted, installs the address and completes WaitForBind with the
-        //    listeners; the node, answered Joined, writes them in its own part of its record (Q333).
+        //    listeners; the node, answered Joined, writes them on its own record (Q356).
         let good_listeners: Vec<(String, SocketAddr)> = vec![
             ("kafka".into(), "127.0.0.1:41001".parse().unwrap()),
             ("rest".into(), "127.0.0.1:41002".parse().unwrap()),
@@ -291,23 +284,22 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
         writer
             .bound(
                 rdm_node::nodes_storage::NodeRecord {
-                    birth: rdm_node::node_records::RecordBirth { node_id: dep.node_id.clone(), incarnation_id: dep.incarnation.clone() },
-                    config: Default::default(),
-                    tags: Default::default(),
-                    endpoint_id: Some(dep.endpoint_id.clone()),
-                    transport_addr: Some(digest.node.transport_addr),
+                    endpoint_id: dep.endpoint_id.clone(),
+                    transport_addr: digest.node.transport_addr,
                     listeners: good_listeners.clone(),
+                    ..rdm_node::nodes_storage::fixture_record(&dep.location(), &dep.r#type, dep.node_id.clone(), dep.incarnation.clone(), rdm_admin::model::NodeStatus::Pending)
                 },
                 |_| {},
             )
             .await
-            .expect("the node's own part is written");
+            .expect("the node's own record is written");
         let own = nodes_storage
-            .properties(&dep.node_id)
+            .node(&dep.node_id)
             .await
             .expect("read storage")
-            .expect("the node's own part of its record");
-        assert_eq!(own.listeners, good_listeners, "the verified listeners are in the node's own part of its record");
+            .expect("the node's own record")
+            .record;
+        assert_eq!(own.listeners, good_listeners, "the verified listeners are on the node's own record");
     });
 
     drop(rt);

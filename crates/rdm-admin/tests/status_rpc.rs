@@ -1292,12 +1292,12 @@ async fn carried_connections_delete_ends(capture: &Capture) {
 /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` an `All` that has not reached zero returns incomplete closure
 /// ... The node stays connections-deleting. A new `node.connection.delete` attempt, or node.stop,
 /// leaves that state"; states.md "Who sets each state"): the mesh-primary carries `node.connection.delete
-/// { All }` to a member twice. The first ends `Deadline`: the member's row says connections-deleting
-/// and never connections-deleted. The second, a new attempt, ends `Established`: the row says
-/// connections-deleted. Must NOT happen: connections-deleted on the row from a `Deadline`, or the
-/// second attempt's `Established` left unrecorded.
+/// { All }` to a member twice. The first ends `Deadline`, its receipt the deadline's; the second, a
+/// new attempt, ends `Established`, its receipt the completion's. The member writes its own state on
+/// its own record (Q356): the mesh-primary writes none. Must NOT happen: a `Deadline` answered as
+/// the completion, or the second attempt's `Established` lost.
 #[test]
-fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_established_sets_connections_deleted() {
+fn a_deadline_all_ends_with_the_deadlines_receipt_and_a_new_attempt_ending_established_with_its_own() {
     let capture = capture("a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_established_sets_connections_deleted");
     capture.run(async {
         use rdm_admin::status_rpc::CarryEnd;
@@ -1317,26 +1317,22 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client))).await));
         rig.service.nodes_storage.put_node(&rdm_node::nodes_storage::fixture_record(&member.node.location(), &member.node.r#type, member.node.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
-        let status = || async { rig.service.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 
         let first = rig.service.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
         assert!(matches!(&first, CarryEnd::Deleted { receipt: Some(r), .. } if *r == deadline), "{first:?}");
-        assert_eq!(status().await, NodeStatus::ConnectionsDeleting, "a Deadline leaves the row connections-deleting");
 
         let second = rig.service.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
         assert!(matches!(&second, CarryEnd::Deleted { receipt: Some(r), .. } if *r == established), "{second:?}");
-        assert_eq!(status().await, NodeStatus::ConnectionsDeleted, "the new attempt's Established sets connections-deleted");
+        assert_eq!(rig.service.nodes_storage.node(&node_id).await.unwrap().map(|l| l.record.state), Some(NodeStatus::Ready), "the mesh-primary writes no state on the member's record: the member writes its own");
         drop(router);
     });
-    let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject_path"] == "mesh1.node" && sp["attributes"]["subject_name"] == "1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
-    assert_eq!(rows, ["ConnectionsDeleting:written", "ConnectionsDeleting:unchanged", "ConnectionsDeleted:written"], "the mesh-primary's row writes, in order: connections-deleted only from the Established completion");
 }
 
 /// What a mesh-primary folds from the stores as it takes `mesh` (`RoleFold::on_install`'s read): the
-/// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
-async fn folded(nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage, mesh: &str) -> rdm_admin::status_rpc::Declared {
-    let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());
+/// facts on every mesh and on the fabric; it reads no node record (decision B, Q260 + Q356).
+async fn folded(_nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage, _mesh: &str) -> rdm_admin::status_rpc::Declared {
+    let (m, f) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap());
     let mut declared = rdm_admin::status_rpc::Declared::default();
-    declared.fold_records(&m, f.as_ref(), &n, |_, _| true);
+    declared.fold_records(&m, f.as_ref());
     declared
 }

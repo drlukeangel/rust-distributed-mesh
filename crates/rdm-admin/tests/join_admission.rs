@@ -205,12 +205,16 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The records of an admin, the writer of `row`'s mesh, holding `row` (Q234: a joiner's row is read from
-/// them, never the store), over a nodes store of its own.
-fn writer_holding(row: rdm_admin::storage::NodeRecord) -> Option<(Arc<dyn rdm_admin::storage::NodesStorage>, Arc<rdm_admin::node_rows::WrittenRows>)> {
-    let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
-    written.hold(&row);
-    Some((Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), written))
+/// A nodes store holding `row`, the joining node's record as it wrote it (Q356): what the mesh-primary's
+/// admission point-reads at runtime (Q237 A).
+fn writer_holding(row: rdm_admin::storage::NodeRecord) -> Option<Arc<dyn rdm_admin::storage::NodesStorage>> {
+    let store = rdm_admin::storage::MemoryNodesStorage::default();
+    // The memory store's put completes at its first poll.
+    {
+        let put = std::pin::pin!(rdm_admin::storage::NodesStorage::put_node(&store, &row));
+        assert!(std::future::Future::poll(put, &mut std::task::Context::from_waker(std::task::Waker::noop())).is_ready(), "the memory store's put is ready at once");
+    }
+    Some(Arc::new(store))
 }
 
 /// The `JoinService` of an admin whose node row at `mesh1.node.1` is `row`, its installs logged in `log`.
@@ -551,8 +555,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted());
         let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&rdm_admin::store_root::StoreRoot::at(&store), &writer).await.unwrap());
         let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Leaving);
-        let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
-        written.put(&*storage, &row).await.unwrap();
+        storage.put_node(&row).await.unwrap();
         let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");
         use std::io::Write as _;
         std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"name":"mesh1.node.9""#).unwrap();
@@ -560,7 +563,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         let joins = Arc::new(Joins::default());
         let mut service = service_over(joins.clone(), Arc::default(), row);
         // Wired as the admin's boot wires it: the records its writer holds.
-        service.nodes = Some((storage.clone(), written.clone()));
+        service.nodes = Some(storage.clone());
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34571");
         let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), listeners: Vec::new() }).await;

@@ -74,8 +74,37 @@ fn capture(cell: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
 /// The fabric-primary `me` over `builds`, its accepted Build seeded from `t` and settled.
 async fn plane(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &PathName) -> Arc<ControlPlane> {
     let cp = plane_unbound(builds, t, me).await;
-    let _ = cp.node_rows.set(Arc::new(rdm_admin::storage::MemoryNodesStorage::default()));
+    let _ = cp.node_rows.set(Arc::new(TimedNodes::default()));
     cp
+}
+
+/// The rafka-time each node's latest line was written at in these cells: a file store's line carries
+/// its writer's rafka-time as its CloudEvents `time` (§6.9 "Age").
+fn line_times() -> &'static std::sync::Mutex<std::collections::HashMap<NodeId, u64>> {
+    static TIMES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<NodeId, u64>>> = std::sync::OnceLock::new();
+    TIMES.get_or_init(Default::default)
+}
+
+/// A memory nodes store whose point read answers each record with the time [`line_times`] holds for
+/// its latest line.
+#[derive(Default)]
+struct TimedNodes(rdm_admin::storage::MemoryNodesStorage);
+
+#[async_trait::async_trait]
+impl rdm_admin::storage::NodesStorage for TimedNodes {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<rdm_admin::storage::NodeLine>, rdm_admin::storage_error::StorageError> {
+        let time = line_times().lock().unwrap().get(node_id).map(|ms| rdm_admin::store_log::rfc3339(*ms));
+        Ok(self.0.node(node_id).await?.map(|l| rdm_admin::storage::NodeLine { time, ..l }))
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
+        self.0.nodes(mesh).await
+    }
+    async fn put_node(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_node(record).await
+    }
+    async fn records_at(&self, name: &PathName) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
+        self.0.records_at(name).await
+    }
 }
 
 /// [`plane`] with no node records bound: every record read is refused by name.
@@ -112,15 +141,14 @@ fn birth(t: &Topology, p: &PathName) -> (PathName, NodeId, IncarnationId) {
     (n.location(), n.node_id.clone(), n.incarnation_id.clone().unwrap())
 }
 
-/// A stop (`stop` true) or start of the exact birth, as its mesh-primary records it on the node record:
-/// a stop writes the stopped period's `stopped_at_rafka_ms` at `at_ms`, the start's ready clears it (D50).
+/// A stop (`stop` true) or start of the exact birth, as the node writes it on its own record at `at_ms`
+/// (Q356): a stop's `stopped`, the start's `ready`; the stopped period's age is the time of the latest
+/// line while its state is `stopped` (§6.9 "Age").
 async fn period(cp: &ControlPlane, _builds: &MemoryBuildStateAdapter, (path, node_id, incarnation): &(PathName, NodeId, IncarnationId), stop: bool, at_ms: u64) {
     let rows = cp.node_rows.get().expect("the plane binds the node records").clone();
-    let base = rdm_node::nodes_storage::fixture_record(&path.clone(), "node", node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-    rdm_admin::node_rows::WrittenRows::default()
-        .update(&*rows, node_id, Some(base), |r| r.birth_mut(incarnation, path).stopped_at_rafka_ms = stop.then_some(at_ms))
-        .await
-        .unwrap();
+    let record = rdm_node::nodes_storage::fixture_record(path, "node", node_id.clone(), incarnation.clone(), if stop { NodeStatus::Stopped } else { NodeStatus::Ready });
+    rows.put_node(&record).await.unwrap();
+    line_times().lock().unwrap().insert(node_id.clone(), at_ms);
 }
 
 fn now(cp: &ControlPlane) -> u64 {

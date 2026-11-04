@@ -17,7 +17,6 @@ use rdm_admin::model::{
     ProviderKind, ScopeStatus,
 };
 use rdm_admin::node_commands::NodeCommand;
-use rdm_admin::node_rows::{RowFor, WriteRecord as _};
 use rdm_admin::storage::{MemoryNodesStorage, NodeRecord, NodesStorage as _};
 use rdm_admin::topology::Topology;
 use rdm_core::status::ConnectionsReceipt;
@@ -318,7 +317,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 
         let store = Arc::new(MemoryNodesStorage::default());
         let mut initial_row = rdm_node::nodes_storage::fixture_record(&target_name.clone(), "node", target_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-        initial_row.birth_mut(&target_incarnation, &target_name);
+        initial_row.incarnation = target_incarnation.clone();
         store.put_node(&initial_row).await.unwrap();
 
         let view = Arc::new(RwLock::new(Topology {
@@ -342,7 +341,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             view,
             store.clone(),
         ));
-        rows.written().hold(&initial_row);
 
         let fact = RuntimeFact::of_this_process(deployment_id.as_str()).unwrap();
         let (pid, start) = match fact.locator {
@@ -453,7 +451,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 
         // Restore the live target row to Ready for the full delete run.
         store.put_node(&initial_row).await.unwrap();
-        rows.written().hold(&initial_row);
 
         // 2. When the provider reports Exited after terminate, node.delete composes node.stop,
         // verifies Exited, writes the row Deleted (keeping record & config, releasing name claim),
@@ -543,12 +540,10 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             .await
             .unwrap()
             .expect("deleted row must remain in store");
-        assert_eq!(deleted_row.status, NodeStatus::Deleted);
-        assert_eq!(deleted_row.births.last().map(|b| b.incarnation_id.clone()), Some(target_incarnation.clone()), "the deleted row keeps its record, its birth included");
+        assert_eq!(deleted_row.record.state, NodeStatus::Deleted);
+        assert_eq!(deleted_row.record.incarnation, target_incarnation, "the deleted record keeps every other field of the node's latest line");
         let successor_id = NodeId::mint();
-        rows.create_row(&target_name, "mesh1", "node", &successor_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), None, None, RowFor::Create)
-        .await
-        .expect("deleted row must release the name claim for a successor node_id");
+        assert_eq!(rdm_admin::node_rows::check_name(&*store, &target_name, &successor_id).await.unwrap(), Ok(()), "the deleted record releases the name for a successor node_id");
 
         // Birth removed from topology sink.
         assert_eq!(
@@ -755,7 +750,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
 
         let store = Arc::new(MemoryNodesStorage::default());
         let mut initial_row = rdm_node::nodes_storage::fixture_record(&target_name.clone(), "node", target_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-        initial_row.birth_mut(&target_incarnation, &target_name);
+        initial_row.incarnation = target_incarnation.clone();
         store.put_node(&initial_row).await.unwrap();
 
         let view = Arc::new(RwLock::new(Topology {
@@ -779,7 +774,6 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             view,
             store.clone(),
         ));
-        rows.written().hold(&initial_row);
 
         let fact = RuntimeFact::of_this_process(deployment_id.as_str()).unwrap();
         let (pid, start) = match fact.locator {
@@ -926,7 +920,6 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         // fabricating a `stopped` event, and the delete proceeds to `TerminateRuntime`, verifies `Exited`,
         // and completes `NodeDeleted`.
         store.put_node(&initial_row).await.unwrap();
-        rows.written().hold(&initial_row);
         events.events.lock().unwrap().clear();
 
         let build_id_live = BuildId::mint();

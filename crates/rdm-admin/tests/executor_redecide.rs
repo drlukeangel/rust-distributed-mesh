@@ -197,15 +197,10 @@ impl DeploymentProvider for Fleet {
                     let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
                     if !withheld && matches!(joins.standing(&digest, &[]), rdm_admin::join::Standing::Deployed { .. }) {
                         joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
-                        let bound = rdm_node::nodes_storage::NodeRecord {
-                            birth: rdm_node::node_records::RecordBirth { node_id: digest.node.node_id.clone(), incarnation_id: digest.node.incarnation.clone() },
-                            config: Default::default(),
-                            tags: Default::default(),
-                            endpoint_id: Some(digest.node.endpoint_id.clone()),
-                            transport_addr: Some(digest.node.transport_addr),
-                            listeners: Vec::new(),
-                        };
-                        rdm_admin::storage::NodesStorage::put_properties(&*store, &bound).await.unwrap();
+                        // The node's own record, its first line at its start (Q356).
+                        let mut bound = rdm_node::nodes_storage::fixture_record(&digest.node.location(), &digest.node.r#type, digest.node.node_id.clone(), digest.node.incarnation.clone(), rdm_admin::model::NodeStatus::Pending);
+                        (bound.endpoint_id, bound.transport_addr) = (digest.node.endpoint_id.clone(), digest.node.transport_addr);
+                        rdm_admin::storage::NodesStorage::put_node(&*store, &bound).await.unwrap();
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;

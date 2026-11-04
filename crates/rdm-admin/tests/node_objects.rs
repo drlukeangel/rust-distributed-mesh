@@ -113,6 +113,13 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
 }
 
+/// The incarnation each launch of these cells was handed, by node id (`RDM_NODE_ID`,
+/// `RDM_INCARNATION_ID` in its launch): the birth the node's own report names.
+fn launched() -> &'static Mutex<std::collections::HashMap<String, IncarnationId>> {
+    static LAUNCHED: OnceLock<Mutex<std::collections::HashMap<String, IncarnationId>>> = OnceLock::new();
+    LAUNCHED.get_or_init(Default::default)
+}
+
 /// A provider whose runtime stays up: the node's own report is fed by the test.
 struct Up;
 #[async_trait::async_trait]
@@ -124,6 +131,9 @@ impl DeploymentProvider for Up {
         "node-objects".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
+        if let (Some(node_id), Some(incarnation)) = (spec.env.get(rdm_core::launch::ENV_NODE_ID), spec.env.get(rdm_core::launch::ENV_INCARNATION)) {
+            launched().lock().unwrap().insert(node_id.clone(), IncarnationId::parse(incarnation).expect("the launch's incarnation"));
+        }
         Ok(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("node-objects".into()) })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
@@ -427,11 +437,13 @@ impl Rig {
             };
             let done = |step: &str| view.completed(&op.to_string(), step);
             if done("AllocateIdentity") && done("PrepareStorage") && done("MakeRuntimeFactAvailableToBirth") {
-                // The birth as the create made it durable (D58, D67): the node.id the create names, the
-                // incarnation the node record's newest birth, the endpoint the transport key in its data dir.
+                // The birth as the create launched it (D58, D67): the node.id the create names, the
+                // incarnation its launch handed the node, the endpoint the transport key in its data dir.
                 let node_id = view.topology.created_id(name).expect("the Build creates the node").clone();
-                let rows = self.sink.1.get().expect("the rig's node rows");
-                let incarnation = rows.written().row_of(&node_id).and_then(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone()))).expect("the create wrote the node record");
+                let Some(incarnation) = launched().lock().unwrap().get(node_id.as_str()).cloned() else {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    continue;
+                };
                 let data_dir = rdm_admin::deployment::node_data_dir(&self.data_root, &node_id);
                 let endpoint_id = rdm_admin::deployment::pipeline::endpoint_id(&data_dir).expect("the create wrote the transport key");
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
