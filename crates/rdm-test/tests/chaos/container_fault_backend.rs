@@ -541,8 +541,8 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         let after_cut = |name: &str| named(&spans, name).into_iter().filter(|sp| start(sp) >= cut_at).collect::<Vec<&Value>>();
         let inspections: Vec<&Value> = after_cut("rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| attr(sp, "node_id") == target_id && attr(sp, "caller").is_empty()).collect();
         let submits: Vec<&Value> = after_cut("rdm.node_admin.node.update.via-node-recovery");
-        let deletes: Vec<&Value> = after_cut("rdm.node_admin.node.delete.via-build");
-        let creates: Vec<&Value> = after_cut("rdm.node_admin.node.create.via-build");
+        let deletes: Vec<&Value> = after_cut("rdm.node_admin.node.delete.via-node-recovery");
+        let creates: Vec<&Value> = after_cut("rdm.node_admin.node.create.via-node-recovery");
         let deleted_applied: Vec<&Value> = after_cut("rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| attr(sp, "node_id") == target_id).collect();
         let old_signal: Vec<&Value> = after_cut("rdm.mesh.node.delete.via-signal").into_iter().filter(|sp| attr(sp, "incarnation_id") == target_inc).collect();
         let deleted_birth_refusals: Vec<Value> = spans.iter().filter(|sp| start(sp) >= cut_at && sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth"))).map(|sp| span_row(sp, &["node", "node_id", "member", "reason"])).collect();
