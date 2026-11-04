@@ -713,5 +713,5 @@ pub async fn run() -> anyhow::Result<()> {
     let service = ExampleService::open(&dir, WORK_TIME).map_err(|e| anyhow::anyhow!("refusing to start: the operations record: {e}"))?;
     let hooks = NodeHooks::new(Arc::new(Resume(service.clone()))).with_on_node_ready(Arc::new(Caller { dir, mesh: launch.mesh.clone() }));
     let gate = hooks.gate();
-    rdm_node::run_with(Role::of(&launch), &[], hooks, move |b| register(b, service, gate)).await
+    rdm_node::run_with(Role::of(&launch), hooks, move |b| register(b, service, gate)).await
 }

@@ -1,9 +1,9 @@
 //! `node.tag.create` and `node.tag.delete`: label a node, find nodes by label, remove the label
 //! (node-rpc-envelope.md, node properties).
 //!
-//! A tag is a label on a node's row. The node's mesh-primary is the one writer of its mesh's rows, so
-//! both calls go to it for the node's exact birth (`node.id` and incarnation): it writes the row and the
-//! label's key of the tags index. A read finds nodes by label with a `tags` pair in its filter; one
+//! A tag is a label on a node's record. Both calls go to the node's mesh-primary for the node's exact
+//! birth (`node.id` and incarnation), which tells the node; the node writes the label on its own record
+//! (Q356). A read finds nodes by label with a `tags` pair in its filter; one
 //! pair's values are any of, repeated pairs are all of.
 //!
 //! Build: `cargo build --example node_tags` in `demo/`. Run against a live estate
@@ -29,7 +29,7 @@ async fn enter() -> Result<(Peers, PathName)> {
 
 /// A call to a node is for its exact birth: the node id and the incarnation its row holds.
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
+    let incarnation = n.incarnation.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
     let row = all.iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
-    let primary = all.iter().find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
+    let primary = all.iter().find(|n| n.mesh() == row.mesh() && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh()))?;
 
     let labels = BTreeSet::from([label.clone()]);
     let created = nodes.tags_create(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &labels).await?;

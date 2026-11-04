@@ -31,7 +31,7 @@ async fn enter() -> Result<(Peers, PathName)> {
 }
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
+    let incarnation = n.incarnation.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -63,10 +63,10 @@ async fn main() -> Result<()> {
     let row = rows.iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?;
     let receiver = rows.iter().find(|n| n.is_fabric_primary).ok_or_else(|| anyhow!("no row names the fabric-primary"))?;
     // A carrier: the one named, else a ready node-admin of another mesh than the fabric-primary's.
-    let ready_admin_elsewhere = |n: &&NodeView| n.r#type == "node-admin" && n.mesh != receiver.mesh && n.incarnation_id.is_some() && !n.stopped;
+    let ready_admin_elsewhere = |n: &&NodeView| n.r#type == "node-admin" && n.mesh() != receiver.mesh() && n.incarnation.is_some() && n.state != rdm_client::NodeStatus::Stopped;
     let carrier_row = match &forced {
         Some(c) => rows.iter().find(|n| &n.location() == c).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", c.path, c.name))?,
-        None => rows.iter().find(ready_admin_elsewhere).ok_or_else(|| anyhow!("{} holds no node-admin outside {} to carry the call", fabric.name, receiver.mesh))?,
+        None => rows.iter().find(ready_admin_elsewhere).ok_or_else(|| anyhow!("{} holds no node-admin outside {} to carry the call", fabric.name, receiver.mesh()))?,
     };
 
     let mut config = row.config.clone();

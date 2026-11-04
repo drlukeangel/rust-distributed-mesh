@@ -65,9 +65,9 @@ async fn main() -> Result<()> {
     let admin_row = all.iter().find(|n| n.name == birth.name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", birth.path, birth.name))?;
     let member = all
         .iter()
-        .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+        .find(|n| n.r#type != "node-admin" && n.state == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready role member in estate"))?;
-    let admin_dir = Path::new(admin_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
+    let admin_dir = Path::new(admin_row.storage.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
 
     let choice = CertChoice::from_material(admin_dir, &birth.mesh, false, |_| None).map_err(|e| anyhow!(e))?;
     let CertChoice::Ca { ref secret, .. } = choice else { return Err(anyhow!("expected CertChoice::Ca")) };
@@ -75,18 +75,18 @@ async fn main() -> Result<()> {
     let time = RafkaTime::unadopted();
     adopt_own_clock(&tracing::Span::none(), &time, &birth.node_id.to_string(), "example");
     let issuer = choice.issuer(admin_dir, false, time.clone()).map_err(|e| anyhow!(e))?;
-    let inc = member.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id"))?;
+    let inc = member.incarnation.clone().ok_or_else(|| anyhow!("no incarnation_id"))?;
     let ep = member.endpoint_id.clone().ok_or_else(|| anyhow!("no endpoint_id"))?;
     let issue = issuer
         .issue_member(&BirthIdentity {
             node_id: member.node_id.clone(),
             incarnation: inc.clone(),
             path: member.path.clone(), name: member.name.clone(),
-            mesh: member.mesh.clone(),
+            mesh: member.mesh().clone(),
             endpoint_key: rdm_core::EndpointId(ep),
         })
         .map_err(|e| anyhow!("{e}"))?;
-    let caller = Birth { mesh: member.mesh.clone(), r#type: member.r#type.clone(), path: member.path.clone(), name: member.name.clone(), node_id: member.node_id.clone(), incarnation: inc };
+    let caller = Birth { mesh: member.mesh().clone(), r#type: member.r#type.clone(), path: member.path.clone(), name: member.name.clone(), node_id: member.node_id.clone(), incarnation: inc };
     let admitter = CertAdmitter::new(RootSet::new(vec![root_pub]), time.clone());
     let (expires_at, clock) = admitter.verify(&caller, b"demo/echo", &issue.bytes).map_err(|e| anyhow!(e))?;
     let empty_err = admitter.verify(&caller, b"demo/echo", &[]).unwrap_err();

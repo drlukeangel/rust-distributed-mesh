@@ -35,7 +35,7 @@ async fn enter() -> Result<(Peers, PathName)> {
 }
 
 fn adopt_birth(row: &NodeView) -> Result<(ProcessDeploymentProvider, rdm_admin::deployment::provider::DeploymentHandle)> {
-    let dir = row.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", row.path, row.name))?;
+    let dir = row.storage.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", row.path, row.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir)).ok_or_else(|| anyhow!("no runtime.json in {dir}"))?.map_err(|e| anyhow!(e))?;
     let provider = ProcessDeploymentProvider::new();
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
@@ -52,33 +52,33 @@ async fn main() -> Result<()> {
     let fp = rows.iter().find(|n| n.is_fabric_primary).ok_or_else(|| anyhow!("no row names the fabric-primary"))?.clone();
     let executor = rows
         .iter()
-        .find(|n| n.r#type == "node-admin" && n.mesh == fp.mesh && n.node_id != fp.node_id && n.status == NodeStatus::Ready)
-        .or_else(|| rows.iter().find(|n| n.r#type == "node-admin" && n.mesh != fp.mesh && n.is_primary && n.status == NodeStatus::Ready))
+        .find(|n| n.r#type == "node-admin" && n.mesh() == fp.mesh() && n.node_id != fp.node_id && n.state == NodeStatus::Ready)
+        .or_else(|| rows.iter().find(|n| n.r#type == "node-admin" && n.mesh() != fp.mesh() && n.is_primary && n.state == NodeStatus::Ready))
         .ok_or_else(|| anyhow!("no surviving ready node-admin to run fabric recovery"))?
         .clone();
 
     let before = Fabrics::new(peers.carrier_at(executor.location())).get(&Filter::new()).await?.into_iter().next().and_then(|f| f.build_id);
     let (provider, handle) = adopt_birth(&fp)?;
-    println!("before: fabric-primary path {:?}, name {:?} (node_id {}, incarnation {:?}, pid {:?}); executor path {:?}, name {:?}", fp.path, fp.name, fp.node_id, fp.incarnation_id, handle.pid, executor.path, executor.name);
+    println!("before: fabric-primary path {:?}, name {:?} (node_id {}, incarnation {:?}, pid {:?}); executor path {:?}, name {:?}", fp.path, fp.name, fp.node_id, fp.incarnation, handle.pid, executor.path, executor.name);
     provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.map_err(|e| anyhow!("{e}"))?;
     println!("terminated path {:?}, name {:?}; awaiting fabric recovery via path {:?}, name {:?}", fp.path, fp.name, executor.path, executor.name);
 
     let obs_nodes = Nodes::new(peers.carrier_at(executor.location()));
     let (fp_name, old_id) = (fp.location(), fp.node_id.clone());
-    let filter = Filter::new().eq("mesh", [fp.mesh.clone()]);
+    let filter = Filter::new().eq("mesh", [fp.mesh().clone()]);
     let recovered = await_fact(
         "node",
         &format!("path {:?}, name {:?}", executor.path, executor.name),
         "re-created fabric-primary ready and restored",
         Duration::from_secs(90),
         || obs_nodes.get(&filter),
-        |list| list.iter().any(|n| n.location() == fp_name && n.node_id != old_id && n.status == NodeStatus::Ready && n.is_primary && n.is_fabric_primary),
-        |list| list.iter().find(|n| n.location() == fp_name).map(|n| format!("path {:?}, name {:?} {:?} node_id={} primary={} fabric_primary={}", n.path, n.name, n.status, n.node_id, n.is_primary, n.is_fabric_primary)).unwrap_or_else(|| format!("no path {:?}, name {:?}", fp_name.path, fp_name.name)),
+        |list| list.iter().any(|n| n.location() == fp_name && n.node_id != old_id && n.state == NodeStatus::Ready && n.is_primary && n.is_fabric_primary),
+        |list| list.iter().find(|n| n.location() == fp_name).map(|n| format!("path {:?}, name {:?} {:?} node_id={} primary={} fabric_primary={}", n.path, n.name, n.state, n.node_id, n.is_primary, n.is_fabric_primary)).unwrap_or_else(|| format!("no path {:?}, name {:?}", fp_name.path, fp_name.name)),
     )
     .await?;
     peers.learn_known(&recovered);
     let restored = recovered.iter().find(|n| n.name == fp.name && n.node_id != old_id).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?} at a new node_id", fp.path, fp.name))?;
-    println!("restored: path {:?}, name {:?} {:?}, new node_id {}, incarnation {:?}, is_primary {}, is_fabric_primary {}", restored.path, restored.name, restored.status, restored.node_id, restored.incarnation_id, restored.is_primary, restored.is_fabric_primary);
+    println!("restored: path {:?}, name {:?} {:?}, new node_id {}, incarnation {:?}, is_primary {}, is_fabric_primary {}", restored.path, restored.name, restored.state, restored.node_id, restored.incarnation, restored.is_primary, restored.is_fabric_primary);
 
     let fabric = Fabrics::new(peers.carrier_at(restored.location()))
         .fact("fabric ready under restored primary", Duration::from_secs(30), |f| f.status == ScopeStatus::Ready && f.fabric_primary.as_ref() == Some(&restored.node_id))

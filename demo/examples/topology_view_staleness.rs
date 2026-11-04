@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage topology_view_staleness [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.r#type != "node-admin" && n.state == NodeStatus::Ready)
             .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
         .into_iter()
         .find(|n| n.location() == target)
         .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
-    let data_dir = before.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.path, target.name))?;
+    let data_dir = before.storage.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.path, target.name))?;
     let fact = RuntimeFact::read_record(Path::new(data_dir))
         .ok_or_else(|| anyhow!("no runtime.json in {data_dir}"))?
         .map_err(|e| anyhow!(e))?;
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     };
     println!(
         "before: path={:?} name={:?} node_id={} incarnation={:?} status={:?} pid={pid}",
-        before.path, before.name, before.node_id, before.incarnation_id, before.status
+        before.path, before.name, before.node_id, before.incarnation, before.state
     );
 
     // The member goes silent: its runtime ends through the deployment provider, as an application's own
@@ -95,14 +95,14 @@ async fn main() -> Result<()> {
                     detail: format!("no row for path {:?}, name {:?}", target.path, target.name),
                 })
         },
-        |n| n.status == NodeStatus::PendingReconnect,
-        |n| format!("status={:?}", n.status),
+        |n| n.state == NodeStatus::PendingReconnect,
+        |n| format!("status={:?}", n.state),
     )
     .await;
     let stale = stale_res?;
     println!(
         "stale past staleness_floor: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
-        stale.path, stale.name, stale.node_id, stale.incarnation_id, stale.status
+        stale.path, stale.name, stale.node_id, stale.incarnation, stale.state
     );
 
     let resumed = await_fact(
@@ -121,13 +121,13 @@ async fn main() -> Result<()> {
                     detail: format!("no row for path {:?}, name {:?}", target.path, target.name),
                 })
         },
-        |n| n.status == NodeStatus::Ready && n.node_id != before.node_id,
-        |n| format!("status={:?} node_id={}", n.status, n.node_id),
+        |n| n.state == NodeStatus::Ready && n.node_id != before.node_id,
+        |n| format!("status={:?} node_id={}", n.state, n.node_id),
     )
     .await?;
     println!(
         "recovered after the silence: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
-        resumed.path, resumed.name, resumed.node_id, resumed.incarnation_id, resumed.status
+        resumed.path, resumed.name, resumed.node_id, resumed.incarnation, resumed.state
     );
     Ok(())
 }

@@ -41,11 +41,11 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_runtime_inspect [<path> <name>]")),
         _ => rows
             .iter()
-            .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.r#type != "node-admin" && n.state == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in the estate"))?,
     };
-    let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("missing data_dir"))?;
-    let inc = target.incarnation_id.as_ref().ok_or_else(|| anyhow!("missing incarnation_id"))?;
+    let dir = target.storage.data_dir.as_deref().ok_or_else(|| anyhow!("missing data_dir"))?;
+    let inc = target.incarnation.as_ref().ok_or_else(|| anyhow!("missing incarnation_id"))?;
     let fact = RuntimeFact::read_record(Path::new(dir))
         .ok_or_else(|| anyhow!("no runtime.json in {dir}"))?
         .map_err(|e| anyhow!(e))?;

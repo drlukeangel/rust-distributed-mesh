@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         .find(|n| n.is_fabric_primary)
         .ok_or_else(|| anyhow!("no row names the fabric-primary"))?;
     let store_dir = fp
-        .data_dir
+        .storage.data_dir
         .as_deref()
         .and_then(|d| Path::new(d).parent())
         .map(|root| root.join("store"))
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     let base: BTreeMap<&str, String> = BTreeMap::from([
         ("RDM_FABRIC", fabric.name.clone()),
         ("RDM_FABRIC_ID", fabric.id.to_string()),
-        ("RDM_MESH", fp.mesh.clone()),
+        ("RDM_MESH", fp.mesh().clone()),
         ("RDM_NODE_PATH", fp.path.clone()),
         ("RDM_NODE_NAME", fp.name.clone()),
         ("RDM_STORE_DIR", store_dir.display().to_string()),

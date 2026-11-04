@@ -23,12 +23,12 @@ use rdm_core::ConnectionId;
 
 fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
     Ok(ConnectionEnd {
-        mesh: n.mesh.clone(),
+        mesh: n.mesh().clone(),
         r#type: n.r#type.clone(),
         path: n.path.clone(), name: n.name.clone(),
         node_id: n.node_id.clone(),
         incarnation: Some(
-            n.incarnation_id
+            n.incarnation
                 .clone()
                 .ok_or_else(|| anyhow!("path {:?}, name {:?} has no incarnation_id", n.path, n.name))?,
         ),
@@ -46,16 +46,16 @@ async fn main() -> Result<()> {
 
     let src = all
         .iter()
-        .find(|n| n.r#type == "compute" && n.status == NodeStatus::Ready)
+        .find(|n| n.r#type == "compute" && n.state == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready compute node in estate"))?;
     let dst = all
         .iter()
-        .find(|n| n.r#type == "broker" && n.status == NodeStatus::Ready && n.mesh != src.mesh)
-        .or_else(|| all.iter().find(|n| n.r#type == "broker" && n.status == NodeStatus::Ready))
+        .find(|n| n.r#type == "broker" && n.state == NodeStatus::Ready && n.mesh() != src.mesh())
+        .or_else(|| all.iter().find(|n| n.r#type == "broker" && n.state == NodeStatus::Ready))
         .ok_or_else(|| anyhow!("no Ready broker node in estate"))?;
     let gw = all
         .iter()
-        .find(|n| n.r#type == "gateway" && n.status == NodeStatus::Ready)
+        .find(|n| n.r#type == "gateway" && n.state == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready gateway node in estate"))?;
 
     let (src_end, dst_end, gw_end) = (to_end(src)?, to_end(dst)?, to_end(gw)?);

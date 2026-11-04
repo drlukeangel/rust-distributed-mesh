@@ -73,7 +73,7 @@ async fn estate(test: &str) -> Estate {
         .resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("gateway", 2), ("broker", 1)])] })
         .await;
     for node in [broker(), gateway(), carrier()] {
-        estate.until_node(&node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+        estate.until_node(&node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready).map(|_| ())).await;
     }
     estate
 }

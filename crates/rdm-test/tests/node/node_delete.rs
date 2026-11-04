@@ -143,20 +143,25 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| rdm_test::estate::of_node(sp, &victim_at, &victim_id)).collect();
     assert_eq!(deleting.len(), 1, "one pre-notice for one deletion: {deleting:?}");
     assert_eq!(deleted.len(), 1, "one departure for one deletion: {deleted:?}");
-    // The node's row (ops-naming "Node data", the delete point; R13): the mesh's primary, which
-    // executes the delete, writes it with status Deleted at its NodeDeleted from the exact record it
-    // acted on; the node born after it at the same path.name writes its row there at its create and
-    // writes its own record from its create spec, nothing seeded from the Deleted row (the Deleted
-    // record released the name: node-delete.md step 3).
+    // The node's record (ops-naming "Node data", the delete point; R13): the mesh's primary, which
+    // executes the delete, writes it Deleted at its NodeDeleted from the record's latest line, the node
+    // being gone (Q356); the node born after it at the same path.name writes its own record from its
+    // create spec at its start, nothing taken from the Deleted record (the Deleted record released the
+    // name: node-delete.md step 3).
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &victim_at)).collect();
-    assert_eq!(row_deleted.len(), 1, "one Deleted row for one delete: {row_deleted:?}");
+    assert_eq!(row_deleted.len(), 1, "one Deleted record line for one delete: {row_deleted:?}");
     let a = &row_deleted[0]["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["node_path"]), s(&a["node_name"])), ("row-deleted".to_string(), victim_id.clone(), "mesh2.node-admin".to_string(), "1".to_string()), "{a}");
-    let row_created: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "subject", &victim_at) && sp["attributes"]["node_id"] == newcomer2["node_id"] && sp["attributes"]["moment"] == "create").collect();
-    assert_eq!(row_created.len(), 1, "the newcomer at {victim_at:?} writes its row once: {row_created:?}");
-    let a = &row_created[0]["attributes"];
-    assert_eq!((s(&a["outcome"]), s(&a["seeded_from"])), ("row-written".to_string(), String::new()), "a plain create seeds nothing from the Deleted row: {a}");
-    estate.artifact("node-rows.json", &json!({"deleted": row_deleted[0], "created": row_created[0]}));
+    let victim_lines = estate.record_lines(&victim_id.parse().expect("the victim's node id"));
+    let (deleted_by, deleted_record) = victim_lines.last().cloned().expect("the victim's record");
+    let mesh2_primary_id = before.iter().find(|n| location(n) == Estate::path("mesh2.node-admin", "1")).map(|n| s(&n["node_id"])).expect("mesh2's primary");
+    assert_eq!((deleted_record.state, deleted_by.as_str()), (rdm_core::model::NodeStatus::Deleted, mesh2_primary_id.as_str()), "the victim's last line is Deleted, its mesh-primary's: {victim_lines:?}");
+    let newcomer_id: rdm_core::NodeId = s(&newcomer2["node_id"]).parse().expect("the newcomer's node id");
+    let created = estate.record_lines(&newcomer_id);
+    let (first_by, first) = created.first().cloned().expect("the newcomer's record");
+    assert_eq!(first_by, newcomer_id.as_str(), "the newcomer writes its own record's first line: {created:?}");
+    assert!(first.config.is_empty() && first.tags.is_empty(), "a plain create takes nothing from the Deleted record: {first:?}");
+    estate.artifact("node-rows.json", &json!({"deleted": row_deleted[0], "victim_lines": victim_lines, "created": created}));
     assert_eq!(deleting[0]["attributes"]["build_id"], build_id);
     assert_eq!(deleted[0]["attributes"]["operation"], "node.delete");
     assert!(s(&deleted[0]["attributes"]["operation_subject"]).contains(&victim_id), "the delete is keyed by the victim's node id: {}", deleted[0]);

@@ -118,14 +118,15 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
     let views = admin.nodes().await?;
     let view: Vec<Value> = views
         .iter()
-        .map(|n| {
-            let n = serde_json::to_value(n).unwrap_or(Value::Null);
+        .map(|v| {
+            let n = serde_json::to_value(v).unwrap_or(Value::Null);
             let r#type = text(&n, "type").unwrap_or_default();
             let (p, fp) = (n["is_primary"].as_bool().unwrap_or(false), n["is_fabric_primary"].as_bool().unwrap_or(false));
+            // A node's mesh is its path's first location (Q366); the rest under the record's names.
             json!({
-                "path": n["path"], "name": n["name"], "type": r#type, "mesh": n["mesh"], "status": n["status"], "role": primary_label(&r#type, p, fp),
-                "is_primary": p, "is_fabric_primary": fp, "declared": n["declared"], "incarnation_id": n["incarnation_id"], "node_id": n["node_id"],
-                "has_runtime": n["data_dir"].is_string(),
+                "path": n["path"], "name": n["name"], "type": r#type, "mesh": v.mesh(), "state": n["state"], "role": primary_label(&r#type, p, fp),
+                "is_primary": p, "is_fabric_primary": fp, "incarnation": n["incarnation"], "node_id": n["node_id"],
+                "has_runtime": v.storage.data_dir.is_some(),
             })
         })
         .collect();

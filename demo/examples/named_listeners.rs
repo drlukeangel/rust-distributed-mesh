@@ -6,7 +6,7 @@
 //! declared name the birth's address with port 0 (`RDM_LISTENERS=client=<addr>:0`): RDM never invents
 //! a port. The gateway's node runtime binds each, keeps the binds open through its join and reports the
 //! ports the operating system picked; the join refuses a report that does not carry exactly the
-//! declared names, and the node's row publishes them (`NodeView::listeners`), which is where a client
+//! declared names, and the node writes them on its own record (`NodeView::listeners`), which is where a client
 //! finds the port. The application takes its bound listener from the running node and serves on it.
 //!
 //! This one executable is both halves, by the launch it is given: a launched gateway serves a one-line

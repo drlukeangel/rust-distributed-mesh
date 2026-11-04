@@ -75,27 +75,27 @@ async fn main() -> Result<()> {
             .find(|n| {
                 n.r#type != "node-admin"
                     && !n.is_primary
-                    && n.status == NodeStatus::Ready
+                    && n.state == NodeStatus::Ready
             })
             .ok_or_else(|| anyhow!("no ready secondary role node in the estate"))?
             .clone(),
     };
     println!(
-        "before stop: path {:?}, name {:?} status={:?} stopped={} node_id={}",
-        target.path, target.name, target.status, target.stopped, target.node_id
+        "before stop: path {:?}, name {:?} state={:?} node_id={}",
+        target.path, target.name, target.state, target.node_id
     );
 
     finish(&format!("node.stop path {:?}, name {:?}", target.path, target.name), nodes.stop(&target.location()).await?).await?;
-    let stopped_rows = nodes.get(&Filter::new().eq("mesh", [target.mesh.clone()])).await?;
+    let stopped_rows = nodes.get(&Filter::new().eq("mesh", [target.mesh().clone()])).await?;
     if let Some(s) = stopped_rows.iter().find(|n| n.location() == target.location()) {
         println!(
-            "after stop:  path {:?}, name {:?} status={:?} stopped={} inc={:?}",
-            s.path, s.name, s.status, s.stopped, s.incarnation_id
+            "after stop:  path {:?}, name {:?} state={:?} inc={:?}",
+            s.path, s.name, s.state, s.incarnation
         );
     }
 
     let target_name = target.location();
-    let filter = Filter::new().eq("mesh", [target.mesh.clone()]);
+    let filter = Filter::new().eq("mesh", [target.mesh().clone()]);
     await_fact(
         "node",
         "fabric-primary",
@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
         |list| {
             list.iter()
                 .find(|n| n.location() == target_name)
-                .map(|n| format!("path {:?}, name {:?} {:?} (stopped={})", n.path, n.name, n.status, n.stopped))
+                .map(|n| format!("path {:?}, name {:?} {:?}", n.path, n.name, n.state))
                 .unwrap_or_else(|| format!("path {:?}, name {:?} collected", target_name.path, target_name.name))
         },
     )

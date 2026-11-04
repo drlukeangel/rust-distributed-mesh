@@ -48,20 +48,20 @@ async fn main() -> Result<()> {
         Some(m) => m,
         None => all
             .iter()
-            .find(|n| n.mesh != birth.mesh && n.r#type == "node-admin" && n.status == NodeStatus::Ready)
-            .map(|n| n.mesh.clone())
+            .find(|n| n.mesh() != birth.mesh && n.r#type == "node-admin" && n.state == NodeStatus::Ready)
+            .map(|n| n.mesh().clone())
             .ok_or_else(|| anyhow!("no Ready peer mesh found in estate"))?,
     };
     let primary = all
         .iter()
-        .find(|n| n.mesh == peer_mesh && n.r#type == "node-admin" && n.is_primary)
+        .find(|n| n.mesh() == peer_mesh && n.r#type == "node-admin" && n.is_primary)
         .ok_or_else(|| anyhow!("no mesh-primary in {peer_mesh}"))?;
     let replica = all
         .iter()
-        .find(|n| n.mesh == peer_mesh && n.r#type == "node-admin" && !n.is_primary)
+        .find(|n| n.mesh() == peer_mesh && n.r#type == "node-admin" && !n.is_primary)
         .ok_or_else(|| anyhow!("no secondary node-admin in {peer_mesh}"))?;
 
-    let admin_dir = Path::new(fp_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
+    let admin_dir = Path::new(fp_row.storage.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
     let choice = CertChoice::from_material(admin_dir, &birth.mesh, false, |_| None).map_err(|e| anyhow!(e))?;
     let time = RafkaTime::unadopted();
     adopt_own_clock(&tracing::Span::none(), &time, &birth.node_id.to_string(), "example");
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
 
     // The CA the issuer is minted under rides with it (Q275), as cert_renewal sends it.
     let ca_key = CaKeyHex(issuer.ca_key_of(&key).unwrap_or_default());
-    let primary_inc = primary.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", primary.path, primary.name))?;
+    let primary_inc = primary.incarnation.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", primary.path, primary.name))?;
     let req_primary = StatusRequest::UpdateIssuer {
         node_id: primary.node_id.clone(),
         incarnation: primary_inc,
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
         primary.path, primary.name, primary.node_id
     );
 
-    let replica_inc = replica.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", replica.path, replica.name))?;
+    let replica_inc = replica.incarnation.clone().ok_or_else(|| anyhow!("no incarnation_id on path {:?}, name {:?}", replica.path, replica.name))?;
     let req_replica = StatusRequest::UpdateIssuer {
         node_id: replica.node_id.clone(),
         incarnation: replica_inc,

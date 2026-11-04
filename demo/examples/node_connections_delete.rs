@@ -27,7 +27,7 @@ use rdm_core::status::ConnectionScope;
 use rdm_transport::NodeTarget;
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
+    let incarnation = n.incarnation.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth {
         target: NodeTarget::ExactNode(n.node_id.clone()),
         node_id: n.node_id.clone(),
@@ -55,15 +55,15 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_connections_delete [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.r#type != "node-admin" && n.state == NodeStatus::Ready)
             .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
     let row = all.iter().find(|n| n.location() == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     let primary = all
         .iter()
-        .find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary)
-        .ok_or_else(|| anyhow!("no row names {}'s mesh-primary", row.mesh))?;
+        .find(|n| n.mesh() == row.mesh() && n.r#type == "node-admin" && n.is_primary)
+        .ok_or_else(|| anyhow!("no row names {}'s mesh-primary", row.mesh()))?;
     let birth_target = exact(row)?;
 
     let held_before = connections.get(&birth_target, &Filter::new()).await?;
@@ -101,12 +101,12 @@ async fn main() -> Result<()> {
         .into_iter()
         .find(|n| n.location() == target)
         .ok_or_else(|| anyhow!("no row for path {:?}, name {:?} after node.connection.delete", target.path, target.name))?;
-    assert_eq!(after.status, NodeStatus::ConnectionsDeleted);
+    assert_eq!(after.state, NodeStatus::ConnectionsDeleted);
     assert_eq!(after.node_id, row.node_id);
-    assert_eq!(after.incarnation_id, row.incarnation_id);
+    assert_eq!(after.incarnation, row.incarnation);
     println!(
         "after node.connection.delete: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
-        after.path, after.name, after.node_id, after.incarnation_id, after.status
+        after.path, after.name, after.node_id, after.incarnation, after.state
     );
     Ok(())
 }

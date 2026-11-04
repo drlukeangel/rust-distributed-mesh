@@ -36,10 +36,9 @@ export function Nodes() {
             <div className="muted mono" style={{ fontSize: 11, marginTop: 4 }}>
               type: {n.type}<br />
               mesh: {n.mesh}<br />
-              status: {n.status}<br />
+              state: {n.state}<br />
               role: {n.role || "member"}<br />
-              declared: {n.declared ?? "—"}<br />
-              incarnation: {n.incarnation_id ? n.incarnation_id.slice(0, 12) : "—"}
+              incarnation: {n.incarnation ? n.incarnation.slice(0, 12) : "—"}
             </div>
             <div className="row" style={{ marginTop: 8 }}>
               <button onClick={() => act("stop", n, () => api.stop(n))}>stop</button>

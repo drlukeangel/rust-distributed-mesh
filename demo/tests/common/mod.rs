@@ -56,7 +56,7 @@ pub async fn estate(feature: &str, test: &str, shape: &[(&str, u32)]) -> Estate 
 
 /// `node` Ready, awaited.
 pub async fn ready(estate: &Estate, node: &PathName) {
-    estate.until_node(node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready).map(|_| ())).await;
 }
 
 /// The node id of `node`'s current birth.

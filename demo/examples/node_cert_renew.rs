@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_cert_renew [<path> <name>]")),
         _ => all
             .iter()
-            .find(|n| n.mesh == birth.mesh && n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh() == birth.mesh && n.r#type != "node-admin" && n.state == NodeStatus::Ready)
             .map(|n| n.location())
             .ok_or_else(|| anyhow!("no Ready role member in {}", birth.mesh))?,
     };
@@ -58,20 +58,20 @@ async fn main() -> Result<()> {
         member.path, member.name, before_cert.issued_at, before_cert.expires_at, before_cert.issuer_expires_at
     );
 
-    let admin_dir = Path::new(admin_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
+    let admin_dir = Path::new(admin_row.storage.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
     let choice = CertChoice::from_material(admin_dir, &birth.mesh, false, |_| None).map_err(|e| anyhow!(e))?;
     let time = RafkaTime::unadopted();
     adopt_own_clock(&tracing::Span::none(), &time, &birth.node_id.to_string(), "example");
     let _ = time.observe(time.now_rafka_ms() + 2_000);
     let issuer = choice.issuer(admin_dir, false, time).map_err(|e| anyhow!(e))?;
 
-    let inc = member.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id"))?;
+    let inc = member.incarnation.clone().ok_or_else(|| anyhow!("no incarnation_id"))?;
     let ep = member.endpoint_id.clone().ok_or_else(|| anyhow!("no endpoint_id"))?;
     let identity = BirthIdentity {
         node_id: member.node_id.clone(),
         incarnation: inc.clone(),
         path: member.path.clone(), name: member.name.clone(),
-        mesh: member.mesh.clone(),
+        mesh: member.mesh().clone(),
         endpoint_key: EndpointId(ep),
     };
     let issue = issuer.renewal(&identity).map_err(|e| anyhow!("{e}"))?;

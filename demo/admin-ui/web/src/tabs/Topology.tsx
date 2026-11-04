@@ -45,7 +45,7 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
           label: (
             <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.path}-${n.name}`}>
               <div className="mono" style={{ fontSize: 11, color: "#c9d1d9" }}><NodeName node={n} /></div>
-              <div style={{ fontSize: 10, color: "#8b949e" }}>{n.type} · {n.status}</div>
+              <div style={{ fontSize: 10, color: "#8b949e" }}>{n.type} · {n.state}</div>
               {n.role && <div style={{ fontSize: 10, color: "#e3b341" }} data-testid={`role-${n.path}-${n.name}`}>{n.role}</div>}
             </div>
           ),

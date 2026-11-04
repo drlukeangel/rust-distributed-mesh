@@ -8,7 +8,7 @@
 //! written as one `rdm.node.investigated` event naming `recreate`, and the mesh-primary runs the
 //! recovery itself, its own workflow and never a Build (Q342): `node.delete` of the exited birth, then
 //! `node.create` at the same `(path, name)` over the inherited `data_dir`, minting a new `node_id` and
-//! `incarnation_id`. The member may be of any mesh: its own mesh-primary recovers it. The fabric's
+//! `incarnation`. The member may be of any mesh: its own mesh-primary recovers it. The fabric's
 //! current Build is the one it named before the exit, and none of its step events is of the new node.
 //!
 //! Build: `cargo build --example node_recovery` in `demo/`. Run against a live estate:
@@ -60,16 +60,16 @@ async fn main() -> Result<()> {
         (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_recovery [<path> <name>]")),
         _ => rows
             .iter()
-            .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+            .find(|n| n.r#type != "node-admin" && n.state == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in the estate"))?
             .clone(),
     };
     let dir = target
-        .data_dir
+        .storage.data_dir
         .as_deref()
         .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", target.path, target.name))?;
     let incarnation = target
-        .incarnation_id
+        .incarnation
         .as_ref()
         .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no incarnation", target.path, target.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir))
@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
     let before_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
     println!(
         "before: path {:?}, name {:?} {:?}, node_id {}, incarnation {}, data_dir {dir}, inspect {before_inspect:?}",
-        target.path, target.name, target.status, target.node_id, incarnation
+        target.path, target.name, target.state, target.node_id, incarnation
     );
 
     provider
@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
     println!("terminated path {:?}, name {:?}: inspect is now {after_inspect:?}; awaiting node recovery", target.path, target.name);
 
     let (target_name, old_id) = (target.location(), target.node_id.clone());
-    let filter = Filter::new().eq("mesh", [target.mesh.clone()]);
+    let filter = Filter::new().eq("mesh", [target.mesh().clone()]);
     let recovered = await_fact(
         "node",
         "fabric-primary",
@@ -101,13 +101,13 @@ async fn main() -> Result<()> {
         || nodes.get(&filter),
         |list| {
             list.iter().any(|n| {
-                n.location() == target_name && n.node_id != old_id && n.status == NodeStatus::Ready
+                n.location() == target_name && n.node_id != old_id && n.state == NodeStatus::Ready
             })
         },
         |list| {
             list.iter()
                 .find(|n| n.location() == target_name)
-                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.path, n.name, n.status, n.node_id))
+                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.path, n.name, n.state, n.node_id))
                 .unwrap_or_else(|| format!("no path {:?}, name {:?}", target_name.path, target_name.name))
         },
     )
@@ -120,11 +120,11 @@ async fn main() -> Result<()> {
         "recovered: path {:?}, name {:?} {:?}, new node_id {}, incarnation {:?}, inherited data_dir {:?} (same={})",
         row.path,
         row.name,
-        row.status,
+        row.state,
         row.node_id,
-        row.incarnation_id,
-        row.data_dir,
-        row.data_dir == target.data_dir
+        row.incarnation,
+        row.storage.data_dir,
+        row.storage.data_dir == target.storage.data_dir
     );
 
     let current = Builds::new(carrier).get(&Filter::new().eq("current", ["true"])).await?;

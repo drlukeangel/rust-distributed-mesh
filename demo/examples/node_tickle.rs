@@ -4,7 +4,7 @@
 //! Runs `tickle` against a live mesh member (direct probe), sends the same
 //! `ProbeNodeState` through an eligible peer carrier of the member's mesh via
 //! `TickleCalls::via_peer`, verifies `birth_answered`, and shows the refusal
-//! when a node record holds no `incarnation_id`.
+//! when a node's view holds no `incarnation`.
 
 use std::sync::Arc;
 

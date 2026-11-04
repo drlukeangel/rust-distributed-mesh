@@ -72,11 +72,11 @@ impl Admin {
         let accepted: BTreeSet<PathName> = self.build(&based_on).await?.nodes.into_iter().map(|spec| spec.location()).collect();
         let rows = self.rows().await?;
         let mut current = Current { paths: BTreeMap::new(), ids: BTreeMap::new(), rows: BTreeMap::new(), primaries: BTreeSet::new(), mesh_primaries: BTreeMap::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
-        for row in rows.into_iter().filter(|n| accepted.contains(&n.location()) && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
+        for row in rows.into_iter().filter(|n| accepted.contains(&n.location()) && !matches!(n.state, NodeStatus::Deleted | NodeStatus::Dead)) {
             if row.is_primary {
                 current.primaries.insert(row.location());
                 if row.r#type == "node-admin" {
-                    current.mesh_primaries.insert(row.mesh.clone(), row.node_id.clone());
+                    current.mesh_primaries.insert(row.mesh(), row.node_id.clone());
                 }
             }
             current.ids.insert(row.location(), row.node_id.clone());
@@ -85,8 +85,8 @@ impl Admin {
                 Some(ref b) => b,
                 None => &self.binding(&row.r#type, &current.image)?,
             };
-            let at = row.location();
-            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(at.clone(), &row.mesh, &row.r#type, executable.clone()) };
+            let (at, mesh) = (row.location(), row.mesh());
+            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(at.clone(), &mesh, &row.r#type, executable.clone()) };
             current.paths.insert(at, spec);
         }
         Ok(current)
@@ -168,12 +168,12 @@ impl Admin {
         Ok(out)
     }
 
-    /// The mesh the row at `node` names (a live birth's first), `None` when no row holds it or the rows
-    /// cannot be read: a node's mesh is its row's, never its `(path, name)`'s.
+    /// The mesh of the record at `node` (a live birth's first): its path's first location (Q366); `None`
+    /// when no record stands at it or the records cannot be read.
     pub async fn mesh_of(&self, node: &PathName) -> Option<String> {
         let rows = self.rows().await.ok()?;
         let at = || rows.iter().filter(|n| &n.location() == node);
-        at().find(|n| !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).map(|n| n.mesh.clone())
+        at().find(|n| !matches!(n.state, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).map(|n| n.mesh())
     }
 
     /// `node.get` with no pair: every node's row, the executable it records included.
@@ -186,18 +186,18 @@ impl Admin {
     /// admitted at any time (Q166).
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("node.get: {e:?}"))?;
-        let own = rows.iter().find(|n| n.location() == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
+        let own = rows.iter().find(|n| n.location() == self.entry && n.incarnation.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
         let primary = rows.iter().find(|n| n.r#type == "node-admin" && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
         config.insert(key.to_string(), value.to_string());
-        let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation_id.clone().expect("checked above") };
+        let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation.clone().expect("checked above") };
         let carrier = self.carrier();
         rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, config, &rdm_transport::CallOptions::default()).await.map_err(|e| format!("node.config.update: {e:?}"))
     }
 
     /// `node.connection.get { node }` of `n`'s exact birth.
     pub async fn connections(&self, n: &NodeView) -> Option<Result<ConnectionsView, CallEnd>> {
-        let incarnation = n.incarnation_id.clone()?;
+        let incarnation = n.incarnation.clone()?;
         let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
         Some(Connections::new(self.carrier()).get(&birth, &Filter::new()).await)
     }

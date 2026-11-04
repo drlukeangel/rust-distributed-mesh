@@ -56,13 +56,13 @@ async fn main() -> Result<()> {
 
     let member = all
         .iter()
-        .find(|n| n.r#type != "node-admin" && n.status == NodeStatus::Ready)
+        .find(|n| n.r#type != "node-admin" && n.state == NodeStatus::Ready)
         .ok_or_else(|| anyhow!("no Ready role member in estate"))?;
     let member_read = read_topology(
         carrier.client(),
         &NodeTarget::ExactNode(member.node_id.clone()),
         "example-rafka-time",
-        Some(&member.mesh),
+        Some(&member.mesh()),
         None,
     )
     .await

@@ -64,12 +64,11 @@ export interface TopologyNode {
   name: string;
   type: string;
   mesh: string;
-  status: string;
+  state: string;
   role: string;
   is_primary: boolean;
   is_fabric_primary: boolean;
-  declared: string | null;
-  incarnation_id: string | null;
+  incarnation: string | null;
   node_id: string;
   has_runtime: boolean;
 }

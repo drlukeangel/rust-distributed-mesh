@@ -51,7 +51,7 @@ fn owner(test: &str) -> Owner {
 }
 
 async fn ready(estate: &Estate, node: &PathName) {
-    estate.until_node(node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready).map(|_| ())).await;
 }
 
 /// The node id of `node`'s current birth.

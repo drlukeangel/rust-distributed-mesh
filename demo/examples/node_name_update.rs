@@ -1,14 +1,13 @@
 //! `node.name.update`: rename a node (lifecycles/node-name-update.md).
 //!
-//! A rename is one call to the node's mesh-primary, the one writer of its mesh's rows, for the node's
-//! exact birth, naming the new name within the node's path; the path never moves. Its one condition is
+//! A rename is one call to the node's mesh-primary, for the node's exact birth, naming the new name within the node's path; the path never moves. Its one condition is
 //! that the node holds no connection: the caller first deletes its connections (`node.connection.delete
 //! { All }`, a node command of its mesh-primary), then renames. A held name answers `NameHeld` naming
 //! the node that holds it, and a name outside the grammar is `RejectedName`.
 //!
-//! The mesh-primary writes the row under the new name and tells the node (`ApplyNodeName`); the node
-//! takes it and rejoins its mesh under it, and the call completes once it is back on its mesh
-//! publishing the new name.
+//! The mesh-primary checks the name and tells the node (`ApplyNodeName`); the node writes the new name
+//! on its own record (Q356), takes it and rejoins its mesh under it, and the call completes once it is
+//! back on its mesh publishing the new name.
 //!
 //! Build: `cargo build --example node_name_update` in `demo/`. Run against a live estate:
 //!
@@ -27,7 +26,7 @@ async fn enter() -> Result<(Peers, PathName)> {
 }
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
+    let incarnation = n.incarnation.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.path, n.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -64,7 +63,7 @@ async fn main() -> Result<()> {
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
     let row = all.iter().find(|n| n.location() == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
-    let primary = all.iter().find(|n| n.mesh == row.mesh && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
+    let primary = all.iter().find(|n| n.mesh() == row.mesh() && n.r#type == "node-admin" && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh()))?;
 
     // The one condition: no connection. A node command of its mesh-primary, never a Build (Q342).
     finish("delete connections", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await?).await?;
