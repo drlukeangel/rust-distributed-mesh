@@ -27,14 +27,17 @@ const CHUNK: &str = crate::envelope::CHUNK_TYPE;
 
 /// X1 of docs/plans/proposal/gossip-neighbour-drop-at-join.md: RDM hands `peers` to iroh-gossip on
 /// `channel` at `caller`, a dial when no connection to a peer exists yet. One span per site, so a join's
-/// dials are named by the RDM code that asked for them.
-pub fn dial_span(caller: &'static str, node: &str, channel: &str, channel_id: &TopicId, peers: &[iroh::EndpointId]) {
-    if peers.is_empty() {
+/// dials are named by the RDM code that asked for them. `named` is the list the caller named and `peers`
+/// the ones handed to iroh-gossip: a peer already asked is named and not dialled again, and the span
+/// says so (`named` beside `peers`), never only the dialled ones.
+pub fn dial_span(caller: &'static str, node: &str, channel: &str, channel_id: &TopicId, named: &[iroh::EndpointId], peers: &[iroh::EndpointId]) {
+    if named.is_empty() && peers.is_empty() {
         return;
     }
     let channel_id: String = channel_id.as_bytes()[..4].iter().map(|b| format!("{b:02x}")).collect();
-    let peers = peers.iter().map(|p| p.fmt_short().to_string()).collect::<Vec<_>>().join(",");
-    tracing::info_span!("rdm.mesh.connection.update.via-join-peers", caller, node, channel, channel_id = %channel_id, peers = %peers)
+    let short = |list: &[iroh::EndpointId]| list.iter().map(|p| p.fmt_short().to_string()).collect::<Vec<_>>().join(",");
+    let (named, peers) = (short(named), short(peers));
+    tracing::info_span!("rdm.mesh.connection.update.via-join-peers", caller, node, channel, channel_id = %channel_id, named = %named, peers = %peers)
         .in_scope(|| tracing::info!("peers handed to iroh-gossip"));
 }
 
@@ -469,7 +472,7 @@ impl Hub {
         if !created && !peers.is_empty() {
             let sender = e.state.sender.lock().unwrap().clone();
             if let Some(sender) = sender {
-                dial_span("apps.join", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers);
+                dial_span("apps.join", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers, &peers);
                 sender.join_peers(peers.clone()).await.map_err(|e| subscribe(e.into()))?;
             }
         }
@@ -494,7 +497,7 @@ impl Hub {
         let mut peers = peers.to_vec();
         peers.sort_unstable();
         peers.dedup();
-        dial_span("apps.subscribe", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers);
+        dial_span("apps.subscribe", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers, &peers);
         let channel = self
             .gossip
             .subscribe(channel_id(&self.fabric, kind), peers)

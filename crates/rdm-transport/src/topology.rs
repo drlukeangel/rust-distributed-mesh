@@ -1550,7 +1550,7 @@ impl Channel {
             location_view.fill(s);
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
-        crate::gossip::dial_span("topology.subscribe", &format!("{}@{}", location_view.observer_name(), endpoint.id().fmt_short()), channel, &channel_id, &peers.iter().copied().collect::<Vec<_>>());
+        crate::gossip::dial_span("topology.subscribe", &format!("{}@{}", location_view.observer_name(), endpoint.id().fmt_short()), channel, &channel_id, &peers.iter().copied().collect::<Vec<_>>(), &peers.iter().copied().collect::<Vec<_>>());
         let sub = gossip.subscribe(channel_id, peers.iter().copied().collect()).await?;
         tracing::info_span!("rdm.mesh.topology.update.via-subscribe", node = %location_view.observer_name(), channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
@@ -1702,7 +1702,7 @@ impl Channel {
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
                 let span = tracing::info_span!("rdm.mesh.topology.update.via-resubscribe", node = %location_view.observer_name(), fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
                 // A refused subscribe means the gossip actor itself has stopped.
-                crate::gossip::dial_span("topology.reopen", &location_view.observer_name(), &channel, &channel_id, &peers);
+                crate::gossip::dial_span("topology.reopen", &location_view.observer_name(), &channel, &channel_id, &peers, &peers);
                 let reopened = match gossip.subscribe(channel_id, peers).await {
                     Ok(t) => t,
                     Err(e) => {
@@ -1774,9 +1774,13 @@ impl Channel {
         }
         let live: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
         let fresh = rejoin(&self.joined, &live);
+        let sender = self.sender.read().await.clone();
+        // The span names what the caller named and what is handed to iroh-gossip: a peer already asked is
+        // named and not dialled again, and a stopped channel dials nothing.
+        let dialled: &[iroh::EndpointId] = if sender.is_some() { &fresh } else { &[] };
+        crate::gossip::dial_span(caller, &format!("{}@{}", self.location_view.observer_name(), self.endpoint.id().fmt_short()), &self.label, &self.channel_id, &live, dialled);
+        let Some(sender) = sender else { return Ok(0) };
         if !fresh.is_empty() {
-            let Some(sender) = self.sender.read().await.clone() else { return Ok(0) };
-            crate::gossip::dial_span(caller, &format!("{}@{}", self.location_view.observer_name(), self.endpoint.id().fmt_short()), &self.label, &self.channel_id, &fresh);
             sender.join_peers(fresh.clone()).await?;
         }
         Ok(fresh.len())
@@ -1820,7 +1824,7 @@ impl Channel {
                     let sender = me.sender.read().await.clone();
                     let joined = match sender {
                         Some(sender) => {
-                            crate::gossip::dial_span("topology.repair", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.channel_id, &[t.addr.id]);
+                            crate::gossip::dial_span("topology.repair", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.channel_id, &[t.addr.id], &[t.addr.id]);
                             sender.join_peers(vec![t.addr.id]).await.is_ok()
                         }
                         None => false,
@@ -1861,7 +1865,7 @@ impl Channel {
                 let sender = me.sender.read().await.clone();
                 let joined = match sender {
                     Some(sender) => {
-                        crate::gossip::dial_span("topology.refeed", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.channel_id, &peers);
+                        crate::gossip::dial_span("topology.refeed", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.channel_id, &peers, &peers);
                         sender.join_peers(peers.clone()).await.is_ok()
                     }
                     None => continue,
