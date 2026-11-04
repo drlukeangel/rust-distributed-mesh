@@ -1367,21 +1367,22 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 }
 
 /// CONTRACT (node-stop.md step 4: "declare `Stopped` to the mesh-primary naming the stop's operation,
-/// an owed message (Node RPC §43) sent whether or not the stop call's stream is still open"; node-rpc.md
-/// §43, "Owed messages: delivery is the runtime's"; step 5 and Q49: whichever of the stopped frame and the
-/// declaration reaches the mesh-primary first is applied, and the other answers `AlreadyApplied`):
-/// mesh2's node is stopped while mesh2's primary holds the node's `Stopped` declaration unanswered at
-/// its `StatusService` (the fault service's declaration cut) and holds the stop stream's `stopped` unrecorded
-/// (its event cut), and that primary is then SIGKILLed: the role moves to mesh2's other admin, and the
-/// stopped node, which left its mesh's channel at its transport cut, hears neither the death nor the
-/// move. The stop's receipt and reply never wait for the declaration's answer: the caller sends its
-/// node.stop again to the new primary (a node command, never a Build, Q342), the birth admits it from
-/// its stopped cycle and the node reads stopped. Must NOT happen: the birth held in Stopping on its owed
-/// declaration, the stop sent again never admitted (release run 5 at 7e13f37e, rshape-authority
-/// recovery: AwaitNodeLeft "stop-node was not admitted", DEADLINE_EXCEEDED).
+/// an owed message (Node RPC §43) sent whether or not the stop call's stream is still open"; states.md
+/// "node stopped": set by the node, on its own record (Q356); node-stop.md "Entry": a birth that is not
+/// live is refused `node-not-live` by name, nothing written): mesh2's node is stopped while mesh2's
+/// primary holds the node's `Stopped` declaration unanswered at its `StatusService` (the fault service's
+/// declaration cut) and holds the stop stream's `stopped` unrecorded (its event cut), and that primary is
+/// then SIGKILLed: the role moves to mesh2's other admin, and the stopped node, which left its mesh's
+/// channel at its transport cut, hears neither the death nor the move. The node wrote stopped on its own
+/// record before it sent the frame, so the same birth reads stopped with no answer from the dead
+/// primary; the new mesh-primary holds it stopped from that record: a node.stop sent to it again is
+/// refused `node-not-live`, and a node.start (a node command, never a Build, Q342) is admitted and the
+/// same birth reads ready. Must NOT happen: the birth held in Stopping on its owed declaration (release
+/// run 5 at 7e13f37e, rshape-authority recovery: AwaitNodeLeft "stop-node was not admitted",
+/// DEADLINE_EXCEEDED), a stop sent again admitted, the start refused, a Build written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admitted_again_and_completes() {
-    let test = "a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admitted_again_and_completes";
+async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_reads_stopped_from_the_nodes_own_record_and_its_new_mesh_primary_starts_it() {
+    let test = "a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_reads_stopped_from_the_nodes_own_record_and_its_new_mesh_primary_starts_it";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     estate.resize_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
@@ -1389,6 +1390,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     estate.until_fabric_ready(SETTLE).await;
     let primary = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh2's primary");
     assert!(!views.iter().any(|n| n.location() == primary && n.is_fabric_primary), "mesh2's primary is not the fabric-primary: the entry admin stays put");
+    let successor = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.location() != primary).map(|n| n.location()).expect("mesh2's other admin");
     // The node of mesh2 that holds no role: a primary's stop moves its role first.
     let node: PathName = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).expect("mesh2 has a node that holds no primary role");
     let node_s = node.clone();
@@ -1408,40 +1410,39 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     // The primary dies holding it: the role moves to mesh2's other admin.
     estate.kill_node(&primary).await;
 
-    // The caller sends its node.stop again, to mesh2's new mesh-primary (a node command, never a Build,
-    // Q342): admitted, it completes and the birth reads stopped. A stop step that ends on its deadline
-    // ends the cell, naming it.
+    // The same birth reads stopped: the node's own line, with nothing from the dead primary.
+    let stopped = view_of(&estate.nodes_obj().await, &node).await;
+    assert_eq!((stopped.state, &stopped.node_id, &stopped.incarnation), (NodeStatus::Stopped, &before.node_id, &before.incarnation), "the same birth reads stopped from its own record: {stopped:?}");
+    // The caller sends its node.stop again until mesh2's new mesh-primary answers it: refused
+    // `node-not-live`, the birth stopped on its record. Never admitted.
     let until = std::time::Instant::now() + SETTLE;
     loop {
-        let unadmitted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
-            .into_iter()
-            .filter(|sp| at_location(sp, &node) && attr(sp, "step") == "AwaitNodeLeft" && attr(sp, "code") == "DEADLINE_EXCEEDED")
-            .cloned()
-            .collect();
-        assert!(unadmitted.is_empty(), "the stop of {node_s:?} sent again was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
-        let v = view_of(&estate.nodes_obj().await, &node).await;
-        if v.state == NodeStatus::Stopped {
-            assert_eq!((v.state, &v.node_id, &v.incarnation), (NodeStatus::Stopped, &before.node_id, &before.incarnation), "the same birth, stopped: {v:?}");
-            break;
-        }
-        assert!(std::time::Instant::now() < until, "the caller's stop completes and {node_s:?} reads stopped within {SETTLE:?}: {v:?}");
-        if let Ok(mut again) = estate.nodes_obj().await.stop(&node).await {
-            let _ = tokio::time::timeout(SETTLE, async { while let Some(Ok(_)) = again.next().await {} }).await;
+        match estate.nodes_obj().await.stop(&node).await {
+            Err(rdm_client::CallEnd::Rejected { reason, .. }) if reason == "node-not-live" => break,
+            Ok(_) => panic!("the stop of {node_s:?} sent again to its new mesh-primary was admitted: the birth is stopped"),
+            Err(other) => assert!(std::time::Instant::now() < until, "mesh2's new mesh-primary refuses the stop of {node_s:?} sent again `node-not-live` within {SETTLE:?}: {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert_eq!(estate.build_ids().await, builds, "the stop writes no Build");
+    // The new mesh-primary starts it: the same birth, ready.
+    let started = frames(estate.nodes_obj().await.start(&node).await.unwrap_or_else(|e| panic!("the start of {node_s:?} at mesh2's new mesh-primary was admitted: {e:?}"))).await;
+    assert_eq!(started.last(), Some(&Frame::Complete), "the start of {node_s:?} completes: {started:?}");
+    let ready = view_of(&estate.nodes_obj().await, &node).await;
+    assert_eq!((ready.state, &ready.node_id, &ready.incarnation), (NodeStatus::Ready, &before.node_id, &before.incarnation), "the same birth, ready: {ready:?}");
+    assert_eq!(estate.build_ids().await, builds, "the stop and the start write no Build");
 
     estate.stop().await;
     let spans = estate.spans();
-    // The birth owed its Stopped declaration naming its stop, and its stop step ran again under the stop sent again.
+    let unadmitted: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &node) && attr(sp, "step") == "AwaitNodeLeft" && attr(sp, "code") == "DEADLINE_EXCEEDED").collect();
+    assert!(unadmitted.is_empty(), "the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
+    // The birth owed its Stopped declaration naming its stop, once, and did not wait on it.
     let operation = "node.stop".to_string();
     let owed: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-owed-on-stop").into_iter().filter(|sp| attr(sp, "node") == node_id && attr(sp, "operation") == operation).collect();
     assert_eq!(owed.len(), 1, "the birth owed its Stopped declaration once, naming its stop, and did not wait on it: {owed:#?}");
-    let steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &node) && attr(sp, "step") == "StopNode").map(|sp| attr(sp, "outcome")).collect();
-    assert!(steps.iter().any(|s| s.starts_with("complete")), "a stop step of {node_s:?} completed: {steps:?}");
+    // The new mesh-primary refused the stop sent again from the node's stopped record, nothing sent to the node.
+    let refused: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().filter(|sp| at_location(sp, &successor) && attr(sp, "subject_id") == node_id && attr(sp, "command") == "stop-node" && attr(sp, "outcome") == "rejected").collect();
+    assert!(refused.iter().any(|sp| attr(sp, "detail").contains("a stop needs a live node")), "mesh2's new mesh-primary refused the stop sent again: the birth is stopped: {refused:#?}");
     estate.record_trace_url(&s(&owed[0]["trace_id"]));
-    println!("{node_s:?} stopped; its stop steps: {steps:?}");
 }
 
 /// CONTRACT (node-stop.md steps 2-4; node-mesh-leave.md; i146 Q55: "a signal stop is node.stop's own
