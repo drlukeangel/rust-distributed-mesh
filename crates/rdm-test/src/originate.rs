@@ -872,6 +872,7 @@ mod tests {
             (OriginateRequest::UpdateOwnConfig { config: [("a".to_string(), "b".to_string())].into() }, "090101610162"),
             (OriginateRequest::Throughput { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), streams: 2, bytes: 3 }, "0a0c6464646464646464646464640203"),
             (OriginateRequest::Publish { subject: "s".into(), sequence: 2, data: vec![9] }, "0b0173020109"),
+            (OriginateRequest::PublishBurst { prefix: "p".into(), count: 2, size: 3 }, "0c01700203"),
         ];
         let replies = [
             (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "0001690170016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
@@ -894,6 +895,7 @@ mod tests {
             (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into() }, "1101690170016e0163016f0101610162", "own-config-updated", Code::Ok),
             (OriginateReply::Measured { by: by(), kind: "k".into(), open_us: 1, streams_us: 2, bytes: 3 }, "1201690170016e0163016b010203", "measured", Code::Ok),
             (OriginateReply::Published { by: by(), outcome: "o".into() }, "1301690170016e0163016f", "published", Code::Ok),
+            (OriginateReply::PublishedBurst { by: by(), published: 1, refused: 2, first_refusal: "f".into(), elapsed_us: 3 }, "1401690170016e01630102016603", "published-burst", Code::Ok),
         ];
         let off = pinned::<Originate>(&requests, &replies);
         assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));
