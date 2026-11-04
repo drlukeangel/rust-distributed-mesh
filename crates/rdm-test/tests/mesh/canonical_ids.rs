@@ -209,7 +209,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .into_iter()
         .filter(|sp| {
             let a = &sp["attributes"];
-            a["node_id"] == before["node_id"] && a["incarnation_id"] == after["incarnation_id"] && a["status"] == "Ready"
+            a["node_id"] == before["node_id"] && a["incarnation_id"] == after["incarnation"] && a["status"] == "Ready"
         })
         .max_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
         .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.node.2's Ready at incarnation {}", after["incarnation"]));
