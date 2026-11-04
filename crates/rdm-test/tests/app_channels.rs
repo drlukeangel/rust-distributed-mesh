@@ -205,10 +205,13 @@ fn neighbours(spans: &[Value]) -> usize {
     count("rdm.mesh.channel.update.via-neighbour").saturating_sub(count("rdm.mesh.channel.update.via-neighbour-down"))
 }
 
-/// `spans`' neighbours on [`APP_CHANNEL`] now, by endpoint id: each one up and not down since.
-fn neighbour_peers(spans: &[Value]) -> std::collections::BTreeSet<String> {
+/// `spans`' neighbours on [`APP_CHANNEL`] at the instant `before` (unix nanoseconds), by endpoint id:
+/// each one up and not down since, from the neighbour spans that start before it. Read at an event's
+/// receipt, these are the event's possible carriers; iroh-gossip adds neighbours later at will
+/// (rdm#324).
+fn neighbour_peers(spans: &[Value], before: u64) -> std::collections::BTreeSet<String> {
     let mut up = std::collections::BTreeSet::new();
-    for s in spans.iter().filter(|s| s["attributes"]["event_type"] == APP_CHANNEL) {
+    for s in spans.iter().filter(|s| s["attributes"]["event_type"] == APP_CHANNEL && s["start_unix_nano"].as_u64().is_some_and(|at| at < before)) {
         let peer = s["attributes"]["peer"].as_str().unwrap_or_default().to_string();
         if s["name"] == "rdm.mesh.channel.update.via-neighbour" {
             up.insert(peer);
@@ -349,10 +352,12 @@ impl Day0 {
 /// its context (`accepting_primary`), a node-admin its own and every other node-admin its view
 /// holds. Once each channel's neighbours are up, an event
 /// mesh1's node publishes is received by mesh2's node's application, sourced from mesh1's node and in
-/// its trace, carried to it by mesh2's node-admin, its one neighbour on the channel, which received it
-/// too. (No node names a peer of another mesh; HyParView's forwarded join may still make mesh2's
-/// node-admin a neighbour of mesh1's node.) Must NOT happen: the event missing on mesh2's node, a node
-/// naming a peer of another mesh, or mesh2's node with a neighbour other than its node-admin.
+/// its trace, carried to it by mesh2's node-admin, its one neighbour on the channel at the receipt,
+/// which received it too: the neighbours read are those up before mesh2's node's `via-received`, the
+/// event's possible carriers, since iroh-gossip adds neighbours later at will (rdm#324). (No node
+/// names a peer of another mesh; HyParView's forwarded join may still make mesh2's node-admin a
+/// neighbour of mesh1's node.) Must NOT happen: the event missing on mesh2's node, a node naming a
+/// peer of another mesh, or mesh2's node with a neighbour other than its node-admin at the receipt.
 #[test]
 fn an_event_a_mesh1_node_publishes_reaches_a_mesh2_node_through_the_node_admins_its_application_joined() {
     let cell = "an_event_a_mesh1_node_publishes_reaches_a_mesh2_node_through_the_node_admins_its_application_joined";
@@ -432,7 +437,9 @@ fn an_event_a_mesh1_node_publishes_reaches_a_mesh2_node_through_the_node_admins_
         .await
         .expect("mesh2's node's application receives the event mesh1's node published");
         assert_eq!(on_m2n["attributes"]["source_node_id"], m1n.to_string().as_str(), "sourced from mesh1's node");
-        assert_eq!(neighbour_peers(&spans_of(&span_files(&dir), &m2n)), std::collections::BTreeSet::from([m2a_key.clone()]), "mesh2's node's one neighbour on the channel is mesh2's node-admin: it carried the event");
+        // Its neighbours at the receipt: the event's possible carriers (iroh-gossip adds neighbours later at will).
+        let received_at = on_m2n["start_unix_nano"].as_u64().expect("the receipt span names its start");
+        assert_eq!(neighbour_peers(&spans_of(&span_files(&dir), &m2n), received_at), std::collections::BTreeSet::from([m2a_key.clone()]), "mesh2's node's one neighbour on the channel is mesh2's node-admin: it carried the event");
         capture.spans().expect("the cell's own spans are flushed");
         // Each node-admin's spans reach its file on that process's own export batch: its receipt is
         // waited for, bounded, as mesh2's node's is above.
