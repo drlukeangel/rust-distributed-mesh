@@ -154,10 +154,11 @@ async fn own_properties_survive_node_restart() {
         "the complete acknowledged map survives forced process loss"
     );
     let log = rdm_node::store_log::read_file(&records).unwrap_or_else(|e| panic!("the node must persist its own properties before acknowledging them; retained record log: {e}"));
+    // The first line of the node's record carrying the acknowledged map: the node's own write (its
+    // mesh-primary's later Deleted line, the node being gone, carries the map too).
     let own = log
         .iter()
-        .rev()
-        .find(|line| line.kind() == "node-record" && line.subject() == before.node_id.as_str())
+        .find(|line| line.kind() == "node-record" && line.subject() == before.node_id.as_str() && line.data["config"] == json!(expected))
         .expect("the original node's acknowledged record survives its process exit");
     let record: rdm_node::nodes_storage::NodeRecord = own.decode(&records).unwrap();
     assert_eq!(

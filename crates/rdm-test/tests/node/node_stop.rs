@@ -1331,7 +1331,8 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     estate.stop().await;
     let spans = estate.spans();
     // The one birth at the node's path.name, by its row: the create's, which stands (Q346).
-    let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &node) && attr(sp, "moment") == "create").map(|sp| attr(sp, "node_id")).collect();
+    let nodes_file = estate.fabric_store_root().join(rdm_admin::store_root::NODES_FILE);
+    let births: std::collections::BTreeSet<String> = rdm_admin::store_log::read_file(&nodes_file).unwrap_or_default().into_iter().filter(|l| l.kind() == rdm_node::nodes_storage::RECORD_KIND && rdm_test::estate::is_location(&l.data, &node)).map(|l| l.subject().to_string()).collect();
     assert_eq!(births.len(), 1, "the create's one birth at {node:?}, never deleted or created again: {births:?}");
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
