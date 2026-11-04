@@ -1427,8 +1427,18 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_reads_st
     // The new mesh-primary starts it: the same birth, ready.
     let started = frames(estate.nodes_obj().await.start(&node).await.unwrap_or_else(|e| panic!("the start of {node_s:?} at mesh2's new mesh-primary was admitted: {e:?}"))).await;
     assert_eq!(started.last(), Some(&Frame::Complete), "the start of {node_s:?} completes: {started:?}");
-    let ready = view_of(&estate.nodes_obj().await, &node).await;
-    assert_eq!((ready.state, &ready.node_id, &ready.incarnation), (NodeStatus::Ready, &before.node_id, &before.incarnation), "the same birth, ready: {ready:?}");
+    // The answering admin held the stopped birth silent (PendingReconnect, observer-inferred); a live
+    // birth the view holds silent is answered as the view holds it, cleared the moment it is heard
+    // (node-identity-and-state.md §7.3, `Atlas::read`): read until its first digest after the start is heard.
+    let until = std::time::Instant::now() + SETTLE;
+    let ready = loop {
+        let ready = view_of(&estate.nodes_obj().await, &node).await;
+        if ready.state == NodeStatus::Ready || std::time::Instant::now() >= until {
+            break ready;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!((ready.state, &ready.node_id, &ready.incarnation), (NodeStatus::Ready, &before.node_id, &before.incarnation), "the same birth, ready once it is heard: {ready:?}");
     assert_eq!(estate.build_ids().await, builds, "the stop and the start write no Build");
 
     estate.stop().await;
