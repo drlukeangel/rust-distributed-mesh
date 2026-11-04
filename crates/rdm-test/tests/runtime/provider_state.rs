@@ -201,8 +201,6 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
         assert_eq!(attr(&at_delete, "verdict"), "os-stopped", "{at_delete}");
         let stopped: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.reject.via-lost-executor").into_iter().filter(|sp| at_node(sp, &held.path)).collect();
         assert!(stopped.is_empty(), "{:?}: the recovery's create stops no runtime as a lost executor's launch: {stopped:#?}", held.path);
-        let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-row-allocation").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
-        assert!(claimed.is_empty(), "{:?}: the deleted birth's row stands Deleted, so the recovery's create finds no claim of it: {claimed:#?}", held.path);
         // The recovery is its runner's own workflow, on the os-stopped verdict, with no Build (Q342).
         let submits: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "complete").collect();
         let submit = submits.first().copied().unwrap_or_else(|| panic!("{:?}: its recovery completes", held.path));

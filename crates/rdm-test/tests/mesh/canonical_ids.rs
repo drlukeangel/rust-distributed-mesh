@@ -257,10 +257,10 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .count();
     assert!(ran >= 2, "each restart ran its own StartNode, none reused: {ran} complete StartNode steps under {restart_build}");
 
-    // R-MN1: mesh2's removal deleted every roster birth (each member's row by its node.delete under
-    // the mesh.delete, the last admin's by its own node.delete, the fabric-primary its executor) and
-    // wrote the mesh row deleted; mesh2 created again wrote mesh2.node-admin.1's row over the Deleted row, its
-    // fresh properties, under a new MeshId.
+    // R-MN1: mesh2's removal deleted every roster birth (each member's record written Deleted by its
+    // node.delete under the mesh.delete, the last admin's by its own node.delete, the fabric-primary its
+    // executor) and wrote the mesh row deleted; mesh2 created again holds a new mesh2.node-admin.1, a
+    // new node that writes its own record (Q356), under a new MeshId.
     let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row");
     for n in regrown.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2") {
         let row = deleted.iter().find(|sp| {
@@ -274,20 +274,17 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let old_admin = regrown.iter().find(|n| location(n) == PathName::new("mesh2.node-admin", "1").unwrap()).unwrap();
     let new_admin = recreated.iter().find(|n| location(n) == PathName::new("mesh2.node-admin", "1").unwrap()).unwrap();
     assert_ne!(new_admin["node_id"], old_admin["node_id"], "the recreated mesh's admin is a new node");
-    let admin_row = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| {
-        let a = &sp["attributes"];
-        a["subject_path"] == "mesh2.node-admin" && a["subject_name"] == "1" && a["moment"] == "create" && s(&a["node_id"]) == s(&new_admin["node_id"])
-    });
-    let admin_row = admin_row.unwrap_or_else(|| panic!("the recreated mesh2.node-admin.1 {} writes its row", new_admin["node_id"]));
-    assert_eq!(admin_row["attributes"]["outcome"], "row-written", "a new mesh starts a fresh node row: {admin_row}");
-    assert_eq!(s(&admin_row["attributes"]["seeded_from"]), "", "a deleted row is not replacement provenance: {admin_row}");
+    let new_admin_id: rdm_core::NodeId = s(&new_admin["node_id"]).parse().expect("the recreated admin's node id");
+    let admin_lines = estate.record_lines(&new_admin_id);
+    let (first_by, _) = admin_lines.first().cloned().unwrap_or_else(|| panic!("the recreated mesh2.node-admin.1 {new_admin_id} writes its record"));
+    assert_eq!(first_by, new_admin_id.as_str(), "the recreated mesh2.node-admin.1 writes its own record's first line: {admin_lines:?}");
     assert_eq!(s(&rdm_test::estate::mesh_of(&new_admin)), "mesh2");
     // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's row is written at its name's key, by its
     // writer (Q109), before anything else of the mesh is written, at CreateMesh by the
     // fabric-primary as the acting primary of a mesh with none (R13); the removed mesh2's Mesh row is
     // written deleted, which releases the name; the recreated mesh2 writes its row at the released name under its new
-    // MeshId, before the recreated mesh2.node-admin.1's row is written, by the same
-    // writer. No mesh's write conflicts with itself across creation and a write again.
+    // MeshId, by the fabric-primary, before the recreated mesh2.node-admin.1 writes its own record. No
+    // mesh's write conflicts with itself across creation and a write again.
     let mesh_writes = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
     let mesh_write_of = |id: &str| mesh_writes.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "write" && sp["attributes"]["outcome"] == "row-written").copied();
     let old_write = mesh_write_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's row was written: {mesh_writes:?}"));
@@ -302,10 +299,10 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // and its record stands Dead at its own id; the recreated mesh2 writes its row at the released name, so no
     // live row is taken over.
     assert_eq!(s(&new_write["attributes"]["over"]), "", "the recreated mesh2 writes its row at the name the removed mesh2's Dead write released: {new_write}");
-    let writer_location = PathName::new(s(&admin_row["attributes"]["node_path"]), s(&admin_row["attributes"]["node_name"])).expect("the row's writer has separate location fields");
-    let writer = recreated.iter().find(|node| location(node) == writer_location).expect("the row's writer is in the retained node view");
-    assert_eq!(new_write["attributes"]["node"], writer["node_id"], "the recreated mesh2's row is written by the writer of its first admin's row, the fabric-primary: {new_write} {admin_row}");
-    assert!(new_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(), "the recreated mesh2's row write ends before mesh2.node-admin.1's row is written: {new_write} {admin_row}");
+    let writer = recreated.iter().find(|node| node["is_fabric_primary"] == true).expect("the retained node view names the fabric-primary");
+    assert_eq!(new_write["attributes"]["node"], writer["node_id"], "the recreated mesh2's row is written by the fabric-primary: {new_write}");
+    let admin_row = named(&spans, "rdm.node.record.update.via-properties").into_iter().filter(|sp| sp["attributes"]["node_id"] == new_admin["node_id"]).min_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(u64::MAX)).unwrap_or_else(|| panic!("the recreated mesh2.node-admin.1 {new_admin_id}'s own record write is spanned"));
+    assert!(new_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(), "the recreated mesh2's row write ends before mesh2.node-admin.1 writes its own record: {new_write} {admin_row}");
     assert!(mesh_writes.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's write is refused: {mesh_writes:?}");
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={} outcome=row-written over={}", s(&new_write["trace_id"]), s(&m2["id"]), mesh_ids["mesh2"]);
     let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_admin["node_id"] && sp["attributes"]["incarnation_id"] == new_admin["incarnation"]).expect("the recreated mesh2.node-admin.1 reports ready");

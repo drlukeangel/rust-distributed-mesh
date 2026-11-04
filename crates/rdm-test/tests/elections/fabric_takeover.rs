@@ -232,10 +232,9 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     };
     estate.stop().await;
     let spans = estate.spans();
-    let claims = spans_where(&spans, "rdm.node_admin.node.create.via-node-row", "subject", &Estate::path("mesh1.node-admin", "1"));
     let steps = spans_where(&spans, "rdm.node_admin.deployment.update.via-step", "node", &Estate::path("mesh1.node-admin", "1"));
     let Some(new) = recreated else {
-        panic!("mesh1.node-admin.1 was not re-created by fabric recovery; name claims {claims:#?}; create steps {steps:#?}");
+        panic!("mesh1.node-admin.1 was not re-created by fabric recovery; create steps {steps:#?}");
     };
     assert_ne!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "a newly minted endpoint key: {new:?}");
     let new_dir = new.storage.data_dir.clone().expect("the re-created admin's data dir");

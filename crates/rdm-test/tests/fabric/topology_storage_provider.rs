@@ -1066,11 +1066,13 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
     assert_eq!(attr(unblocked, "recreated"), "1", "the mesh-primary that replied unblocked waited on the refusing birth's re-create: {unblocked}");
     let lost: Vec<&Value> = of_change(&spans, MOVE_LOST, &change_id, Some("mesh2")).into_iter().filter(|sp| attr(sp, "node_id") == old_id).collect();
     assert!(lost.iter().any(|sp| sp["attributes"]["outcome"] == "recovery-submitted"), "the refusing birth is handed to its mesh-primary's node recovery: {lost:#?}");
-    let recreated = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| attr(sp, "node_id") == new_id && sp["attributes"]["moment"] == "create").unwrap_or_else(|| panic!("the re-created birth {new_id}'s row is written"));
+    let recreated = named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().find(|sp| attr(sp, "created_node_id") == new_id).unwrap_or_else(|| panic!("the re-created birth {new_id}'s create is spanned"));
     assert!(
-        recreated["attributes"]["outcome"] == "row-seeded" && attr(recreated, "seeded_from") == old_id && attr(recreated, "node_path") == "mesh2.node-admin" && recreated["attributes"]["change_id"].is_null(),
-        "mesh2's mesh-primary's node recovery re-creates the refusing birth at its (path, name), seeded from it, never a step of the change: {recreated}"
+        attr(recreated, "node_id") == old_id && attr(recreated, "node_path") == role().path && attr(recreated, "node_name") == role().name && recreated["attributes"]["change_id"].is_null(),
+        "mesh2's mesh-primary's node recovery of the refusing birth re-creates it at its (path, name), never a step of the change: {recreated}"
     );
+    let (writer, _) = estate.record_lines(&rdm_core::NodeId::parse(&new_id).expect("the new birth's node id")).into_iter().next().expect("the re-created birth's record");
+    assert_eq!(writer, new_id, "the re-created birth writes its own record (Q356)");
     let new_moved = named(&spans, MOVE).into_iter().find(|sp| attr(sp, "node_id") == new_id && attr(sp, "change_id") == change_id && sp["attributes"]["outcome"] == "moved").unwrap_or_else(|| panic!("the re-created birth {new_id} answered its move under Build {change_id}"));
     assert!(new_moved["end_unix_nano"].as_u64().unwrap_or(u64::MAX) <= unblocked["end_unix_nano"].as_u64().unwrap_or(0), "the re-created birth moved before its mesh-primary replied unblocked: {new_moved} {unblocked}");
     estate.record_trace_url(&s(&blocked["trace_id"]));
