@@ -224,10 +224,12 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(m1_write["attributes"]["node"], day0_admin["node_id"], "mesh1's row is written by its Day-0 primary: {m1_write}");
     let m2_write = written("mesh2", &mesh2_id);
     assert_eq!(s(&m2_write["attributes"]["node"]), creator, "mesh2's row is written by the fabric-primary that creates its first admin, the acting primary of a mesh with none: {m2_write}");
-    // A create writes no record: mesh2.node-admin.1 writes its own at its start (Q356).
+    // A create writes no record: mesh2.node-admin.1 writes its own at its start (Q356), under its own
+    // node id, its first writes before its path and name are applied.
+    let admin_id = nodes.iter().find(|n| rdm_test::estate::is_location(n, &location("mesh2.node-admin", "1"))).map(|n| n["node_id"].clone()).expect("mesh2.node-admin.1 is in the view");
     let admin_row = named(&spans, "rdm.node.record.update.via-properties")
         .into_iter()
-        .filter(|c| c["attributes"]["path"] == "mesh2.node-admin" && c["attributes"]["name"] == "1")
+        .filter(|c| c["attributes"]["node_id"] == admin_id)
         .min_by_key(|c| c["start_unix_nano"].as_u64())
         .unwrap_or_else(|| panic!("mesh2.node-admin.1 writes its own record"));
     assert!(
