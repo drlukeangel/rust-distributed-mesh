@@ -1929,12 +1929,13 @@ impl Run {
     async fn writer_probe(&mut self, f: &Formed, label: &str, st: &Stable) -> Value {
         self.probe_round += 1;
         let path = Estate::path(&format!("{}.gateway", meshes()[0]), &(900 + self.probe_round).to_string());
+        // A node.id no birth holds, the round's one, as the path is one no node holds: only the
+        // fabric-primary decides it.
+        let probed = rdm_core::NodeId::mint();
         let t0 = now_ns();
         let mut answers = Vec::new();
         for a in &st.admins {
-            // A node.id no birth holds, as the path is one no node holds: only the fabric-primary decides it.
-            let _ = &path;
-            let v = ask(&f.estate, &location(&a), BuildChange::Delete { meshes: vec![], node_ids: vec![rdm_core::NodeId::mint()] }).await;
+            let v = ask(&f.estate, &location(&a), BuildChange::Delete { meshes: vec![], node_ids: vec![probed.clone()] }).await;
             // The admin's location, path and name (Q366: a `name` alone is not one admin).
             answers.push(json!({"admin": location(&a), "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
         }
@@ -1946,7 +1947,7 @@ impl Run {
         for a in answers.iter().filter(|a| a["reply"] == "not-fabric-primary") {
             assert_eq!(&a["fabric_primary"], &st.fp["node_id"], "`{label}`: a non-writer refuses and names the fabric-primary: {a}");
         }
-        let rec = json!({"label": label, "round": self.probe_round, "path": path, "from_ns": t0, "to_ns": t1, "fabric_primary": st.fp["name"], "fabric_primary_node_id": st.fp["node_id"], "answers": answers});
+        let rec = json!({"label": label, "round": self.probe_round, "path": path, "node_id": probed.to_string(), "from_ns": t0, "to_ns": t1, "fabric_primary": st.fp["name"], "fabric_primary_node_id": st.fp["node_id"], "answers": answers});
         self.probes.push(rec.clone());
         rec
     }
@@ -2368,8 +2369,9 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     assert_eq!(without_the_role, non_writer_refusals, "every refusal by an admin without the fabric-primary role is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();
     for p in &a.probes {
+        // The writer refuses the probed node.id by name (`unknown-node`, its detail `node <id>: ...`).
         let path = location(&p["path"]);
-        let shown = format!("(path `{}`, name `{}`)", path.path, path.name);
+        let shown = format!("node {}: ", s(&p["node_id"]));
         let (from, to) = (p["from_ns"].as_u64().unwrap(), p["to_ns"].as_u64().unwrap());
         let unknown: Vec<&Value> = named(spans, "rdm.node_admin.build.reject.via-unknown-node").into_iter().filter(|sp| s(&sp["attributes"]["detail"]).contains(&shown)).collect();
         assert_eq!(unknown.len(), 1, "probe round {}: exactly one admin validated the write to {path:?}: {unknown:?}", p["round"]);
