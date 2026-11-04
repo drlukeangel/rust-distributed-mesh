@@ -205,22 +205,6 @@ fn neighbours(spans: &[Value]) -> usize {
     count("rdm.mesh.channel.update.via-neighbour").saturating_sub(count("rdm.mesh.channel.update.via-neighbour-down"))
 }
 
-/// `spans`' neighbours on [`APP_CHANNEL`] at the instant `before` (unix nanoseconds), by endpoint id:
-/// each one up and not down since, from the neighbour spans that start before it. Read at an event's
-/// receipt, these are the event's possible carriers; iroh-gossip adds neighbours later at will
-/// (rdm#324).
-fn neighbour_peers(spans: &[Value], before: u64) -> std::collections::BTreeSet<String> {
-    let mut up = std::collections::BTreeSet::new();
-    for s in spans.iter().filter(|s| s["attributes"]["event_type"] == APP_CHANNEL && s["start_unix_nano"].as_u64().is_some_and(|at| at < before)) {
-        let peer = s["attributes"]["peer"].as_str().unwrap_or_default().to_string();
-        if s["name"] == "rdm.mesh.channel.update.via-neighbour" {
-            up.insert(peer);
-        } else if s["name"] == "rdm.mesh.channel.update.via-neighbour-down" {
-            up.remove(&peer);
-        }
-    }
-    up
-}
 
 /// The peers `spans`' testkit application named at its join of [`APP_CHANNEL`].
 fn named_peers(spans: &[Value]) -> String {
@@ -437,9 +421,14 @@ fn an_event_a_mesh1_node_publishes_reaches_a_mesh2_node_through_the_node_admins_
         .await
         .expect("mesh2's node's application receives the event mesh1's node published");
         assert_eq!(on_m2n["attributes"]["source_node_id"], m1n.to_string().as_str(), "sourced from mesh1's node");
-        // Its neighbours at the receipt: the event's possible carriers (iroh-gossip adds neighbours later at will).
-        let received_at = on_m2n["start_unix_nano"].as_u64().expect("the receipt span names its start");
-        assert_eq!(neighbour_peers(&spans_of(&span_files(&dir), &m2n), received_at), std::collections::BTreeSet::from([m2a_key.clone()]), "mesh2's node's one neighbour on the channel is mesh2's node-admin: it carried the event");
+        // Its carrier: the neighbour that handed mesh2's node the event, as its receive span names it
+        // (`delivered_from`), never read from the neighbours it holds (iroh-gossip adds neighbours at will).
+        let carried_by: Vec<String> = spans_of(&span_files(&dir), &m2n)
+            .iter()
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-frame" && s["attributes"]["subject"] == "testkit/app/1")
+            .map(|s| s["attributes"]["delivered_from"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(!carried_by.is_empty() && carried_by.iter().all(|c| *c == m2a_key), "mesh2's node received the event from mesh2's node-admin, its carrier: {carried_by:?} (node-admin {m2a_key})");
         capture.spans().expect("the cell's own spans are flushed");
         // Each node-admin's spans reach its file on that process's own export batch: its receipt is
         // waited for, bounded, as mesh2's node's is above.

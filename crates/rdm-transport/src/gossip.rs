@@ -656,7 +656,9 @@ impl Hub {
                         continue;
                     }
                     seen.insert(identity, (), (Instant::now() + retention).into());
-                    let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), bytes = h.data.len());
+                    // `delivered_from`: the neighbour that handed this node the event, its carrier (iroh-gossip's
+                    // `delivered_from`); `source` is its author.
+                    let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), delivered_from = %message.delivered_from, bytes = h.data.len());
                     if let Some(parent) = trace.traceparent.as_deref() {
                         crate::set_remote_parent(&span, parent, trace.tracestate.as_deref());
                     }
