@@ -22,7 +22,13 @@ pub struct NodePropertyWriter {
     /// The record this process's start wrote ([`Self::bound`]): what a later command starts from when
     /// the writer holds no record (after an unacknowledged write it reads the store first).
     start: std::sync::Arc<std::sync::OnceLock<NodeRecord>>,
+    /// Whether this birth's own view holds it deleted ([`Self::deleted_by`]): a node told it is deleted
+    /// stops writing (S1). Unset: never.
+    deleted: std::sync::Arc<std::sync::OnceLock<DeletedOf>>,
 }
+
+/// Where a writer reads whether its own birth is held deleted.
+type DeletedOf = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Where a writer reads its node's current path and name from.
 type NameOf = std::sync::Arc<dyn Fn() -> Option<rdm_core::PathName> + Send + Sync>;
@@ -86,7 +92,15 @@ impl NodePropertyWriter {
             current: Default::default(),
             name: Default::default(),
             start: Default::default(),
+            deleted: Default::default(),
         }
+    }
+
+    /// Write nothing once `deleted` answers true: this birth's own view holds its birth deleted (S1;
+    /// the deleted node's record is its mesh-primary's to write, node-identity-and-state.md §2.5). Each
+    /// write refused for it is named on its span, `outcome = refused`. The first call stands.
+    pub fn deleted_by(&self, deleted: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.deleted.set(std::sync::Arc::new(deleted));
     }
 
     /// Name each write's span by `name`, the writing node's current path and name (a rename moves
@@ -297,11 +311,17 @@ impl NodePropertyWriter {
         let at = self.name.get().and_then(|name| name());
         let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
         let (node_id, incarnation_id) = (initial.node_id.clone(), initial.incarnation.clone());
+        let deleted = self.deleted.get().is_some_and(|deleted| deleted());
         let write = move || tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %backend, outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
         // particular no timeout may allow a second command to overtake the first call.
         tokio::spawn(
             async move {
+                if deleted {
+                    let reason = format!("node {} is deleted in its own view: its record is its mesh-primary's to write", initial.node_id);
+                    write().record("outcome", "refused").record("cause", reason.as_str());
+                    return Err(StorageError::Refused { file: "node record".into(), reason });
+                }
                 let mut held = current.lock().await;
                 if held.is_none() && read_retained {
                     *held = records.node(&initial.node_id).await.map(|line| line.map(|l| l.record)).inspect_err(|e| {

@@ -679,6 +679,9 @@ async fn start_booted(
                 held_name.follow(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
                 let (held, birth) = (topology_view.clone(), launch.location());
                 property_writer.named_by(move || Some(held.held_name(&birth)));
+                // A node told it is deleted stops writing (S1): its own view holding its birth deleted.
+                let (held, me) = (topology_view.clone(), launch.node_id.to_string());
+                property_writer.deleted_by(move || held.digest_view.is_deleted(&me));
             }
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).
