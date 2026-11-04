@@ -142,6 +142,12 @@ fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Optio
     // the fabric primary, which owns what happens to a mesh that has no other admin, executes it.
     if role_move(op, t).is_some() {
         None
+    } else if let Some(now) = t.nodes_of_type(mesh, "node-admin").find(|n| n.location() != *node && n.is_primary).filter(|_| is_primary(node, t)) {
+        // Every command for a mesh goes to its primary of the moment (Q373): once the role moved, the
+        // node-admin that holds it runs the target's delete, while this view still names the target
+        // primary too (Q369's window: step 1 the primary update, step 2 the first primary's delete,
+        // sent to the second).
+        Some(now.node_id.clone())
     } else if is_primary(node, t) {
         let last_mesh_gone = !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) && t.node(node).is_some_and(|n| t.only_node(mesh, &n.node_id));
         held_admins(mesh, Some(node), t).is_empty().then(fabric).flatten().filter(|fp| !t.node(node).is_some_and(|target| &target.node_id == fp) || last_mesh_gone)
@@ -655,6 +661,22 @@ mod tests {
         assert!(node_role_move(&stop(&t3, p2.clone()), false, &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "the stop of mesh2's primary moves its mesh-primary role first");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }, &t), expected(&t, &PathName::new("mesh1.node-admin", "1").unwrap()));
         assert_eq!(who(&shutdown("mesh2"), &t), expected(&t, &PathName::new("mesh1.node-admin", "1").unwrap()));
+    }
+
+    /// CONTRACT (Q373, Q369, build.md §4 "the mesh's primary of the moment"): every command for a mesh
+    /// goes to that mesh's primary of the moment. After the Build's primary update moved mesh2's primary
+    /// from mesh2.node-admin.1 to mesh2.node-admin.2, while the view still names the first primary too,
+    /// the delete of mesh2.node-admin.1 is executed by mesh2.node-admin.2. Must NOT happen: the
+    /// fabric-primary executing it (fabric_atlas's red at dec57eef9: its NodeDeleting refused as not
+    /// mesh2's writer).
+    #[test]
+    fn a_delete_of_the_first_primary_goes_to_the_second_primary() {
+        let mut t = mm(true);
+        let (first, second) = (PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "2").unwrap());
+        t.nodes.push(node(second.clone(), "mesh2", "node-admin", true, false));
+        assert!(t.node(&first).is_some_and(|n| n.is_primary), "the view still names the first primary");
+        let delete = BuildOperation::DeleteLiveNode { mesh: "mesh2".to_owned(), r#type: "node-admin".into(), path: first.path.clone(), name: first.name.clone(), exited: None, birth: t.node(&first).and_then(crate::build::PinnedBirth::of) };
+        assert_eq!(who(&delete, &t), expected(&t, &second));
     }
 
     /// `mm(true)` with pinned NodeIds: `fp`, the lower, is the node-admin the election names as the
