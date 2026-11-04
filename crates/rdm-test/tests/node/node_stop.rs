@@ -1409,9 +1409,12 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
     estate.kill_node(&primary).await;
 
     // The caller sends its node.stop again, to mesh2's new mesh-primary (a node command, never a Build,
-    // Q342): admitted, it completes and the birth reads stopped. A stop step that ends on its deadline
-    // ends the cell, naming it.
+    // Q342): admitted, it completes and the birth reads stopped. The node wrote stopped on its own record
+    // (Q356), so the read says stopped before the stop is sent again; the caller, whose first stop was
+    // never answered, sends it again until one completes. A stop step that ends on its deadline ends the
+    // cell, naming it.
     let until = std::time::Instant::now() + SETTLE;
+    let mut completed_again = false;
     loop {
         let unadmitted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
             .into_iter()
@@ -1420,13 +1423,15 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
             .collect();
         assert!(unadmitted.is_empty(), "the stop of {node_s:?} sent again was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
         let v = view_of(&estate.nodes_obj().await, &node).await;
-        if v.state == NodeStatus::Stopped {
+        if v.state == NodeStatus::Stopped && completed_again {
             assert_eq!((v.state, &v.node_id, &v.incarnation), (NodeStatus::Stopped, &before.node_id, &before.incarnation), "the same birth, stopped: {v:?}");
             break;
         }
         assert!(std::time::Instant::now() < until, "the caller's stop completes and {node_s:?} reads stopped within {SETTLE:?}: {v:?}");
         if let Ok(mut again) = estate.nodes_obj().await.stop(&node).await {
-            let _ = tokio::time::timeout(SETTLE, async { while let Some(Ok(_)) = again.next().await {} }).await;
+            let mut last = None;
+            let _ = tokio::time::timeout(SETTLE, async { while let Some(Ok(f)) = again.next().await { last = Some(f); } }).await;
+            completed_again = last == Some(Frame::Complete);
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
