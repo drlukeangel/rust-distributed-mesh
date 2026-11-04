@@ -135,6 +135,8 @@ mod offline_tick_store_reads;
 #[cfg(feature = "file-backend")]
 #[path = "node/executor_pass_store_reads.rs"]
 mod executor_pass_store_reads;
+#[path = "build/executable_replacement.rs"]
+mod executable_replacement;
 #[path = "build/node_create_after_delete.rs"]
 mod node_create_after_delete;
 #[path = "build/batch_change.rs"]

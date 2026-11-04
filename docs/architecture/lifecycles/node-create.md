@@ -12,7 +12,7 @@ RDM's create owns identity, launch and admission; Rafka supplies its application
 |---|---|
 | Caller | Accepted control/Build caller through the typed object |
 | Executor | Accepted node-admin executor; mesh-primary for an ordinary node |
-| Identity | New node.id and incarnation; immutable path and a name free in it, checked at the Build's acceptance |
+| Identity | New node.id and incarnation; immutable path and a name free in it, or held by a node that is not a node-admin and replaced ([build-deployment.md §3](../build-deployment.md)), checked at the Build's acceptance |
 | Endpoint key | Minted and written into the data dir, a new one or an inherited one; never loaded from an inherited data dir (Q358) |
 | Port | Bind port 0; advertise the actual OS-assigned transport_addr |
 | Spec | The create spec: the node's properties, flat (Q166): its type, executable (path, sha256, image), storage_persistence, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the create, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
