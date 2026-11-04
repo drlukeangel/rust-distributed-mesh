@@ -544,7 +544,10 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         _ => OriginateRequest::Snapshot,
     };
     let (client, _) = enter(&a.admin_birth).await?;
-    let opts = CallOptions::default();
+    // The node answers an originate once its own call ends, under its own `Send` (node-rpc.md §34,
+    // `TimeLimit`): "the receiver's own bound plus ten seconds where it has one".
+    let own = rdm_transport::Send::default().time_limit.0;
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(own + std::time::Duration::from_secs(10)), ..CallOptions::default() };
     let (out, _) = client.call::<Originate>(target, &req, &opts).await;
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
     // process ungracefully and its span file is lost (a call that never left the resolver is the case).
