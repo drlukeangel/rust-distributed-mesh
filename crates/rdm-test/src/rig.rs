@@ -160,6 +160,12 @@ impl Drop for ReapOnDrop {
     }
 }
 
+/// Whether a task of `pid` has not yet exited: it is in `/proc/<pid>/task` and its state is not zombie.
+fn live_task(pid: u32) -> bool {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return false };
+    tasks.flatten().any(|t| std::fs::read_to_string(t.path().join("stat")).is_ok_and(|stat| stat.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z'))))
+}
+
 /// One process this reap signalled, held by a pidfd: the fd names that exact process for its whole
 /// life (a recycled pid is another process and never matches it), and reads ready once every task of
 /// it has exited, so its sockets are released.
@@ -212,7 +218,20 @@ impl Pidfd {
             // SAFETY: poll(2) over the one pollfd above, which outlives the call.
             let n = unsafe { libc::poll(&mut ready, 1, within.as_millis() as libc::c_int) };
             match n {
-                1.. => return,
+                // The pidfd reads ready once the process's leader has exited; its other tasks may
+                // still be on their way out. The drop's contract is every task exited, so it waits for
+                // each to leave `/proc/<pid>/task` or show as a zombie, within the same bound.
+                1.. => {
+                    let deadline = std::time::Instant::now() + within;
+                    while live_task(self.pid) {
+                        if std::time::Instant::now() >= deadline {
+                            eprintln!("reap: pid {} ({}) still has a task running {within:?} after SIGKILL", self.pid, self.dir.display());
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    return;
+                }
                 0 => {
                     eprintln!("reap: pid {} ({}) has not exited {within:?} after SIGKILL", self.pid, self.dir.display());
                     return;
