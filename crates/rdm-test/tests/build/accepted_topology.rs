@@ -218,7 +218,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
         .unwrap_or_else(|| panic!("mesh1's primary submitted the recovery of the killed birth"));
     let sa = &submit["attributes"];
     assert_eq!(sa["submitter"], mesh_primary.as_str(), "the member's own mesh-primary submits: {submit}");
-    assert_eq!(sa["incarnation"], lost["incarnation"], "keyed on the exact exited birth: {submit}");
+    assert_eq!(sa["incarnation_id"], lost["incarnation"], "keyed on the exact exited birth: {submit}");
     assert_eq!(sa["outcome"], "complete", "the submit followed the recovery to its end: {submit}");
     for (name, what) in [("rdm.node_admin.node.delete.via-node-recovery", "delete"), ("rdm.node_admin.node.create.via-node-recovery", "create")] {
         let child = named(&spans, name).into_iter().find(|sp| sp["attributes"]["node_id"] == lost["node_id"] && sp["parent_span_id"] == submit["span_id"]).unwrap_or_else(|| panic!("the recovery's {what} of the killed birth runs under its submit"));
