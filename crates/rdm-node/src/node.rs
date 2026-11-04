@@ -796,6 +796,8 @@ async fn start_booted(
                             let properties_view = topology_view.clone();
                             property_writer.bound(initial, move |record| { properties_view.set_config(record.config.clone()); properties_view.set_tags(record.tags.clone()); }).await
                                 .map_err(|error| anyhow!("{}: bound properties could not be persisted: {error}", launch.node_id))?;
+                            // Its accepted join report's pending, on its own record after the launch's starting (Q356).
+                            write_own_state(&property_writer, &topology_view, rdm_core::status::NodeState::Pending).await;
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&topology_view, &digest, &status, &server));
@@ -1039,12 +1041,20 @@ impl NodeSession {
             // The primary supplies its lifecycle name and certificate, not a copied map.
             if let Some(name) = &joined.control.name { self.topology_view.set_name(name.clone()); }
             install_join_cert(&self.data_connections, &joined.control.member_cert, &self.topology_view.node_name().to_string(), &self.node_id, &self.incarnation);
-            // The installed cert's dates on its own record (Q356): a refused write is named on the
-            // writer's span; the next renewal writes them again.
-            if let Some(dates) = joined.control.member_cert_dates.clone() {
-                if let Some(initial) = self.property_writer.start_record(self.topology_view.config().unwrap_or_default()) {
-                    let _ = self.property_writer.update(initial, move |record| record.cert = Some(dates), |_| {}).await;
-                }
+            // The accepted join report on its own record (Q356): its pending and the installed cert's
+            // dates, one line. A refused write is named on the writer's span; the next renewal writes
+            // the dates again.
+            let dates = joined.control.member_cert_dates.clone();
+            if let Some(initial) = self.property_writer.start_record(self.topology_view.config().unwrap_or_default()) {
+                let _ = self
+                    .property_writer
+                    .update(initial, move |record| {
+                        record.set_state(crate::model::NodeStatus::Pending);
+                        if let Some(dates) = dates {
+                            record.cert = Some(dates);
+                        }
+                    }, |_| {})
+                    .await;
             }
         }
         drop(rows);
