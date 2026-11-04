@@ -220,6 +220,19 @@ impl Profile {
     }
 }
 
+/// Append `found` to the run's `violations.jsonl`, one line each, as they are found: the run's folder
+/// holds every violation whatever ends the run. A write that fails is said on stderr; the run goes on.
+fn write_found(path: &std::path::Path, found: &[Violation]) {
+    use std::io::Write as _;
+    if found.is_empty() {
+        return;
+    }
+    let lines: String = found.iter().map(|v| serde_json::to_string(v).unwrap_or_default() + "\n").collect();
+    if let Err(e) = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| f.write_all(lines.as_bytes())) {
+        eprintln!("SOAK violations.jsonl at {}: {e}", path.display());
+    }
+}
+
 /// One violated rule, by name, at a round and action.
 #[derive(Debug, Clone, Serialize)]
 pub struct Violation {
@@ -1180,12 +1193,17 @@ impl Driver {
         self.sched.record("start", &format!("seed={} secs={}", self.cfg.seed, self.cfg.secs));
         let deadline = Instant::now() + Duration::from_secs(self.cfg.secs);
         let mut violations: Vec<Violation> = Vec::new();
+        // Each violation is written to the run's folder the moment it is found, and the run keeps going:
+        // it ends at its duration, or when nothing more can run (no admin answers, no legal action).
+        let found = self.estate.artifacts.join("violations.jsonl");
         let mut round = 0usize;
         // A cut owes its Heal row: the run ends on a healed fabric, never inside a hold.
-        while (Instant::now() < deadline || !self.silenced.is_empty()) && violations.is_empty() {
+        while Instant::now() < deadline || !self.silenced.is_empty() {
+            let seen = violations.len();
             round += 1;
             if relocate_control(&mut self.estate, &self.known).await.is_none() {
                 violations.push(Violation { rule: "control-api-answers".into(), round, step: self.executed.len(), action: "-".into(), detail: format!("no admin answers fabric.get: {:?}", self.known.iter().map(|a| &a.name).collect::<Vec<_>>()) });
+                write_found(&found, &violations[seen..]);
                 break;
             }
             let nodes = self.estate.node_values().await;
@@ -1193,6 +1211,7 @@ impl Driver {
             self.publish_view(&nodes);
             let Some(action) = self.next_action(&nodes) else {
                 violations.push(Violation { rule: "a-legal-action-exists".into(), round, step: self.executed.len(), action: "-".into(), detail: format!("no drawn action is executable on the live estate; skipped: {:?}", self.skipped) });
+                write_found(&found, &violations[seen..]);
                 break;
             };
             let step = self.executed.len();
@@ -1208,15 +1227,16 @@ impl Driver {
                 let mut p = self.progress.lock().unwrap();
                 p.executed.push(action.clone());
             }
-            if let Err(b) = self.execute(&action, &nodes, round, &mut entry).await {
-                violations.push(Violation { rule: b.rule.into(), round, step, action: action.to_string(), detail: b.detail });
+            let executed = self.execute(&action, &nodes, round, &mut entry).await;
+            if let Err(b) = &executed {
+                violations.push(Violation { rule: b.rule.into(), round, step, action: action.to_string(), detail: b.detail.clone() });
             }
             entry["wall_ms"] = json!(started.elapsed().as_millis() as u64);
             if entry.get("converged_ms").is_some() {
                 entry["converged_ms"] = entry["wall_ms"].clone();
             }
             self.rounds_log.push(entry);
-            if violations.is_empty() {
+            if executed.is_ok() {
                 // The checkpoint: the invariants that held after this action, by name, on its row.
                 match self.invariants(round).await {
                     Ok(held) => {
@@ -1230,13 +1250,16 @@ impl Driver {
                     Err(b) => violations.push(Violation { rule: b.rule.into(), round, step, action: action.to_string(), detail: b.detail }),
                 }
             }
+            write_found(&found, &violations[seen..]);
         }
-        // A mesh left silenced (a violation ended the run) is healed before anything is judged or stopped.
+        // A mesh left silenced (nothing more could run) is healed before anything is judged or stopped.
+        let seen = violations.len();
         for (mesh, sil) in std::mem::take(&mut self.silenced) {
             if let Err(e) = sil.lift() {
                 violations.push(Violation { rule: "silence-lifts".into(), round, step: self.executed.len().saturating_sub(1), action: format!("lift {mesh}"), detail: e });
             }
         }
+        write_found(&found, &violations[seen..]);
         self.shared.stop.store(true, Ordering::Relaxed);
         let _ = tr.await;
         let (ledger, ledger_violations) = self.reconcile_ledger().await;

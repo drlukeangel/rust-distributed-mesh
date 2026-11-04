@@ -6708,6 +6708,7 @@ async fn soak_run(cell: &str, story: Story) {
         "runtime-history.jsonl": "each birth, kill and hold of the run",
         "spans/": "a copy of every span file the estate wrote, unchanged",
         "heartbeat.jsonl": "the run's liveness every 30 s while it ran",
+        "failure.json": "a red run's seed, violations, ledger violations and repro",
     }});
     for part in [more, evidence, views] {
         for (k, v) in part.as_object().cloned().unwrap_or_default() {
@@ -6715,8 +6716,9 @@ async fn soak_run(cell: &str, story: Story) {
         }
     }
 
+    let estate_found = estate.artifacts.join("violations.jsonl");
+    inv.holds("the driver judged no rule broken: every round's invariants held and the ledger reconciled", !failed, json!({"failure": dir.join("failure.json"), "found": estate_found, "violations": report.violations, "ledger_violations": report.ledger.violations}));
     inv.holds("the soak ran its whole duration: round starts never go backward, every round ends inside the run, and the run lasted at least RDM_RSHAPE_SOAK_SECONDS", monotonic && report.elapsed_s >= secs, json!({"seconds_requested": secs, "driver_elapsed_s": report.elapsed_s, "run_wall_s": run_wall.as_secs(), "rounds": report.rounds, "last_round_end_s": last_end_s, "longest_round_ms": walls.iter().max()}));
-    inv.holds("the driver judged no rule broken: every round's invariants held and the ledger reconciled", !failed, json!({"violations": report.violations, "ledger_violations": report.ledger.violations}));
     inv.holds(&format!("{}: at least one named fault/heal/recovery cycle completed (the action converged and the invariants held at its checkpoint)", story.id), !cycles.is_empty(), json!({"cycle_kinds": story.cycle_kinds, "completed": cycles.len(), "first": cycles.first(), "action_kinds": action_kinds}));
     inv.holds("the seeded schedule is recorded: the seed, every executed action and every scheduler event", report.executed.len() == rows.len() && !report.schedule.is_empty(), json!({"seed": seed, "actions": report.executed.len(), "events": report.schedule.len()}));
     inv.holds("checkpointed invariants: every round carries the invariants that held after it (or names the cut that defers them to its Heal row)", judged + deferred == rows.len() && judged > 0, json!({"rounds": rows.len(), "judged": judged, "deferred_during_cut": deferred, "invariants": ["one-current-birth-per-path", "live-admin-answers", "fabric-build-id-held", "no-peer-mesh-permanently-unheard", "one-fabric-primary", "primaries-equal-the-public-candidates", "every-rpc-node-reachable-on-its-current-birth"]}));
