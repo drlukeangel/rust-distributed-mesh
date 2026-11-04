@@ -673,7 +673,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 ratchet,
                 &mut out,
             );
-            require(root, "crates/rdm-node/src/store_root.rs", &["pub const LAYOUT_VALUE: &str = \"q365\";"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/store_root.rs", &["pub const LAYOUT_VALUE: &str = \"q366\";"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/store_log.rs", &["const CRC_SUFFIX: usize = 20;", "pub const SPEC_VERSION: &str = \"1.0\";"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/store_log/tests.rs", &["fn a_line_states_its_own_length_first_and_its_checksum_last"], ratchet, &mut out);
         }
