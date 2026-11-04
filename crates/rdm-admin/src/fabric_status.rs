@@ -60,6 +60,9 @@ pub(crate) struct StatesEnv {
     pub records: Arc<Records>,
     /// The application hooks.
     pub hooks: FabricHooks,
+    /// The view rebuilt now from the records, the projection the reconcile loop runs, so a handler that
+    /// reads the view reads the state just set (`None`: a rig that keeps no view of its own).
+    pub reproject: Option<Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>>,
 }
 
 impl StatesEnv {
@@ -326,6 +329,11 @@ impl FabricStates {
         };
         span.in_scope(|| tracing::info!("the fabric-primary entered a fabric state"));
         if let Some(build) = ready_of.filter(|_| notice) {
+            // The state is readable at once in the view too (fabric-node-hooks.md: on_fabric_ready's
+            // handler reads it): the view is rebuilt from the records before the notice is sent.
+            if let Some(reproject) = &self.env.reproject {
+                reproject().await;
+            }
             change.notified = true;
             self.notify_fabric_ready(build, parent, me.clone());
             self.env.records.set_fabric_ready_notice_owed(false);
@@ -699,6 +707,7 @@ mod tests {
             builds,
             records,
             hooks: FabricHooks::no_app_work(),
+            reproject: None,
         })
     }
 
@@ -1413,6 +1422,7 @@ mod tests {
                 builds: builds.clone(),
                 records: records.clone(),
                 hooks: hooks.clone(),
+                reproject: None,
             });
 
             // 1. Entry from Pending to Ready fires `on_fabric_ready` once with `build_a`'s CallContext.
@@ -1456,6 +1466,7 @@ mod tests {
                 builds: builds.clone(),
                 records: successor_records.clone(),
                 hooks,
+                reproject: None,
             });
             successor_states
                 .change_step(ChangeInputs {

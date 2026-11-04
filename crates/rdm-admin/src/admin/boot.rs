@@ -1586,6 +1586,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 builds: builds_dyn.clone(),
                                 records: records.clone(),
                                 hooks: fabric_hooks,
+                                // The reconcile loop's projection, run once at a state's entry so the view a
+                                // hook's handler reads holds the state just set.
+                                reproject: Some({
+                                    let (me, digest_view, records, fabric, fabric_id, provider, topology) = (name.clone(), digest_view.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, control.topology.clone());
+                                    Arc::new(move || {
+                                        let (me, digest_view, records, fabric, fabric_id, topology) = (me.clone(), digest_view.clone(), records.clone(), fabric.clone(), fabric_id.clone(), topology.clone());
+                                        Box::pin(async move {
+                                            records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
+                                        })
+                                    })
+                                }),
                             }));
                             // A Build this admin accepts as the fabric-primary reaches its change inside the acceptance:
                             // a resize puts the fabric back to pending, and the view the `BuildService`'s caller reads next holds it.
