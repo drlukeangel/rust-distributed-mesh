@@ -484,6 +484,220 @@ fn throughput_rows(rows: &mut Rows, route: &str, rates: &mut [f64]) {
     rows.value("M9", &format!("{route} throughput per pair, slowest, both ways"), "MB/s", slowest, None);
 }
 
+/// One originate request to `node` through the estate's carrier, under one long attempt: its reply, or
+/// why it ended with none.
+async fn originate(estate: &Estate, node: &rdm_core::NodeId, req: rdm_test::originate::OriginateRequest) -> Result<rdm_test::originate::OriginateReply, String> {
+    let carrier = estate.peers().await.carrier_for(node.clone());
+    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(600)), ..rdm_transport::CallOptions::default() };
+    let (out, _) = carrier.client().call::<rdm_test::originate::Originate>(&rdm_transport::NodeTarget::ExactNode(node.clone()), &req, &opts).await;
+    match out {
+        rdm_core::outcome::RpcOutcome::Reply(r) => Ok(r.into_value()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+/// M11's waits for a burst's receipts on the far node.
+const M11_WAIT: Duration = Duration::from_secs(120);
+
+/// M11 (load-testing.md: gossip load, Luke 2026-11-04): mesh1.node.1 publishes bursts on the testkit
+/// application's channel from inside the node (`PublishBurst`), and mesh2.node.1 receives them. For each
+/// burst: delivered of published, the channel's refusals by name, the latency from each event's publish
+/// span to its receipt span (matched by sequence within the burst's window) and events per second
+/// delivered. Count, size and both, each on its own row; reported, no target.
+async fn gossip_load(estate: &Estate, meshes: &[String], rows: &mut Rows) {
+    use rdm_test::originate::{OriginateReply, OriginateRequest};
+    if meshes.len() < 2 {
+        println!("[load] M11: the gossip load needs two meshes, this profile has {}: not measured", meshes.len());
+        return;
+    }
+    let at = |m: &str| rdm_core::PathName::new(format!("{m}.node"), "1").unwrap();
+    let (from, to) = (estate.node_view(&at(&meshes[0])).await.node_id, estate.node_view(&at(&meshes[1])).await.node_id.to_string());
+    // (axis, events, bytes each). The channel's maximum is 16 chunks of one gossip frame (gossip.rs), about
+    // 60 KB; 70 KB is over it and is refused `Oversize` by name.
+    let cells: [(&str, u32, u32); 10] = [("count", 100, 256), ("count", 1000, 256), ("count", 5000, 256), ("size", 20, 256), ("size", 20, 4096), ("size", 20, 32768), ("size", 20, 60_000), ("over the maximum", 1, 70_000), ("both", 1000, 32768), ("both", 100, 60_000)];
+    for (i, (axis, count, size)) in cells.into_iter().enumerate() {
+        let prefix = format!("m11-{i}");
+        let what = format!("{axis}: {count} x {size} B");
+        let t0 = now_ns();
+        let reply = originate(estate, &from, OriginateRequest::PublishBurst { prefix: prefix.clone(), count, size }).await;
+        let t1 = now_ns();
+        let (published, refused, first) = match reply {
+            Ok(OriginateReply::PublishedBurst { published, refused, first_refusal, .. }) => (published, refused, first_refusal),
+            other => {
+                println!("[load] M11 {what}: the burst ended {other:?}");
+                rows.value("M11", &format!("{what}, bursts that published nothing"), "count", 1.0, None);
+                continue;
+            }
+        };
+        rows.value("M11", &format!("{what}, refused by the channel"), "count", refused as f64, None);
+        if !first.is_empty() {
+            println!("[load] M11 {what}: first refusal: {first}");
+        }
+        let received = |estate: &Estate| -> Vec<Value> {
+            named(&estate.spans_named(&["rdm.testkit.channel.update.via-received"]), "rdm.testkit.channel.update.via-received")
+                .into_iter()
+                .filter(|sp| s(&sp["attributes"]["node_id"]) == to && s(&sp["attributes"]["subject"]).starts_with(&format!("{prefix}/")))
+                .cloned()
+                .collect()
+        };
+        let deadline = Instant::now() + M11_WAIT;
+        let mut got = received(estate);
+        while (got.len() as u32) < published && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            got = received(estate);
+        }
+        if published == 0 {
+            continue;
+        }
+        let publishes: std::collections::HashMap<String, u64> = named(&estate.spans_named(&["rdm.mesh.channel.update.via-publish"]), "rdm.mesh.channel.update.via-publish")
+            .into_iter()
+            .filter(|sp| sp["attributes"]["event_type"] == rdm_test::test_app::APP_CHANNEL && sp["start_unix_nano"].as_u64().is_some_and(|at| at >= t0 && at <= t1))
+            .map(|sp| (s(&sp["attributes"]["sequence"]), sp["start_unix_nano"].as_u64().unwrap_or(0)))
+            .collect();
+        let latencies: Vec<f64> = got.iter().filter_map(|sp| publishes.get(&s(&sp["attributes"]["sequence"])).map(|p| sp["start_unix_nano"].as_u64().unwrap_or(0).saturating_sub(*p) as f64 / 1e6)).collect();
+        let last = got.iter().filter_map(|sp| sp["start_unix_nano"].as_u64()).max().unwrap_or(t1);
+        rows.value("M11", &format!("{what}, delivered of published"), "%", 100.0 * got.len() as f64 / published as f64, None);
+        rows.value("M11", &format!("{what}, delivered per second"), "events/s", got.len() as f64 / ((last.saturating_sub(t0)) as f64 / 1e9).max(1e-3), None);
+        rows.time("M11", &format!("{what}, publish to receipt"), latencies, None, None);
+    }
+}
+
+/// M12 (load-testing.md: data plane load, Luke 2026-11-04): M9's Direct pair (rpc.1 to rpc.6) and Proxy
+/// pair (rpc.3 to rpc.5 through rpc.4, Direct blocked) of the first mesh, each at every cell: open
+/// latency, MB/s both ways, and pairs that measured nothing. Count, size and both; reported, no target.
+async fn data_load(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Rows) {
+    if rpcs < 7 {
+        println!("[load] M12: the data plane load needs seven nodes a mesh, this profile has {rpcs}: not measured");
+        return;
+    }
+    let (probe, entry) = (estate.probe_handle(), estate.entry_birth());
+    let nodes = estate.node_views().await;
+    let m = &meshes[0];
+    let rpc_id = |name: u32| {
+        let location = rdm_core::PathName::new(format!("{m}.node"), name.to_string()).unwrap();
+        nodes.iter().find(|n| n.location() == location).expect("RPC fixture").node_id.to_string()
+    };
+    // (axis, streams, bytes each); a testkit echo stream carries at most 1 MiB less its prefix.
+    let cells: [(&str, u32, u32); 7] = [("count", 1, 4096), ("count", 16, 4096), ("count", 64, 4096), ("size", 1, 4096), ("size", 1, 524_288), ("size", 1, 1_000_000), ("both", 16, 1_000_000)];
+    let (direct, carrier, proxied) = ((rpc_id(1), rpc_id(6)), rpc_id(4), (rpc_id(3), rpc_id(5)));
+    {
+        let (probe, entry, carrier, dst, src) = (probe.clone(), entry.clone(), carrier.clone(), proxied.1.clone(), proxied.0.clone());
+        let blocked = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            measure(&probe, &entry, &carrier, &dst, 1, 1024)?;
+            let out = probe.run(&entry, &["block-direct", "--target", &format!("exact:{src}"), "--destination", &format!("exact:{dst}"), "--key", "x"])?;
+            (out["direct_blocked"] == true).then_some(()).ok_or_else(|| format!("{src}'s Direct toward {dst} not blocked: {out}"))
+        })
+        .await
+        .expect("the proxy setup ran");
+        if let Err(why) = blocked {
+            println!("[load] M12: the Proxy pair could not be set up: {why}");
+        }
+    }
+    for (route, (src, dst)) in [("Direct", direct), ("Proxy", proxied)] {
+        for (axis, streams, bytes) in cells {
+            let what = format!("{route}, {axis}: {streams} streams x {bytes} B");
+            let (probe, entry, src, dst) = (probe.clone(), entry.clone(), src.clone(), dst.clone());
+            match tokio::task::spawn_blocking(move || measure(&probe, &entry, &src, &dst, streams, bytes)).await.expect("a measure ran") {
+                Ok((kind, open_ms, streams_ms, moved)) => {
+                    rows.time("M12", &format!("{what}, open ({kind})"), vec![open_ms], None, None);
+                    rows.value("M12", &format!("{what}, throughput both ways"), "MB/s", moved / 1e6 / (streams_ms / 1000.0).max(1e-6), None);
+                }
+                Err(why) => {
+                    println!("[load] M12 {what}: measured nothing: {why}");
+                    rows.value("M12", &format!("{what}, measured nothing"), "count", 1.0, None);
+                }
+            }
+        }
+    }
+}
+
+/// M13 (load-testing.md: management plane load, Luke 2026-11-04): Node RPC against one node-admin.
+/// Count: `node.topology.get` at 1, 16, 64 and 256 callers (M6's driver, 20 s each). Size:
+/// `node.config.update` of mesh1.node.1 sent to the fabric-primary with a config of 256 B, 1 KB and 3.5 KB,
+/// 20 each, and one over the 4 KB Status request frame, refused by name. Both: 64 callers, 5 updates each,
+/// at 3.5 KB. Completed of sent, p50, p99 and max; reported, no target.
+async fn management_load(estate: &Estate, meshes: &[String], admins: u32, rows: &mut Rows) {
+    let at = rdm_core::PathName::new(format!("{}.node-admin", meshes.last().unwrap()), admins.to_string()).unwrap();
+    for callers in [1usize, 16, 64, 256] {
+        let (latencies, errors, secs) = rpc_load(estate, &at, callers, Duration::from_secs(20)).await;
+        let what = format!("count: topology.get at {at:?}, {callers} callers");
+        rows.value("M13", &format!("{what}, completions"), "/s", latencies.len() as f64 / secs, None);
+        rows.value("M13", &format!("{what}, calls without a reply"), "count", errors as f64, None);
+        rows.time("M13", &what, latencies, None, None);
+    }
+    let views = estate.node_views().await;
+    let fp = views.iter().find(|n| n.is_fabric_primary).expect("a fabric-primary").node_id.clone();
+    let subject = views.iter().find(|n| n.location() == rdm_core::PathName::new(format!("{}.node", meshes[0]), "1").unwrap()).expect("the subject node").clone();
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation.clone().expect("the subject node has a birth") };
+    let carrier = estate.peers().await.carrier_for(fp.clone());
+    let update = move |bytes: usize| {
+        let (carrier, fp, birth) = (carrier.clone(), fp.clone(), birth.clone());
+        async move {
+            let rpc = rdm_client::NodeRpc::new(carrier.client());
+            let config: std::collections::BTreeMap<String, String> = [("load.blob".to_string(), "x".repeat(bytes))].into();
+            let t = Instant::now();
+            let r = rpc.config_update(&fp, &rdm_transport::RouteChoice::Direct, &birth, config, &rdm_transport::CallOptions::default()).await;
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            match r {
+                Ok(rdm_core::status::StatusReply::ConfigUpdated { .. }) => Ok(ms),
+                Ok(other) => Err(other.name().to_string()),
+                Err(end) => Err(format!("{end:?}")),
+            }
+        }
+    };
+    for bytes in [256usize, 1024, 3584, 5000] {
+        let what = if bytes > 4096 { format!("size: config.update of {bytes} B, over the 4 KB Status request frame") } else { format!("size: config.update of {bytes} B") };
+        let n = if bytes > 4096 { 1 } else { 20 };
+        let (mut done, mut refused, mut first) = (Vec::new(), 0usize, String::new());
+        for _ in 0..n {
+            match update(bytes).await {
+                Ok(ms) => done.push(ms),
+                Err(why) => {
+                    refused += 1;
+                    if first.is_empty() {
+                        first = why;
+                    }
+                }
+            }
+        }
+        rows.value("M13", &format!("{what}, completed of sent"), "%", 100.0 * done.len() as f64 / n as f64, None);
+        if !first.is_empty() {
+            println!("[load] M13 {what}: {refused} not completed, the first: {first}");
+        }
+        rows.time("M13", &what, done, None, None);
+    }
+    let tasks: Vec<_> = (0..64).map(|_| {
+        let update = update.clone();
+        tokio::spawn(async move {
+            let mut out = Vec::new();
+            for _ in 0..5 {
+                out.push(update(3584).await);
+            }
+            out
+        })
+    }).collect();
+    let (mut done, mut failed, mut first) = (Vec::new(), 0usize, String::new());
+    for t in tasks {
+        for r in t.await.expect("a caller ran") {
+            match r {
+                Ok(ms) => done.push(ms),
+                Err(why) => {
+                    failed += 1;
+                    if first.is_empty() {
+                        first = why;
+                    }
+                }
+            }
+        }
+    }
+    let what = "both: config.update of 3584 B, 64 callers x 5";
+    rows.value("M13", &format!("{what}, completed of sent"), "%", 100.0 * done.len() as f64 / 320.0, None);
+    if !first.is_empty() {
+        println!("[load] M13 {what}: {failed} not completed, the first: {first}");
+    }
+    rows.time("M13", what, done, None, None);
+}
+
 /// M9 (load-testing.md: "connection open latency and bytes per second, Direct and Proxy, N sources x M
 /// destinations; 60 s; reported, no target"). Direct: in each mesh (a node holds its own mesh's
 /// births, never another mesh's), rpc.1 and rpc.2 to rpc.6 and rpc.7, each source's destinations in turn,
@@ -626,6 +840,21 @@ async fn load_profile_l1_data_plane() {
     run_as(&L1, "load_profile_l1_data_plane", true, Run::DataPlane).await;
 }
 
+/// M11, M12 and M13 at L1 (Luke 2026-11-04): gossip, data plane and management plane load, by count, by
+/// size and both; reported, no target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L1 --planes"]
+async fn load_profile_l1_planes() {
+    run_as(&L1, "load_profile_l1_planes", true, Run::Planes).await;
+}
+
+/// M11, M12 and M13 at L2, the 4-mesh profile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L2 --planes"]
+async fn load_profile_l2_planes() {
+    run_as(&L2, "load_profile_l2_planes", true, Run::Planes).await;
+}
+
 /// L4 again with 100 samples of M3 and M5, the target on p99 (load-testing.md "Samples": at the largest
 /// passing profile M3 and M5 run once more with 100 samples, before M10).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -685,6 +914,11 @@ enum Run {
     /// M9: the data plane, Direct and Proxy, N sources x M destinations; reported, no target. The
     /// estate's nodes register the testkit's app protocol (its knob written before they launch).
     DataPlane,
+    /// M11, M12 and M13 (Luke 2026-11-04): gossip, data plane and management plane load, each by the
+    /// number of messages, by their size and by both at once; reported, no target. The estate's nodes join
+    /// the testkit application's channel and register its app protocol (their knobs written before they
+    /// launch).
+    Planes,
 }
 
 impl Run {
@@ -704,10 +938,14 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     let t0 = Instant::now();
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await;
     let admin_up = t0.elapsed();
-    if run == Run::DataPlane {
+    if matches!(run, Run::DataPlane | Run::Planes) {
         // Every node the Build launches registers the app protocol, a carrier included.
         let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();
         std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_PROXY_KNOB), b"").unwrap();
+        if run == Run::Planes {
+            // Every node joins the testkit application's channel in its pre_node_ready (M11).
+            std::fs::write(root.join(rdm_test::test_app::APP_CHANNEL_KNOB), b"").unwrap();
+        }
     }
     let mut stream = estate.submit_shape("fabric1", &shape).await;
     let _ = Estate::until_complete(&mut stream).await;
@@ -729,6 +967,15 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
 
     if run == Run::DataPlane {
         data_plane(&estate, &meshes, p.rpcs, &mut rows).await;
+        estate.stop().await;
+        rows.finish();
+        return;
+    }
+
+    if run == Run::Planes {
+        gossip_load(&estate, &meshes, &mut rows).await;
+        data_load(&estate, &meshes, p.rpcs, &mut rows).await;
+        management_load(&estate, &meshes, p.admins, &mut rows).await;
         estate.stop().await;
         rows.finish();
         return;

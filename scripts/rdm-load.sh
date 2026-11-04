@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rdm-load.sh <profile> [--debug] [--no-evidence|--samples|--soak|--data-plane]: run one load profile (docs/eng/testing-load-harness.md).
+# rdm-load.sh <profile> [--debug] [--no-evidence|--samples|--soak|--data-plane|--planes]: run one load profile (docs/eng/testing-load-harness.md).
 #
 # The nodes under load are a release build of the lane's commit (cargo build --release --bins), the
 # estate pointed at them with RDM_BIN_DIR; --debug runs on the gate's debug build instead; --no-evidence
@@ -20,6 +20,7 @@ for a in "$@"; do
         --samples) cell=samples ;;
         --soak) cell=soak ;;
         --data-plane) cell=data_plane ;;
+        --planes) cell=planes ;;
         --perf=*) export RDM_LOAD_PERF="${a#--perf=}" ;;
         *) echo "rdm-load: unknown argument $a"; exit 2 ;;
     esac

@@ -176,6 +176,20 @@ pub enum OriginateRequest {
         /// The event's data.
         data: Vec<u8>,
     },
+    /// Publish `count` events of `size` bytes each on the testkit application's channel, one after
+    /// another, from inside this node (load-testing.md M11: the gossip load, never one Node RPC per
+    /// event): subjects `<prefix>/<i>`, sequences `i`. Each publish has its own channel span. Appended
+    /// last.
+    ///
+    /// Position 12 on the wire.
+    PublishBurst {
+        /// The events' subject prefix.
+        prefix: String,
+        /// How many events.
+        count: u32,
+        /// Each event's data, in bytes.
+        size: u32,
+    },
 }
 
 /// Who answered.
@@ -419,6 +433,22 @@ pub enum OriginateReply {
         /// `handed-to-gossip`, or the channel's refusal by name.
         outcome: String,
     },
+    /// The burst [`OriginateRequest::PublishBurst`] named: how many were handed to gossip, how many
+    /// the channel refused, and the first refusal by name.
+    ///
+    /// Position 20 on the wire.
+    PublishedBurst {
+        /// Who published them.
+        by: AnsweredBy,
+        /// Events handed to the channel's gossip.
+        published: u32,
+        /// Events the channel refused.
+        refused: u32,
+        /// The first refusal, by name; empty when none.
+        first_refusal: String,
+        /// The burst's time inside the node, microseconds.
+        elapsed_us: u64,
+    },
 }
 
 impl NodeProtocol for Originate {
@@ -431,7 +461,7 @@ impl NodeProtocol for Originate {
     type Reply = OriginateReply;
 
     rdm_core::protocol_variants! {
-        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput, Publish }
+        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput, Publish, PublishBurst }
         reply OriginateReply {
             Called = "called" => ReplyKind::Success,
             FaultArmed = "fault-armed" => ReplyKind::Success,
@@ -448,6 +478,7 @@ impl NodeProtocol for Originate {
             OwnConfigUpdated = "own-config-updated" => ReplyKind::Success,
             Measured = "measured" => ReplyKind::Success,
             Published = "published" => ReplyKind::Success,
+            PublishedBurst = "published-burst" => ReplyKind::Success,
         }
     }
 }
@@ -531,6 +562,26 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                             Err(e) => e.to_string(),
                         };
                         OriginateReply::Published { by, outcome }
+                    }
+                },
+                OriginateRequest::PublishBurst { prefix, count, size } => match crate::test_app::app_channel_publisher() {
+                    None => OriginateReply::NotReady { reason: format!("{own:?}: this node joined no {} channel", crate::test_app::APP_CHANNEL) },
+                    Some(publisher) => {
+                        let started = std::time::Instant::now();
+                        let (mut published, mut refused, mut first_refusal) = (0u32, 0u32, String::new());
+                        for i in 0..count {
+                            let event = rdm_transport::gossip::Event { subject: format!("{prefix}/{i}"), sequence: Some(i as u64), dataschema: Some("testkit.app.v1".into()), data: vec![b'x'; size as usize].into() };
+                            match publisher.publish(event).await {
+                                Ok(()) => published += 1,
+                                Err(e) => {
+                                    refused += 1;
+                                    if first_refusal.is_empty() {
+                                        first_refusal = e.to_string();
+                                    }
+                                }
+                            }
+                        }
+                        OriginateReply::PublishedBurst { by, published, refused, first_refusal, elapsed_us: started.elapsed().as_micros() as u64 }
                     }
                 },
                 OriginateRequest::StopTransport { reason } => {
