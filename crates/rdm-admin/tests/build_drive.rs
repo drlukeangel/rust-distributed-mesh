@@ -833,6 +833,11 @@ fn a_leave_of_a_mesh_held_unheard_runs_and_its_resubmit_completes_once_the_prima
         let ran = r.ran.0.lock().unwrap().clone();
         (first, second, ran, read)
     });
+    // Every run writes its spans, so a red carries its evidence.
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/build_drive/a_leave_of_a_mesh_held_unheard_runs_and_its_resubmit_completes_once_the_primary_has_exited");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&cap.spans()).unwrap()).unwrap();
+    println!("spans={}", dir.join("spans.json").display());
     let (end, p, dispatches) = first;
     assert_eq!((end, p.state, dispatches), (DriveEnd::Terminal, BuildState::Incomplete, 1), "the shutdown ran although mesh2 is held unheard, and the Build ended incomplete: {:?}", p.unfinished);
     assert!(matches!(p.unfinished.as_slice(), [u] if u.mesh == "mesh2" && u.reason.contains("not proven exited")), "the Build names the unproven primary: {:?}", p.unfinished);
