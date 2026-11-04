@@ -389,11 +389,11 @@ pub fn fixture_record(name: &PathName, r#type: &str, node_id: NodeId, incarnatio
 mod tests {
     use super::*;
 
-    /// CONTRACT (Q366): a node record holds exactly Q366's fields: it round-trips through its JSON, and
+    /// CONTRACT (Q366): a node record holds exactly Q366's fields: it decodes back to itself from its JSON, and
     /// a record with any other field is refused by name at decode. Must NOT happen: a line carrying a
     /// field outside the schema decoded as a record.
     #[test]
-    fn a_record_round_trips_with_exactly_its_fields_and_any_other_field_is_refused() {
+    fn a_record_decodes_with_exactly_its_fields_and_any_other_field_is_refused() {
         let name = PathName::new("mesh1.node", "1").unwrap();
         let record = fixture_record(&name, "node", NodeId::mint(), IncarnationId::mint(), crate::model::NodeStatus::Ready);
         let json = serde_json::to_value(&record).unwrap();

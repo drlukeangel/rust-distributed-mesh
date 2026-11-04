@@ -2210,7 +2210,7 @@ mod tests {
     /// primary's exact Exited is proven and recorded first, then the fabric-primary creates the one
     /// node-admin of a mesh with no live admin; R11: record predecessor Exited first; node-create.md:
     /// "the mesh-primary checks the path and name against its view and the creates it has in flight"):
-    /// the proven exit vacates the lost primary's role, so the fabric-primary acts for the mesh and its
+    /// the exit its investigation found vacates the lost primary's role, so the fabric-primary acts for the mesh and its
     /// create's check of the admin it creates passes. Must NOT happen: the refusal of
     /// mesh_lifecycle::mesh_delete_no_survivor on 8803f84e (AllocateIdentity refused the birth:
     /// "mesh1.node-admin.1 is not the writer of mesh2's node rows").
