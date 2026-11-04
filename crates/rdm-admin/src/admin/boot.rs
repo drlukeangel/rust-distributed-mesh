@@ -2668,12 +2668,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                     return Ladder::Gone(crate::node_investigation::Finding::from(inspected).name().to_string());
                                                                 }
                                                                 let Some(client) = client else { return Ladder::Tickled(Err("this admin has no Node RPC client".to_string())) };
-                                                                Ladder::Tickled(crate::offline::tickle(&node, &view, &crate::offline::TickleClient {
+                                                                let investigator = me_id.clone();
+                                                                let tickled = crate::offline::tickle(&node, &view, &crate::offline::TickleClient {
                                                                     client,
                                                                     me_id,
                                                                     me,
                                                                     connections,
-                                                                }).await)
+                                                                }).await;
+                                                                // `running` from an investigator that hears no other node: every other birth it
+                                                                // holds, its own mesh's and the backbone's, is unheard past the floor, so it is the
+                                                                // one cut off, and the birth is unreachable from it, not lost (Q153).
+                                                                crate::offline::ladder_of(&inspected, tickled, || crate::offline::hears_none(&inspector.digest_view, &investigator, floor))
                                                             }
                                                         },
                                                         |id| {

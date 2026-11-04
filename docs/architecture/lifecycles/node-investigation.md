@@ -24,9 +24,7 @@ other caller reports the birth to it with Status `ReportCallFailed`), and the pr
 that birth as it investigates silence ([node recovery](node-recovery.md) step 2).
 
 The verdict is the one decision (Q111). The primary that investigated writes it as one `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, verdict and what follows ([build.md §5](../build.md#5-buildstateadapter)); an investigation is never an entity of its own. Reached: the node is commanded back through
-[node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path and name with a
-new node.id (Q110). Fabric recovery's backbone arm excepts `running`
-([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
+[node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path and name with a new node.id (Q110). `running` from an investigator that hears no other node (every other birth it holds is unheard past the floor, so it is the one cut off) is unreachable from that investigator, not lost: nothing is written, and the next investigation decides again (Q153). Fabric recovery's backbone arm excepts `running` ([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
 
 Nothing waits on the provider's `Exited`: not node recovery, a primary change, a name's release,
 node.delete or mesh.delete.
@@ -58,5 +56,5 @@ row deleted ([node.delete](node-delete.md), releasing the name) and reports it t
 | Target | One node, by `(node.id, incarnation)` |
 | Steps | The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers |
 | Result | `reached`, `running`, `os-stopped`, `exited` or `unproven` |
-| What follows | Reached: node.mesh.join. Any other verdict: re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
+| What follows | Reached: node.mesh.join. Any other verdict (except `running` from an investigator that hears no other node, Q153): re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
 | Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |

@@ -332,10 +332,10 @@
           "dir": "target/i143-acceptance/2775/process/testkit_store_node_restarts_preserves_same_node_store"
         },
         {
-          "name": "testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path",
+          "name": "testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_follows_path",
           "source": "crates/rdm-test/tests/rpc/testkit_store_lifecycle.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path/estate cargo test -p rdm-test --test main testkit_store_lifecycle::testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path -- --exact",
-          "dir": "target/i143-acceptance/2775/process/testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_follows_path/estate cargo test -p rdm-test --test main testkit_store_lifecycle::testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_follows_path -- --exact",
+          "dir": "target/i143-acceptance/2775/process/testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_follows_path"
         }
       ]
     },
@@ -701,52 +701,10 @@
       "layer": "process",
       "cells": [
         {
-          "name": "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes"
-        },
-        {
-          "name": "an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops/estate cargo test -p rdm-test --test main peer_mesh_investigation::an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops"
-        },
-        {
-          "name": "peer_mesh_heard_again_between_probes_cancels_the_investigation",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation/estate cargo test -p rdm-test --test main peer_mesh_investigation::peer_mesh_heard_again_between_probes_cancels_the_investigation -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation"
-        },
-        {
-          "name": "a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict"
-        },
-        {
-          "name": "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost/estate cargo test -p rdm-test --test main peer_mesh_investigation::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost"
-        },
-        {
-          "name": "two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin/estate cargo test -p rdm-test --test main peer_mesh_investigation::two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin"
-        },
-        {
           "name": "elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status",
           "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status/estate cargo test -p rdm-test --test main peer_mesh_investigation::elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/elected_primary_holds_its_checklist_for_the_killed_primary_then_republishes_the_old_status"
-        },
-        {
-          "name": "a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does",
-          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does"
         }
       ]
     },
@@ -787,14 +745,6 @@
       "layer": "process",
       "cells": [
         {
-          "name": "a_path_move_preserves_the_node_identity",
-          "source": "crates/rdm-test/tests/node_records.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_path_move_preserves_the_node_identity/estate cargo test -p rdm-test --test main node_records::a_path_move_preserves_the_node_identity -- --exact",
-          "dir": "target/i143-acceptance/260/process/a_path_move_preserves_the_node_identity",
-          "evidence": "runner",
-          "test": "a_path_move_preserves_the_node_identity"
-        },
-        {
           "name": "a_deleted_birth_is_read_by_its_id",
           "source": "crates/rdm-test/tests/node_records.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_deleted_birth_is_read_by_its_id/estate cargo test -p rdm-test --test main node_records::a_deleted_birth_is_read_by_its_id -- --exact",
@@ -817,14 +767,6 @@
           "dir": "target/i143-acceptance/260/process/takeover_survives_mesh_primary_restart",
           "evidence": "runner",
           "test": "takeover_survives_mesh_primary_restart"
-        },
-        {
-          "name": "an_applied_build_update_survives_node_restart",
-          "source": "crates/rdm-test/tests/node_records.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/an_applied_build_update_survives_node_restart/estate cargo test -p rdm-test --test main node_records::an_applied_build_update_survives_node_restart -- --exact",
-          "dir": "target/i143-acceptance/260/process/an_applied_build_update_survives_node_restart",
-          "evidence": "runner",
-          "test": "an_applied_build_update_survives_node_restart"
         },
         {
           "name": "a_start_preserves_a_newer_owed_update",

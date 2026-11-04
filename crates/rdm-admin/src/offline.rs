@@ -650,6 +650,10 @@ enum LadderEnd {
     Unreached { direct: String, asked: String, verdict_at_ms: u64 },
     /// No ladder ran: the birth could not be probed, by name (no incarnation, no client).
     NotRun(String),
+    /// The inspect read the runtime running, nobody reached the birth, and the investigator hears no
+    /// other node: how the direct probe ended and the carriers asked. Unreachable from this
+    /// investigator, not lost (Q153).
+    InvestigatorHearsNone { direct: String, asked: String },
 }
 
 /// What one birth's investigation in the fold returned (Q273): the provider's proof that its runtime is
@@ -660,6 +664,30 @@ pub enum Ladder {
     Gone(String),
     /// The ladder ran: its result.
     Tickled(Result<Tickle, String>),
+    /// The inspect read the runtime running, the ladder went unanswered, and the investigator hears no
+    /// other node ([`hears_none`]): it is the one cut off (Q153).
+    InvestigatorHearsNone(Unreached),
+}
+
+/// Whether the investigator `me` hears no other node: no birth its digest view holds but its own was
+/// heard on its own word (its own mesh's channel or the backbone) within `floor`, so its view marks
+/// every other birth silent and it is the one cut off (Q153). A birth held only from a topology copy
+/// is not heard: a copy refreshes no node's coverage (gossip.md section 6).
+pub fn hears_none(view: &rdm_transport::topology::DigestView, me: &crate::model::NodeId, floor: std::time::Duration) -> bool {
+    let since = std::time::Instant::now().checked_sub(floor).unwrap_or_else(std::time::Instant::now);
+    view.heard_direct_since(since).iter().all(|d| &d.node.node_id == me)
+}
+
+/// The ladder's result for a birth the inspect did not prove gone (`inspected`), once its tickle
+/// ended (`tickled`): `running` that nobody reached, from an investigator that hears no other node
+/// (`hears_none`, asked only then), is [`Ladder::InvestigatorHearsNone`]; anything else is the
+/// tickle's own result, a `running` with no peer to try from an investigator that hears others
+/// included (Q153).
+pub fn ladder_of(inspected: &crate::deployment::provider::Inspected, tickled: Result<Tickle, String>, hears_none: impl FnOnce() -> bool) -> Ladder {
+    match tickled {
+        Ok(Tickle::Unreached(unreached)) if matches!(inspected, crate::deployment::provider::Inspected::Running) && hears_none() => Ladder::InvestigatorHearsNone(unreached),
+        tickled => Ladder::Tickled(tickled),
+    }
 }
 
 /// One ladder of the ladder, running beside the loop: started by one tick, folded by a later one.
@@ -851,6 +879,15 @@ impl OfflineTickle {
                     }
                     report.reachable_silent.push(id);
                 }
+                LadderEnd::InvestigatorHearsNone { direct, asked } => {
+                    // `running` from an investigator that hears no other node: it is the one cut off, so
+                    // the birth is unreachable from it, not lost, and nothing is written: no recovery, no
+                    // delete, no create (node-investigation.md, Q153). Its window starts again at this
+                    // tick, and the next investigation decides again.
+                    self.first_seen.insert(id.clone(), now_ms);
+                    tracing::info_span!("rdm.node_admin.node.resolve.via-investigator-hears-none", node_id = %id, node_path = %path.path, node_name = %path.name, verdict = "running", direct = %direct, asked = %asked, observer = %self.observer, "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!(node_id = %id, direct = %direct, "the runtime runs and this investigator hears no other node: unreachable from it, not lost; nothing is written"));
+                }
                 LadderEnd::NotRun(reason) => {
                     tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_id = %id, node_path = %path.path, node_name = %path.name, error = %reason, observer = %self.observer, "otel.kind" = "internal")
                         .in_scope(|| tracing::warn!(node_id = %id, error = %reason, "no ladder ran over the birth: no status change"));
@@ -917,6 +954,10 @@ impl OfflineTickle {
                         LadderEnd::Unreached { direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
                     }
                     Ladder::Tickled(Err(reason)) => LadderEnd::NotRun(reason),
+                    Ladder::InvestigatorHearsNone(unreached) => {
+                        unreached.next("investigate-again");
+                        LadderEnd::InvestigatorHearsNone { direct: unreached.direct.name(), asked: unreached.carriers() }
+                    }
                 }
             });
             let task = tokio::spawn(async move {
@@ -1898,6 +1939,72 @@ pub(crate) mod tests {
         let r = tick(&mut t, PROBE_DELAY, true, silent("a"), false, ViaPeerVerdict::Answered { via: crate::model::NodeId::parse("100000000002").unwrap() }).await;
         assert_eq!(r.reachable_silent, vec!["a".to_string()]);
         assert!(!t.is_offline("a"));
+    }
+
+    /// One investigation of a silent birth "a" whose runtime the inspect read running and whose tickle
+    /// nobody answered, with no peer to try, decided by [`ladder_of`] from an investigator that hears
+    /// no other node (`hears_none`) or one that still hears others: the ladder half a floor after the
+    /// mark, then the tick that folds it. Returns the fold's report.
+    async fn running_unreached_with_no_peer(t: &mut OfflineTickle, now: u64, hears_none: bool) -> OfflineTickReport {
+        t.tick(
+            now,
+            true,
+            silent("a"),
+            |_| true,
+            PROBE_DELAY,
+            |_| async move { crate::offline::ladder_of(&crate::deployment::provider::Inspected::Running, Ok(unreached(&[])), || hears_none) },
+            |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
+        )
+        .await
+    }
+
+    /// CONTRACT (Q153; node-investigation.md "Any other verdict"; node-recovery.md step 3): a birth
+    /// whose runtime the inspect reads running and that nobody reached, investigated by a primary
+    /// that hears no other node (every other birth it holds unheard past the floor, so it is the one
+    /// cut off), is unreachable from that investigator, not lost: it is not TRUE OFFLINE, so no
+    /// recovery, delete or create follows; one `rdm.node_admin.node.resolve.via-investigator-hears-none`
+    /// span names it, and half a floor later the next investigation decides again. What must NOT
+    /// happen: a cut-off primary re-creating a node only it cannot reach.
+    #[tokio::test(start_paused = true)]
+    async fn a_running_birth_unreached_by_an_investigator_that_hears_no_other_node_is_not_offline() {
+        let capture = crate::span_capture::Capture::new("q153-investigator-hears-none");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let mut t = OfflineTickle::observed_by("mesh2.node-admin.1".into(), crate::stop_gate::StopGate::new());
+        running_unreached_with_no_peer(&mut t, 0, true).await;
+        assert_eq!(running_unreached_with_no_peer(&mut t, PROBE_DELAY, true).await.tickled, vec!["a".to_string()], "the ladder runs half a floor after the mark");
+        while t.ladders().1 < t.ladders().0 {
+            tokio::task::yield_now().await;
+        }
+        let folded = running_unreached_with_no_peer(&mut t, PROBE_DELAY + 1, true).await;
+        assert!(folded.offline.is_empty() && !t.is_offline("a"), "an investigator that hears no other node: not TRUE OFFLINE, no recovery follows: {folded:?}");
+        assert!(folded.tickled.is_empty(), "no second ladder at the tick that folded the first");
+        let spans = capture.named("rdm.node_admin.node.resolve.via-investigator-hears-none");
+        assert_eq!(spans.len(), 1, "one span names the birth unreachable from this investigator");
+        assert_eq!(spans[0].attributes.get("verdict").map(String::as_str), Some("running"), "{:?}", spans[0].attributes);
+        assert!(capture.named("rdm.node_admin.node.update.via-true-offline").is_empty(), "no TRUE OFFLINE span");
+        assert_eq!(running_unreached_with_no_peer(&mut t, 2 * PROBE_DELAY + 1, true).await.tickled, vec!["a".to_string()], "the next investigation decides again half a floor on");
+        eprintln!("span rdm.node_admin.node.resolve.via-investigator-hears-none trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
+    }
+
+    /// CONTRACT (Q153; node-investigation.md step 4, "Any other verdict"): the same `running` birth
+    /// nobody reached, with no peer to try, investigated by a primary that still hears other nodes, is
+    /// TRUE OFFLINE and recovered as before: no `via-investigator-hears-none` span. What must NOT
+    /// happen: a hung node in a mesh with no other ready peer never recovered.
+    #[tokio::test(start_paused = true)]
+    async fn a_running_birth_with_no_peer_to_try_from_an_investigator_that_hears_others_is_offline() {
+        let capture = crate::span_capture::Capture::new("q153-investigator-hears-others");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let mut t = OfflineTickle::observed_by("mesh2.node-admin.1".into(), crate::stop_gate::StopGate::new());
+        running_unreached_with_no_peer(&mut t, 0, false).await;
+        assert_eq!(running_unreached_with_no_peer(&mut t, PROBE_DELAY, false).await.tickled, vec!["a".to_string()], "the ladder runs half a floor after the mark");
+        while t.ladders().1 < t.ladders().0 {
+            tokio::task::yield_now().await;
+        }
+        let folded = running_unreached_with_no_peer(&mut t, PROBE_DELAY + 1, false).await;
+        assert_eq!(folded.offline, vec!["a".to_string()], "an investigator that hears others: TRUE OFFLINE, its recovery follows");
+        assert!(t.is_offline("a"));
+        assert!(capture.named("rdm.node_admin.node.resolve.via-investigator-hears-none").is_empty(), "no hears-none span");
+        assert_eq!(capture.named("rdm.node_admin.node.update.via-true-offline").len(), 1, "one TRUE OFFLINE span");
     }
 
     #[tokio::test(start_paused = true)]

@@ -95,6 +95,19 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let (mut estate, nodes) = estate(cell).await;
     let member_location = member();
     let member_id = node_id(&nodes, &member_location);
+    // The member learns each mesh's topology by gossip, not from the admin's settled view: the reads are
+    // made once the member's own held view of each mesh holds every settled birth ready (the
+    // `witness_holds_birth` precondition), so the version it answers with is the one it keeps.
+    let member_view = nodes.iter().find(|n| n.location() == member_location).expect("the member is in the view").clone();
+    let peers = estate.peers().await;
+    for mesh in ["mesh1", "mesh2"] {
+        let births: Vec<_> = nodes.iter().filter(|n| n.mesh() == mesh).map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
+        peers
+            .fact(&member_view, mesh, &format!("{member_location:?} holds every settled birth of {mesh} ready"), |v| {
+                births.iter().all(|(id, inc)| v.birth(id).is_some_and(|d| Some(&d.node.incarnation) == inc.as_ref() && d.status == rdm_core::MemberStatus::Ready))
+            })
+            .await;
+    }
     let target = format!("exact:{member_id}");
     let t0 = rdm_test_scenario_now();
 

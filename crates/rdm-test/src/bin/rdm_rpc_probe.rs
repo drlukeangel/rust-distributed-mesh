@@ -348,8 +348,10 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
         }
     };
     let mut opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
+    // `--budget-ms` is the call's overall budget: one attempt bounded by it, never the default attempts
+    // each bounded by it.
     if let Some(ms) = a.budget_ms {
-        opts.send = rdm_transport::Send::with_time_limit(std::time::Duration::from_millis(ms));
+        opts.send = rdm_transport::Send { attempts: 1, time_limit: rdm_transport::TimeLimit(std::time::Duration::from_millis(ms)) };
     }
     let (out, leg): (RpcOutcome<TestkitStoreReply>, &str) = match route {
         Err(f) => (rdm_core::outcome::PreCommit::begin(<TestkitStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), "via-peer"),

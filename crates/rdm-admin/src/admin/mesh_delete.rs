@@ -186,7 +186,7 @@ impl AdminRunner {
     /// launch the provider finds exited or never launched has no runtime to delete and is no roster birth.
     /// One `rdm.node_admin.mesh.resolve.via-in-flight-create` span per create names it (`member`, `found`).
     async fn in_flight_creates(&self, mesh: &str, rows: &[crate::storage::NodeRecord]) -> Result<Vec<RosterBirth>, String> {
-        use crate::deployment::provider::{Found, ResolvedNodeLaunch};
+        use crate::deployment::provider::Found;
         let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(|e| format!("the fabric.delete in force could not be read: {e}"))? else { return Ok(Vec::new()) };
         let allocate = crate::deployment::pipeline::CreateStep::AllocateIdentity.name();
         let mut builds = vec![delete.clone()];
@@ -214,13 +214,7 @@ impl AdminRunner {
                 }
                 let (incarnation, deployment_id) = crate::deployment::pipeline::launch_of(&operation, node_id);
                 let span = tracing::info_span!("rdm.node_admin.mesh.resolve.via-in-flight-create", node_path = %self.me().path, node_name = %self.me().name, mesh = %mesh, member = %node_id, member_path = %at.path, member_name = %at.name, build_id = %p.build_id.log(), deployment_id = %deployment_id, found = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
-                let launch = ResolvedNodeLaunch {
-                    mesh: mesh.to_string(), r#type: spec.r#type.clone(), path: at.path.clone(), name: at.name.clone(),
-                    deployment_id: deployment_id.clone(), executable: Default::default(), args: Vec::new(), env: Default::default(),
-                    secrets: Default::default(), withhold: Vec::new(),
-                    data_dir: crate::deployment::node_data_dir(&self.template.data_root, node_id),
-                    transport: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), listeners: Vec::new(),
-                };
+                let launch = in_flight_launch(mesh, spec, &deployment_id, crate::deployment::node_data_dir(&self.template.data_root, node_id));
                 let found = self.provider.find(&launch, crate::deployment::deadline::Deadline::step()).instrument(span.clone()).await.map_err(|e| {
                     span.record("found", "failed").record("detail", e.to_string().as_str());
                     format!("the in-flight create {operation} of {mesh} (launch {deployment_id}) could not be found: {e}")
@@ -982,6 +976,21 @@ impl AdminRunner {
     }
 }
 
+/// The launch of an in-flight create of `mesh` that a roster capture asks the provider to find: the
+/// accepted entry `spec`'s node, its launch `deployment_id` in `data_dir`, running the executable the
+/// create launched, the entry's binding (deployment-provider.md §2, "Find is for the launcher's
+/// successor"). The process provider's find reads a launch running only while its pid runs that file;
+/// an entry that names no executable (a Build accepted before the field) finds none running.
+fn in_flight_launch(mesh: &str, spec: &rdm_core::meta::NodeSpec, deployment_id: &crate::model::DeploymentId, data_dir: std::path::PathBuf) -> crate::deployment::provider::ResolvedNodeLaunch {
+    crate::deployment::provider::ResolvedNodeLaunch {
+        mesh: mesh.to_string(), r#type: spec.r#type.clone(), path: spec.path.clone(), name: spec.name.clone(),
+        deployment_id: deployment_id.clone(), executable: spec.executable.as_ref().map(|b| b.executable.clone()).unwrap_or_default(), args: Vec::new(), env: Default::default(),
+        secrets: Default::default(), withhold: Vec::new(),
+        data_dir,
+        transport: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), listeners: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1393,6 +1402,36 @@ mod tests {
         router.shutdown().await.unwrap();
         admin_ep.close().await;
         ep.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (fabric-delete.md "Receipts"; deployment-provider.md §2, "Find is for the launcher's
+    /// successor"): the launch a roster capture finds for an in-flight create names the executable the
+    /// create launched, its accepted entry's binding, so the process provider's find of a launch whose
+    /// process still runs is `Running` (a birth of the roster, deleted with it), and `Exited` once it
+    /// has exited. Must NOT happen: a running launch found `Exited` (it is no roster birth, nothing
+    /// deletes it, and it outlives fabric.deleted), as a find naming no executable reads every launch.
+    #[tokio::test]
+    async fn the_in_flight_launch_names_its_entrys_executable_so_a_running_launch_is_found_running() {
+        use crate::deployment::provider::{DeploymentProvider as _, Found};
+        let dir = crate::test_support::tempdir("in-flight-launch-find");
+        let spec = rdm_core::meta::NodeSpec {
+            path: "mesh1.node".into(), name: "2".into(), mesh: "mesh1".into(), r#type: "node".into(),
+            storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral,
+            executable: Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/bin/sleep".into(), sha256: String::new(), image: None }),
+            tags: Default::default(), config: Default::default(),
+        };
+        let deployment_id = crate::model::DeploymentId::mint();
+        let launch = in_flight_launch("mesh1", &spec, &deployment_id, dir.clone());
+        assert_eq!(launch.executable, std::path::PathBuf::from("/bin/sleep"), "the launch names the entry's executable");
+        let p = ProcessDeploymentProvider::new();
+        let spawned = crate::deployment::provider::ResolvedNodeLaunch { args: vec!["30".into()], ..launch.clone() };
+        let h = p.spawn(&spawned, crate::deployment::deadline::Deadline::step()).await.unwrap();
+        assert_eq!(p.find(&launch, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Running(h.clone()), "the launch whose process runs is found running");
+        let unnamed = rdm_core::meta::NodeSpec { executable: None, ..spec.clone() };
+        assert!(matches!(p.find(&in_flight_launch("mesh1", &unnamed, &deployment_id, dir.clone()), crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(_)), "an entry naming no executable finds no launch running");
+        p.terminate(&h, crate::deployment::provider::TerminationMode::Immediate, crate::deployment::deadline::Deadline::step()).await.unwrap();
+        assert!(matches!(p.find(&launch, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(Some(_))), "its process is gone: exited");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

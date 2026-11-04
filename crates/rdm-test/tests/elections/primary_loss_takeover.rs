@@ -57,7 +57,8 @@ fn mesh(name: &str) -> (&str, u32, u32) {
     (name, 2, 3)
 }
 
-/// One process of the run, as the control APIs and the host describe it: its `admin_api_base` the one
+/// One process of the run, as the control APIs and the host describe it: its `path` and `name` the two
+/// strings its view carries ([`rdm_test::estate::location`] reads them), its `admin_api_base` the one
 /// its digest carries, as `advertised` holds it ([`Estate::admin_api_bases_at`]).
 async fn describe(estate: &Estate, node: &Value, advertised: &BTreeMap<String, String>) -> Value {
     let name: rdm_core::PathName = rdm_test::estate::location(&node);
@@ -71,7 +72,7 @@ async fn describe(estate: &Estate, node: &Value, advertised: &BTreeMap<String, S
     let data_dir = s(&node["storage"]["data_dir"]);
     let deployment = std::fs::read_to_string(format!("{data_dir}/deployment.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
     json!({
-        "name": name, "mesh": rdm_test::estate::mesh_of(&node), "type": node["type"], "node_id": node["node_id"], "incarnation_id": node["incarnation"],
+        "path": name.path, "name": name.name, "mesh": rdm_test::estate::mesh_of(&node), "type": node["type"], "node_id": node["node_id"], "incarnation_id": node["incarnation"],
         "endpoint_id": node["endpoint_id"], "status": node["state"], "is_primary": node["is_primary"], "is_fabric_primary": node["is_fabric_primary"],
         "admin_api_base": advertised.get(&s(&node["node_id"])), "transport_addr": node["transport_addr"], "listeners": node["listeners"],
         "data_dir": data_dir, "data_dir_exists": std::path::Path::new(&data_dir).is_dir(), "node_key_present": std::path::Path::new(&format!("{data_dir}/node-key")).is_file(),
@@ -176,6 +177,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         })
         .await;
     let mut delete = estate.delete_node(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last:?} was refused: {e}"));
+    let last_delete_id = delete.accepted().expect("the last admin's node.delete opens a Build").build_id.to_string();
     Estate::complete(&mut delete).await;
     // The former primary's runtimes: terminal, observed by the host.
     for (name, pid) in &lost_pids {
@@ -253,8 +255,15 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
     let first_handoff = handed_off.iter().map(|sp| sp["start_unix_nano"].as_u64().unwrap()).min().unwrap();
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
-    let primary_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node_path"] == primary_location.path && sp["attributes"]["node_name"] == primary_location.name && sp["attributes"]["build_id"] == build_id.as_str()).collect();
-    assert_eq!(primary_terminate.len(), 1, "the delete pipeline terminated the former primary {primary} once under {build_id}: {primary_terminate:?}");
+    // Its runtime ends by a delete pipeline's TerminateRuntime: the mesh delete's (the resize), or, when it
+    // is the lost mesh's last admin, which mesh.deleted leaves alive, its own node.delete's (mesh-delete.md
+    // step 7).
+    let primary_terminate: Vec<&Value> = steps
+        .iter()
+        .copied()
+        .filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node_path"] == primary_location.path && sp["attributes"]["node_name"] == primary_location.name && (sp["attributes"]["build_id"] == build_id.as_str() || sp["attributes"]["build_id"] == last_delete_id.as_str()))
+        .collect();
+    assert_eq!(primary_terminate.len(), 1, "a delete pipeline terminated the former primary {primary} once, under {build_id} or the last admin's node.delete {last_delete_id}: {primary_terminate:?}");
     assert_eq!(primary_terminate[0]["attributes"]["outcome"], "complete");
     let terminate_began = primary_terminate[0]["start_unix_nano"].as_u64().unwrap();
     let terminated_at = primary_terminate[0]["end_unix_nano"].as_u64().unwrap();

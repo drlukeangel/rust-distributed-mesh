@@ -132,6 +132,26 @@ mod tests {
         assert_eq!(plan, crate::primary_watch::Plan::default(), "the primary watch investigates no live node-admin");
     }
 
+    /// CONTRACT (Q153; node-investigation.md "Any other verdict"): an investigator hears no other node
+    /// only when every other birth its digest view holds, its own mesh's and the backbone's, was last
+    /// heard on its own word past the floor; one other birth heard within the floor, of either, and it
+    /// hears others. Its own digest never counts. Must NOT happen: an investigator that still hears a
+    /// peer-mesh admin on the backbone read as the one cut off.
+    #[test]
+    fn an_investigator_hears_no_other_node_only_when_every_other_birth_is_unheard_past_the_floor() {
+        let floor = rdm_transport::topology::staleness_floor();
+        let digest_view = DigestView::default();
+        let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
+        let mate = digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
+        let peer = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let now = std::time::Instant::now();
+        let past = now.checked_sub(floor * 2).expect("the clock reaches back two floors");
+        assert!(digest_view.record_at(me.clone(), now) && digest_view.record_at(mate.clone(), past) && digest_view.record_at(peer.clone(), past), "every digest is taken");
+        assert!(crate::offline::hears_none(&digest_view, &me.node.node_id, floor), "every other birth unheard past the floor, its own heard now: it hears none");
+        assert!(digest_view.record_at(MeshDigest { digest_seq: 2, ..peer.clone() }, now), "the peer-mesh admin's next heartbeat is taken");
+        assert!(!crate::offline::hears_none(&digest_view, &me.node.node_id, floor), "a peer-mesh admin heard on the backbone within the floor: it hears others");
+    }
+
     #[tokio::test]
     async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_complete() {
         let failed = RecoveryEnd::Failed { reason: "NodeDeleted: the exited-verdict row is missing".into() };
