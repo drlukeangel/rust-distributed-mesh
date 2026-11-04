@@ -2263,7 +2263,7 @@ mod tests {
     /// runtime" at the release instant while the birth was running, ready 0.3 s later.
     #[test]
     fn a_released_birth_marked_pending_reconnect_is_returning_never_replaced() {
-        let row = |inc: &str, status: &str| json!({"path": "mesh2.node-admin", "name": "1", "node_id": "100000000000", "incarnation_id": inc, "status": status});
+        let row = |inc: &str, status: &str| json!({"path": "mesh2.node-admin", "name": "1", "node_id": "100000000000", "incarnation": inc, "state": status});
         assert_eq!(judge_held_birth(&[row("qx6", "pending-reconnect")], "100000000000", "qx6"), HeldBirth::Returning);
         assert_eq!(judge_held_birth(&[row("qx6", "ready")], "100000000000", "qx6"), HeldBirth::Ready);
         assert_eq!(judge_held_birth(&[row("zzz", "ready")], "100000000000", "qx6"), HeldBirth::Replaced);
@@ -2298,7 +2298,7 @@ mod tests {
     /// another birth and never makes the held one heard.
     #[test]
     fn a_held_birth_node_recovery_replaced_is_marked_unheard() {
-        let row = |id: &str, status: &str| json!({"name": "mesh2.broker.2", "node_id": id, "status": status});
+        let row = |id: &str, status: &str| json!({"name": "mesh2.broker.2", "node_id": id, "state": status});
         let held = [(PathName::new("mesh2.broker", "2").unwrap(), "y2reptx3zt5y".to_string())];
         assert!(marks_unheard(&[row("y2reptx3zt5y", "dead")], &held, true));
         assert!(!marks_unheard(&[row("y2reptx3zt5y", "pending-reconnect")], &held, true));
@@ -2336,7 +2336,7 @@ mod tests {
     /// mesh is never held.
     #[test]
     fn a_peer_mesh_is_held_while_the_fabric_primarys_view_holds_its_primary_off_ready() {
-        let row = |mesh: &str, id: &str, primary: bool, fabric: bool, status: &str| json!({ "mesh": mesh, "type": "node-admin", "node_id": id, "is_primary": primary, "is_fabric_primary": fabric, "status": status });
+        let row = |mesh: &str, id: &str, primary: bool, fabric: bool, status: &str| json!({ "path": format!("{mesh}.node-admin"), "type": "node-admin", "node_id": id, "is_primary": primary, "is_fabric_primary": fabric, "state": status });
         let fp = row("mesh1", "100000000000", true, true, "ready");
         assert!(held_unheard_in(&[fp.clone(), row("mesh2", "200000000000", true, false, "ready")]).is_none(), "a heard peer mesh is not held");
         let why = held_unheard_in(&[fp.clone(), row("mesh2", "200000000000", true, false, "pending_reconnect")]).expect("a marked peer mesh-primary holds its mesh");

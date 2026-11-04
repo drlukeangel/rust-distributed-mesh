@@ -278,12 +278,9 @@ mod tests {
         Executables::Set(BindingSet { candidate: rdm_client::binding::Candidate { sha: "c".into(), build: String::new() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
     }
 
-    fn row(name: PathName, mesh: &str, r#type: &str, primary: bool, sha: &str) -> NodeView {
-        let mut v: NodeView = serde_json::from_value(serde_json::json!({
-            "path": name.path, "name": name.name, "type": r#type, "mesh": mesh, "node_id": rdm_core::NodeId::mint(), "status": "ready",
-            "is_primary": primary, "is_fabric_primary": false, "tags": [], "config": {}
-        }))
-        .unwrap();
+    fn row(name: PathName, r#type: &str, primary: bool, sha: &str) -> NodeView {
+        let mut v = NodeView::new(&name, r#type, rdm_core::NodeId::mint(), NodeStatus::Ready);
+        v.is_primary = primary;
         v.executable = Some(binding(r#type, sha));
         v
     }
@@ -300,7 +297,7 @@ mod tests {
             mesh.insert(p.clone(), created_spec(p, "mesh1", "node", binding("node", "r0")));
         }
         let topology = [("mesh1".to_string(), mesh)].into_iter().collect();
-        Current { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, "a0"), row(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", true, "r0")] }
+        Current { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", true, "a0"), row(PathName::new("mesh1.node", "3").unwrap(), "node", true, "r0")] }
     }
 
     fn names(request: &[NodeSpec]) -> Vec<PathName> {

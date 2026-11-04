@@ -100,7 +100,7 @@ mod tests {
         let incarnation = rdm_core::IncarnationId::mint();
         let original = json!({"node_id": id, "incarnation_id": incarnation,
             "path": "mesh1.node-admin", "name": "north", "mesh": "mesh1", "type": "node-admin",
-            "status": "ready", "is_primary": true, "is_fabric_primary": true});
+            "state": "ready", "is_primary": true, "is_fabric_primary": true});
         let before = vec![original.clone()];
         assert_eq!(advertised_fabric_primaries(&before), vec![id.to_string()]);
         assert_eq!(expected_primaries(&before).get(&("mesh1".into(), "node-admin".into())), Some(&id.to_string()));
