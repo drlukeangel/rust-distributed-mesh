@@ -81,6 +81,8 @@ impl Capture {
 
 struct ImmediateReportProvider {
     joins: Arc<Joins>,
+    /// The nodes store the birth writes its own record to at its join (Q356).
+    store: Arc<rdm_admin::storage::MemoryNodesStorage>,
     pending_report: Mutex<Option<JoinReport>>,
     spawn_calls: Mutex<usize>,
 }
@@ -165,6 +167,14 @@ impl DeploymentProvider for ImmediateReportProvider {
         let maybe_report = self.pending_report.lock().unwrap().take();
         if let Some(report) = maybe_report {
             self.joins.report(&report);
+            // The node's own record, its first line at its start (Q356).
+            let d = &report.digest;
+            let mut bound = rdm_node::nodes_storage::fixture_record(&d.node.location(), &d.node.r#type, d.node.node_id.clone(), d.node.incarnation.clone(), NodeStatus::Pending);
+            (bound.endpoint_id, bound.transport_addr, bound.listeners) = (d.node.endpoint_id.clone(), d.node.transport_addr, report.listeners.clone());
+            if let Some(runtime) = d.node.runtime.clone() {
+                bound.runtime = runtime;
+            }
+            rdm_admin::storage::NodesStorage::put_node(&*self.store, &bound).await.unwrap();
         }
         DeploymentStatus::Running
     }
@@ -308,6 +318,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let joins = Arc::new(Joins::default());
         let provider = ImmediateReportProvider {
             joins: joins.clone(),
+            store: store.clone(),
             pending_report: Mutex::new(None),
             spawn_calls: Mutex::new(0),
         };
@@ -683,6 +694,9 @@ impl DeploymentProvider for StepFaultProvider {
                 // The node's own record, its first line at its start (Q356).
                 let mut bound = rdm_node::nodes_storage::fixture_record(&d.node.location(), &d.node.r#type, d.node.node_id.clone(), d.node.incarnation.clone(), NodeStatus::Pending);
                 (bound.endpoint_id, bound.transport_addr, bound.listeners) = (d.node.endpoint_id.clone(), d.node.transport_addr, report.listeners.clone());
+                if let Some(runtime) = d.node.runtime.clone() {
+                    bound.runtime = runtime;
+                }
                 rdm_admin::storage::NodesStorage::put_node(&*self.store, &bound).await.unwrap();
             }
         }

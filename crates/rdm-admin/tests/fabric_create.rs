@@ -122,6 +122,7 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
 
     let expected_fabric_id = cfg.fabric_id.clone();
     let expected_node_id = cfg.node_id.clone();
+    let own_id = expected_node_id.to_string();
     let day0_certs = rdm_admin::certs::CertChoice::from_material(&data_dir, &cfg.mesh, true, |_| None)
         .expect("Day-0 bootstrap with no seeds and no anchor mints the fabric root");
 
@@ -223,23 +224,18 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         !capture.named("rdm.mesh.node.create.via-identity-minted").is_empty(),
         "Day 0 must mint node identity"
     );
-    let node_claims: Vec<_> = capture
-        .named("rdm.node_admin.node.create.via-node-row")
+    // Day 0's admin writes its own record (Q356), the first write of its start: durable, under its
+    // own node.id.
+    let own_writes: Vec<_> = capture
+        .named("rdm.node.record.update.via-properties")
         .into_iter()
-        .filter(|s| {
-            s.attributes.get("subject_path").map(String::as_str) == Some("mesh1.node-admin")
-                && s.attributes.get("subject_name").map(String::as_str) == Some("1")
-                && s.attributes.get("moment").map(String::as_str) == Some("create")
-        })
+        .filter(|s| s.attributes.get("node_id").map(String::as_str) == Some(own_id.as_str()))
         .collect();
-    assert_eq!(node_claims.len(), 1, "Day 0 claims mesh1.node-admin.1 once");
+    assert!(!own_writes.is_empty(), "Day 0's admin writes its own record");
     assert_eq!(
-        node_claims[0].attributes.get("outcome").map(String::as_str),
-        Some("row-written")
-    );
-    assert_eq!(
-        node_claims[0].attributes.get("operation").map(String::as_str),
-        Some("fabric-create")
+        own_writes[0].attributes.get("outcome").map(String::as_str),
+        Some("durable"),
+        "its own record's first write is durable"
     );
 
     let fabric_rows: Vec<_> = capture

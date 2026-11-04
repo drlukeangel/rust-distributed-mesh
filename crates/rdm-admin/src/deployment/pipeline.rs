@@ -1194,6 +1194,15 @@ pub(crate) fn build_span(build_id: Option<&BuildId>) -> String {
     build_id.map(|b| b.log().to_string()).unwrap_or_default()
 }
 
+/// The deployment id of the launch the create `operation` makes: a function of the operation, as the
+/// node id it names is, so a re-run of the same create names the same launch to its provider's find
+/// (a launch that never joined has no record to name it, Q356); a recovery's re-create is a new
+/// operation, with a new id.
+pub(crate) fn deployment_of(operation: &rdm_core::OperationId) -> DeploymentId {
+    let h = operation.to_string().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+    DeploymentId::parse(&rdm_core::ids::encode_crockford60(h)).expect("a crockford60 encoding is a canonical id")
+}
+
 /// One run of one structured operation: create at a location or delete by node ID.
 pub(crate) struct Run<'r> {
     /// The Build the run belongs to. `None`: a run that belongs to no Build (a node command, a
@@ -1613,8 +1622,11 @@ impl DeploymentPipeline<'_> {
         let executor = self.template.executor_birth();
         let recorded_by_another = |run: &Run<'_>, step: CreateStep| run.owner.get(step.name()).is_some_and(|o| o.as_ref() != Some(&executor));
         self.give_create_values(run, req).await;
-        // A launch whose runtime no node record names (its birth never wrote one) is decided afresh.
-        if run.done.get(CreateStep::DeployRuntime.name()).is_some_and(|v| v.as_ref().is_none_or(serde_json::Value::is_null)) {
+        // A launch whose runtime no node record names (its birth never joined, so it wrote none, Q356)
+        // is decided afresh: its runtime, which the provider finds by the launch's deployment id (a
+        // function of this create's operation, [`deployment_of`]), is terminated first, in DeployRuntime.
+        let over_unjoined = run.done.get(CreateStep::DeployRuntime.name()).is_some_and(|v| v.as_ref().is_none_or(serde_json::Value::is_null));
+        if over_unjoined {
             run.done.clear();
         }
         if let Some(Some(h)) = run.done.get(CreateStep::DeployRuntime.name()) {
@@ -1643,10 +1655,11 @@ impl DeploymentPipeline<'_> {
             }
         }
         let rows = self.sink.node_rows();
-        // A run holding no AllocateIdentity receipt of this operation mints the birth.
+        // A run holding no AllocateIdentity receipt of this operation mints the birth's incarnation; its
+        // deployment id is the operation's ([`deployment_of`]), as its node id is.
         let id: Identity = self
             .step(run, CreateStep::AllocateIdentity.name(), async {
-                Ok(Identity { node_id: req.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() })
+                Ok(Identity { node_id: req.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: deployment_of(&req.operation) })
             })
             .await?;
         // The birth's address, bound for its deployment: the birth a run continues binds the address it
@@ -1767,8 +1780,20 @@ impl DeploymentPipeline<'_> {
                 // name, its outcome unknown.
                 let deadline = super::deadline::Deadline::step();
                 if let Some(h) = self.provider.find(&spec, deadline).await.map_err(StepFailure::from)?.running() {
-                    tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
-                    return Ok(h);
+                    if !over_unjoined {
+                        tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
+                        return Ok(h);
+                    }
+                    // An earlier run's launch that never joined: its birth is decided afresh, so its
+                    // runtime is terminated by name before the fresh launch, never left running beside it.
+                    use tracing::Instrument;
+                    let span = tracing::info_span!("rdm.node_admin.deployment.delete.via-unjoined-launch", node_path = %req.path, node_name = %req.name, build_id = %build_span(req.build_id.as_ref()), deployment_id = %h.deployment_id, outcome = tracing::field::Empty);
+                    self.provider.terminate(&h, TerminationMode::Graceful { grace: self.timeouts.stop_grace }, super::deadline::Deadline::stop(self.timeouts.stop_grace))
+                        .instrument(span.clone())
+                        .await
+                        .map_err(|e| { span.record("outcome", "failed"); StepFailure::from(format!("path {:?}, name {:?}: an earlier run's launch never joined and its runtime could not be terminated; nothing is launched: {e}", &req.path, &req.name)) })?;
+                    span.record("outcome", "terminated");
+                    span.in_scope(|| tracing::info!("an earlier run's launch that never joined is terminated before the fresh launch"));
                 }
                 if let Some(before) = before_launch {
                     before.await;

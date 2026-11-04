@@ -172,15 +172,14 @@ impl TopologySink for WithRows {
 }
 
 /// CONTRACT (e12.s83): `PrepareStorage` names every await it holds (`awaiting` while in flight,
-/// `awaited` as each completes), and `NodeRows::claim` opens `rdm.node_admin.node.create.via-node-row`
-/// (`moment = "create"`) before its first await (`writer-check`). When `PrepareStorage` is cancelled
-/// while awaiting the claim's first await (`writer-check`, with the view write lock held), both spans
-/// close with `outcome = "cancelled"` naming the exact await that did not return (`awaiting = "claim"`
-/// on `via-step`, `awaiting = "writer-check"` on `via-node-row`); when cancelled while awaiting the
-/// blocking pool (`endpoint_id`), `via-step` names `awaited = "claim"`, `awaiting = "endpoint_id"`,
+/// `awaited` as each completes). Its first is the mesh-primary's name check against its view and the
+/// creates in flight (`name-check`, `NodeRows::check_create`; it writes nothing, the node writes its own
+/// record at its start, Q356). Cancelled while awaiting the name check (the view write lock held), its
+/// `via-step` span closes `outcome = "cancelled"`, `awaiting = "name-check"`; cancelled while awaiting
+/// the blocking pool (`endpoint_id`), it names `awaited = "name-check"`, `awaiting = "endpoint_id"`,
 /// `outcome = "cancelled"` and records `io_calls = 1` and `io_queued_ms` for the in-flight blocking call.
 #[test]
-fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_first_await() {
+fn prepare_storage_names_every_await_and_the_one_it_was_holding_when_cancelled() {
     use rdm_admin::model::{Fabric, Mesh, NodeStatus, ScopeStatus};
     use rdm_admin::topology::Topology;
     use std::sync::Arc;
@@ -229,7 +228,7 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         };
         let joins = rdm_admin::join::Joins::default();
 
-        // 1. Hold the view write lock so the claim's very first await (`writer_check` -> `view.read().await`) blocks.
+        // 1. Hold the view write lock so the name check's view read blocks.
         let builds1 = crate::stepping(&executor.node_id, "mesh1");
         let build1 = BuildId::mint();
         builds1
@@ -241,10 +240,10 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         // AllocateIdentity reads the name's records; PrepareStorage then reaches the writer check.
         let held_view = view.write().await;
         let timed_out = tokio::time::timeout(Duration::from_millis(80), pipeline1.create(&req1)).await;
-        assert!(timed_out.is_err(), "the create waits at the claim's first await while the view write lock is held");
+        assert!(timed_out.is_err(), "the create waits at the name check while the view write lock is held");
         drop(held_view);
 
-        // 2. Let the claim complete, and hold the one blocking thread so `PrepareStorage` cancels at `endpoint_id`.
+        // 2. Let the name check complete, and hold the one blocking thread so `PrepareStorage` cancels at `endpoint_id`.
         let builds2 = crate::stepping(&executor.node_id, "mesh1");
         let build2 = BuildId::mint();
         builds2
@@ -273,45 +272,28 @@ fn prepare_storage_names_every_await_and_opens_the_node_row_span_before_its_firs
         s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()
     };
 
-    // Case 1 (`mesh1.node.3`): cancelled at `claim` -> `writer-check`.
+    // Case 1 (`mesh1.node.3`): cancelled at `name-check`.
     let step1 = finished
         .iter()
         .map(attrs_of)
         .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.node") && a.get("node_name").map(String::as_str) == Some("3"))
         .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.node.3: {finished:?}"));
     assert_eq!(step1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step1:?}");
-    assert_eq!(step1.get("awaiting").map(String::as_str), Some("create-row"), "PrepareStorage names the claim await it was holding: {step1:?}");
+    assert_eq!(step1.get("awaiting").map(String::as_str), Some("name-check"), "PrepareStorage names the name-check await it was holding: {step1:?}");
     assert!(step1.contains_key("elapsed_ms"), "cancelled PrepareStorage records elapsed_ms: {step1:?}");
 
-    let claim1 = finished
-        .iter()
-        .filter(|s| s.name == "rdm.node_admin.node.create.via-node-row")
-        .map(attrs_of)
-        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.node") && a.get("subject_name").map(String::as_str) == Some("3") && a.get("moment").map(String::as_str) == Some("create"))
-        .unwrap_or_else(|| panic!("the claim via-node-row span must open before writer_check: {finished:?}"));
-    assert_eq!(claim1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled claim span records outcome=cancelled: {claim1:?}");
-    assert_eq!(claim1.get("awaiting").map(String::as_str), Some("writer-check"), "claim span names writer-check as the await that did not return: {claim1:?}");
 
-    // Case 2 (`mesh1.node.4`): claim completed, cancelled at `endpoint_id` while waiting for the blocking thread.
+    // Case 2 (`mesh1.node.4`): the name check completed, cancelled at `endpoint_id` while waiting for the blocking thread.
     let step2 = finished
         .iter()
         .map(attrs_of)
         .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.node") && a.get("node_name").map(String::as_str) == Some("4"))
         .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.node.4: {finished:?}"));
     assert_eq!(step2.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step2:?}");
-    assert_eq!(step2.get("awaited").map(String::as_str), Some("entry-spec,create-row"), "PrepareStorage names the completed entry-spec read and claim awaits: {step2:?}");
+    assert_eq!(step2.get("awaited").map(String::as_str), Some("name-check"), "PrepareStorage names the completed name-check await: {step2:?}");
     assert_eq!(step2.get("awaiting").map(String::as_str), Some("endpoint_id"), "PrepareStorage names endpoint_id as the await in flight: {step2:?}");
     assert_eq!(step2.get("io_calls").and_then(|v| v.parse::<u64>().ok()), Some(1), "in-flight blocking call is counted on cancellation: {step2:?}");
     assert!(step2.get("io_queued_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) >= 50, "in-flight queue wait is recorded on cancellation: {step2:?}");
 
-    let claim2 = finished
-        .iter()
-        .filter(|s| s.name == "rdm.node_admin.node.create.via-node-row")
-        .map(attrs_of)
-        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.node") && a.get("subject_name").map(String::as_str) == Some("4") && a.get("moment").map(String::as_str) == Some("create"))
-        .unwrap_or_else(|| panic!("no claim span for mesh1.node.4: {finished:?}"));
-    assert_eq!(claim2.get("outcome").map(String::as_str), Some("row-written"), "{claim2:?}");
-    assert_eq!(claim2.get("awaited").map(String::as_str), Some("writer-check,read-previous-row,put-node-row"), "{claim2:?}");
-    assert_eq!(claim2.get("awaiting").map(String::as_str), Some("done"), "{claim2:?}");
 }
 

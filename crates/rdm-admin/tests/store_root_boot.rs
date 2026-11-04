@@ -186,11 +186,9 @@ const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "
 /// (mesh1.node-admin, 1) [...] and writes its own row through the same validation and storage
 /// path as any create, the first write of its birth, before Ready. No bypass; a conflicting holder is
 /// NameHeld, never overwritten"; item 1: "The mesh-primary writes every row in its mesh, including its
-/// own"): the Day-0 admin's first durable write is the claim of its own path.name, one
-/// `rdm.node_admin.node.create.via-node-row` span with `subject = mesh1.node-admin.1`, its own node.id,
-/// `moment = claim`, `outcome = row-written`, a step of its boot's own trace, started before the Fabric
-/// row, mesh1's row, the accepted root Build and Ready. Its own birth's arrival in its first view finds the
-/// row its node holds and writes nothing (`row-held-by-node`): one writer, one write. The row stands on the
+/// own"; Q356: each node writes its own record): the Day-0 admin's first durable write is its own
+/// record, one `rdm.node.record.update.via-properties` span under its own node.id, `outcome = durable`,
+/// started before the Fabric row, mesh1's row, the accepted root Build and Ready. The record stands on the
 /// store root at mesh1.node-admin.1 under the boot's node.id, the one the bootstrap's first step minted and
 /// the process's deployment span carries from its start (Q208). What must NOT happen: a Day-0 fabric whose
 /// primary holds no row of its own, so that `mesh1.node-admin.1` has no claimed name.
@@ -209,23 +207,15 @@ fn the_day0_admin_writes_its_own_record_at_its_path_name_as_the_first_write_of_i
     let deployment = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("no deployment span: {spans:?}"));
     assert!(rdm_admin::model::NodeId::parse(&node_id).is_ok(), "the boot runs as a minted node id: {boot}");
     assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the node id its boot runs as: {deployment}");
-    let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.node-admin" && attr(s, "subject_name") == "1").collect();
-    let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "create").collect();
-    assert_eq!(claims.len(), 1, "the Day-0 admin claims its own path.name once: every node row span of mesh1.node-admin.1 {rows:?}");
-    let claim = claims[0];
-    assert_eq!(
-        (attr(claim, "node_path"), attr(claim, "node_name"), attr(claim, "node_id"), attr(claim, "outcome")),
-        ("mesh1.node-admin".to_string(), "1".to_string(), node_id.clone(), "row-written".to_string()),
-        "the claim of its own name under its own node.id, written: {claim}"
-    );
-    assert_eq!(claim["trace_id"], boot["trace_id"], "the claim is a step of the boot's own story: {claim}");
+    // Its own record's writes (Q356): the first, under its own node.id, durable, before every other
+    // Day-0 write and before Ready.
+    let mut own: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node.record.update.via-properties" && attr(s, "node_id") == node_id).collect();
+    own.sort_by_key(|s| start(s));
+    let first = *own.first().unwrap_or_else(|| panic!("the Day-0 admin wrote no record of its own: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
+    assert_eq!(attr(first, "outcome"), "durable", "its own record's first write is durable: {first}");
     for name in DAY0_WRITES.iter().chain(["rdm.mesh.node.update.via-ready"].iter()) {
         let later = spans.iter().find(|s| s["name"] == *name).unwrap_or_else(|| panic!("Day 0 left no {name}: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
-        assert!(start(claim) < start(later), "the claim of mesh1.node-admin.1 starts before {name}: claim {claim} then {later}");
-    }
-    for arrival in rows.iter().filter(|s| attr(s, "moment") == "arrival") {
-        assert!(start(claim) < start(arrival), "the claim precedes its birth's arrival: {arrival}");
-        assert_eq!(attr(arrival, "outcome"), "row-held-by-node", "its own birth's arrival finds the claimed row and writes nothing: {arrival}");
+        assert!(start(first) < start(later), "the Day-0 admin's own record is written before {name}: {first} then {later}");
     }
     let fabric_id = rdm_admin::model::FabricId::parse(&fabric_dirs(&day0.store).remove(0)).unwrap();
     let row = {
@@ -564,21 +554,6 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
         ("mesh1.node-admin.1".to_string(), root.node_id.to_string(), root.incarnation.to_string(), root.fabric_id.to_string(), String::new()),
         "the same path.name over the inherited birth, no supersedes lineage: {recovery}"
     );
-    let deleted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.delete.via-node-row" && attr(s, "subject_path") == "mesh1.node-admin" && attr(s, "subject_name") == "1").collect();
-    assert_eq!(deleted.len(), 1, "the inherited birth's node.delete, once: {deleted:?}");
-    assert_eq!((attr(deleted[0], "node_id"), attr(deleted[0], "outcome")), (root.node_id.to_string(), "row-deleted".to_string()), "{}", deleted[0]);
-    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.node-admin" && attr(s, "subject_name") == "1" && attr(s, "moment") == "create").collect();
-    assert_eq!(claimed.len(), 1, "this node's name claim, once: {claimed:?}");
-    assert_eq!(
-        (attr(claimed[0], "node_id"), attr(claimed[0], "moment"), attr(claimed[0], "seeded_from"), attr(claimed[0], "outcome")),
-        (node_id.clone(), "create".to_string(), root.node_id.to_string(), "row-seeded".to_string()),
-        "{}",
-        claimed[0]
-    );
-    assert!(deleted[0]["start_unix_nano"].as_u64() < claimed[0]["start_unix_nano"].as_u64(), "node.delete of the inherited birth, then the claim");
-    for s in [deleted[0], claimed[0]] {
-        assert_eq!(s["trace_id"], opened["trace_id"], "a step of the boot's own story: {s}");
-    }
     let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
     assert_eq!(attr(reloaded, "build_id"), root.build_id.log().to_string(), "the accepted Build reloaded from the inherited journal: {reloaded}");
     assert_eq!(reloaded["trace_id"], opened["trace_id"], "the Build reload is a step of the boot's own story");
@@ -603,6 +578,18 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     // The evidence file is complete once the admin has exited: the recovery's pulls and calls are read
     // from it whole.
     let ended = root.end(running);
+    // The inherited birth's record is written Deleted, releasing its name, and this node's own record
+    // holds the path and name (Q356).
+    let (inherited_state, at) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        use rdm_admin::storage::NodesStorage as _;
+        let store_root = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
+        let nodes = rdm_admin::storage::FileNodesStorage::open(&store_root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
+        let inherited = nodes.node(&root.node_id).await.unwrap().map(|l| l.record.state);
+        let at = rdm_admin::node_rows::record_at(&nodes, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap().map(|r| r.node_id.to_string());
+        (inherited, at)
+    });
+    assert_eq!(inherited_state, Some(rdm_admin::model::NodeStatus::Deleted), "the inherited birth's record is Deleted");
+    assert_eq!(at, Some(node_id.clone()), "this node's own record holds mesh1.node-admin.1");
     let adopted = assert_recovery_reaches_the_recorded_nodes(&ended, &root);
     assert_eq!(adopted["trace_id"], opened["trace_id"], "the rafka-time adoption is the boot's own story");
     assert_eq!(fabric_dirs(&root.store), vec![root.fabric_id.to_string()], "no second fabric directory");

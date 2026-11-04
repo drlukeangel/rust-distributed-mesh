@@ -200,6 +200,9 @@ impl DeploymentProvider for Fleet {
                         // The node's own record, its first line at its start (Q356).
                         let mut bound = rdm_node::nodes_storage::fixture_record(&digest.node.location(), &digest.node.r#type, digest.node.node_id.clone(), digest.node.incarnation.clone(), rdm_admin::model::NodeStatus::Pending);
                         (bound.endpoint_id, bound.transport_addr) = (digest.node.endpoint_id.clone(), digest.node.transport_addr);
+                        if let Some(runtime) = digest.node.runtime.clone() {
+                            bound.runtime = runtime;
+                        }
                         rdm_admin::storage::NodesStorage::put_node(&*store, &bound).await.unwrap();
                         return;
                     }
@@ -377,8 +380,10 @@ fn complete_steps(view: &rdm_admin::build_state::BuildProjection, step: CreateSt
 /// joined: that runtime's only seed is the lost admin's endpoint, where a dial can reach another
 /// process (UnknownIssuer) and the birth never joins. The successor refuses it by name, stops it,
 /// and decides the birth afresh: a new birth of the Build's node.id (D58), launched under its own endpoint. The same birth
-/// handed on after it joined (the seed did its work) is kept; an executor re-running its own work
-/// reuses it.
+/// handed on after it joined (the seed did its work) is kept. An executor re-running its own work
+/// whose launch never joined (so no record names its runtime, Q356) finds that launch by its deployment
+/// id, a function of the create's operation, terminates it (`via-unjoined-launch`), and launches
+/// exactly one fresh birth: never a second runtime beside the first.
 #[test]
 fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     let cell = "successor_executor_redecides_outputs_owned_by_lost_incarnation";
@@ -394,15 +399,17 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         let lost = executor(&fleet, &data_root, "lostadminkey", &store, &fabric_id);
         let successor = executor(&fleet, &data_root, "successoradminkey", &store, &fabric_id);
 
-        // CONTROL: the same executor re-runs its own cut-short run: its birth is handed on.
+        // CONTROL: the same executor re-runs its own cut-short run, cut before its birth joined: the
+        // earlier runtime is terminated, then exactly one fresh birth is launched.
         let own = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let build_own = accepted_build(&builds).await;
         lost_run(&fleet, &lost, &build_own, &own, Dies::BeforeJoin).await;
         let own_birth = fleet.spawns().last().cloned().expect("the lost run launched the birth");
         let again = lost.pipeline(&fleet).create(&request(&build_own, &own)).await.unwrap_or_else(|e| panic!("control re-run: {e}"));
-        assert_eq!(fleet.spawns().len(), 1, "the executor's own re-run launches no second runtime");
-        assert_eq!(again.node.node_id, own_birth.node_id, "the executor's own re-run keeps its decided identity");
-        assert!(fleet.terminated.lock().unwrap().is_empty(), "nothing of the executor's own is stopped");
+        assert_eq!(fleet.spawns().len(), 2, "the executor's own re-run launches exactly one fresh birth");
+        assert_eq!(fleet.terminated.lock().unwrap().clone(), vec![own_birth.pid], "the earlier launch, which never joined, is terminated");
+        assert!(fleet.running(fleet.spawns().last().unwrap().pid), "the fresh birth runs");
+        assert_eq!(again.node.node_id, own_birth.node_id, "the re-run keeps the Build's node.id");
 
         // CONTROL: a birth that JOINED under the lost executor is handed on by the successor.
         let joined = rdm_core::PathName::new("mesh1.node", "2").unwrap();

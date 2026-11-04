@@ -901,7 +901,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
         let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
-    assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
+    assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no digest") && reason.contains("no node record")), "no digest and no record: unproven, naming both: {without_row:?}");
     assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
 }
 
@@ -965,8 +965,8 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
 /// leaving mesh with no admin left joined after path `mesh2.node`, name `1` stopped, so neither its view nor its
 /// the topology view holds that birth. The roster birth runs from the roster itself: its member workflow is
 /// handed a record naming exactly that birth (separate path/name, node id, incarnation), its exact Exited
-/// receipt is in the manifest, and its row, read from the mesh's own rows before the tiers run, is
-/// written Deleted with its config kept by its node.delete's NodeDeleted step. Must NOT happen: the tier refused "this view holds no record
+/// receipt is in the manifest, and its record, the one it wrote, is written Deleted by its node.delete's
+/// NodeDeleted step (a runtime point read of the record, Q237). Must NOT happen: the tier refused "this view holds no record
 /// of the accepted birth" (no_survivor, created path `mesh2.node-admin`, name `2`, runs 2 and 3), or a Deleted row
 /// written with a config the writer never read.
 #[test]
@@ -991,8 +991,6 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // births its view names; the stopped birth's row it never held.
         for n in &all {
             storage.put_node(&rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready)).await.unwrap();
-        }
-        for n in &records {
         }
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
@@ -1029,11 +1027,9 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     let from_roster = named("rdm.node_admin.mesh.resolve.via-roster-birth");
     assert_eq!(from_roster.iter().map(|s| s["attributes"]["member"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>(), vec![failing.node_id.to_string()], "{from_roster:#?}");
-    let read = named("rdm.node_admin.mesh.resolve.via-roster-row");
-    assert_eq!(read.iter().map(|s| (s["attributes"]["member"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(failing.node_id.to_string(), "held".to_string())], "{read:#?}");
     let deleted = named("rdm.node_admin.node.delete.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == failing.node_id.as_str()).collect::<Vec<_>>();
     assert!(deleted.iter().any(|s| s["attributes"]["outcome"] == "row-deleted"), "{deleted:#?}");
-    println!("trace_id={trace_id} via-roster-birth={} via-roster-row={}", from_roster[0]["trace_id"], read[0]["trace_id"]);
+    println!("trace_id={trace_id} via-roster-birth={}", from_roster[0]["trace_id"]);
 }
 
 /// CONTRACT (mesh-delete.md step 4: "The fabric-primary validates exact roster coverage"; line 79:

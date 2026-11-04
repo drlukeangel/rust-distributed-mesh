@@ -546,15 +546,9 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     assert!(spans_named(&spans, "rdm.node_admin.deployment.update.via-step").iter().all(|s| s["attributes"]["step"] != "WaitForMeshJoin"), "nothing after the bind wait ran: {spans:?}");
     let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
     assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
-    assert_eq!(prepare[0]["attributes"]["awaited"], "entry-spec,create-row,endpoint_id", "PrepareStorage names every await it ran (a plain create reads its create spec first): {}", prepare[0]);
+    assert_eq!(prepare[0]["attributes"]["awaited"], "name-check,endpoint_id", "PrepareStorage names every await it ran: {}", prepare[0]);
     assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
-    let create_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "create").collect();
-    assert_eq!(create_row.len(), 1, "PrepareStorage opened the create via-node-row span: {create_row:?}");
-    for row in &create_row {
-        assert_eq!(row["attributes"]["outcome"], "row-written", "the row was written: {row}");
-        assert_eq!(row["attributes"]["awaited"], "writer-check,read-previous-row,put-node-row", "the row span names every await of the write: {row}");
-        assert_eq!(row["attributes"]["awaiting"], "done", "the write completed every await: {row}");
-    }
+    assert!(spans_named(&spans, "rdm.node_admin.node.create.via-node-row").is_empty(), "a create writes no record: the node writes its own at its start (Q356)");
     // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
     let walls: Vec<String> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
