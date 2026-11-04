@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
         data_dir: gw_dir.display().to_string(), last_accepted_name: None, held: false,
     });
     let gw = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(
-        &launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[rshape_consumer::data_alpn()],
+        &launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[rshape_consumer::data_alpn()],
     ).await?;
     let (dialer, _) = root.connections(b"demo/echo").expect("admin demo/echo").split();
     let (_, mut acceptor) = gw.connections(b"demo/echo").expect("gateway demo/echo").split();

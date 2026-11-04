@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
             // The broker's own read of its secret. Its value is the application's: log only that it is held.
             let held = std::env::var(TOKEN).map_err(|_| anyhow!("path {path:?}, name {name:?} was launched without {TOKEN}"))?;
             eprintln!("path {path:?}, name {name:?}: {TOKEN} held ({} bytes)", held.len());
-            rdm_node::run(rdm_node::Role { r#type: "broker".into() }, &[]).await
+            rdm_node::run(rdm_node::Role { r#type: "broker".into() }).await
         }
         Some(r#type) if !rdm_core::is_node_admin(r#type) => Err(anyhow!("path {path:?}, name {name:?}: this example runs node-admins and brokers only")),
         _ => {
