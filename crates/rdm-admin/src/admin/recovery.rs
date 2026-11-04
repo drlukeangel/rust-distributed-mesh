@@ -111,6 +111,22 @@ impl RecoverySubmitter {
             .in_scope(|| tracing::info!("the birth's removal belongs to the workflow that announced it: no recovery is submitted"));
             return outcome;
         }
+        // Node recovery acts only on a lost birth that wrote its record (Q356; rdm#334, A): a birth that
+        // never wrote its own record is the Build's in-flight create (the Build and the atlas hold it),
+        // which the Build runs; nothing is deleted or created for it here.
+        if let Ok(None) = self.nodes_storage.node(&n.node_id).await {
+            let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+            tracing::info_span!(
+                "rdm.node_admin.build.reject.via-in-flight-create",
+                node_path = %n.path, node_name = %n.name,
+                node_id = %n.node_id,
+                incarnation_id = %incarnation,
+                submitter = %self.me_id,
+                verdict = verdict_name(&outcome),
+            )
+            .in_scope(|| tracing::info!("the birth never wrote its record: it is its Build's in-flight create, which the Build runs; no recovery is submitted"));
+            return outcome;
+        }
         match n.incarnation_id.clone() {
             Some(incarnation) => {
                 let _ = self.submit_on_tick(n, &incarnation, verdict_name(&outcome), false).await;

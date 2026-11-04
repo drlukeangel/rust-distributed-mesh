@@ -1109,7 +1109,10 @@ mod tests {
             }
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: status.clone(), inspected: Default::default() });
-            let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()));
+            // The member wrote its own record at its start (Q356): node recovery acts only on such a birth.
+            let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::MemoryNodesStorage::default());
+            own_record(&*nodes, &member).await;
+            let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), nodes);
             let (_, inspections, submits) = two_ticks(&recovery, &node, &format!("i143-l5-recovery-at-once-{verdict}")).await;
             assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 2, "{verdict}: the provider is asked on each tick");
             let verdicts: Vec<String> = inspections.iter().map(|c| c.attributes.get("verdict").cloned().unwrap_or_default()).collect();
@@ -1120,6 +1123,37 @@ mod tests {
             assert_eq!((attr("node_path"), attr("node_name"), attr("node_id"), attr("incarnation_id"), attr("verdict")), ("mesh2.node".to_string(), "1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string(), verdict.to_string()), "{verdict}: keyed on the exact birth: {a:?}");
             eprintln!("span rdm.node_admin.node.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
         }
+    }
+
+    /// CONTRACT (rdm#334, A; Luke: "the record is in the build and the atlas"): node recovery acts only on
+    /// a lost birth that wrote its record (Q356). A TRUE OFFLINE birth that never wrote its own record is
+    /// its Build's in-flight create, which the Build runs: the tick spans it by name
+    /// (`build.reject.via-in-flight-create`) and submits no recovery, so nothing is deleted or created.
+    /// Must NOT happen: a recovery, a delete or a create of a birth that wrote no record.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_lost_birth_that_wrote_no_record_is_left_to_its_build() {
+        use crate::deployment::provider::DeploymentStatus;
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-no-record")).unwrap();
+        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        member.node.runtime = Some(fact.clone());
+        let digest_view = DigestView::default();
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+            digest_view.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+        let (recovery, _, node) = recovery_of(&view, digest_view, provider, Arc::new(crate::storage::MemoryNodesStorage::default()));
+        let capture = crate::span_capture::Capture::new("rdm334-no-record-left-to-its-build");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.recover(&node).await;
+        }
+        assert!(capture.named("rdm.node_admin.node.update.via-node-recovery").is_empty(), "no recovery is submitted for a birth that wrote no record");
+        let left = capture.named("rdm.node_admin.build.reject.via-in-flight-create");
+        assert_eq!(left.len(), 1, "the birth is spanned by name as its Build's in-flight create: {left:?}");
+        assert_eq!(left[0].attributes.get("node_id"), Some(&node.node_id.to_string()), "{:?}", left[0].attributes);
+        assert!(recovery.failed_recoveries(true, "mesh2").is_empty(), "nothing is owed a recovery");
     }
 
     /// CONTRACT (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again
@@ -1144,7 +1178,10 @@ mod tests {
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: DeploymentStatus::Running, inspected: Default::default() });
-        let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()));
+        // The member wrote its own record at its start (Q356): node recovery acts only on such a birth.
+        let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::MemoryNodesStorage::default());
+        own_record(&*nodes, &member).await;
+        let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), nodes);
         let birth = (node.node_id.clone(), node.incarnation_id.clone().expect("the member's birth"));
         let replacement = (NodeId::mint(), IncarnationId::mint());
         let in_flight: Mutex<HashSet<(NodeId, IncarnationId)>> = Mutex::default();
