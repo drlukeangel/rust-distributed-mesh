@@ -28,6 +28,11 @@ pub struct MeshDeleteService {
     pub(super) runner: Arc<AdminRunner>,
 }
 
+/// Whether `n` is the exact birth `lost` names.
+fn is_birth(lost: Option<&Node>, n: &Node) -> bool {
+    lost.is_some_and(|l| l.node_id == n.node_id && l.incarnation_id == n.incarnation_id)
+}
+
 #[async_trait::async_trait]
 impl MeshDeleter for MeshDeleteService {
     async fn delete_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
@@ -120,7 +125,7 @@ impl AdminRunner {
                 // is deleted in process at this executor, which holds the fabric-primary's roles
                 // (mesh-delete.md "Resume after the primary's loss" step 2, Q160; fabric-delete.md step 1).
                 if build.topology.meshes.is_empty() {
-                    return self.delete_mesh_in_process(build_id, mesh, &key, &steps, &view).await;
+                    return self.delete_mesh_in_process(build_id, mesh, &key, &steps, &view, None).await;
                 }
                 self.admin_for_deleting_mesh(build_id, mesh, &key, &steps, &view).await?
             }
@@ -155,7 +160,7 @@ impl AdminRunner {
             return Err(format!("{outer:?} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node_id, admitted.final_primary.incarnation_id).into());
         }
         let handoff = self.leaves.open(key.clone(), admitted.clone());
-        let result = self.lead_delete(build_id, mesh_id, outer, node_rpc, &primary, &key, handoff).await;
+        let result = self.lead_delete(build_id, mesh, mesh_id, outer, node_rpc, &primary, &key, handoff, build.topology.meshes.is_empty()).await;
         if result.is_err() {
             // This run's open leave ends with it; the receipts are the record a resubmit of the Build reads.
             self.leaves.close(&key);
@@ -174,19 +179,22 @@ impl AdminRunner {
     /// terminate ends the step by name, no receipt manufactured. Then mesh.deleted's and mesh-left's receipts
     /// are recorded and the mesh leaves this view. A live node-admin of the mesh not yet its primary is no
     /// loss: the section ends incomplete, and a resubmit of the Build hands that admin the workflow.
-    async fn delete_mesh_in_process(&self, build_id: &crate::build::BuildId, mesh: &str, key: &MeshDeleteKey, steps: &[crate::build_state::BuildStep], view: &Topology) -> Result<(), RunEnd> {
+    /// `lost` is the mesh-primary that did not answer its mesh.delete and that node investigation did not
+    /// reach ([`Self::delete_mesh_unanswered`]): lost whatever status this view holds it at, and not
+    /// investigated again.
+    async fn delete_mesh_in_process(&self, build_id: &crate::build::BuildId, mesh: &str, key: &MeshDeleteKey, steps: &[crate::build_state::BuildStep], view: &Topology, lost: Option<&Node>) -> Result<(), RunEnd> {
         let outer = &key.operation;
-        if let Some(live) = view.nodes_of_type(mesh, "node-admin").find(|n| n.status.is_live()) {
+        if let Some(live) = view.nodes_of_type(mesh, "node-admin").find(|n| n.status.is_live() && !is_birth(lost, n)) {
             return Err(RunEnd::Incomplete(format!("{outer:?}: {mesh}'s admin {} is live and holds no mesh-primary role yet, so it is not lost; a resubmit of the Build hands the workflow to the admin that holds it", live.node_id)));
         }
         let span = tracing::info_span!("rdm.node_admin.mesh.delete.via-in-process", node_path = %self.held_name().path, node_name = %self.held_name().name, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.step, roster = tracing::field::Empty, outcome = tracing::field::Empty);
-        let r = self.delete_mesh_in_process_in(build_id, mesh, key, steps, view).instrument(span.clone()).await;
+        let r = self.delete_mesh_in_process_in(build_id, mesh, key, steps, view, lost).instrument(span.clone()).await;
         span.record("outcome", if r.is_ok() { "deleted" } else { "incomplete" });
         span.in_scope(|| tracing::info!("under fabric.delete the mesh with no node-admin is deleted in process at the executor; no node-admin is created"));
         r
     }
 
-    async fn delete_mesh_in_process_in(&self, build_id: &crate::build::BuildId, mesh: &str, key: &MeshDeleteKey, steps: &[crate::build_state::BuildStep], view: &Topology) -> Result<(), RunEnd> {
+    async fn delete_mesh_in_process_in(&self, build_id: &crate::build::BuildId, mesh: &str, key: &MeshDeleteKey, steps: &[crate::build_state::BuildStep], view: &Topology, lost: Option<&Node>) -> Result<(), RunEnd> {
         let outer = &key.operation;
         let me = self.node_id.to_string();
         let live: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == mesh && !rdm_core::is_node_admin(&n.r#type) && n.status.is_live()).cloned().collect();
@@ -221,8 +229,9 @@ impl AdminRunner {
                     }
                     None => {
                         // An admin node investigation reaches is not lost (Q111): a resubmit of the Build hands
-                        // it the workflow, and nothing of it is deleted here.
-                        let seen = view.nodes_of_type(mesh, "node-admin").find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
+                        // it the workflow, and nothing of it is deleted here. The `lost` primary's
+                        // investigation is already its verdict.
+                        let seen = view.nodes_of_type(mesh, "node-admin").find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id) && !is_birth(lost, n)).cloned();
                         if let Some(n) = seen {
                             if matches!(crate::path_investigation::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                                 return Err(RunEnd::Incomplete(format!("{outer:?}: {mesh}'s node-admin {} {} answers, so it is not lost; a resubmit of the Build hands the workflow to the admin the election names", b.node_id, b.incarnation_id)));
@@ -436,18 +445,56 @@ impl AdminRunner {
         self.delete_unreached_as(&*self.builds, Some(build_id), &path, &crate::build::ExitedBirth { node_id, incarnation }, true, false, &operation).await
     }
 
-    /// Steps 2-5 of the owner's workflow, for the leave `key` opened at admission: `mesh.deleting`,
-    /// `DeleteMesh`, the validated handoff (mesh.deleted) and its completion receipt.
+    /// Under an in-force fabric.delete, the mesh-primary `primary` of `mesh` did not answer `DeleteMesh`
+    /// (the call `ended` with no reply). "A mesh whose mesh-primary does not answer its mesh.delete is
+    /// reached the way an unheard mesh-primary is reached in a live fabric (node investigation: its exact
+    /// birth, direct then via peers of its mesh), and during fabric.delete the outcome is a delete"
+    /// (fabric-delete.md step 1): reached, the primary runs the mesh's mesh.delete, the section ends
+    /// incomplete and a resubmit of the Build hands it the workflow; any other verdict, the primary is lost
+    /// (mesh-delete.md "Resume after the primary's loss"), and the mesh is deleted in process at this
+    /// executor, the lost primary among its births (Q160).
+    async fn delete_mesh_unanswered(&self, build_id: &crate::build::BuildId, mesh: &str, key: &MeshDeleteKey, primary: &Node, ended: &str) -> Result<(), RunEnd> {
+        let outer = &key.operation;
+        let me = self.held_name();
+        let finding = crate::path_investigation::PathProbe::investigate(self, primary).await;
+        let span = tracing::info_span!(
+            "rdm.node_admin.mesh.resolve.via-primary-investigation",
+            node_path = %me.path, node_name = %me.name,
+            mesh = %mesh, mesh_id = %key.mesh_id,
+            build_id = %build_id.log(),
+            operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.step,
+            primary_node_id = %primary.node_id,
+            primary_incarnation = %primary.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""),
+            call = %ended,
+            verdict = finding.name(),
+        );
+        if matches!(finding, crate::node_investigation::Finding::Reached { .. }) {
+            span.in_scope(|| tracing::info!("the mesh-primary that did not answer delete-mesh is reached by node investigation: it runs the mesh's mesh.delete"));
+            return Err(RunEnd::Incomplete(format!("{outer:?}: delete-mesh to {} ended {ended}, and node investigation reaches it: it runs {mesh}'s mesh.delete, and a resubmit of the Build hands it the workflow", primary.node_id)));
+        }
+        span.in_scope(|| tracing::info!("the mesh-primary that did not answer delete-mesh is lost by node investigation: under fabric.delete the mesh is deleted in process at the executor"));
+        let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its events: {e}"))?.steps;
+        self.refresh_view().await;
+        let view = self.topology.read().await.clone();
+        self.delete_mesh_in_process(build_id, mesh, key, &steps, &view, Some(primary)).instrument(span).await
+    }
+
+    /// Steps 2-5 of the owner's workflow, for the leave `key` of `mesh` opened at admission: `mesh.deleting`,
+    /// `DeleteMesh`, the validated handoff (mesh.deleted) and its completion receipt. Under an in-force
+    /// fabric.delete (`under_fabric_delete`), a `DeleteMesh` the primary does not answer is
+    /// [`Self::delete_mesh_unanswered`]'s.
     #[allow(clippy::too_many_arguments)]
     async fn lead_delete(
         &self,
         build_id: &crate::build::BuildId,
+        mesh: &str,
         mesh_id: &MeshId,
         outer: &rdm_core::OperationId,
         node_rpc: &crate::node_rpc::ProcessNodeRpc,
         primary: &Node,
         key: &MeshDeleteKey,
         handoff: tokio::sync::watch::Receiver<Option<crate::mesh_delete::MeshDeleteOutcome>>,
+        under_fabric_delete: bool,
     ) -> Result<(), RunEnd> {
         let req = StatusRequest::DeleteMesh { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), operation: outer.clone() };
         // The fabric-primary that is the deleting mesh's own primary (its own mesh, the last of
@@ -462,9 +509,16 @@ impl AdminRunner {
         match replied {
             Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => {}
             Ok(refused) => return Err(RunEnd::failed(format!("{outer:?}: {} refused delete-mesh: {} ({refused:?})", primary.node_id, refused.name()))),
-            // The call did not come back: the primary is unreached or the stream broke. A broken stream
-            // proves neither a failed step nor a completed one (node-rpc-envelope.md, "Caller execution
-            // and certainty"): the leave is incomplete and its receipts stand.
+            // The call did not come back: the primary is unreached or the stream broke. Under fabric.delete
+            // the primary that does not answer its mesh.delete is reached by node investigation
+            // (fabric-delete.md step 1); the open leave ends here, its receipts the record either way.
+            Err(ended) if under_fabric_delete => {
+                self.leaves.close(key);
+                return self.delete_mesh_unanswered(build_id, mesh, key, primary, &ended).await;
+            }
+            // Otherwise a broken stream proves neither a failed step nor a completed one
+            // (node-rpc-envelope.md, "Caller execution and certainty"): the leave is incomplete and its
+            // receipts stand.
             Err(ended) => return Err(RunEnd::Incomplete(format!("{outer:?}: delete-mesh to {} ended {ended}: the mesh may or may not have admitted it", primary.node_id))),
         }
         // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
@@ -1339,8 +1393,12 @@ mod tests {
     /// "a verdict of `reached` refuses the resume by name, since the primary is not lost". The leaving
     /// mesh2's node-admin `mesh2.node-admin.1` is silent in the fabric-primary's view, and its exact birth
     /// answers node investigation's probe (`ProbeNodeState`, `Current`): the resume ends incomplete
-    /// naming it as alive, and nothing of it is deleted (no step event of its node.delete). Must NOT
-    /// happen: a node-admin that answers deleted as lost, or an admin created for its mesh.
+    /// naming it as alive, and nothing of it is deleted (no step event of its node.delete). fabric-delete.md
+    /// step 1, "A mesh whose mesh-primary does not answer its mesh.delete is reached the way an unheard
+    /// mesh-primary is reached in a live fabric (node investigation ...)": the same admin as the mesh's
+    /// primary whose delete-mesh ended with no reply under fabric.delete is reached, so the section ends
+    /// incomplete naming it and the mesh is not deleted in process. Must NOT happen: a node-admin that
+    /// answers deleted as lost, its mesh deleted in process, or an admin created for its mesh.
     #[tokio::test]
     async fn a_node_admin_of_the_leaving_mesh_that_answers_its_investigation_refuses_the_resume_and_is_not_deleted() {
         let Rig { runner, steps, ep, dir, mesh2_id, .. } = rig("admin-mesh-delete-reached").await;
@@ -1384,9 +1442,18 @@ mod tests {
             Err(RunEnd::Incomplete(reason)) => assert!(reason.contains(admin_id.as_str()) && reason.contains("answers, so it survives"), "the refusal names the admin that answered: {reason}"),
             other => panic!("a node-admin that answers refuses the resume, incomplete by name: {other:?}"),
         }
+        // fabric-delete.md step 1: the same admin, mesh2's primary, whose delete-mesh ended with no reply
+        // under fabric.delete, is reached by node investigation: it runs its mesh's mesh.delete, the section
+        // ends incomplete naming it, and nothing of the mesh is deleted in process.
+        let primary = runner.topology.read().await.nodes.iter().find(|n| n.node_id == admin_id).cloned().unwrap();
+        match runner.delete_mesh_unanswered(&build_id, "mesh2", &key, &primary, "NotSent (timed out)").await {
+            Err(RunEnd::Incomplete(reason)) => assert!(reason.contains(admin_id.as_str()) && reason.contains("node investigation reaches it"), "the unanswered primary that answers its investigation is named: {reason}"),
+            other => panic!("an unanswered primary that node investigation reaches ends the section incomplete by name: {other:?}"),
+        }
         let after = steps.read_build(&build_id).await.unwrap().steps;
         let of_its_delete = rdm_core::OperationId::node("node.delete", &admin_id).to_string();
         assert!(after.iter().all(|s| s.operation != of_its_delete), "nothing of the admin that answered is deleted: {after:?}");
+        assert!(after.iter().all(|s| s.step != STEP_ACCEPTED_ROSTER && s.step != STEP_MESH_DELETED), "mesh2 is not deleted in process: {after:?}");
 
         router.shutdown().await.unwrap();
         admin_ep.close().await;

@@ -557,6 +557,53 @@ async fn the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_
     nothing_recreated_under_the_delete(&spans, accepted_ns, &fp);
 }
 
+/// CONTRACT (fabric-delete.md step 1: "A mesh whose mesh-primary does not answer its mesh.delete is
+/// reached the way an unheard mesh-primary is reached in a live fabric (node investigation: its exact
+/// birth, direct then via peers of its mesh), and during fabric.delete the outcome is a delete, never a
+/// node.create of a node-admin"; mesh-delete.md "Resume after the primary's loss" step 2: "Under an
+/// in-force fabric.delete no node-admin is created: the mesh is deleted in process at the executor
+/// holding the fabric-primary's roles"): on a two-mesh fabric whose mesh2 holds one node-admin, that
+/// admin's runtime is killed and fabric.delete is admitted at once, its delete-mesh to mesh2's primary
+/// sent while the fabric-primary's view still holds that primary live. The call ends with no reply; node
+/// investigation of the primary's exact birth does not reach it; mesh2 is deleted in process at the
+/// fabric-primary (its serving member by node.delete, its lost admin as an unreached birth), then the
+/// fabric-primary's own mesh1 last, and fabric.deleted is reported. What must NOT happen: the delete
+/// ending incomplete on the unanswered call, a node-admin created for mesh2, a mesh deleted twice, or a
+/// member's runtime left running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_that_does_not_answer_its_mesh_delete_is_investigated_and_its_mesh_deleted_in_process() {
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
+    let mut estate = ready_fabric("a_mesh_primary_that_does_not_answer_its_mesh_delete_is_investigated_and_its_mesh_deleted_in_process", &shape).await;
+    let ids = ids_of(&estate).await;
+    let (mesh1_id, mesh2_id) = (estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id"), estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id"));
+    let (admin2, node2) = (id_in(&ids, "mesh2.node-admin", "1"), id_in(&ids, "mesh2.node", "1"));
+    let fp = (Estate::path("mesh1.node-admin", "1"), id_in(&ids, "mesh1.node-admin", "1"));
+    let accepted_ns = now_ns();
+    estate.kill_pid(runtime_pid(&estate, &admin2));
+    let mut delete = delete_admitted(&estate).await;
+    let id = delete.build_id().to_string();
+    let frames = terminal_of("fabric.delete", &mut delete, SETTLE).await;
+    assert!(matches!(frames.last(), Some(BuildFrame::Complete { .. })), "fabric.delete {id} completes: {frames:?}");
+    let receipts = receipts_at(&estate, &fp.0, &id).await;
+    assert_eq!(count(&receipts, |o| on_mesh(o, "mesh.delete", &mesh2_id), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh2 is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| on_mesh(o, "mesh.delete", &mesh1_id), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted once: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| of_id(o, "node.delete", &admin2), "Complete"), 1, "mesh2's lost admin has its node.delete receipt: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| of_id(o, "node.delete", &node2), "Complete"), 1, "mesh2's serving member has its node.delete receipt: {:?}", listed(&receipts));
+    assert_eq!(count(&receipts, |o| action_of(o) == "fabric.delete", "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
+    let deleted: Vec<String> = steps_of(&receipts).into_iter().filter(|(_, s, _)| s == rdm_admin::mesh_delete::STEP_MESH_DELETED).map(|(o, _, _)| o).collect();
+    assert!(deleted.last().is_some_and(|o| on_mesh(o, "mesh.delete", &mesh1_id)), "the fabric-primary's own mesh1 is deleted last: {deleted:?}");
+    assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_node(dir, &fp.1)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp:?} is left, for its separate node.delete");
+    estate.stop().await;
+    let spans = estate.spans();
+    // The one investigation of the unanswered primary decided the in-process delete.
+    let investigated: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.resolve.via-primary-investigation").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2" && sp["attributes"]["primary_node_id"] == admin2.as_str()).collect();
+    assert!(investigated.len() == 1 && investigated[0]["attributes"]["verdict"] != "reached", "the unanswered primary is investigated once and not reached: {investigated:#?}");
+    let in_process: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.delete.via-in-process").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect();
+    assert!(in_process.len() == 1 && in_process[0]["attributes"]["outcome"] == "deleted", "mesh2 is deleted in process at the fabric-primary: {in_process:#?}");
+    let created: Vec<&Value> = spans.iter().filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_admin.node.create.")) && sp["attributes"]["moment"] != "arrival" && start(sp) >= accepted_ns).collect();
+    assert!(created.is_empty(), "nothing is created after the delete's acceptance: {created:?}");
+}
+
 /// The bound of the fabric-primary's own node.delete: the stop's (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`,
 /// 5 s by default, and the 10 s the mesh-primary allows a stop's reply past it), which the termination of
 /// a process runtime and its inspection fit inside.
