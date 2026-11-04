@@ -886,6 +886,7 @@ async fn start_booted(
                                 status: status.clone(),
                                 owed: owed_state.clone(),
                                 operation: None,
+                                records: property_writer.clone(),
                             };
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::node_hooks::Birth {
@@ -1172,6 +1173,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             status: s.status.clone(),
             owed: s.owed.clone(),
             operation: Some(self.operation.clone()),
+            records: s.property_writer.clone(),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::node_hooks::Birth { path: me.path.clone(), name: me.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: s.r#type.clone() },
@@ -1289,6 +1291,8 @@ struct Becoming {
     /// The operation that makes this birth ready: the start's, or `None` at its first boot, a state
     /// the birth measured itself (i146 Q36).
     operation: Option<rdm_core::status::DeclaredOperation>,
+    /// This birth's own record's writer: its Ready is on its record before node.start completes (Q356).
+    records: crate::node_records::NodePropertyWriter,
 }
 
 impl Becoming {
@@ -1317,6 +1321,10 @@ impl Becoming {
         )
         .in_scope(|| tracing::info!("ready"));
         let d = set_own_status(&self.status, &self.digest, MemberStatus::Ready);
+        // Its Ready on its own record first (Q356; node-start.md: "the caller's node.start completes only
+        // after the Ready record"): node.started, and the start's completion, follow it. The owed
+        // declaration below then finds its state already written.
+        write_own_state(&self.records, &self.topology_view, rdm_core::status::NodeState::Ready).await;
         // The node also declares Ready to its mesh-primary as an owed message, as it declares Stopped
         // (node-start.md step 5; Q36, Q87), with or without a start stream reporting it: frame and
         // declaration apply once (Q49). Owed before anything that follows it can be (Q210): a stop's
@@ -2197,6 +2205,7 @@ mod primary_tests {
                 status: status.clone(),
                 owed: owed.clone(),
                 operation: Some(start.clone()),
+                records: crate::node_records::NodePropertyWriter::new(Arc::new(crate::nodes_storage::MemoryNodesStorage::default()), || "memory".into()),
             };
             becoming.go().await;
             assert_eq!(*status.lock().unwrap(), MemberStatus::Ready, "the start's hook passed: the birth is Ready");
