@@ -212,7 +212,7 @@ impl AdminRunner {
                 if rows.iter().any(|r| r.node_id == *node_id) || !p.steps.iter().any(|s| s.operation == operation && s.step == allocate && s.outcome == StepOutcome::Complete) {
                     continue;
                 }
-                let (incarnation, deployment_id) = crate::deployment::pipeline::launch_of(&operation);
+                let (incarnation, deployment_id) = crate::deployment::pipeline::launch_of(&operation, node_id);
                 let span = tracing::info_span!("rdm.node_admin.mesh.resolve.via-in-flight-create", node_path = %self.me().path, node_name = %self.me().name, mesh = %mesh, member = %node_id, member_path = %at.path, member_name = %at.name, build_id = %p.build_id.log(), deployment_id = %deployment_id, found = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
                 let launch = ResolvedNodeLaunch {
                     mesh: mesh.to_string(), r#type: spec.r#type.clone(), path: at.path.clone(), name: at.name.clone(),
