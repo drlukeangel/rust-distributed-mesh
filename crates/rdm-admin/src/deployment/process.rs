@@ -603,6 +603,14 @@ impl DeploymentProvider for ProcessDeploymentProvider {
     }
 }
 
+/// One span per `exited` verdict, naming how it was read: `child-wait` (this provider's own child's
+/// wait returned) or `proc-gone` (no live task of the exact pid and start), with the pid and start the
+/// handle names. A verdict a node's own log contradicts is traced to its source here.
+fn exited_verdict(handle: &DeploymentHandle, pid: u32, source: &str, code: Option<i32>) {
+    tracing::info_span!("rdm.node_admin.deployment.resolve.via-exited-verdict", deployment_id = %handle.deployment_id, pid, start = ?handle.start, source, code = ?code, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the runtime is read exited"));
+}
+
 /// A process call past its deadline: the typed failure, its outcome unknown for a mutation.
 fn past(deadline: super::deadline::Deadline, elapsed: Duration, operation: &str, deployment: &crate::model::DeploymentId, mutation: bool) -> DeployError {
     tracing::info_span!("rdm.node_admin.deployment.update.via-provider-command", operation, deployment_id = %deployment, deadline_ms = deadline.bound().as_millis() as u64, elapsed_ms = elapsed.as_millis() as u64, outcome = "deadline", mutation, external_outcome = if mutation { "unknown" } else { "" })
@@ -642,6 +650,7 @@ impl ProcessDeploymentProvider {
         let Some(pid) = handle.pid else { return DeploymentStatus::Unknown };
         let exit_of = || self.children.lock().unwrap().get(&pid).filter(|l| handle.start.is_none() || l.start == handle.start).map(|l| l.exit);
         if let Some(Some(code)) = exit_of() {
+            exited_verdict(handle, pid, "child-wait", code);
             return DeploymentStatus::Exited { code };
         }
         #[cfg(unix)]
@@ -657,7 +666,11 @@ impl ProcessDeploymentProvider {
                 }
                 // No live task, or a recycled pid that runs another process: this birth has exited.
                 // A child's code is its wait's, recorded once the group is gone.
-                Group::Gone => DeploymentStatus::Exited { code: exit_of().flatten().flatten() },
+                Group::Gone => {
+                    let code = exit_of().flatten().flatten();
+                    exited_verdict(handle, pid, "proc-gone", code);
+                    DeploymentStatus::Exited { code }
+                }
             }
         }
         #[cfg(not(unix))]

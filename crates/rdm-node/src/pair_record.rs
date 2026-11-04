@@ -33,6 +33,10 @@ pub fn resolve(records: Vec<NodeRecord>, name: &PathName) -> Result<Option<NodeR
     let mut holding = records.into_iter().filter(|r| r.location() == *name && holds_its_name(r));
     let first = holding.next();
     if let (Some(a), Some(b)) = (&first, holding.next()) {
+        // One span per refusal, naming the pair and both node ids: the readers that fail on it name it
+        // only inside their own reasons.
+        tracing::info_span!("rdm.node.record.reject.via-two-live-records", node_path = %name.path, node_name = %name.name, node_id = %a.node_id, other_node_id = %b.node_id, node_state = ?a.state, other_state = ?b.state, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("two live records hold the path and name: the read is refused, naming both"));
         return Err(StorageError::Refused {
             file: format!("the node records at path {:?}, name {:?}", name.path, name.name),
             reason: format!("two live records hold it, nodes {} and {}", a.node_id, b.node_id),

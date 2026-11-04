@@ -312,7 +312,7 @@ impl NodePropertyWriter {
         let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
         let (node_id, incarnation_id) = (initial.node_id.clone(), initial.incarnation.clone());
         let deleted = self.deleted.get().is_some_and(|deleted| deleted());
-        let write = move || tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %backend, outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
+        let write = move || tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %backend, outcome = tracing::field::Empty, cause = tracing::field::Empty, state = tracing::field::Empty, "otel.kind" = "internal");
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
         // particular no timeout may allow a second command to overtake the first call.
         tokio::spawn(
@@ -333,6 +333,9 @@ impl NodePropertyWriter {
                 change(&mut next).inspect_err(|e| {
                     write.record("outcome", "refused").record("cause", e.to_string());
                 })?;
+                // The state the line carries: a birth deleted by its mesh-primary that writes itself live
+                // again is read from this field.
+                write.record("state", tracing::field::debug(&next.state));
                 if held.as_ref() == Some(&next) {
                     write.record("outcome", "unchanged");
                 } else if let Err(error) = records.put_node(&next).instrument(write.clone()).await {

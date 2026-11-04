@@ -1135,23 +1135,34 @@ impl StatusService {
                 };
             }
             StatusRequest::GetAtlas => {
-                let Some(atlas) = self.atlas.get() else {
-                    return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no fabric atlas yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name));
-                };
-                // One row for every node the current Build's topology names (fabric-atlas.md R-FA4).
-                let paths: Vec<crate::model::PathName> = match self.builds.current().await {
-                    Ok(Some(b)) => b.topology.meshes.values().flat_map(|m| m.nodes.iter().cloned()).collect(),
-                    Ok(None) => Vec::new(),
-                    Err(e) => return rdm_core::reply::status::bounded_source_failed("builds.storage", req.op(), &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
-                };
-                if self.configs.get().and_then(|c| c.records()).is_none() {
-                    return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no node records yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name));
-                };
-                let records = crate::current_record::CurrentRecords { nodes: &*self.nodes_storage };
-                return match atlas.view(paths, &records, &view).await {
-                    Ok(atlas) => StatusReply::within_reply_bound(StatusReply::Atlas { atlas }, req.op()),
-                    Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
-                };
+                let reply = async {
+                    let Some(atlas) = self.atlas.get() else {
+                        return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no fabric atlas yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name));
+                    };
+                    // One row for every node the current Build's topology names (fabric-atlas.md R-FA4).
+                    let paths: Vec<crate::model::PathName> = match self.builds.current().await {
+                        Ok(Some(b)) => b.topology.meshes.values().flat_map(|m| m.nodes.iter().cloned()).collect(),
+                        Ok(None) => Vec::new(),
+                        Err(e) => return rdm_core::reply::status::bounded_source_failed("builds.storage", req.op(), &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
+                    };
+                    if self.configs.get().and_then(|c| c.records()).is_none() {
+                        return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no node records yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name));
+                    };
+                    let records = crate::current_record::CurrentRecords { nodes: &*self.nodes_storage };
+                    return match atlas.view(paths, &records, &view).await {
+                        Ok(atlas) => StatusReply::within_reply_bound(StatusReply::Atlas { atlas }, req.op()),
+                        Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
+                    };
+                }
+                .await;
+                // A refusal of the atlas names its source and cause here, at the fabric-primary: the
+                // caller that acts on the atlas (a refused caller's decision) waits on it.
+                match &reply {
+                    StatusReply::Atlas { .. } => {}
+                    StatusReply::RejectedSourceFailed { source, cause, .. } => tracing::info_span!("rdm.node_admin.fabric.reject.via-atlas-unread", node_path = %me_name.path, node_name = %me_name.name, outcome = "rejected-source-failed", source = %source, cause = %cause, "otel.kind" = "internal").in_scope(|| tracing::info!("fabric.atlas.get is refused: a source of the atlas could not be read")),
+                    other => tracing::info_span!("rdm.node_admin.fabric.reject.via-atlas-unread", node_path = %me_name.path, node_name = %me_name.name, outcome = %other.name(), "otel.kind" = "internal").in_scope(|| tracing::info!("fabric.atlas.get is refused")),
+                }
+                return reply;
             }
             StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert, req).await,
             StatusRequest::UpdateIssuer { incarnation, key, cert, ca_key, .. } => {
