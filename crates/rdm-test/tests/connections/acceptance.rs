@@ -609,7 +609,7 @@ async fn refused_dial(estate: &Estate, name: &PathName, target_name: &PathName, 
     })
     .await;
     let acceptor = estate.node_value(target_name).await;
-    assert_eq!(s(&acceptor["status"]), "ready", "the refusal marks nothing on the acceptor: {acceptor}");
+    assert_eq!(s(&acceptor["state"]), "ready", "the refusal marks nothing on the acceptor: {acceptor}");
     (reason, span)
 }
 
@@ -720,7 +720,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     assert!(matches!(&empty, rdm_core::node_command::NodeCommandReply::Rejected { reason, detail } if reason == "rejected-connection-scope" && detail.contains("at least one")), "an empty list is refused by name: {empty:?}");
     assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("node.connection.get"), &dest_id).contains(&to_dest), "the refused scope cut nothing");
     let source = estate.node_value(&*SOURCE).await;
-    assert_eq!(s(&source["status"]), "ready", "a delete of named connections changes no status: {source}");
+    assert_eq!(s(&source["state"]), "ready", "a delete of named connections changes no state: {source}");
     estate.stop().await;
 }
 
