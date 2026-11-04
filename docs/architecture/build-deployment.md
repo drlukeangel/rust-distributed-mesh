@@ -9,8 +9,9 @@ deploys: the executable each node runs, from the request to the row and back out
 ## 1. The rule
 
 A node's executable is an input of node.create and of nothing else: the executable used to launch the
-node. The birth runs it for its whole life. A new executable is a new node: a Build that adds it
-(Q345).
+node. The birth runs it for its whole life. A new executable is a new node: a Build that adds it,
+or, at a held path and name of a node that is not a node-admin, a Build whose Create names that path
+and name with another executable, which RDM replaces (§3).
 
 ## 2. From the request to the row
 
@@ -36,19 +37,21 @@ node. The birth runs it for its whole life. A new executable is a new node: a Bu
 ## 3. A new executable is a new node
 
 A node's executable never changes: its row records the executable used to launch it. A new executable
-is a new node: a Build that adds it, `Create { nodes }` naming the executable, at a path and name no
-live node holds (build.md §12.5). A live node whose row records its executable is not deleted, created
-or restarted because another node changes. Recovery of a lost birth is node recovery's (§4).
+is a new node: a Build that adds it, `Create { nodes }` naming the executable at a path and name no
+live node holds, or naming a held path and name of a node that is not a node-admin with an executable
+other than its row records. RDM then replaces the node in the mesh's section, one path at a time: the
+node-type primary's role moves first when another node of its type is in the mesh, the held birth is
+deleted, and a node is created at the same path and name with the Build entry's executable, config and
+tags. A live node whose row records its executable is not deleted, created or restarted because another
+node changes. Recovery of a lost birth is node recovery's (§4).
 
-To keep the old node's data, the old node is stopped ([node.stop](lifecycles/node-stop.md)) and its
-name changed with [node.name.update](lifecycles/node-name-update.md) first; the Create then takes the
-path and name it released, and the old node stays stopped with its data until a Delete removes it.
-Without the old node's data, a Delete of the old node releases its path and name for the Create.
-These are primitives, each its own call; no page documents them together (Q345). Going back is a Build
-of the former topology and configuration: nothing is ever reverted. The new node's config and tags are
-its Build entry's, never the old node's. node.stop and node.start keep the executable (node-stop.md
-"Kept"); nothing changes a running birth's executable. A Build that puts the fabric back to pending
-completes only after its own ready state is set (states.md).
+The new node takes the held birth's data dir when its own entry's `storage_persistence` is
+`persistent` and the directory exists; otherwise it gets a new one. A node-admin's executable is
+replaced by the primitives, each its own call. Going back is a Build of the former topology and
+configuration: nothing is ever reverted. The new node's config and tags are its Build entry's, never
+the old node's. node.stop and node.start keep the executable (node-stop.md "Kept"); nothing changes a
+running birth's executable. A Build that puts the fabric back to pending completes only after its own
+ready state is set (states.md).
 
 ## 4. Recovery
 
@@ -60,7 +63,7 @@ names no executable on its step, so it takes the row's (node-recovery.md "Retain
 recovering admin's and never the topology's next entry. A heal never upgrades. A row written before the field
 existed decodes with none, and a birth whose row records no executable has no automatic recovery: the
 topology's entry is the target, not what the birth ran, so recovery of it is refused by name; the repair
-is a new node: a Delete of the birth, then a Create naming the executable (§3).
+is a new node: a Create naming the executable at its path and name (§3).
 
 ## 5. Reads
 
@@ -71,5 +74,5 @@ nodes by `mesh`, the fabric's by no pair. The digest, the `MeshTopology` project
 ## 6. Refusals, by name
 
 A created path with no executable; an executable outside the launcher's directories; a missing file;
-a differing hash; node recovery of a birth whose row records no executable (repaired by a Delete and a
-Create naming the executable, §3).
+a differing hash; node recovery of a birth whose row records no executable (repaired by a Create
+naming the executable at its path and name, §3).

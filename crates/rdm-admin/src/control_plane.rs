@@ -287,9 +287,16 @@ impl ControlPlane {
             // ([`crate::build::delete_admits`]). A birth the view marks Dead with neither fact is refused
             // `node-not-live` by name: silence never says the runtime exited (Q219).
             let mut exited_pins: Vec<(PathName, crate::build::PinnedBirth)> = Vec::new();
+            // A node's executable replacement (build-deployment.md §3): each held path a Create names
+            // with an executable other than the one its node's row records, its node not a node-admin.
+            // Its held birth is pinned and gated as a Delete's is, the node-type primary's last of its type.
+            let replaced: Vec<PathName> = match &composed {
+                BuildChange::Create { nodes, .. } => self.replaced_paths(nodes, &observed).await?,
+                _ => Vec::new(),
+            };
             // The nodes the change deletes, each at the path of the birth that holds it now: a Delete's
             // node.id another birth replaced, or no birth holds, is refused by name (build.md §4.4).
-            let deleting: Vec<PathName> = match &change {
+            let mut deleting: Vec<PathName> = match &change {
                 BuildChange::Delete { node_ids, .. } => {
                     let mut paths = Vec::with_capacity(node_ids.len());
                     for id in node_ids {
@@ -306,6 +313,7 @@ impl ControlPlane {
                 }
                 _ => Vec::new(),
             };
+            deleting.extend(replaced.iter().cloned());
             for node in &deleting {
                 if let Some(candidate) = collect {
                     let exact = observed.node(node).is_some_and(|n| n.node_id == candidate.node_id && n.incarnation_id.as_ref() == Some(&candidate.incarnation) && n.stopped);
@@ -323,7 +331,8 @@ impl ControlPlane {
                     }
                 }
             }
-            let mut topology = match crate::accepted::compile(&current.topology, &composed, &observed) {
+            let replaced_set: std::collections::BTreeSet<PathName> = replaced.iter().cloned().collect();
+            let mut topology = match crate::accepted::compile_replacing(&current.topology, &composed, &observed, &replaced_set) {
                 Ok(t) => t,
                 Err(reject) => {
                     outer.in_scope(|| reject_span(route, &reject));
@@ -395,13 +404,12 @@ impl ControlPlane {
             }
             // A Build whose plan would end a primary while no other node of its type in its mesh can
             // take its role is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
-            if let Some(reject) = operations.iter().find_map(|op| {
-                let (node, action) = match op {
-                    crate::build::BuildOperation::DeleteLiveNode { .. } => (op.node().expect("a node operation names its node"), "delete"),
-                    _ => return None,
-                };
-                last_admin(&node, action, &observed, observed.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default())
-            }) {
+            // Every replaced birth's delete passes it, the ones a later pass plans included (§3.1).
+            let own_mesh = observed.node(&self.me()).map(|n| n.mesh.clone()).unwrap_or_default();
+            if let Some(reject) = operations.iter().filter_map(|op| match op {
+                crate::build::BuildOperation::DeleteLiveNode { .. } => op.node(),
+                _ => None,
+            }).chain(replaced.iter().cloned()).find_map(|node| last_admin(&node, "delete", &observed, &own_mesh)) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -511,6 +519,35 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// The held paths `nodes` (a Create's entries, their type defaults filled) names that are a node's
+    /// executable replacement (build-deployment.md §3): each held in `observed` by a node that is not a
+    /// node-admin, of the entry's type and mesh, whose row records an executable other than the entry's
+    /// (another path, sha256 or image; `launch_id` is not compared, D14). The row is the node's record
+    /// read now, the record of what its birth runs (build-deployment.md §2), never the view or the
+    /// accepted topology. A held path named with the same executable, a node-admin's, one of another type
+    /// or mesh, or one whose node has no record is not one: it stays `name-held`. Ordered as the plan runs
+    /// them, one at a time (D12): by mesh and type, the node-type primary's last of its type.
+    async fn replaced_paths(&self, nodes: &[rdm_core::build::Nodes], observed: &Topology) -> Result<Vec<PathName>, Refusal> {
+        let Some(records) = self.current_records() else { return Ok(Vec::new()) };
+        let mut replaced: Vec<(String, String, bool, PathName)> = Vec::new();
+        for n in nodes {
+            let Ok(path) = PathName::new(&n.path, &n.name) else { continue };
+            let (Some(held), Some(asked)) = (observed.node(&path), n.executable.as_ref()) else { continue };
+            if rdm_core::is_node_admin(&held.r#type) || rdm_core::is_node_admin(&n.r#type) || held.r#type != n.r#type || held.mesh != n.mesh {
+                continue;
+            }
+            let Some(row) = records.row(&held.node_id).await.map_err(|e| Refusal::Unavailable(format!("the row of the node at path {:?}, name {:?}: {e}", path.path, path.name)))? else { continue };
+            let same = row.executable.as_ref().is_some_and(|b| b.executable == asked.executable && b.sha256 == asked.sha256 && b.image == asked.image);
+            tracing::info!(node_path = %path.path, node_name = %path.name, node_id = %held.node_id, row_executable = ?row.executable.as_ref().map(|b| (&b.executable, &b.sha256, &b.image)), asked_executable = ?(&asked.executable, &asked.sha256, &asked.image), replaced = !same, "a Create names a held path and name: another executable than its row records is the node's executable replacement, the same one is name-held");
+            if !same {
+                let primary = observed.node_type_primary(&held.mesh, &held.r#type).is_some_and(|p| p.node_id == held.node_id);
+                replaced.push((held.mesh.clone(), held.r#type.clone(), primary, path));
+            }
+        }
+        replaced.sort();
+        Ok(replaced.into_iter().map(|(_, _, _, path)| path).collect())
+    }
+
     /// Gate 5 of a delete of the atlas row `n` ([`crate::build::delete_admits`]): node investigation of
     /// its exact birth (`observed`'s birth of that node id and incarnation) is asked only when the birth
     /// is neither stopped nor heard live, and its verdict is spanned on `outer`. No investigation held:

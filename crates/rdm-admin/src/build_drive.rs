@@ -1288,6 +1288,10 @@ impl DriveEnv {
             // and every other mesh's, by the mesh's primary.
             let mut own: Vec<BuildOperation> = Vec::new();
             let mut remote: std::collections::BTreeMap<String, String> = Default::default();
+            // Each remote mesh's first operation, and whether the view names its executor now: a node's
+            // executable replacement step leads its mesh's section, and the section that ends `Complete`
+            // without a step of it is checked below (build-deployment.md §3).
+            let mut remote_first: std::collections::BTreeMap<String, (BuildOperation, bool)> = Default::default();
             let mut held: Vec<String> = Vec::new();
             let mut own_open = true;
             for op in &ops {
@@ -1324,12 +1328,14 @@ impl DriveEnv {
                     }
                     Some(_) => {
                         let mesh = op.mesh().unwrap_or_default().to_string();
-                        remote.entry(mesh).or_insert_with(|| op.key().to_string());
+                        remote.entry(mesh.clone()).or_insert_with(|| op.key().to_string());
+                        remote_first.entry(mesh).or_insert_with(|| (op.clone(), true));
                         own_open = false;
                     }
                     None if op.mesh().is_some_and(|m| m != self.me_mesh) => {
                         let mesh = op.mesh().unwrap_or_default().to_string();
-                        remote.entry(mesh).or_insert_with(|| op.key().to_string());
+                        remote.entry(mesh.clone()).or_insert_with(|| op.key().to_string());
+                        remote_first.entry(mesh).or_insert_with(|| (op.clone(), false));
                         own_open = false;
                     }
                     None => {
@@ -1346,7 +1352,10 @@ impl DriveEnv {
             drive.clear_stall();
             let context = crate::build::current_context();
             let mut runs: Vec<futures_util::future::BoxFuture<'_, Section>> = Vec::new();
+            // The mesh of each remote run, in the order of `runs`: `None` for this admin's own.
+            let mut run_meshes: Vec<Option<String>> = Vec::new();
             if !own.is_empty() {
+                run_meshes.push(None);
                 *dispatches += 1;
                 let mesh = own.iter().find_map(|op| op.mesh().map(str::to_string)).unwrap_or_else(|| self.me_mesh.clone());
                 let first = own[0].key().to_string();
@@ -1361,6 +1370,7 @@ impl DriveEnv {
             }
             for (mesh, first) in remote {
                 *dispatches += 1;
+                run_meshes.push(Some(mesh.clone()));
                 let (env, context) = (self.clone(), context.clone());
                 let me = me.clone();
                 // A mesh whose mesh-primary this admin's atlas names from an update's answer while the
@@ -1384,6 +1394,43 @@ impl DriveEnv {
                     Some(end) => end,
                     None => self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: a section of Build {id} stopped at a role target that the gate no longer reports", me_path = &me.path, me_name = &me.name)),
                 };
+            }
+            // A section that ended `Complete` and ran no step of the executable replacement step that
+            // leads it, the view naming its mesh-primary its executor, did not run the replacement: its
+            // pinned birth is still live (a mesh-primary that plans a live birth as satisfying its path).
+            // Its mesh's part of this run ends by name (build-deployment.md §3).
+            let ran_replacements: Vec<(String, BuildOperation)> = ended
+                .iter()
+                .zip(&run_meshes)
+                .filter(|(s, _)| matches!(s, Section::Ran))
+                .filter_map(|(_, mesh)| mesh.as_ref())
+                .filter_map(|mesh| remote_first.get(mesh).filter(|(op, named)| *named && is_replacement_step(&p, op)).map(|(op, _)| (mesh.clone(), op.clone())))
+                .collect();
+            if !ran_replacements.is_empty() {
+                let after = match self.builds_call(|| self.builds.read_build(&id)).await {
+                    Ok(after) => after,
+                    Err(e) => return self.store_spent(&me, drive, &p, "builds", format!("path {me_path:?}, name {me_name:?}: Build {id} could not be read for the replacements its sections ran: {e}", me_path = &me.path, me_name = &me.name), &span).await,
+                };
+                for (mesh, op) in ran_replacements {
+                    let key = op.key().to_string();
+                    if after.steps.iter().any(|s| s.operation == key) {
+                        continue;
+                    }
+                    let Some(node) = op.node() else { continue };
+                    let pinned = p.topology.replaced(&node).map(|b| format!("{} at incarnation {}", b.node_id, b.incarnation.as_str())).unwrap_or_default();
+                    let left = match op {
+                        BuildOperation::DeleteLiveNode { .. } => format!("its pinned birth {pinned} still live"),
+                        _ => format!("no node created at the path its pinned birth {pinned} left"),
+                    };
+                    let reason = format!(
+                        "path {me_path:?}, name {me_name:?}: mesh {mesh}'s section ended complete and ran no step of {key}, the executable replacement of path {:?}, name {:?}: the replacement was not run, {left} (build-deployment.md §3)",
+                        node.path, node.name, me_path = &me.path, me_name = &me.name
+                    );
+                    let u = UnfinishedSection { mesh: mesh.clone(), operation: key, step: "build.section.run".into(), reason: crate::build_run::bounded_reason(reason), code: rdm_core::outcome::Code::FailedPrecondition };
+                    tracing::info_span!("rdm.node_admin.build.update.via-replacement-not-run", build_id = %id.log(), node_path = %me.path, node_name = %me.name, mesh = %u.mesh, operation = %u.operation, reason = %u.reason)
+                        .in_scope(|| tracing::info!("the mesh's section ended complete with a replaced birth still live: nothing more of that mesh runs in this run"));
+                    drive.unfinished.lock().unwrap().insert(mesh, u);
+                }
             }
             // A section that ended short ends its mesh's part of this run, never the Build (Q346): the
             // drive plans again, and the Build ends once no section is left to run.
@@ -1541,6 +1588,12 @@ impl DriveEnv {
             }
         }
     }
+}
+
+/// Whether `op` is a step of a node's executable replacement in `p` (build-deployment.md §3): the
+/// delete of a birth its acceptance pinned at a path its topology still names, or the create there.
+fn is_replacement_step(p: &BuildProjection, op: &BuildOperation) -> bool {
+    matches!(op, BuildOperation::DeleteLiveNode { exited: None, .. } | BuildOperation::CreateNode { over: None, .. }) && op.node().is_some_and(|n| p.topology.replaced(&n).is_some())
 }
 
 /// The section of `op`'s mesh ended short at its role move (Q346): nothing more of that mesh runs in

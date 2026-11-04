@@ -114,13 +114,13 @@ the chaos kit (`rdm-test`'s `faults` modules), the fault backends with typed out
 
 ## 1. Build is the only topology mutation engine
 
-Every external requested change to the topology that results in the addition or a removal of a node is its own Build, submitted through build.create with its own build_id. node.stop, node.start and node.connection.delete change no shape: each is a node command the primary above the node runs, recorded on the node record, never a Build or part of one. A repair (delete, then create at the same path and name) is not external: it is the primary's own workflow ([node recovery](lifecycles/node-recovery.md)), recorded on the node record, never a Build or part of one. Work on one node is serialized at its mesh-primary.
+Every external requested change to the topology that results in the addition or a removal of a node is its own Build, submitted through build.create with its own build_id. node.stop, node.start and node.connection.delete change no shape: each is a node command the primary above the node runs, recorded on the node record, never a Build or part of one. A repair (delete, then create at the same path and name) is not external: it is the primary's own workflow ([node recovery](lifecycles/node-recovery.md)), recorded on the node record, never a Build or part of one; a node's executable replacement is a Build's ([build-deployment.md §3](build-deployment.md)). Work on one node is serialized at its mesh-primary.
 
 The request is a batch (Q280; [batch call](node-rpc-envelope.md#caller-execution-and-certainty)), one of three changes, each with a result per node:
 
 | Change | Names | Refused by name |
 |---|---|---|
-| `Create { meshes, nodes }` | each mesh by its Meshes schema, each node by its Nodes schema ([schemas](node-rpc-envelope.md#build-schema)), whole; a node whose mesh is not yet live creates that mesh with its first node-admin | a new mesh with no node-admin among its nodes; a node naming a mesh neither in the request nor live; a path and name already held; an undeclared type; a node with no executable, its own or its type's |
+| `Create { meshes, nodes }` | each mesh by its Meshes schema, each node by its Nodes schema ([schemas](node-rpc-envelope.md#build-schema)), whole; a node whose mesh is not yet live creates that mesh with its first node-admin | a new mesh with no node-admin among its nodes; a node naming a mesh neither in the request nor live; a path and name already held, except a held node that is not a node-admin named with another executable, which is replaced ([build-deployment.md §3](build-deployment.md)); an undeclared type; a node with no executable, its own or its type's |
 | `Delete { meshes, node_ids }` | each mesh by name, each node by its node.id, never by its path and name | a node.id already deleted, in its own result |
 | `DeleteFabric` | the fabric | (§1, the one exception below) |
 
@@ -279,7 +279,7 @@ one source. A gate that fails refuses by name and nothing is written. A node com
 |---|---|---|
 | The receiver is the fabric-primary | its own view | `not-fabric-primary`, naming the fabric-primary |
 | The current Build is settled | the Build store and its events (R-BI3) | `build-in-progress`, naming the Build; fabric.delete excepted (§1) |
-| A created node's path and name are free, its mesh live or created in the request with a node-admin, its type declared | the fabric-primary's records | `name-held`, `unknown-mesh`, `unknown-type`, by name |
+| A created node's path and name are free, or held by a node that is not a node-admin and named with another executable (a replacement, [build-deployment.md §3](build-deployment.md)), its mesh live or created in the request with a node-admin, its type declared | the fabric-primary's records | `name-held`, `unknown-mesh`, `unknown-type`, by name |
 | A deleted node.id stands | the fabric-primary's records by node.id | `unknown-node` |
 | The node's mesh is heard | the fabric-primary's view | refused by name, naming the mesh and how long it has gone unheard (R-D1) |
 | A deleted primary has a successor | the fabric-primary's view | refused by name, naming the primary |
@@ -582,12 +582,10 @@ fabric-primary accepts Build B22:
 
 A node's `executable` is the executable used to launch the node; nothing changes it after. A new
 executable is a new node: a Build that adds it ([node.create](lifecycles/node-create.md), a new
-node.id), at a path and name no live node holds ([build-deployment.md §3](build-deployment.md)). To keep
-the old node's data, the old node is stopped ([node.stop](lifecycles/node-stop.md)) and its name changed
-with [node.name.update](lifecycles/node-name-update.md) first; without it, a Delete of the old node
-releases its path and name. These are primitives, each its own call. Going back is a Build of the
-former topology and configuration; nothing is ever reverted (Q345). Nothing else in the fabric
-changes.
+node.id), at a path and name no live node holds, or at a held one with another executable, which RDM
+replaces ([build-deployment.md §3](build-deployment.md)); a node-admin's executable is replaced by the
+primitives, each its own call. Going back is a Build of the former topology and configuration; nothing
+is ever reverted (Q345). Nothing else in the fabric changes.
 
 ---
 

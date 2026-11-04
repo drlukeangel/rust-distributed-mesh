@@ -511,12 +511,13 @@ impl BuildExecutor {
 
     /// How many of `ops`, from the first, are member creates this admin executes in its view now
     /// (Q245): node creates, each of whose executor is this admin, but a mesh's first node-admin, the
-    /// birth the view hands the mesh's members to.
+    /// birth the view hands the mesh's members to, and a node's executable replacement, which runs on
+    /// its own (build-deployment.md §3).
     async fn create_group(&self, ops: &[BuildOperation], accepted: &crate::accepted::FabricTopology) -> usize {
         let now = &self.executor.node_id;
         let t = self.topology.read().await;
         ops.iter()
-            .take_while(|op| matches!(op, BuildOperation::CreateNode { path, name, mesh, .. } if { let node = &PathName { path: path.clone(), name: name.clone() }; accepted.meshes.get(mesh).and_then(|m| m.spec(node)).is_some_and(|spec| !t.first_admin_of(node, mesh, &spec.r#type)) }) && executor_for(op, &t).is_none_or(|to| &to == now))
+            .take_while(|op| matches!(op, BuildOperation::CreateNode { path, name, mesh, .. } if { let node = &PathName { path: path.clone(), name: name.clone() }; accepted.replaced(node).is_none() && accepted.meshes.get(mesh).and_then(|m| m.spec(node)).is_some_and(|spec| !t.first_admin_of(node, mesh, &spec.r#type)) }) && executor_for(op, &t).is_none_or(|to| &to == now))
             .count()
     }
 
