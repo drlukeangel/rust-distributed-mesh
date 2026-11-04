@@ -548,8 +548,10 @@ impl SectionRunService {
                     // node.delete) does not wait for this turn (stop_gate.rs).
                     let _turn = _turn.of_build(&id.to_string());
                     let end = exec.run_section(&id, &mesh_name, &context, &operations).await;
-                    run.finish(terminal_of(&id, &mesh_name, &end, run.last_failed_step()));
+                    // The run leaves the open runs before its terminal reaches a reader: a resubmit that
+                    // follows the terminal starts a new run, never reattaches to this finished one.
                     runs.end(&id, &mesh_name);
+                    run.finish(terminal_of(&id, &mesh_name, &end, run.last_failed_step()));
                 }
             }
             .with_current_subscriber(),
