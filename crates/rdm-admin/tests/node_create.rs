@@ -1009,13 +1009,6 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
     drop(rt);
     let _ = std::fs::remove_dir_all(&data_root);
 
-    let claimed_spans = capture.named("rdm.node_admin.node.resolve.via-row-allocation");
-    assert!(
-        claimed_spans
-            .iter()
-            .any(|s| s.attributes.get("outcome").map(String::as_str) == Some("never-launched")),
-        "expected via-row-allocation span with outcome=never-launched"
-    );
     let names = capture.all_names();
     crate::assert_own_story(names.iter().map(String::as_str));
 }

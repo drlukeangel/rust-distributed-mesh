@@ -105,7 +105,8 @@ struct Fleet {
     reached: Notify,
     next_pid: AtomicU32,
     spawned: Mutex<Vec<Spawn>>,
-    terminated: Mutex<Vec<u32>>,
+    /// The pids terminated: a terminated birth reports nothing more.
+    terminated: Arc<Mutex<Vec<u32>>>,
     /// Each executor's deployments, by the endpoint key its launches carry as their seed: the
     /// admin a launched birth reports its join to.
     executors: Mutex<BTreeMap<String, Arc<Joins>>>,
@@ -125,7 +126,7 @@ struct Spawn {
 
 impl Fleet {
     fn new() -> Arc<Self> {
-        Arc::new(Self { dies: Arc::new(Mutex::new(Dies::Not)), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]), executors: Mutex::new(BTreeMap::new()), store: Arc::default() })
+        Arc::new(Self { dies: Arc::new(Mutex::new(Dies::Not)), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Arc::new(Mutex::new(vec![])), executors: Mutex::new(BTreeMap::new()), store: Arc::default() })
     }
     fn spawns(&self) -> Vec<Spawn> {
         self.spawned.lock().unwrap().clone()
@@ -192,8 +193,12 @@ impl DeploymentProvider for Fleet {
             let digest = fake_node_digest(spec, handle.fact());
             let dies = self.dies.clone();
             let store = self.store.clone();
+            let terminated = self.terminated.clone();
             tokio::spawn(async move {
                 for _ in 0..500 {
+                    if terminated.lock().unwrap().contains(&pid) {
+                        return;
+                    }
                     let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
                     if !withheld && matches!(joins.standing(&digest, &[]), rdm_admin::join::Standing::Deployed { .. }) {
                         joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
@@ -240,7 +245,9 @@ impl DeploymentProvider for Fleet {
     }
     async fn find(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         use rdm_admin::deployment::provider::Found;
-        Ok(match self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id) {
+        // The latest launch of the deployment, taken out of the lock before `running` reads it again.
+        let launched = self.spawned.lock().unwrap().iter().rev().find(|s| s.handle.deployment_id == spec.deployment_id).cloned();
+        Ok(match launched {
             Some(s) if self.running(s.pid) => Found::Running(s.handle.clone()),
             Some(_) => Found::Exited(None),
             None => Found::NeverLaunched,
@@ -434,8 +441,10 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert_eq!(spawns.len(), spawns_before + 1, "the successor launches the birth afresh");
         let fresh = spawns.last().unwrap();
         assert!(!fresh.seeds.contains("lostadminkey") && fresh.seeds.contains("successoradminkey"), "the new birth is seeded with the successor only: {}", fresh.seeds);
-        // The node.id is the Build's own for the create (D58): a birth decided afresh is a new deployment of it.
-        assert_ne!(fresh.handle.deployment_id, dead.handle.deployment_id, "a fresh birth: the stranded runtime is not this birth's");
+        // The node.id is the Build's own for the create (D58), and the deployment id its create operation's
+        // (A1): a birth decided afresh is a new runtime of the same launch.
+        assert_eq!(fresh.handle.deployment_id, dead.handle.deployment_id, "the same create's launch, by its deployment id");
+        assert_ne!(fresh.pid, dead.pid, "a fresh birth: the stranded runtime is not this birth's");
         assert_eq!(redone.node.node_id, fresh.node_id);
         assert!(!fleet.running(dead.pid), "the stranded runtime that names the lost admin is stopped");
         assert!(fleet.running(fresh.pid));

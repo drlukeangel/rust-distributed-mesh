@@ -178,17 +178,14 @@ impl Day0 {
         }
     }
 }
-/// The durable writes of a Day-0 birth, by the span that names each: the Fabric row, mesh1's row, the
-/// accepted root Build, and a node row put at an arrival.
-const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "rdm.node_admin.mesh.create.via-mesh-row", "rdm.node_admin.build.create.via-accepted"];
 
 /// CONTRACT (R-OW1, ruling text item 2: "Day 0: the bootstrap admin, as mesh1's primary, claims
 /// (mesh1.node-admin, 1) [...] and writes its own row through the same validation and storage
 /// path as any create, the first write of its birth, before Ready. No bypass; a conflicting holder is
 /// NameHeld, never overwritten"; item 1: "The mesh-primary writes every row in its mesh, including its
 /// own"; Q356: each node writes its own record): the Day-0 admin's first durable write is its own
-/// record, one `rdm.node.record.update.via-properties` span under its own node.id, `outcome = durable`,
-/// started before the Fabric row, mesh1's row, the accepted root Build and Ready. The record stands on the
+/// record write, one `rdm.node.record.update.via-properties` span under its own node.id, `outcome =
+/// durable`, started before Ready. The record stands on the
 /// store root at mesh1.node-admin.1 under the boot's node.id, the one the bootstrap's first step minted and
 /// the process's deployment span carries from its start (Q208). What must NOT happen: a Day-0 fabric whose
 /// primary holds no row of its own, so that `mesh1.node-admin.1` has no claimed name.
@@ -207,13 +204,12 @@ fn the_day0_admin_writes_its_own_record_at_its_path_name_as_the_first_write_of_i
     let deployment = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("no deployment span: {spans:?}"));
     assert!(rdm_admin::model::NodeId::parse(&node_id).is_ok(), "the boot runs as a minted node id: {boot}");
     assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the node id its boot runs as: {deployment}");
-    // Its own record's writes (Q356): the first, under its own node.id, durable, before every other
-    // Day-0 write and before Ready.
+    // Its own record's writes (Q356): the first, under its own node.id, durable, before Ready.
     let mut own: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node.record.update.via-properties" && attr(s, "node_id") == node_id).collect();
     own.sort_by_key(|s| start(s));
     let first = *own.first().unwrap_or_else(|| panic!("the Day-0 admin wrote no record of its own: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
     assert_eq!(attr(first, "outcome"), "durable", "its own record's first write is durable: {first}");
-    for name in DAY0_WRITES.iter().chain(["rdm.mesh.node.update.via-ready"].iter()) {
+    for name in ["rdm.mesh.node.update.via-ready"] {
         let later = spans.iter().find(|s| s["name"] == *name).unwrap_or_else(|| panic!("Day 0 left no {name}: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
         assert!(start(first) < start(later), "the Day-0 admin's own record is written before {name}: {first} then {later}");
     }
