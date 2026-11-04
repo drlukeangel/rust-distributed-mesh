@@ -4620,9 +4620,11 @@ async fn supersession_run(cell: &str, shape: Shape) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     events.push(json!({"event": "dial-lost", "source": lost_src, "ack": ack2, "failed_fact": failed, "call": failed_call.out, "t_cut_ns": t_cut2, "t_release_ns": t_release}));
 
-    // Recovery is the source's own next call (connections.md §9; Q348): nothing dials again from the Failed row, and
-    // the call after the release dials Direct on `Send` and is answered by the new birth, its fact Connected. The dial
-    // still running when the cut lifts may have connected first.
+    // Recovery is the source's own open (Q348): nothing dials again from the Failed row, which is no route
+    // (connections.md §5.1), so the application opens the connection again, a redial on `Send`; the call after it is
+    // answered by the new birth, its fact Connected. The dial still running when the cut lifts may have connected first.
+    let redial = dial(&f, &lost_src, &dst);
+    f.actions.push(action_row(&redial));
     let recovered_op = originate_op(&f, &mut a, &lost_src, &d1, "after-recovery");
     let connection1 = await_direct(&f.estate, &lost_src, &dst, "Connected on the new birth", rdm_core::cadence::staleness_floor() + Duration::from_secs(10), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == d_inc1.as_str()).await;
 
@@ -4676,9 +4678,9 @@ async fn supersession_run(cell: &str, shape: Shape) {
 /// fact at the gateway (R-CN1). The broker's exact runtime is then killed (acknowledged by the provider) and
 /// its mesh-primary recovers it (node-recovery.md): a new node.id and incarnation at the same path.name, the
 /// endpoint key and data dir retained, on a new socket in a new runtime. Another mesh's compute dials the new
-/// birth under a cut and its dial is a Failed fact that sent nothing; once released, the source's next call dials
-/// Direct on `Send` and its fact is Connected on the new birth (connections.md §9; Q348: nothing dials again from
-/// the Failed row). The gateway's pool names nothing of the
+/// birth under a cut and its dial is a Failed fact that sent nothing; the Failed Direct is no route (connections.md
+/// §5.1), and once released the source opens the connection again, a redial on `Send`, and its fact is Connected on
+/// the new birth (Q348: nothing dials again from the Failed row). The gateway's pool names nothing of the
 /// superseded birth and holds a connection to the new one, it holds a Connected connection to the new node.id and
 /// none to the exited one, and its call is answered by the new birth. What must NOT happen: a reply under the
 /// cut, a call answered by a superseded birth, a pooled connection to the old birth after the supersession, a
