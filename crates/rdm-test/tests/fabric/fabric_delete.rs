@@ -620,7 +620,7 @@ async fn a_mesh_primary_that_does_not_answer_its_mesh_delete_is_investigated_re_
     assert!(matches!(frames.last(), Some(BuildFrame::Incomplete { .. })), "fabric.delete {id} ends incomplete while mesh2's primary is lost: {frames:?}");
     // mesh2's lost primary is re-created at its path and name, as without a delete, and serves.
     let created = wait_for("mesh2.node-admin.1 re-created at its path and name, Ready", SETTLE, || async {
-        estate.node_views_at(&fp.0).await.unwrap_or_default().into_iter().find(|n| n.location() == at && n.node_id.as_str() != admin2 && n.status == rdm_client::NodeStatus::Ready).map(|n| n.node_id.to_string())
+        estate.node_views_at(&fp.0).await.unwrap_or_default().into_iter().find(|n| n.location() == at && n.node_id.as_str() != admin2 && n.state == rdm_client::NodeStatus::Ready).map(|n| n.node_id.to_string())
     })
     .await;
     let mut again = estate.carrier_at(&fp.0).await.resubmit(&id).await.unwrap_or_else(|e| panic!("the fabric-primary does not take the resubmit of Build {id}: {e}"));

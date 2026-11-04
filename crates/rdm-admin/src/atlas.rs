@@ -669,15 +669,17 @@ impl Atlas {
     }
 
     /// The effect `row`'s state records of its birth `incarnation` (the node writes its own state,
-    /// Q356), with its stamp: `Stopped` for a stopped record; `Started` for a ready record past the stop
-    /// `held` names; any other state leaves the lifecycle where it is.
+    /// Q356), with its stamp: `Stopped` for a stopped record; `Started` for a ready record when `held`
+    /// names no effect or a stop (a node.start is a node command, never a Build, Q342, so no effect of it
+    /// is held); any other state, and a ready record under another held effect, leaves the lifecycle
+    /// where it is.
     fn row_effect(row: &NodeRecord, incarnation: &IncarnationId, held: Option<&Effect>) -> Option<Effect> {
         if row.incarnation != *incarnation {
             return None;
         }
         let lifecycle = match row.state {
             NodeStatus::Stopped => Lifecycle::Stopped,
-            NodeStatus::Ready if held.is_some_and(|h| h.lifecycle == Lifecycle::Stopped) => Lifecycle::Started,
+            NodeStatus::Ready if held.is_none_or(|h| h.lifecycle == Lifecycle::Stopped) => Lifecycle::Started,
             _ => return None,
         };
         // A node command belongs to no Build (Q342): its effect is the record's, read from no Build.
