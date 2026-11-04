@@ -282,7 +282,12 @@ impl NodesStorage for LostAcknowledgement {
         self.records.nodes(mesh).await
     }
     async fn put_node(&self, row: &NodeRecord) -> Answer<()> {
-        self.records.put_node(row).await
+        self.records.put_node(row).await?;
+        if self.lose.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            Err(rdm_node::storage_error::StorageError::Io { file: "nodes".into(), reason: "acknowledgement lost".into() })
+        } else {
+            Ok(())
+        }
     }
     async fn records_at(&self, name: &PathName) -> Answer<Vec<NodeRecord>> {
         self.records.records_at(name).await
@@ -361,10 +366,11 @@ async fn a_complete_entry_is_one_put_and_a_later_entry_replaces_both_fields_whol
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R13, Q331): migration copies the complete property record and the node's record in
-/// the nodes store. A fresh provider instance returns every value unchanged.
+/// CONTRACT (i150 R13, Q331, Q366): migration copies the node's record, every line of it, in the nodes
+/// store: the node's own write, then later lines at its node id. A fresh provider instance answers the
+/// record's latest line unchanged, and the mesh holds the one record.
 #[tokio::test]
-async fn a_provider_copy_preserves_both_record_kinds() {
+async fn a_provider_copy_carries_the_nodes_latest_line() {
     use rdm_node::node_records::NodePropertyWriter;
     use rdm_node::storage_copy::{copy, CopyRun, FileProviderLines};
     use std::sync::Arc;
@@ -374,7 +380,7 @@ async fn a_provider_copy_preserves_both_record_kinds() {
     let records = Arc::new(FileNodesStorage::open(&root, &rdm_node::store_log::LogWriter::mint()).await.unwrap());
     let writer = NodePropertyWriter::new(records.clone(), || "file".into());
     let initial = properties();
-    let written = writer
+    writer
         .update(
             initial.clone(),
             |r| {
@@ -383,8 +389,7 @@ async fn a_provider_copy_preserves_both_record_kinds() {
             |_| {},
         )
         .await
-        .unwrap()
-        .record;
+        .unwrap();
     let nodes = FileNodesStorage::open(&root, &rdm_node::store_log::LogWriter::mint()).await.unwrap();
     let previous = record(initial.node_id.clone(), "mesh1");
     let mut current = previous.clone();
@@ -410,10 +415,7 @@ async fn a_provider_copy_preserves_both_record_kinds() {
         .await
         .unwrap();
     let reopened_nodes = FileNodesStorage::open(&destination_root, &rdm_node::store_log::LogWriter::mint()).await.unwrap();
-    assert_eq!(
-        reopened.node(&initial.node_id).await.unwrap().map(|l| l.record),
-        Some(written)
-    );
+    assert_eq!(reopened.node(&initial.node_id).await.unwrap().map(|l| l.record), Some(current.clone()), "a fresh instance answers the latest line");
     assert_eq!(reopened_nodes.node(&initial.node_id).await.unwrap().map(|l| l.record), Some(current), "the copy carries the node's latest line");
     assert_eq!(reopened_nodes.nodes("mesh1").await.unwrap().len(), 1);
     let _ = previous;

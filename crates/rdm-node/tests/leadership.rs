@@ -35,7 +35,9 @@ fn an_election_in_flight_is_no_primary_not_a_guess() {
     assert_eq!(primary_of(&view, "mesh1", "broker"), None);
 }
 
-/// The product base holds no election: no NodeId ordering, no primary computation, anywhere in it.
+/// The product base holds no election: no NodeId ordering, no primary computation, anywhere in it. A
+/// node writing its own record's `is_primary` / `is_fabric_primary` from its PrimaryView (Q356) records
+/// the election's result and computes nothing.
 #[test]
 fn node_base_holds_no_comparator() {
     // Every source file under src/, its executables' (src/bin/) included.
@@ -60,7 +62,10 @@ fn node_base_holds_no_comparator() {
                 continue;
             }
             for token in ["min_by", "max_by", ".cmp(", "fn elect", "is_primary =", "is_fabric_primary ="] {
-                if line.contains(token) {
+                // The node recording on its own record the role its PrimaryView names it (Q356,
+                // `node_records::write_own_roles`) writes the election's result; it computes no primary.
+                let recorded = token.ends_with(" =") && line.contains(&format!("record.{token}"));
+                if line.contains(token) && !recorded {
                     hits.push(format!("{}:{}: {token}: {}", path.display(), i + 1, line.trim()));
                 }
             }

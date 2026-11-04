@@ -1359,7 +1359,7 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
         assert_eq!(paths.len().max(ids.len()), n, "{name} spans");
     };
     named("rdm.node_admin.build.create.via-accepted", 2);
-    named("rdm.node_admin.node.create.via-node-row", 1);
+    // A create writes no record (the node writes its own at its start, Q356): no node-row span here.
     named("rdm.node_admin.build.update.via-drive", 1);
     named("rdm.node_admin.build.serve.via-own-section", 1);
     for (span, key) in [("rdm.node_admin.build.update.via-reconcile", "executor")] {

@@ -56,16 +56,18 @@ fn the_answers_member_cert_name_and_cert_policy_are_the_control_frames_last_fiel
     a.control.member_cert = vec![0xca, 0xfe];
     a.control.name = None;
     let bytes = answer_to_wire(&a).unwrap();
-    // postcard varint 300 = ac 02, the cert's length 02 and its bytes ca fe, no name = 00, no cert
-    // policy = 00 (i145 e3), then the empty statuses = 00: the control frame carries no executable
+    // postcard varint 300 = ac 02, the cert's length 02 and its bytes ca fe, no member cert dates = 00
+    // and no signing cert dates = 00 (Q366: the issuer computes them and the node writes them on its own
+    // record; wire format moved), no name = 00, no cert policy = 00 (i145 e3), then the empty statuses =
+    // 00: the control frame carries no executable
     // (proposal executable-bindings-at-create.md rule 7; the removed per-kind set's field is gone,
     // durable format moved) and no config (i150 D10: a node's properties are its own record; durable
     // format moved).
-    assert_eq!(&bytes[bytes.len() - 8..], &[0xac, 0x02, 0x02, 0xca, 0xfe, 0x00, 0x00, 0x00], "{bytes:02x?}");
+    assert_eq!(&bytes[bytes.len() - 10..], &[0xac, 0x02, 0x02, 0xca, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
     // An authority configured with no certs sends an empty cert.
     a.control.member_cert = vec![];
     let bytes = answer_to_wire(&a).unwrap();
-    assert_eq!(&bytes[bytes.len() - 6..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
+    assert_eq!(&bytes[bytes.len() - 8..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
     // The fabric's cert policy: member TTL 12 = 0c, issuing 2592000 = 80 9a 9e 01, CA 31536000 =
     // 80 e7 84 0f, renew point 670 = 9e 05; then the empty statuses = 00.
     a.control.cert_policy = Some(rdm_core::certs::CertPolicy { member_ttl_secs: 12, ..Default::default() });

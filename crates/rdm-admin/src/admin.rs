@@ -348,7 +348,7 @@ mod tests {
                 own_record(&*nodes, d).await;
             }
             // mesh2's Mesh record, its mesh-primary's: what names mesh2 as a mesh of the fabric.
-            meshes.put_mesh(&crate::storage::MeshRecord::new(crate::model::MeshId::mint(), "mesh2".into())).await.unwrap();
+            meshes.put_mesh(&crate::storage::MeshRecord::new(crate::model::MeshId::mint(), "mesh2")).await.unwrap();
             crate::node_rows::write_deleted(&*nodes, &deleted.node.location(), &deleted.node.node_id).await.ok().expect("the deleted node's record");
             // The live records of every mesh: no Deleted one.
             let live: std::collections::BTreeSet<PathName> = crate::storage::live_records(&*meshes, &*nodes, "mesh1").await.unwrap().into_iter().map(|r| r.location()).collect();

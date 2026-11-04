@@ -210,11 +210,13 @@ fn node_records() -> Arc<MemoryNodesStorage> {
     RECORDS.get_or_init(Default::default).clone()
 }
 
-/// The config and tags the node property record of `node_id` holds in the rig's records (empty when
-/// none is written).
+/// The config and tags the node record of `node_id` holds (empty when none is written): the rig
+/// admin's own in the rig's nodes store, where its own writer puts it; a served birth's in the rig's
+/// records, where its own writer puts it.
 async fn props(rig: &Rig, node_id: &NodeId) -> (BTreeMap<String, String>, std::collections::BTreeSet<String>) {
     use rdm_admin::storage::NodesStorage as _;
-    rig.records.node(node_id).await.unwrap().map(|l| (l.record.config, l.record.tags)).unwrap_or_default()
+    let store = if *node_id == rig.admin.node.node_id { &rig.nodes } else { &rig.records };
+    store.node(node_id).await.unwrap().map(|l| (l.record.config, l.record.tags)).unwrap_or_default()
 }
 
 /// The record `b` writes of itself in `state` carrying `tags` (Q356).
@@ -460,6 +462,9 @@ struct ServedNode {
     /// The endpoint it serves on: a cell's call made as this birth goes out on it.
     endpoint: iroh::Endpoint,
     _router: Router,
+    /// The nodes store this birth writes its own record to on `ApplyNodeName` (Q356): the rig's, set
+    /// by [`node_configs_for`].
+    store: Arc<OnceLock<Arc<MemoryNodesStorage>>>,
 }
 
 async fn serve_node(b: &Birth) -> ServedNode {
@@ -481,6 +486,8 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let answer = Arc::new(answer);
     let (cs, ch, canswer, cd) = (seen.clone(), heard.clone(), answer.clone(), deletes.clone());
     let writer = Arc::new(rdm_node::node_records::NodePropertyWriter::new(node_records(), || "memory".into()));
+    let store: Arc<OnceLock<Arc<MemoryNodesStorage>>> = Arc::default();
+    let own_store = store.clone();
     let server = ServerBuilder::new()
         // The node command op 0x22 (i144 R22): `node.connection.delete` reaches the birth here, logged in
         // `deletes` and answered with every named connection cut, on the command's ordered stream.
@@ -501,12 +508,22 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
             }
         })
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
-            let (s, h, answer, writer) = (s.clone(), h.clone(), answer.clone(), writer.clone());
+            let (s, h, answer, writer, own_store) = (s.clone(), h.clone(), answer.clone(), writer.clone(), own_store.clone());
             async move {
                 // A birth that takes a property command puts it on its own record through its own
                 // writer, as a node does (node writes its own); `answer` refusing it writes nothing.
                 let reply = match answer(&req) {
-                    applied @ (StatusReply::Applied | StatusReply::AlreadyApplied) => written_by_the_node(&writer, &req).await.unwrap_or(applied),
+                    applied @ (StatusReply::Applied | StatusReply::AlreadyApplied) => match (&req, own_store.get()) {
+                        // A told name: the node writes its own record at its node.id with the new name.
+                        (StatusRequest::ApplyNodeName { node_id, name, .. }, Some(store)) => {
+                            use rdm_admin::storage::NodesStorage as _;
+                            if let Some(line) = store.node(node_id).await.unwrap() {
+                                store.put_node(&rdm_admin::storage::NodeRecord { path: name.path.clone(), name: name.name.clone(), ..line.record }).await.unwrap();
+                            }
+                            applied
+                        }
+                        _ => written_by_the_node(&writer, &req).await.unwrap_or(applied),
+                    },
                     other => other,
                 };
                 s.lock().unwrap().push(req);
@@ -520,7 +537,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let resolved = ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(), node_id: b.node.node_id.clone(), path: b.node.path.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
-    ServedNode { resolved, seen, deletes, heard, endpoint: ep, _router: router }
+    ServedNode { resolved, seen, deletes, heard, endpoint: ep, _router: router, store }
 }
 
 /// What a node's own writer answers `req` with once it is put on its own record in [`node_records`]:
@@ -546,6 +563,14 @@ async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter
     Some(written.unwrap_or_else(|e| panic!("the node's own put: {e}")))
 }
 
+/// `configs` with the admin `admin`'s own record written at its start (Q356), as its start writes it
+/// before a command reaches it: what its own commands hand its writer.
+async fn own_started(configs: rdm_admin::node_config::NodeConfigs, admin: &rdm_admin::model::Node) -> rdm_admin::node_config::NodeConfigs {
+    let bound = rdm_admin::model::Node { endpoint_id: Some(rdm_admin::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..admin.clone() };
+    configs.bound_own(&bound, Default::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("own-started")).unwrap(), (None, None)).await.expect("the admin writes its own record at its start");
+    configs
+}
+
 /// mesh1's primary's `NodeConfigs`, telling births through a client that resolves `node`.
 async fn node_configs(rig: &Rig, node: &ServedNode) {
     node_configs_for(rig, &[node]).await
@@ -556,17 +581,18 @@ async fn node_configs_for(rig: &Rig, nodes: &[&ServedNode]) {
     let resolver = Arc::new(StaticResolver::new());
     for node in nodes {
         resolver.insert(node.resolved.clone());
+        let _ = node.store.set(rig.nodes.clone());
     }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     // The `NodeConfigs` writes from the one copy of the records this admin holds, its authority's.
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await));
+    let _ = rig.service.configs.set(Arc::new(own_started(crate::bound_configs_on(rig.nodes.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await, &rig.admin.node).await));
 }
 
 /// mesh1's primary's `NodeConfigs`, the one place its record changes take turns at, its client
 /// resolving no node: what a cell whose subject is told nothing (a stopped birth) needs.
 async fn quiet_node_configs(rig: &Rig) {
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")))).await));
+    let _ = rig.service.configs.set(Arc::new(own_started(crate::bound_configs_on(rig.nodes.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")))).await, &rig.admin.node).await));
 }
 
 fn exact(b: &Birth) -> rdm_client::ExactBirth {
@@ -771,6 +797,10 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
         let configs = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")))).await;
         let view = rig.topology.read().await.clone();
         let me = &rig.admin.node;
+        // Its start's own record, which the refusing store does not take either: the record its
+        // commands hand its writer.
+        let bound = rdm_admin::model::Node { endpoint_id: Some(rdm_admin::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..me.clone() };
+        let _ = configs.bound_own(&bound, Default::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("own-started")).unwrap(), (None, None)).await;
         let req = StatusRequest::UpdateNodeConfig { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
         let reply = configs.update(&me.location(), &me.node_id, &view, &MemoryNodesStorage::default(), &req).await;
         assert!(
@@ -1051,7 +1081,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let _ = status.atlas.set(atlas.clone());
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = status.configs.set(Arc::new(crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")))).await));
+    let _ = status.configs.set(Arc::new(own_started(crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")))).await, &b.node).await));
     let slot: Arc<OnceLock<Arc<StatusService>>> = Arc::new(OnceLock::new());
     let _ = slot.set(status.clone());
     let server = rdm_admin::status_rpc::serve(ServerBuilder::new(), slot).build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() }).unwrap();
@@ -1073,7 +1103,7 @@ async fn fabric_primary_atlas(rig: &Rig, resolves: &[ResolvedNode]) -> Arc<rdm_a
     }
     name_primaries(&resolver, &*rig.topology.read().await);
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await));
+    let _ = rig.service.configs.set(Arc::new(own_started(crate::bound_configs_on(rig.nodes.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await, &rig.admin.node).await));
     atlas
 }
 
@@ -1435,6 +1465,7 @@ fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_mesh
 async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
     let b = birth(rdm_core::PathName::new("mesh1.node", "8").unwrap(), "node", "mesh1", false, false);
     rig.topology.write().await.nodes.push(b.node.clone());
+    rig.nodes.put_node(&own_record(&b, b.node.status, &[])).await.unwrap();
     let node = serve_node(&b).await;
     node_configs(rig, &node).await;
     (b, node)
@@ -1447,6 +1478,7 @@ async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     let mut b = birth(rdm_core::PathName::new("mesh1.node", "8").unwrap(), "node", "mesh1", false, false);
     (b.node.status, b.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
+    rig.nodes.put_node(&own_record(&b, b.node.status, &[])).await.unwrap();
     let node = serve_node_with(&b, |_| StatusReply::Applied).await;
     node_configs(rig, &node).await;
     (b, node)
@@ -1824,6 +1856,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let mut succ = birth(rdm_core::PathName::new("mesh1.node", "8").unwrap(), "node", "mesh1", false, false);
         (succ.node.status, succ.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         rig.topology.write().await.nodes.push(succ.node.clone());
+        rig.nodes.put_node(&own_record(&succ, succ.node.status, &[])).await.unwrap();
         let applies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a = applies.clone();
         let node = serve_node_with(&succ, move |req| match req {
@@ -1836,9 +1869,10 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert!(matches!(&incomplete, StatusReply::NameNotApplied { node, answered, .. } if node == succ.node.node_id.as_str() && answered == "not-ready"), "{incomplete:?}");
-        assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "the row moved");
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "the node, whose apply did not answer, wrote nothing (Q356)");
         let done = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(done, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
+        assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "the node wrote its record at the new name on the resent apply");
         let apply = StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.clone() };
         assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)]);
         assert_eq!(node.seen.lock().unwrap().clone(), vec![apply.clone(), apply], "the resubmit resent the apply");
@@ -2011,9 +2045,13 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
         let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
         let a = asked.clone();
         let held: PathName = me.node.location();
+        let (own_store, own_id) = (rig.nodes.clone(), me.node.node_id.clone());
         let _ = rig.service.rename.set(Arc::new(move |name: PathName| {
-            let (a, held) = (a.clone(), held.clone());
+            let (a, held, own_store, own_id) = (a.clone(), held.clone(), own_store.clone(), own_id.clone());
             Box::pin(async move {
+                // Its own name decision writes its own record at its node.id with the new name.
+                let line = own_store.node(&own_id).await.unwrap().expect("its own record");
+                own_store.put_node(&rdm_admin::storage::NodeRecord { path: name.path.clone(), name: name.name.clone(), ..line.record }).await.unwrap();
                 a.lock().unwrap().push(name);
                 (held, rdm_admin::node_name::NameApply::Applied)
             })
