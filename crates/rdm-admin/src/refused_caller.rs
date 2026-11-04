@@ -278,7 +278,6 @@ mod tests {
     /// refused callers it installed.
     async fn atlas_deciding_over(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>, client: Option<Arc<rdm_transport::NodeRpcClient>>) -> (Arc<Atlas>, Arc<RefusedCallers>) {
         let atlas = Arc::new(Atlas::default());
-        let written: Arc<crate::node_rows::WrittenRows> = Default::default();
         atlas.scope([admin.mesh.clone()].into());
         let recovery = crate::admin::RecoverySubmitter {
             me_path: admin.path.clone(), me_name: admin.name.clone(),
@@ -287,7 +286,6 @@ mod tests {
             digest_view: Default::default(),
             provider: Arc::new(crate::deployment::process::ProcessDeploymentProvider::new()),
             nodes_storage: rows.clone(),
-            written,
             runner: Arc::default(),
             build_service: Default::default(),
             client,
@@ -300,16 +298,6 @@ mod tests {
         let callers = Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default(), Arc::new(move || Some(stores.clone()))));
         atlas.refused_callers(callers.clone());
         (atlas, callers)
-    }
-
-    /// The records the writer of `mesh` holds (its rows in `rows`): what a join at its mesh-primary is
-    /// reconciled to ([`crate::node_rows::WrittenRows::record_for_join`]).
-    async fn writer_holding(rows: &crate::storage::MemoryNodesStorage, mesh: &str) -> Arc<crate::node_rows::WrittenRows> {
-        let written = Arc::new(crate::node_rows::WrittenRows::default());
-        for r in rows.nodes(mesh).await.unwrap() {
-            written.hold(&r);
-        }
-        written
     }
 
     /// The one `rdm.node_admin.node.update.via-refused-caller` span's attributes, once the decision's
@@ -409,7 +397,7 @@ mod tests {
         // The node records: the admin's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -469,7 +457,7 @@ mod tests {
         // The node records: the admin's and the re-created birth's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&recreated, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -490,11 +478,10 @@ mod tests {
         };
         let _commanded = joins.expect(deployed.clone());
         let join_service = crate::join::JoinService {
-            nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
+            nodes: Some(rows.clone()),
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
@@ -575,7 +562,7 @@ mod tests {
         // The node records: the admin's live, the caller's deleted, and no re-created birth yet.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -596,11 +583,10 @@ mod tests {
         };
         let _commanded = joins.expect(deployed.clone());
         let join_service = crate::join::JoinService {
-            nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
+            nodes: Some(rows.clone()),
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
@@ -692,7 +678,7 @@ mod tests {
         // The node records of mesh2: the admin's and the caller's, both live.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
-            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+            let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), n.status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -790,7 +776,7 @@ mod tests {
         // Both records live: the caller's delete is not written.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
-            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+            let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }

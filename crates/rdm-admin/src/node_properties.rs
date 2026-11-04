@@ -175,7 +175,7 @@ async fn write(_me: &PathName, me_id: &NodeId, view: &Topology, _storage: &dyn N
         };
         return match reply {
             Ok(reply) => reply,
-            Err(error) => rdm_core::reply::status::bounded_node_row_refused(&subject.node_id.to_string(), &error),
+            Err(error) => rdm_core::reply::status::bounded_node_record_refused(&subject.node_id.to_string(), &error),
         };
     }
     rdm_core::reply::status::not_ready(format!("{me_id} has no bound node property records; the tags of {} are not written", subject.node_id))

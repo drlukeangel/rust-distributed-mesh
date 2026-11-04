@@ -317,7 +317,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRecord::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = rdm_node::nodes_storage::fixture_record(&target_name.clone(), "node", target_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 
@@ -754,7 +754,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRecord::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = rdm_node::nodes_storage::fixture_record(&target_name.clone(), "node", target_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 

@@ -908,7 +908,7 @@ pub enum StatusReply {
     NameUpdated { node_id: NodeId, incarnation: IncarnationId },
     RejectedAdmittingConnections { status: NodeStatus, held_connections: Vec<ConnectionId> },
     NameHeld { name: String, by: NodeId },
-    NodeRowRefused { node: String, reason: String },
+    NodeRecordRefused { node: String, reason: String },
     NameNotApplied { node: String, answered: String, reason: String },
     Reserved31 { closed: Vec<ConnectionId>, not_open: Vec<ConnectionId>, held: Vec<ConnectionId>, receipt: Option<ConnectionsReceipt> }, // position 31, reserved (D18): never sent
     Reserved32 { reason: String }, // position 32, reserved (D18): never sent

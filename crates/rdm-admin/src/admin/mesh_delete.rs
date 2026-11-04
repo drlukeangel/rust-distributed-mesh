@@ -1164,7 +1164,7 @@ mod tests {
         let final_id = NodeId::mint();
         let final_inc = IncarnationId::mint();
         // The final primary's record, its birth on it, written Deleted by its own node.delete.
-        let mut final_row = crate::storage::NodeRecord::new(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", final_id.clone(), NodeStatus::Deleted);
+        let mut final_row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", final_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted);
         final_row.birth_mut(&final_inc, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap());
         final_row.mesh_id = Some(mesh2_id.clone());
         runner.nodes_storage.put_node(&final_row).await.unwrap();

@@ -186,7 +186,6 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
             me_path: "mesh1.node-admin".into(), me_name: "1".into(),
             joins: joins.clone(),
             answer: Arc::new(|| Box::pin(async { Err("a refused join is never answered".to_string()) })),
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |_| {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),

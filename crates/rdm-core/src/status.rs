@@ -1553,12 +1553,12 @@ pub enum StatusReply {
         /// The node that holds it.
         by: NodeId,
     },
-    /// The `UpdateName` was not made: the nodes store refused the claim or the put at the new key, so
-    /// nothing was written and the old name stands.
+    /// The node's write of its own record was refused by the nodes store (a name update, a property
+    /// update): nothing was written, and the record's latest line stands.
     ///
     /// Position 29 on the wire.
-    NodeRowRefused {
-        /// The node's `(path, name)`, the row the store refused.
+    NodeRecordRefused {
+        /// The node whose record the store refused.
         node: String,
         /// The store's refusal.
         reason: String,
@@ -2026,9 +2026,9 @@ impl StatusReply {
     }
 
 
-    /// `NodeRowRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
-    pub fn node_row_refused(node: &str, reason: &str) -> Self {
-        Self::NodeRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+    /// `NodeRecordRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
+    pub fn node_record_refused(node: &str, reason: &str) -> Self {
+        Self::NodeRecordRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
     /// `RejectedName` naming why, within its budget so the reply always fits the Status reply bound.
@@ -2113,7 +2113,7 @@ impl StatusReply {
             Self::NameUpdated { .. } => "name-updated",
             Self::RejectedAdmittingConnections { .. } => "rejected-admitting-connections",
             Self::NameHeld { .. } => "name-held",
-            Self::NodeRowRefused { .. } => "node-row-refused",
+            Self::NodeRecordRefused { .. } => "node-record-refused",
             Self::NameNotApplied { .. } => "name-not-applied",
             Self::Reserved31 { .. } => "reserved-31",
             Self::Reserved32 { .. } => "reserved-32",
@@ -2219,7 +2219,7 @@ impl NodeProtocol for Status {
             StatusReply::NameUpdated { .. } => "name-updated",
             StatusReply::RejectedAdmittingConnections { .. } => "rejected-admitting-connections",
             StatusReply::NameHeld { .. } => "name-held",
-            StatusReply::NodeRowRefused { .. } => "node-row-refused",
+            StatusReply::NodeRecordRefused { .. } => "node-record-refused",
             StatusReply::NameNotApplied { .. } => "name-not-applied",
             StatusReply::Reserved31 { .. } => "reserved31",
             StatusReply::Reserved32 { .. } => "reserved32",
@@ -2293,7 +2293,7 @@ impl NodeProtocol for Status {
             StatusReply::NameUpdated { .. } => ReplyKind::Success,
             StatusReply::RejectedAdmittingConnections { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::NameHeld { .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
-            StatusReply::NodeRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::NodeRecordRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::NameNotApplied { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::Reserved31 { .. } | StatusReply::Reserved32 { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::Nodes { .. } => ReplyKind::Success,
@@ -2436,7 +2436,7 @@ mod tests {
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::ConnectionsDeleting, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameHeld { path: "mesh1.node".into(), name: "1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
-            (StatusReply::NodeRowRefused { node: "mesh1.node.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::NodeRecordRefused { node: "mesh1.node.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameNotApplied { node: "100000000001".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Reserved31 { closed: vec![], not_open: vec![], held: vec![], receipt: None }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Reserved32 { reason: String::new() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),

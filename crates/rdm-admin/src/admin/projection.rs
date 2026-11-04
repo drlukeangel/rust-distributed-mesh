@@ -792,7 +792,7 @@ mod tests {
         assert!(matches!(r_none, RowName::At(ref p) if p == &rpc_path));
         assert!(!rel_none);
 
-        store.put_node(&NodeRecord::new(rpc_path.clone(), "mesh1", "node", old_id.clone(), NodeStatus::Deleted)).await.unwrap();
+        store.put_node(&rdm_node::nodes_storage::fixture_record(&rpc_path.clone(), "node", old_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted)).await.unwrap();
         let (r_del, rel_del) = row_name(&me_name, &store, &old_id, &old_inc, &rpc_path).await;
         assert!(matches!(r_del, RowName::At(ref p) if p == &rpc_path));
         assert!(rel_del);

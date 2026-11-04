@@ -370,7 +370,6 @@ pub use rdm_node::storage::FileConnectionsStorage;
 #[cfg(all(test, feature = "file-backend"))]
 mod tests {
     use super::*;
-    use crate::node_rows::WrittenRows;
 
     /// CONTRACT (build.md §5.3; storage.md §2; Q365): a Mesh record's line in the root's
     /// `meshes.jsonl` is frozen byte for byte: a CloudEvents event whose `source` is its writer, `type`
@@ -393,153 +392,6 @@ mod tests {
         assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8(crate::store_log::encode_line(&attributes, record.as_bytes())).unwrap());
     }
 
-    /// The same script over any nodes store: the facts of one birth, each written from the record its
-    /// writer holds, all stand on the record a fresh reader loads whole (storage-whole-records.md,
-    /// cells: "two facts of one birth both stand on the record across a reload"): a late `Pending`
-    /// beside `Ready`, two operations' effects, a silence mark and a primary revision;
-    /// the birth's cert dates are its last.
-    async fn facts_of_one_birth_all_stand(first: &dyn NodesStorage, reopened: &dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn NodesStorage>> + Send>>) {
-        let (node_id, incarnation_id, name): (NodeId, IncarnationId, PathName) = (NodeId::mint(), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
-        let written = WrittenRows::default();
-        let base = NodeRecord::new(name.clone(), "mesh1", "node", node_id.clone(), crate::model::NodeStatus::Ready);
-        let write = async |change: Box<dyn FnOnce(&mut BirthFacts) + Send>| {
-            written.update(first, &node_id, Some(base.clone()), |r| change(r.birth_mut(&incarnation_id, &name))).await.unwrap();
-        };
-        write(Box::new(|b| { b.declared.insert(NodeState::Ready); })).await;
-        write(Box::new(|b| { b.declared.insert(NodeState::Pending); })).await;
-        let op = || rdm_core::status::DeclaredOperation { operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())).in_occurrence(rdm_core::OperationOccurrenceId::mint()) };
-        write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
-        write(Box::new(move |b| b.apply_operation(&op(), NodeState::Stopped))).await;
-        write(Box::new(|b| b.silence = Some(crate::model::NodeStatus::PendingReconnect))).await;
-        write(Box::new(|b| b.is_primary = Some(3))).await;
-        let cert = |issued_at: u64| CertDates { issued_at, expires_at: issued_at + 10, issuer_expires_at: 100, renew_at: issued_at + 6 };
-        write(Box::new(move |b| b.cert = Some(cert(1)))).await;
-        write(Box::new(move |b| b.cert = Some(cert(20)))).await;
-
-        let store = reopened().await;
-        let record = store.node(&node_id).await.unwrap().expect("the record is read whole");
-        let b = record.birth(&incarnation_id).expect("the birth's facts");
-        assert_eq!(b.declared_state(), Some(NodeState::Ready), "a late Pending removes no Ready: the reader takes the greatest");
-        assert_eq!(b.declared.len(), 2, "two states, both kept");
-        assert_eq!(b.operations.len(), 2, "two occurrences' effects both stand");
-        assert_eq!((b.silence, b.is_primary), (Some(crate::model::NodeStatus::PendingReconnect), Some(3)), "a silence mark and a primary revision both stand");
-        assert_eq!(b.cert, Some(cert(20)), "the birth's cert dates are the last written");
-        assert_eq!(store.nodes("mesh1").await.unwrap(), vec![record.clone()], "the record is its mesh's");
-        assert!(store.nodes("mesh2").await.unwrap().is_empty(), "and no other mesh's");
-    }
-
-    /// CONTRACT (storage-whole-records.md, "The objects" and its cell "two facts of one birth both stand
-    /// on the record across a reload ... on the memory and file backends"): every fact of a birth is
-    /// kept by its full identity inside its node's record, so no later or delayed write erases an
-    /// independent fact; the file backend's record survives a reopen by another writer. What must NOT
-    /// happen: a late Pending replacing Ready, one operation's effect erasing another's, a fact
-    /// lost on the reload.
-    #[tokio::test]
-    async fn the_facts_of_one_birth_all_stand_on_its_record_across_a_reload_on_either_backend() {
-        let memory = std::sync::Arc::new(MemoryNodesStorage::default());
-        let held = memory.clone();
-        facts_of_one_birth_all_stand(&*memory, &move || {
-            let held = held.clone();
-            Box::pin(async move { Box::new(SharedNodes(held)) as Box<dyn NodesStorage> })
-        })
-        .await;
-        let dir = crate::test_support::tempdir("facts-of-one-birth");
-        let root = crate::store_root::StoreRoot::at(&dir);
-        let data = dir.join("data");
-        let first = FileNodesStorage::open(&data, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        facts_of_one_birth_all_stand(&first, &move || {
-            let (root, data) = (root.clone(), data.clone());
-            Box::pin(async move { Box::new(FileNodesStorage::open(&data, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap()) as Box<dyn NodesStorage> })
-        })
-        .await;
-    }
-
-    /// CONTRACT (storage-whole-records.md, "The rule", first cell): a write takes the cached object and
-    /// writes it whole: each put carries every fact the copy held, never one fact, and no read precedes
-    /// a put of a record the writer holds.
-    #[tokio::test]
-    async fn each_put_carries_the_whole_record_held_and_no_read_precedes_it() {
-        #[derive(Default)]
-        struct Recording {
-            inner: MemoryNodesStorage,
-            log: Mutex<Vec<String>>,
-            puts: Mutex<Vec<NodeRecord>>,
-        }
-        #[async_trait]
-        impl NodesStorage for Recording {
-            async fn node(&self, n: &NodeId) -> Result<Option<crate::storage::NodeLine>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.node(n).await }
-            async fn nodes(&self, m: &str) -> Result<Vec<NodeRecord>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.nodes(m).await }
-            async fn put_node(&self, r: &NodeRecord) -> Result<(), StorageError> { self.log.lock().unwrap().push("put".into()); self.puts.lock().unwrap().push(r.clone()); self.inner.put_node(r).await }
-            async fn records_at(&self, n: &PathName) -> Result<Vec<NodeRecord>, StorageError> { self.inner.records_at(n).await }
-        }
-        let store = Recording::default();
-        let written = WrittenRows::default();
-        let (name, node_id, inc): (PathName, NodeId, IncarnationId) = (rdm_core::PathName::new("mesh1.node", "1").unwrap(), NodeId::mint(), IncarnationId::mint());
-        let mut held = NodeRecord::new(name.clone(), "mesh1", "node", node_id.clone(), crate::model::NodeStatus::Ready);
-        held.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
-        held.executable = Some(rdm_core::binding::Binding { launch_id: "node".into(), executable: "/bin/rpc".into(), sha256: "1".repeat(64), image: None });
-        written.hold(&held);
-        written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::Ready); }).await.unwrap();
-        written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).silence = Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
-        written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).cert = Some(CertDates { issued_at: 1, expires_at: 9, issuer_expires_at: 99, renew_at: 6 })).await.unwrap();
-        assert_eq!(*store.log.lock().unwrap(), ["put", "put", "put"], "three writes, no read before any of them");
-        let puts = store.puts.lock().unwrap().clone();
-        let last = puts.last().unwrap();
-        assert_eq!((last.storage_persistence, last.executable.is_some()), (Some(rdm_core::meta::StoragePersistence::Ephemeral), true), "the record's own fields go with every put");
-        let b = last.birth(&inc).unwrap();
-        assert!(b.declared.contains(&NodeState::Ready) && b.silence.is_some() && b.cert.is_some(), "the last put carries every fact the copy held: {b:?}");
-        assert!(puts[1].birth(&inc).unwrap().declared.contains(&NodeState::Ready), "the second put carries the first's fact too");
-    }
-
-    /// CONTRACT (storage-whole-records.md, "The rule": the copy is filled from storage when the writer
-    /// takes the object's writing): a record written after the fill listed the mesh, and before the fill
-    /// held it, is the copy the fill leaves, and the next write carries it. Must NOT happen: the listing's
-    /// older record replacing the newer copy, so the next whole write erases what was written between.
-    #[tokio::test]
-    async fn a_fill_never_replaces_a_record_written_after_its_listing() {
-        struct StaleListing {
-            inner: MemoryNodesStorage,
-            listed: Mutex<Vec<NodeRecord>>,
-        }
-        #[async_trait]
-        impl NodesStorage for StaleListing {
-            async fn node(&self, n: &NodeId) -> Result<Option<crate::storage::NodeLine>, StorageError> { self.inner.node(n).await }
-            // The listing as it stood before the last write landed.
-            async fn nodes(&self, _m: &str) -> Result<Vec<NodeRecord>, StorageError> { Ok(self.listed.lock().unwrap().clone()) }
-            async fn put_node(&self, r: &NodeRecord) -> Result<(), StorageError> { self.inner.put_node(r).await }
-            async fn records_at(&self, n: &PathName) -> Result<Vec<NodeRecord>, StorageError> { self.inner.records_at(n).await }
-        }
-        let store = StaleListing { inner: MemoryNodesStorage::default(), listed: Mutex::new(Vec::new()) };
-        let written = WrittenRows::default();
-        let (name, node_id, inc): (PathName, NodeId, IncarnationId) = (rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), NodeId::mint(), IncarnationId::mint());
-        written.update(&store, &node_id, Some(NodeRecord::new(name.clone(), "mesh1", "node-admin", node_id.clone(), crate::model::NodeStatus::Pending)), |_| ()).await.unwrap();
-        *store.listed.lock().unwrap() = vec![store.inner.node(&node_id).await.unwrap().unwrap()];
-        written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::Ready); }).await.unwrap();
-        written.fill(&store, "mesh1").await.unwrap();
-        written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).signing_cert = Some(SigningCertDates { issued_at: 1, expires_at: 9, renew_at: 6 })).await.unwrap();
-        let stored = store.inner.node(&node_id).await.unwrap().unwrap();
-        let b = stored.birth(&inc).unwrap();
-        assert!(b.declared.contains(&NodeState::Ready) && b.signing_cert.is_some(), "the write between the listing and the fill stands beside the next: {b:?}");
-    }
-
-    /// The memory store a reopen hands back: the same rows.
-    struct SharedNodes(std::sync::Arc<MemoryNodesStorage>);
-
-    #[async_trait]
-    impl NodesStorage for SharedNodes {
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
-            self.0.node(node_id).await
-        }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.nodes(mesh).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_node(row).await
-        }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.0.records_at(name).await
-        }
-    }
     use rdm_core::connections::NodeConnection;
     use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState};
 
@@ -579,34 +431,37 @@ mod tests {
         }
     }
 
-    /// Every boundary behaves the same in memory and on disk, and the disk copy survives reopening.
+    /// Every boundary behaves the same in memory and on disk, and the disk copy survives reopening: a
+    /// Mesh record, a node's record read at its id and listed by its mesh, the latest connection fact.
     #[tokio::test]
     async fn mesh_nodes_and_connections_hold_their_records_in_memory_and_across_a_reopen() {
         let d = crate::test_support::tempdir("storage");
         let mesh = MeshRecord::new(MeshId::mint(), "mesh1");
-        let (own, peer) = (node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
-        let runtime = RuntimeRow { r#type: "node".into(), mesh: peer.mesh.clone(), node_id: peer.node_id.clone(), path: peer.path.clone(), name: peer.name.clone(), incarnation_id: peer.incarnation_id.clone(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(), data_dir: None };
+        let own = node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        let peer = row(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         let (up, down) = (fact(ConnectionState::Connected), fact(ConnectionState::Disconnected));
         let check = async |m: &dyn MeshStorage, n: &dyn NodesStorage, c: &dyn ConnectionsStorage, fresh: bool| {
             if fresh {
                 assert_eq!(m.mesh(&mesh.mesh_id).await.unwrap(), None);
                 assert_eq!(crate::storage::write_mesh(&*m, None, &mesh).await.unwrap(), Ok(MeshWritten::Written));
-                n.put_runtime(&runtime).await.unwrap();
+                n.put_node(&peer).await.unwrap();
                 c.put_connection(&up).await.unwrap();
                 c.put_connection(&down).await.unwrap();
             }
             assert_eq!(m.mesh(&mesh.mesh_id).await.unwrap(), Some(mesh.clone()));
             assert_eq!(m.mesh_named("mesh1").await.unwrap(), Some(mesh.clone()), "the lookup by name names the record");
             assert_eq!(m.meshes().await.unwrap(), [mesh.clone()]);
-            assert_eq!(n.runtimes().await.unwrap(), [runtime.clone()]);
+            assert_eq!(n.node(&peer.node_id).await.unwrap().map(|l| l.record), Some(peer.clone()), "the node's record at its id");
+            assert_eq!(n.nodes("mesh1").await.unwrap(), [peer.clone()], "the record is its mesh's, read from its path");
             assert_eq!(c.connections().await.unwrap(), [down.clone()], "the latest fact per (source, destination, kind)");
         };
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
         check(&mem.0, &mem.1, &mem.2, true).await;
         let connection_writer = crate::store_log::LogWriter::mint();
-        let (root, w, _me): (_, IncarnationId, PathName) = (crate::store_root::StoreRoot::at(&d.join("root")), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap());
-        check(&FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), &FileConnectionsStorage::open(&root, &connection_writer).await.unwrap(), true).await;
-        let (m, n, c) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileConnectionsStorage::open(&root, &connection_writer).await.unwrap());
+        let (root, w): (_, IncarnationId) = (crate::store_root::StoreRoot::at(&d.join("root")), IncarnationId::mint());
+        let writer = || crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted());
+        check(&FileMeshStorage::open(&root, &writer()).await.unwrap(), &FileNodesStorage::open(&root, &writer()).await.unwrap(), &FileConnectionsStorage::open(&root, &connection_writer).await.unwrap(), true).await;
+        let (m, n, c) = (FileMeshStorage::open(&root, &writer()).await.unwrap(), FileNodesStorage::open(&root, &writer()).await.unwrap(), FileConnectionsStorage::open(&root, &connection_writer).await.unwrap());
         check(&m, &n, &c, false).await;
         c.remove_connection(&down.index()).await.unwrap();
         assert!(c.connections().await.unwrap().is_empty());
@@ -621,49 +476,46 @@ mod tests {
     }
 
     /// CONTRACT (node-identity-and-state.md §4; states.md "Who sets each state" and the paragraph after
-    /// it, Q233): a node's status on its record follows states.md's order through a stop and a start, a
-    /// declaration inside node.stop leaves it stopping, a superseded birth moves nothing, and a `Deleted`
-    /// record stands. A stop's acknowledgement sets stopping over any status but stopped, a node already
-    /// connections-deleted or left included. delete is the mesh-primary's workflow: deleting from its
-    /// claim, over a live or a stopped node; the frames of the stop it composes move the row as a stop's
-    /// do, stopping through stopped; then deleted. A ready, a pending or a starting moves a deleting row
-    /// nowhere.
+    /// it, Q233): a node's `state` on its record follows states.md's order through a stop and a start,
+    /// a declaration inside node.stop leaves it stopping, and a `Deleted` record stands. A stop's
+    /// acknowledgement sets stopping over any state but stopped, a node already connections-deleted or
+    /// left included. delete is the mesh-primary's workflow: deleting from its admission, over a live or
+    /// a stopped node; the frames of the stop it composes move the record as a stop's do, stopping
+    /// through stopped; then deleted. A ready, a pending or a starting moves a deleting record nowhere.
     // @feature: node-lifecycle
     #[test]
-    fn a_node_records_status_follows_the_order_states_md_names() {
+    fn a_node_records_state_follows_the_order_states_md_names() {
         use crate::model::NodeStatus as S;
-        let (birth, old) = (IncarnationId::mint(), IncarnationId::mint());
-        let mut r = NodeRecord::new(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", NodeId::mint(), S::Starting);
-        r.birth_mut(&old, &r.location());
-        r.birth_mut(&birth, &r.location());
-        let walk = |r: &mut NodeRecord, steps: &[(S, S)]| for (to, then) in steps { r.set_status(&birth, *to); assert_eq!(r.status, *then, "after {to:?}"); };
+        let mut r = row(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
+        r.state = S::Starting;
+        let walk = |r: &mut NodeRecord, steps: &[(S, S)]| for (to, then) in steps { r.set_state(*to); assert_eq!(r.state, *then, "after {to:?}"); };
         walk(&mut r, &[(S::Pending, S::Pending), (S::Ready, S::Ready), (S::Starting, S::Ready), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         // A stop (Q205): stopping from its admission, then each primitive's frame, then stopped.
-        // The node's Stopped declaration may reach the mesh-primary before the stream's last frames
-        // (node-stop.md step 5): a stopped row stands, and no stopping takes it.
+        // The node's Stopped may be written before the stream's last frames (node-stop.md step 5): a
+        // stopped record stands, and no stopping takes it.
         walk(&mut r, &[(S::Stopping, S::Stopping), (S::Ready, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::ConnectionsDeleting, S::Left), (S::Stopped, S::Stopped), (S::Left, S::Stopped), (S::Stopping, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         walk(&mut r, &[(S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::ConnectionsDeleting, S::ConnectionsDeleted)]);
         // A stop of a node already connections-deleted: its acknowledgement sets stopping (Q233), and
-        // its primitives' frames move the row on to stopped.
+        // its primitives' frames move the record on to stopped.
         walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         // A stop of a node already left: the same.
         walk(&mut r, &[(S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
-        // A delete of the live node: deleting from its claim, then the composed stop's frames.
+        // A delete of the live node: deleting from its admission, then the composed stop's frames.
         walk(&mut r, &[(S::Deleting, S::Deleting), (S::Ready, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
-        assert!(!r.clone().set_status(&birth, S::Deleting), "deleting again leaves a deleting row unchanged");
-        assert!(!r.clone().set_status(&old, S::Stopping), "a superseded birth moves no status");
+        assert!(!r.clone().set_state(S::Deleting), "deleting again leaves a deleting record unchanged");
         walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
-        // A delete of a stopped node: deleting from its claim over stopped, then deleted from the receipt.
-        assert!(!r.clone().set_status(&old, S::Deleted), "a superseded birth moves no status");
+        // A delete of a stopped node: deleting from its admission over stopped, then deleted.
         walk(&mut r, &[(S::Deleting, S::Deleting), (S::Deleted, S::Deleted)]);
         walk(&mut r, &[(S::Pending, S::Deleted), (S::Starting, S::Deleted)]);
     }
 
+    /// A ready node's record at `name` of `type` in `mesh` (the first location of `name`'s path).
     fn row(name: PathName, mesh: &str, r#type: &str) -> NodeRecord {
-        NodeRecord::new(name.clone(), mesh, r#type, NodeId::mint(), crate::model::NodeStatus::Ready)
+        assert_eq!(rdm_core::path::mesh_of(&name.path), mesh, "a node's mesh is its path's first location");
+        rdm_node::nodes_storage::fixture_record(&name, r#type, NodeId::mint(), IncarnationId::mint(), crate::model::NodeStatus::Ready)
     }
 
     /// CONTRACT (node-identity-and-state.md §2: "A current-pair lookup reads the node records by their
@@ -671,173 +523,102 @@ mod tests {
     /// "writes Deleted lifecycle state, which frees the pair"): a `(path, name)` resolves to the live
     /// record standing there, and `NameHeld { by: node.id }` names another node's live record. A name
     /// the node's own record holds is its own again; a delete frees the pair, so nothing resolves at the
-    /// name (the `Deleted` record stands, read by id) until the next node created there writes its
-    /// record. In memory and on disk alike.
+    /// name (the `Deleted` record stands, read by id) until the next node there writes its record. In
+    /// memory and on disk alike.
     #[tokio::test]
     async fn a_nodes_name_is_read_from_the_live_records_and_a_delete_frees_it() {
         let d = crate::test_support::tempdir("node-names");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let file = FileNodesStorage::open(&d.join("admin-1-1-data"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
+        let file = FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let mem = MemoryNodesStorage::default();
         for n in [&file as &dyn NodesStorage, &mem as &dyn NodesStorage] {
-            let w = WrittenRows::default();
             let a = row(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-            let _one = w.lock(&a.node_id).await;
-            assert_eq!(crate::node_rows::check_name(n, None, &a.location(), &a.node_id).await.unwrap(), Ok(()), "a free name is the node's");
-            w.put(n, &a).await.unwrap();
-            drop(_one);
-            assert_eq!(crate::node_rows::record_at(n, &a.location()).await.unwrap(), w.row_of(&a.node_id), "the name resolves to the live record, as its writer wrote it");
-            assert_eq!(crate::node_rows::check_name(n, None, &a.location(), &a.node_id).await.unwrap(), Ok(()), "the node's own record holds its name");
+            assert_eq!(crate::node_rows::check_name(n, &a.location(), &a.node_id).await.unwrap(), Ok(()), "a free name is the node's");
+            n.put_node(&a).await.unwrap();
+            assert_eq!(crate::node_rows::record_at(n, &a.location()).await.unwrap(), Some(a.clone()), "the name resolves to the live record, as its node wrote it");
+            assert_eq!(crate::node_rows::check_name(n, &a.location(), &a.node_id).await.unwrap(), Ok(()), "the node's own record holds its name");
             let other = row(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-            assert_eq!(crate::node_rows::check_name(n, None, &a.location(), &other.node_id).await.unwrap(), Err(NameHeld { path: a.path.clone(), name: a.name.clone(), by: a.node_id.clone() }), "another node's live record holds the name");
-            crate::node_rows::write_deleted(n, &w, &a.location(), &a.node_id).await.ok().expect("the delete's record");
+            assert_eq!(crate::node_rows::check_name(n, &a.location(), &other.node_id).await.unwrap(), Err(NameHeld { path: a.path.clone(), name: a.name.clone(), by: a.node_id.clone() }), "another node's live record holds the name");
+            crate::node_rows::write_deleted(n, &a.location(), &a.node_id).await.ok().expect("the delete's record");
             assert_eq!(crate::node_rows::record_at(n, &a.location()).await.unwrap(), None, "a Deleted record frees its pair: nothing resolves at the name");
-            assert_eq!(crate::node_rows::check_name(n, None, &a.location(), &other.node_id).await.unwrap(), Ok(()), "the next node takes the name");
-            let _two = w.lock(&other.node_id).await;
-            w.put(n, &other).await.unwrap();
+            assert_eq!(crate::node_rows::check_name(n, &a.location(), &other.node_id).await.unwrap(), Ok(()), "the next node takes the name");
+            n.put_node(&other).await.unwrap();
             assert_eq!(crate::node_rows::record_at(n, &a.location()).await.unwrap().map(|r| r.node_id), Some(other.node_id.clone()), "the name resolves to the new node");
-            assert_eq!(n.node(&a.node_id).await.unwrap().map(|r| r.status), Some(crate::model::NodeStatus::Deleted), "the deleted record stands, read by id");
+            assert_eq!(n.node(&a.node_id).await.unwrap().map(|l| l.record.state), Some(crate::model::NodeStatus::Deleted), "the deleted record stands, read by id");
         }
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// CONTRACT (node-name-update.md, "Check and move": "one write of the node's record at its node.id
-    /// (Q323) carrying the destination pair and `renamed_from: <old pair>`: the name move is that one
-    /// write. A retry, or a successor writer resuming the command, reads the record: one that already
-    /// carries the destination pair is the move done"): a rename writes the node's record once, the old
-    /// pair then free; its successor writer's retry finds the record at the new pair and writes nothing;
-    /// another node's rename to that pair is `NameHeld` naming the first node.
+    /// CONTRACT (R14 items 1 and 2; node-identity-and-state.md §2.5, Q356: each node writes every field
+    /// of its own record): each mesh-primary writes its mesh's record, and each node of both meshes
+    /// writes its own record, at once, on one root: every record is keyed by its node id, each line's
+    /// `source` names the node that wrote it, no data dir holds a shared record, and each node reads
+    /// the other mesh's records from the shared root.
     #[tokio::test]
-    async fn a_rename_is_one_record_write_its_retry_writes_nothing_and_another_nodes_rename_to_it_is_held() {
-        let d = crate::test_support::tempdir("rename-retry");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let file = FileNodesStorage::open(&d.join("admin-1-1-data"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-        let from = row(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        let first = WrittenRows::default();
-        first.update(&file, &from.node_id, Some(from.clone()), |_| ()).await.unwrap();
-        let to: PathName = rdm_core::PathName::new("mesh1.node", "9").unwrap();
-        let mut record = crate::model::Node::allocated(from.location(), from.mesh.clone(), &from.r#type);
-        record.node_id = from.node_id.clone();
-        record.status = from.status;
-        let lines = || crate::store_log::read_file(&root.dir().join(crate::store_root::NODES_FILE)).unwrap().iter().filter(|l| l.kind() == "node-record" && l.subject() == from.node_id.as_str()).count();
-        let before = lines();
-        let (moved, written) = crate::node_rows::move_row(&file, &first, &me, &record, &from.location(), &to).await.expect("the rename is written");
-        assert_eq!((moved, written.map(|r| r.location())), (crate::node_rows::Moved::Renamed, Some(to.clone())));
-        assert_eq!(lines(), before + 1, "the rename is one write of the node's record");
-        assert_eq!(file.node(&from.node_id).await.unwrap().map(|r| (r.location(), r.renamed_from)), Some((to.clone(), Some(from.name.clone()))), "the record carries the new name and the name it came from");
-        assert_eq!(crate::node_rows::record_at(&file, &from.location()).await.unwrap(), None, "the old pair is free");
-        // Its successor writer retries the command from what storage holds.
-        let successor = WrittenRows::default();
-        let (moved, _) = crate::node_rows::move_row(&file, &successor, &me, &record, &from.location(), &to).await.expect("the retry answers");
-        assert_eq!(moved, crate::node_rows::Moved::AlreadyMoved, "the record at the new pair is the move done");
-        assert_eq!(lines(), before + 1, "the retry writes nothing");
-        let other = row(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node");
-        let mut theirs = crate::model::Node::allocated(other.location(), other.mesh.clone(), &other.r#type);
-        theirs.node_id = other.node_id.clone();
-        successor.update(&file, &other.node_id, Some(other.clone()), |_| ()).await.unwrap();
-        assert_eq!(crate::node_rows::move_row(&file, &successor, &me, &theirs, &other.location(), &to).await.err(), Some(crate::node_rows::RenameRefused::NameHeld(NameHeld { path: to.path.clone(), name: to.name.clone(), by: from.node_id.clone() })), "another node's rename to the name is NameHeld");
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// CONTRACT (R14 items 1 and 2; acceptance "two mesh-primaries write their own meshes' rows at
-    /// once on one shared root without touching each other's keys"): each mesh-primary writes its
-    /// mesh's record and its members' node records under its own mesh's keys, at once, on
-    /// one root; neither writes a key under the other's mesh, its own data dir holds none of them, and
-    /// each reads the other's records from the shared root.
-    #[tokio::test]
-    async fn two_mesh_primaries_write_their_own_meshes_rows_at_once_on_one_shared_root_without_touching_each_others_keys() {
+    async fn each_node_writes_its_own_record_at_once_on_one_shared_root_under_its_own_key() {
         let d = crate::test_support::tempdir("shared-root");
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        let fabric = crate::model::FabricId::mint();
+        let root = crate::store_root::StoreRoot::open(&store, &fabric).unwrap();
         let (data1, data2) = (d.join("admin-1-1-data"), d.join("admin-2-1-data"));
-        let (inc1, inc2) = (IncarnationId::mint(), IncarnationId::mint());
-        let (n1, n2) = (FileNodesStorage::open(&data1, &root, "mesh1", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc1, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileNodesStorage::open(&data2, &root, "mesh2", &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc2, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
-        let (m1, m2) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc1, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &inc2, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
-        let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
-            let w = WrittenRows::default();
-            crate::storage::write_mesh(&*m, None, &MeshRecord::new(MeshId::mint(), mesh)).await.unwrap().expect("each mesh writes its record at a name no mesh holds");
-            let mut ids = Vec::new();
+        let writer_of = |r: &NodeRecord| crate::store_log::LogWriter::new(&fabric, &r.node_id, &r.incarnation, &rdm_transport::clock::RafkaTime::unadopted());
+        let writes = async |mesh: &str| {
+            let admin = crate::store_log::LogWriter::new(&fabric, &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted());
+            let m = FileMeshStorage::open(&root, &admin).await.unwrap();
+            crate::storage::write_mesh(&m, None, &MeshRecord::new(MeshId::mint(), mesh)).await.unwrap().expect("each mesh writes its record at a name no mesh holds");
+            let mut written = Vec::new();
             for (name, r#type) in [(PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), "node-admin"), (PathName::new(format!("{mesh}.node"), "1").unwrap(), "node"), (PathName::new(format!("{mesh}.node"), "2").unwrap(), "node")] {
                 let r = row(name, mesh, r#type);
-                w.update(n, &r.node_id, Some(r.clone()), |_| ()).await.unwrap();
-                ids.push(r.node_id.to_string());
+                FileNodesStorage::open(&root, &writer_of(&r)).await.unwrap().put_node(&r).await.unwrap();
+                written.push((r.node_id.to_string(), writer_of(&r).source()));
             }
-            ids.sort();
-            ids
+            written.sort();
+            written
         };
-        let (ids1, ids2) = tokio::join!(writes(&n1, &m1, "mesh1"), writes(&n2, &m2, "mesh2"));
+        let (of1, of2) = tokio::join!(writes("mesh1"), writes("mesh2"));
         let records = crate::store_log::latest_in(&root.dir().join(crate::store_root::NODES_FILE)).unwrap();
-        for (mesh, ids) in [("mesh1", ids1), ("mesh2", ids2)] {
-            let of_mesh: Vec<String> = records.iter().filter(|((kind, _), l)| kind == "node-record" && l.data["mesh"] == mesh).map(|((_, key), _)| key.clone()).collect();
-            assert_eq!(of_mesh, ids, "{mesh}'s records, keyed by node id, in the root's nodes.jsonl");
+        for (mesh, written) in [("mesh1", of1), ("mesh2", of2)] {
+            let of_mesh: Vec<(String, String)> = records.iter().filter(|((kind, _), l)| kind == "node-record" && rdm_core::path::mesh_of(l.data["path"].as_str().unwrap()) == mesh).map(|((_, key), l)| (key.clone(), l.attributes.source.clone())).collect();
+            assert_eq!(of_mesh, written, "{mesh}'s records, keyed by node id, each line's source the node that wrote it");
         }
         assert_eq!(crate::store_log::subjects_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap().len(), 2, "one record per mesh");
         for data in [&data1, &data2] {
             assert!(!data.join(crate::store_root::MESHES_FILE).exists() && !data.join(crate::store_root::NODES_FILE).exists(), "{} holds a shared record", data.display());
         }
-        assert!(crate::node_rows::record_at(&n1, &rdm_core::PathName::new("mesh2.node", "1").unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's record from the shared root");
-        assert!(crate::node_rows::record_at(&n2, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's record from the shared root");
-        assert_eq!(live_records(&m1, &n1, "mesh1").await.unwrap().len(), 6, "a restart reads every mesh's records");
+        let reader = FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
+        assert!(crate::node_rows::record_at(&reader, &rdm_core::PathName::new("mesh2.node", "1").unwrap()).await.unwrap().is_some(), "a node reads mesh2's record from the shared root");
+        assert!(crate::node_rows::record_at(&reader, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await.unwrap().is_some(), "and mesh1's");
+        let meshes = FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
+        assert_eq!(live_records(&meshes, &reader, "mesh1").await.unwrap().len(), 6, "a restart reads every mesh's records");
     }
 
     /// CONTRACT (R-ML2 item 4; §5.4): mesh2 created again under its name, a new mesh with a new id,
-    /// takes the mesh's name over the deleted mesh's record, its node-admin's path and name over the
-    /// Deleted record there, and its records carry the new MeshId. Must NOT happen: the recreated mesh
-    /// refused its name.
+    /// takes the mesh's name over the deleted mesh's record, and its node-admin's record takes the path
+    /// and name over the Deleted record there. Must NOT happen: the recreated mesh refused its name.
     #[tokio::test]
     async fn a_recreated_mesh_takes_its_names_over_the_dead_ones() {
         use crate::node_rows::RecordAt as _;
         let d = crate::test_support::tempdir("recreated-mesh");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let w = crate::store_log::LogWriter::mint();
-        let (meshes, nodes) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap());
+        let (meshes, nodes) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&root, &w).await.unwrap());
         let admin: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         let old = MeshRecord::new(MeshId::mint(), "mesh2");
         write_mesh(&meshes, None, &old).await.unwrap().expect("the first mesh2 writes its record at its name");
-        let first = NodeRecord { mesh_id: Some(old.mesh_id.clone()), ..NodeRecord::new(admin.clone(), "mesh2", "node-admin", NodeId::mint(), crate::model::NodeStatus::Pending) };
-        assert_eq!(crate::node_rows::write_record(&nodes, &first).await.unwrap(), Ok(()));
+        let first = row(admin.clone(), "mesh2", "node-admin");
+        nodes.put_node(&first).await.unwrap();
         // mesh2 is removed: its node Deleted, its record deleted.
-        nodes.put_node(&NodeRecord { status: crate::model::NodeStatus::Deleted, ..first.clone() }).await.unwrap();
+        nodes.put_node(&NodeRecord { state: crate::model::NodeStatus::Deleted, ..first.clone() }).await.unwrap();
         write_mesh(&meshes, Some(&old), &MeshRecord { state: MeshState::Deleted, ..old.clone() }).await.unwrap().expect("the deleted record is written");
         // mesh2 created again.
         let new = MeshRecord::new(MeshId::mint(), "mesh2");
         assert_eq!(write_mesh(&meshes, None, &new).await.unwrap(), Ok(MeshWritten::Written), "the recreated mesh takes its name over the deleted mesh's");
         assert_eq!(meshes.mesh_named("mesh2").await.unwrap().map(|m| m.mesh_id), Some(new.mesh_id.clone()));
-        let second = NodeRecord { mesh_id: Some(new.mesh_id.clone()), ..NodeRecord::new(admin.clone(), "mesh2", "node-admin", NodeId::mint(), crate::model::NodeStatus::Pending) };
-        assert_eq!(crate::node_rows::write_record(&nodes, &second).await.unwrap(), Ok(()), "its node-admin's record takes the name over the Deleted record");
-        assert_eq!(nodes.record_at(&admin).await.unwrap().and_then(|r| r.mesh_id), Some(new.mesh_id.clone()), "its records carry the new MeshId");
-    }
-
-    /// CONTRACT (R-SR2: "a create withdrawn before the node ran appends the record marked Withdrawn";
-    /// nothing is ever removed): a create withdrawn before its node ran leaves its record `Withdrawn`,
-    /// read at its id and listed by no mesh and at no name, which frees the pair; the next node's record
-    /// takes the name over it. On the file backend every write of the record stands as a line. Must
-    /// NOT happen: the record removed, or a record over a `Withdrawn` one refused `NameHeld`.
-    #[tokio::test]
-    async fn a_withdrawn_create_leaves_its_record_withdrawn_and_a_later_record_takes_its_name() {
-        let d = crate::test_support::tempdir("withdrawn-create");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let file = FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        let memory = MemoryNodesStorage::default();
-        for (store, backend) in [(&file as &dyn NodesStorage, "file"), (&memory as &dyn NodesStorage, "memory")] {
-            let name: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-            let pending = |n: &PathName| NodeRecord::new(n.clone(), "mesh1", "node", NodeId::mint(), crate::model::NodeStatus::Pending);
-            let x = pending(&name);
-            assert_eq!(crate::node_rows::write_record(store, &x).await.unwrap(), Ok(()), "{backend}: x's record takes the name");
-            assert!(crate::node_rows::release_record(store, &WrittenRows::default(), &name, &x.node_id).await.unwrap(), "{backend}: x held the name");
-            assert_eq!(store.node(&x.node_id).await.unwrap().map(|r| r.status), Some(crate::model::NodeStatus::Withdrawn), "{backend}: the record stands, Withdrawn");
-            assert_eq!(crate::node_rows::record_at(store, &name).await.unwrap(), None, "{backend}: no record at the name");
-            assert!(store.nodes("mesh1").await.unwrap().iter().all(|r| r.node_id != x.node_id), "{backend}: no mesh lists it");
-            let z = pending(&name);
-            assert_eq!(crate::node_rows::write_record(store, &z).await.unwrap(), Ok(()), "{backend}: z's record takes the name over x's Withdrawn record");
-            assert_eq!(crate::node_rows::record_at(store, &name).await.unwrap().map(|r| r.node_id), Some(z.node_id.clone()), "{backend}: the name is z's");
-            if backend == "file" {
-                let lines = crate::store_log::read_file(&root.dir().join(crate::store_root::NODES_FILE)).unwrap();
-                assert_eq!(lines.iter().filter(|l| l.kind() == "node-record" && l.subject() == x.node_id.as_str()).count(), 2, "x's record and its Withdrawn record both stand as lines");
-            }
-        }
+        let second = row(admin.clone(), "mesh2", "node-admin");
+        assert_eq!(crate::node_rows::check_name(&nodes, &admin, &second.node_id).await.unwrap(), Ok(()), "its node-admin takes the name over the Deleted record");
+        nodes.put_node(&second).await.unwrap();
+        assert_eq!(nodes.record_at(&admin).await.unwrap().map(|r| r.node_id), Some(second.node_id.clone()), "the name resolves to the new node-admin's record");
     }
 
     /// CONTRACT (R14 items 1 and 9, R-SR1; connections.md §3: the raw log and the latest-per-key view
@@ -905,30 +686,6 @@ mod tests {
         check(&fa, &fb, &reader, "file").await;
     }
 
-    #[tokio::test]
-    async fn runtime_rows_are_one_keyed_row_per_birth_and_an_unrecognised_row_is_refused_by_name() {
-        let d = std::env::temp_dir().join(format!("rdm-runtime-rows-{}", rand::random::<u32>()));
-        let row = |inc: &str| RuntimeRow { r#type: "node-admin".into(), mesh: "mesh1".into(),
-            node_id: NodeId::mint(),
-            path: "mesh1.node-admin".into(), name: "2".into(),
-            incarnation_id: IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap(),
-            runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
-            data_dir: Some("/tmp/x".into()),
-        };
-        let (a, b) = (row("i1"), row("i2"));
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let n = FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        n.put_runtime(&a).await.unwrap();
-        n.put_runtime(&b).await.unwrap();
-        n.put_runtime(&a).await.unwrap();
-        let mut held = FileNodesStorage::open(&d, &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap().runtimes().await.unwrap();
-        held.sort_by_key(|r| r.incarnation_id.to_string());
-        assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
-        let writer = crate::store_log::LogWriter::mint();
-        std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::NODES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&crate::store_log::Attributes::of(&writer, "node-runtime", "node-runtime/9", &a.key()), b"{}"))).unwrap();
-        assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
-    }
-
     /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "checks the mesh's name against the mesh records at the key
     /// `(path, name)` ... Held means held by a different MeshId: `NameHeld` names that holder.
     /// The same MeshId writing its own row again ... is idempotent and accepted"; R-MN1: only a delete
@@ -970,42 +727,29 @@ mod tests {
 
     /// CONTRACT: docs/architecture/storage.md:86
     /// "| a restart with no launcher (the adoption launch) | the node itself | its own row in its data dir |"
-    /// CONTRACT: docs/architecture/node-identity-and-state.md:149
-    /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
-    /// the row with status deleted, keeping the record and its config; the deleted row releases..."
+    /// `clear_primaries` takes both primary revisions off a record, and `own_in` / `put_own_in`
+    /// round-trip the admin's own row in its data dir.
     #[tokio::test]
-    async fn clear_primaries_fold_declared_and_own_in_behave_as_specified() {
+    async fn clear_primaries_and_own_in_behave_as_specified() {
         // 1. `clear_primaries` strips the primary revisions.
-        let inc = IncarnationId::mint();
         let name: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-        let mut birth = BirthFacts::new(inc.clone(), name.clone());
-        birth.is_primary = Some(3);
-        birth.is_fabric_primary = Some(4);
-        birth.declared.insert(NodeState::Ready);
-        birth.declared.insert(NodeState::Stopped);
+        let mut record = row(name.clone(), "mesh1", "node-admin");
+        record.is_primary = Some(3);
+        record.is_fabric_primary = Some(4);
+        clear_primaries(&mut record);
+        assert_eq!((record.is_primary, record.is_fabric_primary), (None, None));
 
-        clear_primaries(&mut birth);
-        assert_eq!(birth.is_primary, None);
-        assert_eq!(birth.is_fabric_primary, None);
-
-        // 2. `fold_declared` extracts the greatest declared state and path name per (node_id, incarnation_id).
-        let node_id = NodeId::mint();
-        let mut row = NodeRecord::new(name.clone(), "mesh1", "node-admin", node_id.clone(), crate::model::NodeStatus::Stopped);
-        row.births.push(birth);
-        let declared = fold_declared([&row]);
-        assert_eq!(declared.get(&(node_id.clone(), inc.clone())), Some(&(NodeState::Stopped, name.clone())));
-
-        // 3. `own_in` and `put_own_in` round-trip the admin's own row in its data dir.
+        // 2. `own_in` and `put_own_in` round-trip the admin's own row in its data dir.
         let d = crate::test_support::tempdir("storage-own-in");
         let writer = IncarnationId::mint();
         assert_eq!(own_in(&d, &writer).await.unwrap(), None);
         let secret = iroh::SecretKey::from_bytes(&[11u8; 32]);
         let own_record = OwnRow { mesh: "mesh1".to_owned(),
-            node_id: node_id.clone(),
+            node_id: record.node_id.clone(),
             fabric_id: FabricId::mint(),
             path: name.path.clone(), name: name.name.clone(),
             mesh_id: MeshId::mint(),
-            incarnation_id: inc,
+            incarnation_id: record.incarnation.clone(),
             endpoint_id: EndpointId(secret.public().to_string()),
             transport_addr: "127.0.0.1:9100".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:9101".parse().unwrap())],

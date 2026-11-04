@@ -1694,7 +1694,8 @@ mod tests {
     use rdm_core::binding::Binding;
 
     /// A data root under the system temp dir, with the stopped birth `node` (its node id, its birth) and
-    /// its node record renamed at its unchanged path in a nodes store, its record's allocation minting `deployment`.
+    /// its node record renamed at its unchanged path in a nodes store, the runtime on its record of
+    /// `deployment` in this process.
     async fn absent_birth(cell: &str, deployment: &crate::model::DeploymentId) -> (std::path::PathBuf, crate::storage::MemoryNodesStorage, PathName, NodeId, IncarnationId) {
         use crate::storage::NodesStorage;
         let root = std::env::temp_dir().join(format!("rdm-{cell}-{}-{}", std::process::id(), rand::random::<u32>()));
@@ -1702,26 +1703,23 @@ mod tests {
         let created: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
         let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
         let rows = crate::storage::MemoryNodesStorage::default();
-        let mut row = crate::storage::NodeRecord::new(created.with_name("renamed").unwrap(), "mesh1", "node", node_id.clone(), NodeStatus::Leaving);
-        row.birth_mut(&from, &created);
-        row.allocated = Some(crate::storage::Allocation { predecessor: None, build_id: Some(crate::build::BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &node_id), incarnation: from.clone(), deployment_id: deployment.clone() });
+        let mut row = rdm_node::nodes_storage::fixture_record(&created.with_name("renamed").unwrap(), "node", node_id.clone(), from.clone(), NodeStatus::Leaving);
+        row.runtime = rdm_core::RuntimeFact::of_this_process(&deployment.to_string()).unwrap();
         rows.put_node(&row).await.unwrap();
         (root, rows, created, node_id, from)
     }
 
     /// CONTRACT (node-admin-lifecycle.md §6.1: "A node.delete of a birth absent from the executor's view runs
-    /// against its exact runtime, rebuilt from the Build action and the data-root runtime record"): the
-    /// stopped predecessor is rebuilt by admitted node ID and incarnation even when the caller
-    /// carries its original name. Its lifecycle record now carries its new name at the same path;
-    /// the runtime record lives under `<data root>/<node id>` and names the exact deployment.
+    /// against its exact runtime"; Q366: the node record carries `runtime` and `storage.data_dir`): the
+    /// stopped predecessor is rebuilt by admitted node ID and incarnation from its node record even when
+    /// the caller carries its original name. Its record carries its new name at the same path and the
+    /// exact runtime the node wrote at its start; its data dir is `<data root>/<node id>` when the record
+    /// names none.
     #[tokio::test]
-    async fn a_birth_absent_from_the_view_is_rebuilt_from_its_record_and_its_data_root_runtime_record() {
+    async fn a_birth_absent_from_the_view_is_rebuilt_from_its_record() {
         let deployment = crate::model::DeploymentId::mint();
         let (root, rows, created, node_id, from) = absent_birth("rebuilt-birth", &deployment).await;
         let dir = crate::deployment::node_data_dir(&root, &node_id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let fact = rdm_core::RuntimeFact::of_this_process(&deployment.to_string()).unwrap();
-        fact.write_record(&dir).unwrap();
         let provider = crate::deployment::process::ProcessDeploymentProvider::new();
         let (record, handle) = rebuild_absent_birth(Some(&rows), &root, &provider, &created, &node_id, &from).await.unwrap_or_else(|e| panic!("the birth is rebuilt: {e}"));
         assert_eq!((record.location(), record.node_id.clone(), record.incarnation_id.clone()), (created.with_name("renamed").unwrap(), node_id, Some(from)), "the exact birth: {record:?}");
@@ -1732,9 +1730,8 @@ mod tests {
     }
 
     /// CONTRACT (node-admin-lifecycle.md §6.1: "refuses by name when no record names the birth"): a birth
-    /// no node record at its path names, a data dir with no runtime record, and a runtime record naming
-    /// another deployment than the one minted for the birth are each refused, the refusal naming the
-    /// path, the birth and what was missing; nothing is rebuilt.
+    /// no node record names, and a birth with no nodes store to read, are each refused, the refusal
+    /// naming the path, the birth and what was missing; nothing is rebuilt.
     #[tokio::test]
     async fn a_birth_absent_from_the_view_that_no_record_names_is_refused_by_name() {
         let deployment = crate::model::DeploymentId::mint();
@@ -1748,46 +1745,7 @@ mod tests {
         // No nodes store at all.
         let e = rebuild_absent_birth(None, &root, &provider, &old, &node_id, &from).await.expect_err("no store: refused");
         assert!(e.contains(from.as_str()) && e.contains("no nodes store"), "{e}");
-        // The record names the birth; its data dir holds no runtime record.
-        let dir = crate::deployment::node_data_dir(&root, &node_id);
-        let e = rebuild_absent_birth(Some(&rows), &root, &provider, &old, &node_id, &from).await.expect_err("no runtime record: refused");
-        assert!(e.contains(&dir.display().to_string()) && e.contains(rdm_core::runtime::RUNTIME_FILE), "{e}");
-        // The data dir holds another deployment's runtime record (a later birth's, over an inherited dir).
-        std::fs::create_dir_all(&dir).unwrap();
-        rdm_core::RuntimeFact::of_this_process(&crate::model::DeploymentId::mint().to_string()).unwrap().write_record(&dir).unwrap();
-        let e = rebuild_absent_birth(Some(&rows), &root, &provider, &old, &node_id, &from).await.expect_err("another birth's runtime: refused");
-        assert!(e.contains(&deployment.to_string()) && e.contains("not this birth's runtime"), "{e}");
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn retained_birth_uses_its_durable_runtime_after_the_directory_is_inherited() {
-        use crate::storage::NodesStorage;
-        let deployment = crate::model::DeploymentId::mint();
-        let (root, rows, created, node_id, from) = absent_birth("retained-runtime", &deployment).await;
-        let provider = crate::deployment::process::ProcessDeploymentProvider::new();
-        let dir = crate::deployment::node_data_dir(&root, &node_id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let newer = crate::model::DeploymentId::mint();
-        rdm_core::RuntimeFact::of_this_process(newer.as_str()).unwrap().write_record(&dir).unwrap();
-        let mut row = rows.node(&node_id).await.unwrap().unwrap();
-        let allocation = row.allocated.as_mut().unwrap();
-        allocation.incarnation = IncarnationId::mint();
-        allocation.deployment_id = newer;
-        rows.put_node(&row).await.unwrap();
-        let error = rebuild_absent_birth(Some(&rows), &root, &provider, &created, &node_id, &from).await.expect_err("newer allocation cannot prove the old runtime");
-        assert!(error.contains("no exact runtime row or allocation"), "{error}");
-        rows.put_runtime(&crate::storage::RuntimeRow {
-            node_id: node_id.clone(), incarnation_id: from.clone(), path: created.path.clone(), name: created.name.clone(),
-            mesh: row.mesh.clone(), r#type: row.r#type.clone(),
-            runtime: rdm_core::RuntimeFact::of_this_process(deployment.as_str()).unwrap(),
-            data_dir: Some(dir.display().to_string()),
-        }).await.unwrap();
-        let (record, handle) = rebuild_absent_birth(Some(&rows), &root, &provider, &created, &node_id, &from).await.unwrap();
-        assert_eq!(record.node_id, node_id);
-        assert_eq!(record.incarnation_id, Some(from));
-        assert_eq!(handle.deployment_id, deployment);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     /// CONTRACT (e12.s91; node-rpc-envelope.md "the executable binding the Build fixes ... verified at
@@ -2018,7 +1976,7 @@ mod tests {
         let mesh_storage = Arc::new(crate::storage::MemoryMeshStorage::default());
         let fabric_storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::default());
         records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), "mesh1".into(), me.clone(), node_id.clone());
-        records.set_rows(Arc::new(crate::node_rows::NodeRows::new(me.clone(), node_id.clone(), topology.clone(), nodes_storage.clone()).with_written(records.caches.nodes.clone())));
+        records.set_rows(Arc::new(crate::node_rows::NodeRows::new(me.clone(), node_id.clone(), topology.clone(), nodes_storage.clone())));
         let runner = Arc::new(AdminRunner {
             storage_changes,
             target_seam: None,
@@ -2096,7 +2054,7 @@ mod tests {
         runner.handles.lock().unwrap().insert(predecessor.node_id.clone(), (predecessor.clone(), old_handle.clone()));
         runner.handles.lock().unwrap().insert(successor.node_id.clone(), (successor.clone(), new_handle.clone()));
         assert!(runner.current_node_at(&location).await.unwrap().is_none(), "cached locations alone are not a record");
-        let record = |n: &Node, at: &PathName| crate::storage::NodeRecord::new(at.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let record = |n: &Node, at: &PathName| rdm_node::nodes_storage::fixture_record(at, &n.r#type, n.node_id.clone(), n.incarnation_id.clone().unwrap(), NodeStatus::Ready);
         runner.nodes_storage.put_node(&record(&successor, &location)).await.unwrap();
         assert_eq!(runner.current_node_at(&location).await.unwrap().unwrap().node_id, successor.node_id);
         let renamed = location.with_name("renamed").unwrap();

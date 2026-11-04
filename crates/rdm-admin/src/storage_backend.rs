@@ -869,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_uses_the_replaced_provider_for_every_storage_call() {
         use crate::fabric_storage::{FabricIdentity, FabricRecord};
-        use crate::storage::{MeshRecord, NodeRecord, RuntimeRow};
+        use crate::storage::MeshRecord;
         let (old, new) = (crate::test_support::tempdir("handle-old"), crate::test_support::tempdir("handle-new"));
         let providers = TopologyStorageProviders::new().register("file", Arc::new(FileBackend::at(&old))).register("file-new", Arc::new(FileBackend::at(&new)));
         let scope = scope_in(crate::test_support::tempdir("handle-data"));
@@ -892,10 +892,8 @@ mod tests {
         fabric.put_fabric(&FabricRecord::new(identity.clone())).await.unwrap();
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
-        let row = NodeRecord::new(rdm_core::PathName::new("meshafter.node", "7").unwrap(), "meshafter", "node", NodeId::mint(), crate::model::NodeStatus::Ready);
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("meshafter.node", "7").unwrap(), "node", NodeId::mint(), rdm_core::IncarnationId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
-        let runtime = RuntimeRow { r#type: "node".into(), mesh: "meshafter".into(), node_id: NodeId::mint(), path: "meshafter.node".into(), name: "8".into(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
-        nodes.put_runtime(&runtime).await.unwrap();
         let build = crate::build_state::BuildAccepted {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
             topology: crate::accepted::FabricTopology::root("fabric1", "meshafter", mesh.mesh_id.clone()),
@@ -921,14 +919,13 @@ mod tests {
 
         assert_eq!(fabric.fabric().await.unwrap().map(|f| f.name), Some("fabricafter".to_string()), "fabric.storage reads the new provider");
         assert_eq!(meshes.mesh_named("meshafter").await.unwrap(), Some(mesh.clone()), "mesh.storage reads the new provider");
-        assert_eq!(nodes.node(&row.node_id).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "nodes.storage reads the new provider");
+        assert_eq!(nodes.node(&row.node_id).await.unwrap().map(|l| l.record), Some(row.clone()), "nodes.storage reads the new provider");
         assert_eq!(crate::node_rows::record_at(&*nodes, &row.location()).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "and the record at its path and name");
-        assert_eq!(nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "and its runtime rows");
         assert_eq!(builds.read_build(&build.build_id).await.unwrap().build_id, build.build_id, "the Build journal reads the new provider");
         assert!(seen.lock().unwrap().contains(&build.build_id), "the derivation installed before the change runs over the new journal's facts");
         assert_eq!(connections.connections().await.unwrap(), vec![fact.clone()], "connections.storage reads the new provider");
         assert_eq!(events.of_build(&build.build_id).await.unwrap(), vec![event.clone()], "events.storage reads the new provider");
-        for (store, needle) in [("events", event.id.to_string()), ("fabric", "fabricafter".to_string()), ("mesh", mesh.mesh_id.to_string()), ("mesh name", "meshafter".to_string()), ("nodes", row.node_id.to_string()), ("runtime", runtime.node_id.to_string()), ("builds", build.build_id.to_string()), ("connections", fact.id.to_string())] {
+        for (store, needle) in [("events", event.id.to_string()), ("fabric", "fabricafter".to_string()), ("mesh", mesh.mesh_id.to_string()), ("mesh name", "meshafter".to_string()), ("nodes", row.node_id.to_string()), ("builds", build.build_id.to_string()), ("connections", fact.id.to_string())] {
             assert!(holds(&new, &needle), "the {store} write after the change lands on the new provider");
             assert!(!holds(&old, &needle), "and nothing of the {store} write after the change on the old one");
         }
@@ -1021,27 +1018,24 @@ mod tests {
         assert_eq!(handle.provider(), "file-new");
     }
 
-    /// The same script against any backend that keeps its rows across opens: the admin re-born at the
+    /// The same script against any backend that keeps its records across opens: the admin re-born at the
     /// same path and name over the inherited data dir (a new node.id and incarnation, `inherited = true`)
-    /// reads its predecessor's runtime rows: they are the fabric's lines in its store root's
-    /// `nodes.jsonl` (R-SR1), so another admin over another data dir reads them too.
-    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
-        let runtime = crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
-            node_id: NodeId::mint(),
-            path: "mesh1.node".into(), name: "2".into(),
-            incarnation_id: IncarnationId::mint(),
-            runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
-            data_dir: Some("/tmp/mesh1.node.2".into()),
-        };
+    /// reads its predecessor's node record, with the runtime and data dir the predecessor wrote on it at
+    /// its start: it is the fabric's line in its store root's `nodes.jsonl` (R-SR1), so another admin
+    /// over another data dir reads it too.
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_record(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
+        let mut record = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", NodeId::mint(), IncarnationId::mint(), crate::model::NodeStatus::Ready);
+        record.runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap();
+        record.storage.data_dir = Some("/tmp/mesh1.node.2".into());
         {
             let b = backend.open(first).await.unwrap_or_else(|e| panic!("the first birth opens: {e}"));
-            b.nodes.put_runtime(&runtime).await.unwrap();
+            b.nodes.put_node(&record).await.unwrap();
         }
         let b = backend.open(re_born).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
-        assert_eq!(b.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the re-born admin holds its predecessor's runtime rows");
-        assert_eq!(b.nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "a point read by the birth finds it");
+        assert_eq!(b.nodes.nodes("mesh1").await.unwrap(), vec![record.clone()], "the re-born admin reads its predecessor's record");
+        assert_eq!(b.nodes.node(&record.node_id).await.unwrap().map(|l| l.record), Some(record.clone()), "a point read by its node id finds it, its runtime on it");
         let o = backend.open(other).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
-        assert_eq!(o.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the runtime rows are the fabric's, on its store root");
+        assert_eq!(o.nodes.nodes("mesh1").await.unwrap(), vec![record.clone()], "the record is the fabric's, on its store root");
     }
 
     /// CONTRACT (R-FI1: a restarting node-admin's own row names the Fabric whose root it opens, read
@@ -1082,18 +1076,18 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md: recovery retains the inherited data dir and creates a new node.id
-    /// and incarnation; R-FM2 `inherited = true`): on the file backend, the runtime rows an admin
-    /// wrote are its data dir's, read back by the admin re-born at the same
-    /// path and name over that data dir, so it still holds the handles of the runtimes it must inspect and
-    /// terminate; another admin's data dir reads none. Must NOT happen: a re-birth losing them because
-    /// they were keyed by the birth that wrote them. Rafka's backend runs the same script.
+    /// and incarnation; R-FM2 `inherited = true`; Q366: the node record carries `runtime`): on the file
+    /// backend, the record a node wrote, its runtime on it, is read back by the admin re-born at the same
+    /// path and name over the inherited data dir, so it still holds the handle of the runtime it must
+    /// inspect and terminate, and by another admin over another data dir. Must NOT happen: a re-birth
+    /// losing it. Rafka's backend runs the same script.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_on_the_file_backend() {
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_record_on_the_file_backend() {
         let store = crate::test_support::tempdir("file-backend-re-born-store");
         let data_dir = crate::test_support::tempdir("file-backend-re-born-data");
         let fabric_id = FabricId::mint();
         let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint(), time: rdm_transport::clock::RafkaTime::unadopted() };
-        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-re-born-other"))).await;
+        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_record(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-re-born-other"))).await;
     }
 }

@@ -880,10 +880,9 @@ mod tests {
 
     /// A record of a birth at `at`, in `status`.
     fn record(at: PathName, mesh: &str, r#type: &str, status: NodeStatus) -> (NodeRecord, IncarnationId) {
-        let (name, incarnation) = (at, IncarnationId::mint());
-        let mut r = NodeRecord::new(name.clone(), mesh, r#type, NodeId::mint(), status);
-        r.birth_mut(&incarnation, &name);
-        (r, incarnation)
+        assert_eq!(rdm_core::path::mesh_of(&at.path), mesh, "a node's mesh is its path's first location");
+        let incarnation = IncarnationId::mint();
+        (rdm_node::nodes_storage::fixture_record(&at, r#type, NodeId::mint(), incarnation.clone(), status), incarnation)
     }
 
     /// The stores `rows` are read from as current records (query.md §1): each row's name claimed, its
@@ -896,7 +895,7 @@ mod tests {
 
     impl Current {
         async fn of(rows: &[&NodeRecord], observed: &mut Topology) -> Self {
-            let mut fp = crate::model::Node::allocated(path("writer.node-admin", "1"), rows.first().map(|r| r.mesh.as_str()).unwrap_or("mesh1"), "node-admin");
+            let mut fp = crate::model::Node::allocated(path("writer.node-admin", "1"), &rows.first().map(|r| r.mesh()).unwrap_or_else(|| "mesh1".into()), "node-admin");
             fp.node_id = NodeId::mint();
             fp.incarnation_id = Some(IncarnationId::mint());
             fp.status = NodeStatus::Ready;
@@ -904,10 +903,10 @@ mod tests {
             observed.nodes.push(fp);
             let mut current = Self { claims: MemoryNodesStorage::default(), mesh_ids: BTreeMap::new() };
             for row in rows {
-                if !current.mesh_ids.contains_key(&row.mesh) {
+                if !current.mesh_ids.contains_key(&row.mesh()) {
                     let id = crate::model::MeshId::mint();
-                    observed.meshes.push(crate::model::Mesh { id: Some(id.clone()), name: row.mesh.clone(), status: crate::model::ScopeStatus::Ready });
-                    current.mesh_ids.insert(row.mesh.clone(), id);
+                    observed.meshes.push(crate::model::Mesh { id: Some(id.clone()), name: row.mesh(), status: crate::model::ScopeStatus::Ready });
+                    current.mesh_ids.insert(row.mesh(), id);
                 }
                 current.put(row).await;
             }
@@ -934,7 +933,7 @@ mod tests {
     /// The record the current-pair lookup names at `name` among `rows`: the one whose node holds the
     /// name's claim, the live record there (a released one holds no claim).
     fn claimant<'a>(rows: &[&'a NodeRecord], name: &PathName) -> Option<&'a NodeRecord> {
-        rows.iter().copied().find(|r| r.location() == *name && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn))
+        rows.iter().copied().find(|r| r.location() == *name && !matches!(r.state, NodeStatus::Deleted | NodeStatus::Withdrawn))
     }
 
     fn planned(paths: &[(PathName, &str)]) -> BTreeMap<String, Vec<PathName>> {
@@ -943,50 +942,6 @@ mod tests {
             out.entry((*mesh).into()).or_default().push(p.clone());
         }
         out
-    }
-
-    /// CONTRACT (query.md §1: "A current-pair lookup resolves the path and name to a node ID from the node
-    /// records. The reader reads the node's record at that node ID: one record per node, append-only, its
-    /// latest line current"; Q323; Q109: a version a deleted birth writes after its re-creation is
-    /// ignored by every reader): a deleted birth still running (a paused node-admin a recovery deleted,
-    /// resumed) writes its own record after the birth that re-created the path, which names it its
-    /// predecessor. The atlas row Build acceptance reads at the path is the re-created birth's, live, and
-    /// its own record is read at its own id; the deleted birth read by its id is its own latest line.
-    /// Must NOT happen: the path read from the deleted birth's own write and a stop of its live successor
-    /// refused `node-not-live` (S2 container seed 1431101 round 40, candidate 187fe558a).
-    #[tokio::test]
-    async fn a_deleted_births_own_write_never_hides_the_birth_that_holds_its_path() {
-        use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
-        let at = path("mesh2.node-admin", "1");
-        let (old, old_inc) = record(path("mesh2.node-admin", "1"), "mesh2", "node-admin", NodeStatus::Deleted);
-        let (mut new, new_inc) = record(path("mesh2.node-admin", "1"), "mesh2", "node-admin", NodeStatus::Ready);
-        new.birth_mut(&new_inc, &at).declared.insert(rdm_core::status::NodeState::Ready);
-        // The re-creation names the deleted birth its predecessor (node-recovery.md).
-        new.predecessor = Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() });
-        let atlas = TestAtlas::new();
-        // mesh2's installed mesh-primary is the re-created birth: it writes mesh2's records.
-        let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
-        let mut primary = crate::model::Node::allocated(at.clone(), "mesh2", "node-admin");
-        primary.node_id = new.node_id.clone();
-        primary.incarnation_id = Some(new_inc.clone());
-        primary.status = NodeStatus::Ready;
-        primary.is_primary = true;
-        let observed = crate::topology::Topology { fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh2".into(), status: ScopeStatus::Ready }], nodes: vec![primary] };
-        let claims = MemoryNodesStorage::default();
-        claims.put_node(&new).await.unwrap();
-        claims.put_node(&old).await.unwrap();
-        // The deleted birth, resumed, writes its own record live, after the re-creation.
-        let mut late = old.clone();
-        late.status = NodeStatus::Ready;
-        late.writer = Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() });
-        claims.put_node(&late).await.unwrap();
-        // The re-creation's live record holds the path.
-        let reader = crate::current_record::CurrentRecords { nodes: &claims };
-        let row = atlas.row(&at, &reader, &observed).await.unwrap().expect("a record is current at the path");
-        assert_eq!((row.node_id.clone(), row.status, row.live), (new.node_id.clone(), NodeStatus::Ready, true), "the re-created birth is the path's, live: {row:?}");
-        // By its own id, the deleted birth answers its own latest line (Q323: one record per node, latest wins).
-        let by_id = atlas.row_id(&old.node_id, &reader, &observed).await.unwrap().expect("the deleted birth's record");
-        assert_eq!(by_id.node_id, old.node_id, "the deleted birth's own record: {by_id:?}");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:31
@@ -1042,7 +997,7 @@ mod tests {
     async fn an_older_birth_of_the_node_at_the_path_is_deleted() {
         let (mut r, older) = record(path("mesh1.node", "1"), "mesh1", "node", NodeStatus::Ready);
         let newer = IncarnationId::mint();
-        r.birth_mut(&newer, &path("mesh1.node", "1"));
+        r.incarnation = newer.clone();
         let atlas = atlas_of(&[&r], &["mesh1"]).await;
         assert_eq!(atlas.refused_caller(Some(&r), claimant(&[&r], &r.location()), &older, &planned(&[(path("mesh1.node", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: "mesh1.node".into(), name: "1".into(), by: format!("{}@{}", r.node_id, newer.as_str()) });
     }

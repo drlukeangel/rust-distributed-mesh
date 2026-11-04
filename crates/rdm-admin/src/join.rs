@@ -828,7 +828,6 @@ mod tests {
                 install: Arc::new(move |d| {
                     installed_clone.lock().unwrap().push(d.node.transport_addr);
                 }),
-                seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
                 known: Arc::new(|| Box::pin(async {})),
                 pending: Arc::new(|_, _| Box::pin(async {})),
                 primary: Arc::new(|| Some(NodeId::parse("0123456789ab").unwrap())),

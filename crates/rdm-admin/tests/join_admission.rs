@@ -146,7 +146,6 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                     })
                 })
             }),
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
@@ -229,7 +228,6 @@ fn service_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, r
                 })
             })
         }),
-        seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
         install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
         known: Arc::new(|| Box::pin(async {})),
         pending: Arc::new(|_, _| Box::pin(async {})),
@@ -371,7 +369,6 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
                     })
                 })
             }),
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),

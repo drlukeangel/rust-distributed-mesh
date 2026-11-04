@@ -163,7 +163,6 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                     })
                 })
             }) },
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| {
                 installed_for_service
                     .lock()

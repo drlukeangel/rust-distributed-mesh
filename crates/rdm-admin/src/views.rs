@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeStatus as ModelNodeStatus, PathName, ProviderKind as ModelProviderKind, ScopeStatus as ModelScopeStatus};
     use crate::span_capture::Capture;
-    use crate::storage::{BirthFacts, CertDates, NodeRecord};
+    use crate::storage::{CertDates, NodeRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
@@ -479,35 +479,22 @@ mod tests {
             };
 
             let atlas = Atlas::default();
-            // Each node's record is at its node id in the nodes store, written by mesh1's mesh-primary (query.md §1).
+            // Each node's record is at its node id in the nodes store, written by the node itself (Q356):
+            // its config and tags (node-config-update.md step 4) and its cert dates among its fields.
             let claims = crate::storage::MemoryNodesStorage::default();
-            let mut admin_row = NodeRecord::new(me.clone(), "mesh1", "node-admin", admin_id.clone(), ModelNodeStatus::Ready);
-            admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
-
-            // Each node's config and tags are its own part of its record (node-config-update.md step 4), in
-            // the same nodes store (Q333).
-            let properties = &claims;
-            let own = |node_id: &NodeId, incarnation: &IncarnationId, config: BTreeMap<String, String>, tags: BTreeSet<String>| rdm_node::nodes_storage::NodeRecord {
-                birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
-                config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(),
-            };
-            use crate::storage::NodesStorage as _;
-            properties.put_properties(&own(&admin_id, &admin_inc, BTreeMap::new(), BTreeSet::new())).await.unwrap();
-            properties.put_properties(&own(&rpc_succ_id, &rpc_succ_inc, BTreeMap::from([("region".to_string(), "eu-west".to_string())]), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
-            properties.put_properties(&own(&rpc_pred_id, &rpc_pred_inc, BTreeMap::new(), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
-            let mut succ_row = NodeRecord::new(rpc_path.clone(), "mesh1", "node", rpc_succ_id.clone(), ModelNodeStatus::Ready);
-            let mut succ_birth = BirthFacts::new(rpc_succ_inc.clone(), rpc_path.clone());
-            succ_birth.cert = Some(CertDates {
+            let admin_row = rdm_node::nodes_storage::fixture_record(&me, "node-admin", admin_id.clone(), admin_inc.clone(), ModelNodeStatus::Ready);
+            let mut succ_row = rdm_node::nodes_storage::fixture_record(&rpc_path, "node", rpc_succ_id.clone(), rpc_succ_inc.clone(), ModelNodeStatus::Ready);
+            succ_row.config = BTreeMap::from([("region".to_string(), "eu-west".to_string())]);
+            succ_row.tags = BTreeSet::from(["tier-a".to_string()]);
+            succ_row.cert = Some(CertDates {
                 issued_at: 1_000,
                 expires_at: 9_000,
                 issuer_expires_at: 20_000,
                 renew_at: 7_000,
             });
-            succ_row.births.push(succ_birth);
-
             // The earlier node's tags stay in its own record at its own id (node-records: a record is keyed by its node id).
-            let mut pred_row = NodeRecord::new(rpc_pred_path.clone(), "mesh1", "node", rpc_pred_id.clone(), ModelNodeStatus::Ready);
-            pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
+            let mut pred_row = rdm_node::nodes_storage::fixture_record(&rpc_pred_path, "node", rpc_pred_id.clone(), rpc_pred_inc.clone(), ModelNodeStatus::Ready);
+            pred_row.tags = BTreeSet::from(["tier-a".to_string()]);
             for row in [&admin_row, &succ_row, &pred_row] {
                 crate::storage::NodesStorage::put_node(&claims, row).await.unwrap();
             }
@@ -615,8 +602,8 @@ mod tests {
     /// "A current-pair lookup resolves the path and name to a node ID from the node records. The reader reads the node's record"
     /// A `node.get` naming a (path, name) whose node the answering admin's gossip view does not hold
     /// at that moment (a peer mesh's node-admin whose stop the backbone delivered after its start
-    /// completed) answers the live record standing at the pair, read at its node ID: its birth and the
-    /// status its row last took. Must NOT happen: the node not answered (the client's `unknown-node`)
+    /// completed) answers the live record standing at the pair, read at its node ID: its incarnation and
+    /// the state its record last took. Must NOT happen: the node not answered (the client's `unknown-node`)
     /// while its record stands at the pair; a pair no live record stands at answered.
     #[test]
     fn a_pair_the_view_does_not_hold_is_answered_from_the_record_standing_at_it() {
@@ -628,8 +615,7 @@ mod tests {
             let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
             let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
             let store = crate::storage::MemoryNodesStorage::default();
-            let mut row = NodeRecord::new(at.clone(), "mesh2", "node-admin", node_id.clone(), ModelNodeStatus::Ready);
-            row.births.push(BirthFacts::new(incarnation.clone(), at.clone()));
+            let row = rdm_node::nodes_storage::fixture_record(&at, "node-admin", node_id.clone(), incarnation.clone(), ModelNodeStatus::Ready);
             store.put_node(&row).await.unwrap();
             let (atlas, loads): (Atlas, Loads) = (Atlas::default(), Arc::new(BTreeMap::new));
             let read = |filter: Filter| {
@@ -639,7 +625,7 @@ mod tests {
             match read(Filter::new().eq("path", [at.path.as_str()]).eq("name", [at.name.as_str()])).await {
                 StatusReply::Nodes { nodes } => {
                     let answered: Vec<_> = nodes.iter().map(|n| (n.node_id.clone(), n.incarnation.clone(), n.state == rdm_core::views::NodeStatus::Ready)).collect();
-                    assert_eq!(answered, vec![(node_id.clone(), Some(incarnation.clone()), true)], "the record standing at the pair is answered at its node ID, as its row last took it: {nodes:#?}");
+                    assert_eq!(answered, vec![(node_id.clone(), Some(incarnation.clone()), true)], "the record standing at the pair is answered at its node ID, as its record last took it: {nodes:#?}");
                 }
                 other => panic!("expected StatusReply::Nodes, got {other:?}"),
             }

@@ -221,7 +221,7 @@ fn a_plain_create_carries_its_create_specs_config_not_the_deleted_rows() {
         let storage = Arc::new(MemoryNodesStorage::default());
         let (old, old_incarnation) = (NodeId::mint(), IncarnationId::mint());
         let births = vec![rdm_admin::storage::BirthFacts::new(old_incarnation.clone(), rdm_core::PathName::new("mesh1.node", "2").unwrap())];
-        let deleted = NodeRecord { births, ..NodeRecord::new(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", old.clone(), NodeStatus::Deleted) };
+        let deleted = NodeRecord { births, ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", old.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted) };
         storage.write_record(&deleted).await.unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
@@ -301,7 +301,7 @@ fn a_create_launches_from_its_entry_and_a_recovery_from_its_predecessors_acknowl
         for of in [RowFor::Create, RowFor::Recovery] {
             let storage = Arc::new(MemoryNodesStorage::default());
             // The predecessor's Deleted row holds its birth: the row names it exactly (Allocation.predecessor).
-            let mut deleted = NodeRecord::new(name.clone(), "mesh1", "gateway", old.clone(), NodeStatus::Deleted);
+            let mut deleted = rdm_node::nodes_storage::fixture_record(&name.clone(), "gateway", old.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted);
             deleted.births.push(rdm_admin::storage::BirthFacts::new(acknowledged.birth.incarnation_id.clone(), name.clone()));
             storage.write_record(&deleted).await.unwrap();
             // The predecessor's own part of its record, in the same nodes store (Q333).
@@ -512,16 +512,16 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         // P's writes, as its role made them.
         let (successor, fresh) = (node(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false, false), node(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", false, false));
         let (old_inc, deleted_inc) = (IncarnationId::mint(), IncarnationId::mint());
-        let mut live = NodeRecord::new(rpc1.location(), rpc1.mesh.clone(), &rpc1.r#type, rpc1.node_id.clone(), NodeStatus::ConnectionsDeleting);
+        let mut live = rdm_node::nodes_storage::fixture_record(&rpc1.location(), &rpc1.r#type, rpc1.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::ConnectionsDeleting);
         live.birth_mut(rpc1.incarnation_id.as_ref().unwrap(), &rpc1.location());
-        let mut renamed = NodeRecord::new(PathName::new("mesh1.node", "2-old").unwrap(), "mesh1", "node", old_pred.clone(), NodeStatus::Deleted);
+        let mut renamed = rdm_node::nodes_storage::fixture_record(&PathName::new("mesh1.node", "2-old").unwrap(), "node", old_pred.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted);
         renamed.renamed_from = Some("2".into());
         renamed.birth_mut(&old_inc, &PathName::new("mesh1.node", "2").unwrap());
-        let mut deleted = NodeRecord::new(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", deleted_pred.clone(), NodeStatus::Deleted);
+        let mut deleted = rdm_node::nodes_storage::fixture_record(&PathName::new("mesh1.node", "3").unwrap(), "node", deleted_pred.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted);
         deleted.birth_mut(&deleted_inc, &PathName::new("mesh1.node", "3").unwrap());
         // Each later birth's row names its predecessor's exact birth.
         let created = |n: &Node, pred: &NodeId, inc: &IncarnationId| {
-            let mut row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Starting);
+            let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Starting);
             row.allocated = Some(rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.clone(), incarnation_id: inc.clone() }), build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), incarnation: n.incarnation_id.clone().unwrap(), deployment_id: DeploymentId::mint() });
             row
         };
@@ -1916,7 +1916,7 @@ fn a_resumed_deleted_births_own_record_write_is_ignored_on_read() {
         let mut own = NodeRecord { ..row_of(&victim) };
         own.birth_mut(&x.incarnation_id, &victim.location());
         resumed.update(&*storage, &victim.node_id, Some(own), |_| ()).await.expect("the birth's own record is written");
-        let other = NodeRecord::new(rdm_core::PathName::new("mesh1.node", "9").unwrap(), "mesh1", "node", NodeId::mint(), NodeStatus::Ready);
+        let other = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "9").unwrap(), "node", NodeId::mint(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         resumed.update(&*storage, &other.node_id, Some(other.clone()), |_| ()).await.expect("another node's record is written");
         // Its mesh's writer deletes it; resumed, it puts its own record whole from its older copy.
         mp.rows.deleted(&victim, &rdm_core::OperationId::node("node.delete", &victim.node_id)).await.expect("the mesh's writer writes the Deleted record");

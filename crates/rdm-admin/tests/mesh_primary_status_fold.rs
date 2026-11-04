@@ -88,8 +88,8 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     let a = stores(&root, &IncarnationId::mint()).await;
     { let mut r = a.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.state = MeshState::Ready; a.meshes.put_mesh(&r).await.unwrap(); }
     { let mut r = a.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), state: rdm_admin::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.state = rdm_admin::fabric_state::FabricState::Ready; a.fabric.put_fabric(&r).await.unwrap(); }
-    { let (node_id, incarnation_id, name) = (rpc_birth.0.clone(), rpc_birth.1.clone(), rpc.location()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRecord::new(name.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
-    { let (node_id, incarnation_id, name) = (other.0.clone(), other.1.clone(), rdm_core::PathName::new("mesh1.node", "2").unwrap()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRecord::new(name.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Pending); }).await.unwrap(); }
+    { let (node_id, incarnation_id, name) = (rpc_birth.0.clone(), rpc_birth.1.clone(), rpc.location()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&name.clone(), "node", node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
+    { let (node_id, incarnation_id, name) = (other.0.clone(), other.1.clone(), rdm_core::PathName::new("mesh1.node", "2").unwrap()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&name.clone(), "node", node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Pending); }).await.unwrap(); }
     let fabric_records = rdm_admin::store_log::latest_in(&root.dir().join(rdm_admin::store_root::FABRIC_FILE)).unwrap().into_keys().filter(|(kind, _)| kind == "fabric-record").count();
     let mesh_records = rdm_admin::store_log::subjects_in(&root.dir().join(rdm_admin::store_root::MESHES_FILE), "mesh-record").unwrap().len();
     let node_records = rdm_admin::store_log::subjects_in(&root.dir().join(rdm_admin::store_root::NODES_FILE), "node-record").unwrap().len();
@@ -225,7 +225,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 let root = rdm_admin::store_root::StoreRoot::at(&dir);
                 let a = stores(&root, &IncarnationId::mint()).await;
                 for n in [&rpc1, &rpc2] {
-                    { let (node_id, incarnation_id, name) = (n.node_id.clone(), n.incarnation_id.clone().unwrap(), n.location()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRecord::new(name.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
+                    { let (node_id, incarnation_id, name) = (n.node_id.clone(), n.incarnation_id.clone().unwrap(), n.location()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&name.clone(), "node", node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
                 }
                 // B: its topology view's view, its role fold over the same root.
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
@@ -338,7 +338,7 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     {
         let store = stores(&root, &IncarnationId::mint()).await;
         let w = rdm_admin::node_rows::WrittenRows::default();
-        let base = rdm_admin::storage::NodeRecord::new(row.name.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Pending);
+        let base = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&row.name.clone(), "node", node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Pending);
         w.update(&*store.nodes, &node_id, Some(base), |r| {
             let b = r.birth_mut(&incarnation, &row.name);
             b.declared.insert(NodeState::Stopped);
@@ -467,12 +467,12 @@ fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
         let absent = (NodeId::mint(), IncarnationId::mint());
         // The records as a lost predecessor left them: the exact birth's, another birth of its node, and a
         // node the view never held, each written whole at its id.
-        let mut held = rdm_admin::storage::NodeRecord::new(rpc.location(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
+        let mut held = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&rpc.location(), &rpc.r#type, rpc.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         for (_, incarnation_id) in [&exact, &stale] {
             held.birth_mut(incarnation_id, &rpc.location()).declared.insert(NodeState::Ready);
         }
         storage.nodes.put_node(&held).await.unwrap();
-        let mut stranger = rdm_admin::storage::NodeRecord::new(rpc.location(), rpc.mesh.clone(), &rpc.r#type, absent.0.clone(), NodeStatus::Ready);
+        let mut stranger = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&rpc.location(), &rpc.r#type, absent.0.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         stranger.birth_mut(&absent.1, &rpc.location()).declared.insert(NodeState::Ready);
         storage.nodes.put_node(&stranger).await.unwrap();
         let records = Records::default();

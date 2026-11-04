@@ -208,7 +208,7 @@ pub async fn records_of_views(views: &[&rdm_admin::topology::Topology]) -> std::
     let rows = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let mut seen = std::collections::BTreeSet::new();
     for n in views.iter().flat_map(|t| t.nodes.iter()).filter(|n| seen.insert(n.node_id.clone())) {
-        let mut row = rdm_admin::storage::NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
+        let mut row = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.location());
         }

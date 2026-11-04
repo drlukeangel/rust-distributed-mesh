@@ -136,18 +136,18 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         let deleted_inc = IncarnationId::mint();
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let mut admin_row = NodeRecord::new(admin_name.clone(), "mesh1", "node-admin", admin_id.clone(), NodeStatus::Ready);
+        let mut admin_row = rdm_node::nodes_storage::fixture_record(&admin_name.clone(), "node-admin", admin_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         admin_row
             .birth_mut(&admin_inc, &admin_name)
             .declared
             .insert(rdm_core::status::NodeState::Ready);
-        let mut rpc_row = NodeRecord::new(rpc_name.clone(), "mesh1", "node", rpc_id.clone(), NodeStatus::Ready);
+        let mut rpc_row = rdm_node::nodes_storage::fixture_record(&rpc_name.clone(), "node", rpc_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         rpc_row
             .birth_mut(&rpc_inc, &rpc_name)
             .declared
             .insert(rdm_core::status::NodeState::Ready);
         let mut deleted_row =
-            NodeRecord::new(deleted_name.clone(), "mesh1", "node", deleted_id.clone(), NodeStatus::Deleted);
+            rdm_node::nodes_storage::fixture_record(&deleted_name.clone(), "node", deleted_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted);
         deleted_row.birth_mut(&deleted_inc, &deleted_name);
         nodes_storage.put_node(&admin_row).await.unwrap();
         nodes_storage.put_node(&rpc_row).await.unwrap();

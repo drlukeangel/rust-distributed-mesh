@@ -788,7 +788,7 @@ mod tests {
         configs.own_entry(&admin, entry).await.unwrap().unwrap();
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
         let absent = configs.update_with(&admin.location(), &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StoragePersistence::Ephemeral)).await;
-        assert!(matches!(absent, StatusReply::NodeRowRefused { .. }), "missing lifecycle metadata cannot report success: {absent:?}");
+        assert!(matches!(absent, StatusReply::NodeRecordRefused { .. }), "missing lifecycle metadata cannot report success: {absent:?}");
         let mut stale = req("stale");
         if let StatusRequest::UpdateNodeConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }
         assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));

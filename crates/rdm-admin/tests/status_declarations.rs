@@ -197,7 +197,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
     };
     // Every birth's lifecycle record is claimed, as its create or join claims it before a command reaches it.
     for b in std::iter::once(&admin).chain(others.values()) {
-        let row = rdm_admin::storage::NodeRecord::new(b.node.location(), b.node.mesh.clone(), &b.node.r#type, b.node.node_id.clone(), b.node.status);
+        let row = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&b.node.location(), &b.node.r#type, b.node.node_id.clone(), rdm_core::IncarnationId::mint(), b.node.status);
         rdm_admin::node_rows::write_record(&*nodes, &row).await.unwrap().unwrap();
     }
     let records = node_records();

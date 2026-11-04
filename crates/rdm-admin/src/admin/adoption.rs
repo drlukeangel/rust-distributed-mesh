@@ -431,7 +431,7 @@ mod tests {
 
             let lost_id = NodeId::mint();
             let lost_inc = IncarnationId::mint();
-            let mut row = NodeRecord::new(path.clone(), "mesh1", "node-admin", lost_id.clone(), NodeStatus::Ready);
+            let mut row = rdm_node::nodes_storage::fixture_record(&path.clone(), "node-admin", lost_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             let b = row.birth_mut(&lost_inc, &path);
             b.is_primary = Some(1);

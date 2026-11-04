@@ -163,7 +163,7 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         // status Ready (1) | held_connections (len 1)
         (RejectedAdmittingConnections { status: NodeStatus::Ready, held_connections: vec![connection()] }, "1b01010c333132333435363738396162"),
         (NameHeld { path: "p".into(), name: "n".into(), by: node() }, "1c0170016e0c303132333435363738396162"),
-        (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
+        (NodeRecordRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
         (Reserved31 { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
         (Reserved32 { reason: "r".into() }, "200172"),

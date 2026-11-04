@@ -179,33 +179,12 @@ mod tests {
                         return None;
                     }
                     let view = NodeView {
-                        properties: Default::default(),
-                        path: name.path.clone(), name: name.name.clone(),
-                        r#type: "node".into(),
-                        mesh: "mesh1".to_string(),
-                        node_id,
                         endpoint_id: Some(expected),
-                        incarnation_id: Some(inc),
-                        deployment_id: None,
-                        provider: Some(ProviderKind::Process),
-                        data_dir: None,
-                        status: NodeStatus::Ready,
+                        incarnation: Some(inc),
                         is_primary: true,
-                        is_fabric_primary: false,
-                        admin_api_base: None,
-                        transport_addr: None,
-                        listeners: Vec::new(),
-                        declared: None,
-                        stopped: false,
-                        load: None,
-                        gossip: None,
                         tags: BTreeSet::from(["role-a".to_string()]),
                         config: BTreeMap::from([("tier".to_string(), "gold".to_string())]),
-                        cert: None,
-                        executable: None,
-                        storage_persistence: None,
-                       
-                        topology_storage_provider: None,
+                        ..NodeView::new(&name, "node", node_id, NodeStatus::Ready)
                     };
                     Some(view)
                 }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<NodeView>> + Send>>

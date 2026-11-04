@@ -13,8 +13,7 @@ mod tests {
     use super::*;
     use crate::fabric_storage::{FabricIdentity, FabricRecord};
     use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus, PathName};
-    use crate::status_rpc::{Declaration, OperationEffect};
-    use crate::storage::{BirthFacts, MeshRecord, NodeOperation, NodeRecord};
+    use crate::storage::MeshRecord;
     use rdm_core::MemberStatus;
     use rdm_core::status::{DeclaredOperation, MeshState, NodeState};
     use std::time::{Duration, Instant};
@@ -25,7 +24,7 @@ mod tests {
     /// from which the mesh-primary publishes NodeStopped ([node.stop] step 5), and a start's
     /// `Pending` and `Ready`."
     #[test]
-    fn declared_fold_records_preserves_greatest_state_operation_effects_watch_moves_and_row_cycle_transitions() {
+    fn declared_fold_records_folds_mesh_and_fabric_records_and_moves_its_watch() {
         // docs/architecture/lifecycles/node-status.md:26 — "A node reports to its mesh's
         // primary, which sets its status. A report is an owed message ([Node RPC §43]) and
         // names the operation that produced the state when one did ([DeclaredOperation]): a
@@ -36,78 +35,8 @@ mod tests {
         let older_inc = IncarnationId::mint();
         let current_inc = IncarnationId::mint();
 
-        let mut row = NodeRecord::new(path.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Starting);
-        let mut older_birth = BirthFacts::new(older_inc.clone(), path.clone());
-        older_birth.declared.insert(NodeState::Pending);
-        let mut current_birth = BirthFacts::new(current_inc.clone(), path.clone());
-        current_birth.declared.insert(NodeState::Pending);
-        current_birth.declared.insert(NodeState::Ready);
-        let start_op = DeclaredOperation {
-            operation: rdm_core::OperationId::node("node.start", &node_id),
-        };
-        let stop_op = DeclaredOperation {
-            operation: rdm_core::OperationId::node("node.stop", &node_id),
-        };
-        current_birth.operations.push(NodeOperation {
-            operation: start_op.clone(),
-            state: NodeState::Ready,
-        });
-        current_birth.operations.push(NodeOperation {
-            operation: stop_op.clone(),
-            state: NodeState::Stopped,
-        });
-        row.births.push(older_birth);
-        row.births.push(current_birth);
-
-        // Declaration::of_records and OperationEffect::of_records extract facts in record order.
-        let declarations = Declaration::of_records([&row]);
-        assert_eq!(
-            declarations,
-            vec![
-                Declaration { r#type: "node".into(), mesh: "mesh1".to_owned(),
-                    node_id: node_id.clone(),
-                    incarnation_id: older_inc.clone(),
-                    name: path.clone(),
-                    state: NodeState::Pending,
-                },
-                Declaration { r#type: "node".into(), mesh: "mesh1".to_owned(),
-                    node_id: node_id.clone(),
-                    incarnation_id: current_inc.clone(),
-                    name: path.clone(),
-                    state: NodeState::Pending,
-                },
-                Declaration { r#type: "node".into(), mesh: "mesh1".to_owned(),
-                    node_id: node_id.clone(),
-                    incarnation_id: current_inc.clone(),
-                    name: path.clone(),
-                    state: NodeState::Ready,
-                },
-            ]
-        );
-        let effects = OperationEffect::of_records([&row]);
-        assert_eq!(effects.len(), 2);
-        assert_ne!(effects[0].key(), effects[1].key());
-        // OperationEffect::key depends on (node_id, incarnation, operation), never state.
-        let mut pending_same_op = effects[0].clone();
-        pending_same_op.state = NodeState::Pending;
-        assert_eq!(effects[0].key(), pending_same_op.key());
-
-        // Row status transitions follow ready -> stop -> start for the newest birth only.
-        assert!(!row.set_status(&older_inc, NodeStatus::Ready));
-        assert!(row.set_status(&current_inc, NodeStatus::Pending));
-        assert!(row.set_status(&current_inc, NodeStatus::Ready));
-        assert!(row.set_status(&current_inc, NodeStatus::Stopping));
-        assert!(row.set_status(&current_inc, NodeStatus::ConnectionsDeleting));
-        assert!(row.set_status(&current_inc, NodeStatus::ConnectionsDeleted));
-        assert!(row.set_status(&current_inc, NodeStatus::Leaving));
-        assert!(row.set_status(&current_inc, NodeStatus::Left));
-        assert!(row.set_status(&current_inc, NodeStatus::Stopped));
-        assert!(!row.set_status(&current_inc, NodeStatus::Stopping));
-        assert!(row.set_status(&current_inc, NodeStatus::Starting));
-        assert!(row.set_status(&current_inc, NodeStatus::Pending));
-        assert!(row.set_status(&current_inc, NodeStatus::Ready));
-
-        // Declared fold_records folds only held births, preserves greater state, deduplicates fabric events, and moves watch.
+        // Declared fold_records folds the Mesh and Fabric records (a role fold reads no node record,
+        // Q260 + Q356), and moves the watch.
         let mut declared = Declared::default();
         let rx = declared.subscribe();
         assert_eq!(*rx.borrow(), 0);
@@ -127,26 +56,18 @@ mod tests {
         });
         fabric_rec.state = crate::fabric_state::FabricState::Ready;
 
-        let folded_count = declared.fold_records(
-            &[mesh_rec],
-            Some(&fabric_rec),
-            &[row],
-            |id, inc| id == &node_id && inc == &current_inc,
-        );
-        assert_eq!(folded_count, 1);
+        declared.fold_records(&[mesh_rec], Some(&fabric_rec));
         assert_eq!(*rx.borrow(), 2);
-        // Stopped > Ready, so the already-held Stopped state stands over the record's Ready.
+        // The held Stopped stands: the fold reads no node record.
         assert_eq!(declared.node(&node_id, &current_inc), Some(NodeState::Stopped));
         assert_eq!(declared.node(&node_id, &older_inc), None);
         assert_eq!(declared.meshes.get(&mesh_id), Some(&MeshState::Ready));
         assert_eq!(declared.fabric.get(&fabric_id), Some(&vec!["ready".to_string()]));
-        assert_eq!(declared.operations.len(), 2);
 
-        // Forgetting the node state moves the watch while preserving durable operation effects.
+        // Forgetting the node state moves the watch.
         declared.forget_node(&(node_id.clone(), current_inc.clone()));
         assert_eq!(*rx.borrow(), 3);
         assert_eq!(declared.node(&node_id, &current_inc), None);
-        assert_eq!(declared.operations.len(), 2);
 
         // Reporter matching and member status conversion round-trip.
         assert_eq!(member_of_declared(NodeState::Pending), MemberStatus::Pending);
@@ -360,12 +281,12 @@ mod tests {
         {
             let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[11u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
             let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
-            let configs = crate::node_config::NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
+            let configs = crate::node_config::NodeConfigs::new(client);
             let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let snapshot = topology.read().await.clone();
             let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
             configs.uses_records(Arc::new(crate::storage::MemoryNodesStorage::default()), || "memory".into(), channels);
-            configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default()).await.unwrap();
+            configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("status-own")).unwrap(), (None, None)).await.unwrap();
             let _ = service.configs.set(Arc::new(configs));
         }
         let config_req = StatusRequest::ApplyNodeConfig {
@@ -378,7 +299,7 @@ mod tests {
         assert_eq!(service.declared.lock().unwrap().node(&admin_id, &admin_inc), None, "config put never moves node status");
 
         // node-status.md:26-30 — Node reports Pending and start's Ready, then stop's Stopped naming DeclaredOperation;
-        // mesh-primary sets status on the node's row and publishes NodeStopped on Stopped.
+        // the mesh-primary holds each state and publishes NodeStopped on Stopped; the node writes its own record (Q356).
         let pending_req = StatusRequest::DeclareNodeState {
             node_id: rpc_id.clone(),
             incarnation: rpc_inc.clone(),
@@ -412,8 +333,6 @@ mod tests {
         assert_eq!(published.len(), 1, "mesh-primary publishes NodeStopped from stop's Stopped report");
         assert_eq!(published[0].0.node_id, rpc_id);
         assert_eq!(published[0].1, stop_op);
-        let stored_row = nodes_storage.node(&rpc_id).await.unwrap().expect("node row written");
-        assert_eq!(stored_row.births[0].operations.len(), 2, "start and stop operation effects recorded on row");
 
         // node-status.md:22-24 — ProbeNodeState answers Current, reasserts held status, and manufactures no transition.
         crate::node_self::process_stop().start();

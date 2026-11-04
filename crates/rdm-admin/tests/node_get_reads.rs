@@ -109,7 +109,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (&broker, &["silver"][..], &[("zone", "eu-1"), ("rack", "7")][..]),
         (&gw2, &["gold"][..], &[("rack", "7")][..]),
     ] {
-        let row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         status.write_record(&row).await.unwrap();
         own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
@@ -222,7 +222,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     let records = Arc::new(MemoryNodesStorage::default());
     let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
     for (n, expires_at) in expiries {
-        let mut row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location()).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
@@ -283,11 +283,11 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     for n in [&admin, &rpc, &peer] {
         own(&n.node_id, BTreeMap::new(), Default::default()).await;
     }
-    let mut row = NodeRecord::new(rpc.location(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
+    let mut row = rdm_node::nodes_storage::fixture_record(&rpc.location(), &rpc.r#type, rpc.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.location()).declared.insert(rdm_core::status::NodeState::Ready);
     records.write_record(&row).await.unwrap();
     // mesh2's record as its current writer holds it.
-    let mut peer_row = NodeRecord::new(peer.location(), peer.mesh.clone(), &peer.r#type, peer.node_id.clone(), NodeStatus::Pending);
+    let mut peer_row = rdm_node::nodes_storage::fixture_record(&peer.location(), &peer.r#type, peer.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Pending);
     peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.location());
     records.write_record(&peer_row).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
@@ -355,7 +355,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         n.is_primary = primary;
         n.endpoint_id = Some(EndpointId(format!("key-{}", n.node_id)));
         n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
-        let row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+        let row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), n.status);
         records.write_record(&row).await.unwrap();
         own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
@@ -431,7 +431,7 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     };
     let records = MemoryNodesStorage::default();
     for n in [&admin, &owned, &bare] {
-        let mut row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
         records.write_record(&row).await.unwrap();
     }

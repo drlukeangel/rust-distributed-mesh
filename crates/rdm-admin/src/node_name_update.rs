@@ -219,7 +219,7 @@ async fn rename(
     let one = configs.one_at_a_time().await;
     let known = match storage.node(node_id).await {
         Ok(line) => line.map(|l| l.record),
-        Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
+        Err(why) => return rdm_core::reply::status::bounded_node_record_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
     };
     let from = known.as_ref().map_or_else(|| held.location(), |r| r.location());
     if from.path != to.path {
@@ -233,7 +233,7 @@ async fn rename(
         match crate::node_rows::check_name(storage, &to, node_id).await {
             Ok(Ok(())) => {}
             Ok(Err(h)) => return rdm_core::reply::status::name_held(h.location(), h.by),
-            Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: the records at path={to_path:?} name={to_name:?} could not be read: {why}; nothing is written")),
+            Err(why) => return rdm_core::reply::status::bounded_node_record_refused(&node_id.to_string(), &format!("{me_id}: the records at path={to_path:?} name={to_name:?} could not be read: {why}; nothing is written")),
         }
         Some(moved)
     } else {

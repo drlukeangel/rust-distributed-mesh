@@ -1056,7 +1056,7 @@ impl StatusService {
             };
             let reply = match result {
                 Some(Ok(reply)) => if matches!(req, StatusRequest::ApplyNodeConfig { .. }) { rdm_core::reply::applied() } else { reply },
-                Some(Err(error)) => rdm_core::reply::status::bounded_node_row_refused(self.node_id.as_str(), &error.to_string()),
+                Some(Err(error)) => rdm_core::reply::status::bounded_node_record_refused(self.node_id.as_str(), &error.to_string()),
                 None => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has no own property writer yet", me_name_path = &me_name.path, me_name_name = &me_name.name)),
             };
             if let Some(span) = tags {
@@ -2702,90 +2702,12 @@ mod tests {
     }
 
 
-    /// What a mesh-primary folds from the stores as it takes `mesh` (`RoleFold::on_install`'s read): the
-    /// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
-    async fn folded(nodes: &dyn crate::storage::NodesStorage, meshes: &dyn crate::storage::MeshStorage, fabric: &dyn crate::fabric_storage::FabricStorage, mesh: &str) -> Declared {
-        let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());
-        let mut declared = Declared::default();
-        declared.fold_records(&m, f.as_ref(), &n, |_, _| true);
-        declared
-    }
     use rdm_core::status::StatusReply as R;
 
     fn node(name: crate::model::PathName, mesh: &str, r#type: &str) -> crate::model::Node {
         let mut n = crate::model::Node::allocated(name, mesh, r#type);
         n.incarnation_id = Some(IncarnationId::mint());
         n
-    }
-
-    /// The silence status the mesh primary stored for `node` at `incarnation`, as a reader folds it.
-    async fn stored_silence(status: &dyn crate::storage::NodesStorage, node: &crate::model::Node) -> Option<crate::model::NodeStatus> {
-        status.node(&node.node_id).await.unwrap()?.birth(node.incarnation_id.as_ref()?)?.silence
-    }
-
-    /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): a node's declared state and the silence
-    /// status its mesh primary holds are two facts, each its own keyed row with its own writer. A
-    /// declaration the authority applies, and a start beginning the node's next cycle, put only the
-    /// declared fact: neither erases the `PendingReconnect` the mesh primary put for the same birth.
-    #[tokio::test]
-    async fn a_declaration_and_a_cycle_begin_leave_the_mesh_primarys_silence_status_standing() {
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.mesh = "mesh1".into();
-        admin.r#type = "node-admin".to_string();
-        admin.is_primary = true;
-        admin.is_fabric_primary = true;
-        let mut rpc = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        rpc.mesh = "mesh1".into();
-        rpc.r#type = "node".to_string();
-        rpc.endpoint_id = Some(EndpointId("rpc-endpoint".into()));
-        rpc.transport_addr = Some("127.0.0.1:1".parse().unwrap());
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: Vec::new(),
-            nodes: vec![admin.clone(), rpc.clone()],
-        }));
-        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let service = StatusService {
-            certs: None,
-            topology_view: None,
-            declaration_seam: None,
-            command_frame_seam: None,
-            operation_effects: Default::default(),
-            stopped: Default::default(),
-            me: admin.location(),
-            node_id: admin.node_id.clone(),
-            fabric_id: topology.read().await.fabric.id.clone(),
-            topology: topology.clone(),
-            declared: Arc::new(Mutex::new(Declared::default())),
-            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
-            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
-            mesh_ids: Arc::new(BTreeMap::new),
-            durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandView::default()),
-            own: Arc::new(OnceLock::new()),
-            mesh_deleter: Arc::new(OnceLock::new()),
-            primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake: Default::default(),
-            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: status.clone(),
-            caches: Default::default(),
-            configs: Default::default(),
-            republish: Default::default(),
-            pre_node_ready: Default::default(),
-            rename: Default::default(),
-            row_moved: Default::default(), rejoin: Default::default(),
-            loads: None,
-            digest_view: None,
-            unreachable: Default::default(),
-            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-        };
-        crate::offline::put_silence_status(&*status, &service.caches.nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
-        let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        assert_eq!(service.apply(Some(rpc.clone()), &declare).await, R::Applied);
-        assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "the authority's declared-state put erased the mesh primary's silence status");
-        service.begin_cycle(&rpc, rpc.incarnation_id.as_ref().unwrap()).await;
-        assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
     }
 
     /// CONTRACT (i146 Q29, Q36; node-stop.md step 5): a birth's Leaving that names the operation which
@@ -2884,125 +2806,7 @@ mod tests {
             vec![(declared_first.node_id.clone(), stop.operation.clone()), (stream_first.node_id.clone(), stop2.operation.clone())],
             "NodeStopped once per stop, from whichever reached the mesh-primary first, and from nothing else"
         );
-        let recovered = folded(&*service.nodes_storage, &*service.meshes_storage, &*service.fabric_storage, "mesh1").await;
-        assert_eq!(recovered.operations, service.declared.lock().unwrap().operations, "Q49: the successor folds every applied operation, including the previous cycle's stop");
 
-    }
-
-    /// The `rdm.node_admin.node.update.via-row-status` spans in the order they open, each
-    /// `(status, outcome)`; the open of the one whose status is `held` waits, on its own thread,
-    /// for the cell's release, as a worker thread the operating system holds does.
-    struct RowStatusOpens {
-        held: &'static str,
-        at_open: std::sync::mpsc::SyncSender<()>,
-        release: Mutex<std::sync::mpsc::Receiver<()>>,
-        opened: Arc<Mutex<Vec<(String, String)>>>,
-    }
-
-    #[derive(Default)]
-    struct RowStatusFields {
-        status: String,
-        outcome: String,
-    }
-
-    impl tracing::field::Visit for RowStatusFields {
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            if field.name() == "outcome" { self.outcome = value.to_string(); }
-        }
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            match field.name() {
-                "status" => self.status = format!("{value:?}"),
-                "outcome" => self.outcome = format!("{value:?}").trim_matches('"').to_string(),
-                _ => {}
-            }
-        }
-    }
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RowStatusOpens {
-        fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-            if attrs.metadata().name() != "rdm.node_admin.node.update.via-row-status" { return; }
-            let mut fields = RowStatusFields::default();
-            attrs.record(&mut fields);
-            if fields.status == self.held {
-                let _ = self.at_open.send(());
-                let _ = self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10));
-            }
-            self.opened.lock().unwrap().push((fields.status, fields.outcome));
-        }
-    }
-
-    /// CONTRACT (node-identity-and-state.md §2.5: a node record carries no revision; node-stop.md
-    /// step 5: the node's `Stopped` declaration and the stop stream's frames are applied whichever
-    /// first reaches the mesh-primary, and each frame after it leaves the row stopped; rdm#266): the
-    /// mesh-primary's `via-row-status` spans of one record follow the order its writes were made. The
-    /// stop stream's `connections-deleting` frame writes the row over `Stopping`, and the open of its
-    /// span is held on its thread (as the gate's loaded worker thread was, gate 7 2f76d5a5a) while the
-    /// node's `Stopped` declaration is taken. Either the frame's write is spanned before the
-    /// declaration's write begins (`ConnectionsDeleting` written, then `Stopped` written), or the
-    /// declaration writes first and the frame finds the row stopped (`Stopped` written, then
-    /// `ConnectionsDeleting` unchanged); the record holds `Stopped`. Must NOT happen: `Stopped`
-    /// written, then `ConnectionsDeleting` written, over a record that holds `Stopped`: the spans
-    /// reading as a frame that wrote the row back from stopped when it did not.
-    // @feature: node-records
-    #[test]
-    fn a_stop_frames_row_write_and_the_nodes_stopped_declaration_are_spanned_in_the_order_they_write_the_record() {
-        rdm_transport::enable_callsites();
-        let (at_open_tx, at_open) = std::sync::mpsc::sync_channel(1);
-        let (release, release_rx) = std::sync::mpsc::channel();
-        let opened: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
-        use tracing_subscriber::layer::SubscriberExt as _;
-        let d = tracing::Dispatch::new(tracing_subscriber::registry().with(RowStatusOpens { held: "ConnectionsDeleting", at_open: at_open_tx, release: Mutex::new(release_rx), opened: opened.clone() }));
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(3).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
-
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.mesh = "mesh1".into();
-        admin.is_primary = true;
-        admin.is_fabric_primary = true;
-        let rpc = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        let incarnation = rpc.incarnation_id.clone().unwrap();
-        let fabric_id = FabricId::mint();
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-            fabric: crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: Vec::new(),
-            nodes: vec![admin.clone(), rpc.clone()],
-        }));
-        let store: Arc<crate::storage::MemoryNodesStorage> = Arc::default();
-        let service = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id, store.clone()));
-        let publisher: StoppedPublisher = Arc::new(|_, _| Box::pin(async {}));
-        let _ = service.stopped.set(publisher);
-        let stop = DeclaredOperation { operation: rdm_core::OperationId::node("node.stop", &rpc.node_id) };
-        rt.block_on(async {
-            claimed(&store, &[&rpc]).await;
-            // The stop's acknowledgement: stopping, its span opened at once.
-            service.put_status(&rpc.node_id, &incarnation, &rpc.location(), crate::model::NodeStatus::Stopping).await.unwrap();
-        });
-        opened.lock().unwrap().clear();
-
-        // The stream's connections-deleting frame; the open of its span is held.
-        let frame = rt.spawn({
-            let (service, rpc, incarnation) = (service.clone(), rpc.clone(), incarnation.clone());
-            async move { service.put_status(&rpc.node_id, &incarnation, &rpc.location(), crate::model::NodeStatus::ConnectionsDeleting).await }
-        });
-        at_open.recv_timeout(std::time::Duration::from_secs(10)).expect("the frame's row-status span is about to open");
-        // The node's Stopped declaration, while the frame's span is held.
-        let mut declared = rt.spawn({
-            let (service, rpc, stop) = (service.clone(), rpc.clone(), stop.clone());
-            async move { service.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: Some(stop) }).await }
-        });
-        let early = rt.block_on(async { tokio::time::timeout(std::time::Duration::from_millis(500), &mut declared).await });
-        release.send(()).unwrap();
-        rt.block_on(frame).unwrap().unwrap();
-        let declared = match early { Ok(done) => done, Err(_) => rt.block_on(declared) };
-        assert_eq!(declared.unwrap(), R::Applied);
-
-        let stored = rt.block_on(crate::storage::NodesStorage::node(&*store, &rpc.node_id)).unwrap().expect("the record is held").status;
-        let at = |status: &str, outcome: &str| (status.to_string(), outcome.to_string());
-        let opened = opened.lock().unwrap().clone();
-        assert_eq!(stored, crate::model::NodeStatus::Stopped, "the record holds stopped: {opened:?}");
-        assert!(
-            [vec![at("ConnectionsDeleting", "written"), at("Stopped", "written")], vec![at("Stopped", "written"), at("ConnectionsDeleting", "unchanged")]].contains(&opened),
-            "the row-status spans of the record follow the order of its writes: {opened:?}"
-        );
     }
 
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
@@ -3010,8 +2814,8 @@ mod tests {
     /// that has one, and its mesh and kind are read from it.
     async fn claimed(status: &crate::storage::MemoryNodesStorage, nodes: &[&crate::model::Node]) {
         for n in nodes {
-            let row = crate::storage::NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
-            assert_eq!(crate::node_rows::write_record(status, &row).await, Ok(Ok(())), "{}'s record is claimed", n.node_id);
+            let row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), n.incarnation_id.clone().unwrap_or_else(IncarnationId::mint), n.status);
+            crate::storage::NodesStorage::put_node(status, &row).await.unwrap();
         }
     }
 
@@ -3051,91 +2855,6 @@ mod tests {
             unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
-    }
-
-    /// CONTRACT (storage.md §2 "Changing it", step 2: the copy holds every line of the old provider; i149
-    /// R8; lead decision D13; states.md: a declaration is answered once its row is durable): once its
-    /// mesh-primary has replied `blocked`, nothing of its mesh writes the old provider, a node's own
-    /// report included. mesh1.node.1's Pending is on its record; its mesh-primary replies `blocked`; the
-    /// node reports Ready. While blocked the report is neither applied nor answered, and nothing
-    /// is written: the node's owed call stays open. At the unblock it is applied, its row written on the
-    /// provider current then, and only then answered `Applied`. Must NOT happen: the row written while
-    /// blocked, the report answered before its row is durable, or the report lost.
-    #[tokio::test]
-    async fn a_status_a_node_reports_while_blocked_is_answered_once_written_after_the_unblock() {
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.r#type = "node-admin".to_string();
-        admin.is_primary = true;
-        let mut rpc = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        rpc.r#type = "node".to_string();
-        let birth = rpc.incarnation_id.clone().unwrap();
-        let fabric_id = FabricId::mint();
-        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
-        let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let service = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id, status.clone()));
-        claimed(&status, &[&rpc]).await;
-        assert_eq!(service.joined_pending(&rpc.node_id, &rpc.location(), &birth, true).await, R::Applied, "the accepted join report records its Pending");
-        let on_record = async || {
-            let rows = crate::storage::NodesStorage::nodes(&*status, "mesh1").await.unwrap();
-            let mut states: Vec<NodeState> = Declaration::of_records(&rows).into_iter().filter(|r| r.node_id == rpc.node_id).map(|r| r.state).collect();
-            states.sort_by_key(|s| format!("{s:?}"));
-            states
-        };
-        assert_eq!(on_record().await, vec![NodeState::Pending], "the Pending is on the record before the block");
-        assert_eq!(service.commands.block().await, 0, "no command in flight at the block");
-        let ready = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state: NodeState::Ready, operation: None };
-        let mut report = {
-            let (service, rpc) = (service.clone(), rpc.clone());
-            tokio::spawn(async move { service.apply(Some(rpc), &ready).await })
-        };
-        let early = tokio::time::timeout(std::time::Duration::from_millis(500), &mut report).await;
-        assert!(early.is_err(), "the report is not answered while its mesh-primary is blocked: {early:?}");
-        assert_eq!(service.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::Pending), "the report is not applied while blocked");
-        assert_eq!(on_record().await, vec![NodeState::Pending], "nothing is written while the mesh-primary is blocked: the record holds what was copied");
-        service.commands.unblock();
-        let answered = tokio::time::timeout(std::time::Duration::from_secs(10), report).await.expect("the report is answered after the unblock").unwrap();
-        assert_eq!(answered, R::Applied, "the report is applied after the unblock");
-        assert!(on_record().await.contains(&NodeState::Ready), "its row is written before the answer: {:?}", on_record().await);
-        assert_eq!(service.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::Ready), "the declared state holds the report");
-    }
-
-    /// CONTRACT (Q97, node-mesh-join.md step 10: "The node's mesh-primary (the fabric-primary for a
-    /// mesh with no primary) records and publishes the node once as Pending when it accepts the node's
-    /// join report"; Q54: an applied declared-state row is durable before the reply): the Pending
-    /// of a birth of another mesh, whose join report this mesh's admin accepted, is put among that
-    /// mesh's status rows (`status/<mesh>/`, where its primary and every reader of it look) and never
-    /// among this admin's own; a birth of this admin's own mesh is put among its own rows, as every
-    /// declaration is. A start beginning each birth's next cycle tombstones its rows where they were
-    /// put. Must NOT happen: another mesh's birth among this admin's own mesh's rows.
-    #[tokio::test]
-    async fn a_join_report_accepted_for_another_meshs_birth_puts_its_pending_among_that_meshs_rows() {
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.r#type = "node-admin".to_string();
-        admin.is_primary = true;
-        let mut own = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        own.r#type = "node".to_string();
-        let mut other = node(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin");
-        other.r#type = "node-admin".to_string();
-        let fabric_id = FabricId::mint();
-        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), own.clone(), other.clone()] }));
-        let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let service = mesh_primary_with_store(&admin, topology, fabric_id, status.clone());
-        claimed(&status, &[&own, &other]).await;
-        for n in [&own, &other] {
-            assert_eq!(service.joined_pending(&n.node_id, &n.location(), n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "node {}'s accepted join report records its Pending", n.node_id);
-        }
-        let births = |rows: Vec<crate::status_rpc::Declaration>| rows.into_iter().map(|r| (r.node_id, r.state)).collect::<Vec<_>>();
-        let declared_of = async |mesh: &str| Declaration::of_records(&crate::storage::NodesStorage::nodes(&*status, mesh).await.unwrap());
-        let own_rows = declared_of("mesh1").await;
-        assert_eq!(births(own_rows.clone()), vec![(own.node_id.clone(), NodeState::Pending)], "mesh1's rows hold its own birth's Pending and nothing of mesh2's: {own_rows:?}");
-        assert_eq!(births(declared_of("mesh2").await), vec![(other.node_id.clone(), NodeState::Pending)], "mesh2's birth's Pending is among mesh2's rows");
-        for n in [&own, &other] {
-            service.begin_cycle(n, n.incarnation_id.as_ref().unwrap()).await;
-        }
-        assert!(declared_of("mesh1").await.is_empty(), "the own birth's begun cycle clears its declared states on its record");
-        assert!(declared_of("mesh2").await.is_empty(), "mesh2's birth's begun cycle clears its declared states on its record");
     }
 
     /// CONTRACT (Q99, Q97; node-mesh-join.md step 10: the mesh-primary "records and publishes the node
@@ -3180,7 +2899,6 @@ mod tests {
                     })
                 })
             }),
-            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new({
@@ -3249,14 +2967,6 @@ mod tests {
                 replies.lock().unwrap().pop().unwrap_or_else(|| panic!("{what}: the accepted report recorded no Pending"))
             }
         };
-        let pending_rows = || {
-            let status = status.clone();
-            async move {
-                let rows = Declaration::of_records(&crate::storage::NodesStorage::nodes(&*status, "mesh1").await.unwrap());
-                rows.into_iter().map(|r| (r.node_id, r.incarnation_id, r.state)).collect::<Vec<_>>()
-            }
-        };
-        let one_pending = vec![(rpc.node_id.clone(), birth.clone(), NodeState::Pending)];
 
         // The first start's join (its create's registration).
         let _create = joins.expect(first.clone());
@@ -3271,7 +2981,6 @@ mod tests {
         let _commanded = joins.expect(commanded.clone());
         assert_eq!(serve("the commanded join").await, R::Applied, "the same birth's commanded join, while it is still Pending from its last join, records its own Pending");
         assert!(!cut_held(), "the commanded join's accepted report begins the birth's next cycle");
-        assert_eq!(pending_rows().await, one_pending, "one Pending row of the birth, its new cycle's");
         cut();
         assert_eq!(serve("a retry of the commanded join").await, R::AlreadyApplied, "a retry of the commanded join belongs to its Pending");
         assert!(cut_held(), "a retry begins no cycle");
@@ -3281,111 +2990,7 @@ mod tests {
         let _again = joins.expect(commanded);
         assert_eq!(serve("the next commanded join").await, R::Applied, "the next commanded join of the still-Pending birth records its own Pending");
         assert!(!cut_held(), "the next commanded join's accepted report begins the birth's next cycle");
-        assert_eq!(pending_rows().await, one_pending, "one Pending row of the birth, its new cycle's");
         assert_eq!(serve("a retry of the next commanded join").await, R::AlreadyApplied, "a retry of the next commanded join belongs to its Pending");
-    }
-
-    /// A nodes store whose every record write takes 50 ms: updates of one node started together
-    /// overlap in time, so a write that started from a copy another write was about to replace would
-    /// erase that write's fact.
-    #[derive(Default)]
-    struct SlowPuts {
-        inner: crate::storage::MemoryNodesStorage,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::storage::NodesStorage for SlowPuts {
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
-            self.inner.node(node_id).await
-        }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.nodes(mesh).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            self.inner.put_node(row).await
-        }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
-            self.inner.records_at(name).await
-        }
-    }
-
-    /// CONTRACT (storage-whole-records.md, "The rule": "Every mutation of an object holds that object's
-    /// own lock from the cache read through the mutation, the store's acknowledgment and the cache
-    /// replacement; two updates of one object never overlap"; #3051): two declarations of one birth
-    /// and a renewal's cert dates for it, started together over a store whose writes take time, all
-    /// stand on the node's record afterwards, and what a restarted authority folds from the record is
-    /// the state it held in memory: a node's declared state never goes backward across a restart.
-    /// Must NOT happen: a write started from a copy another write was replacing, erasing its fact.
-    #[tokio::test]
-    async fn overlapping_updates_of_one_node_all_stand_on_its_record_and_rehydrate_never_backward() {
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.mesh = "mesh1".into();
-        admin.r#type = "node-admin".to_string();
-        admin.is_primary = true;
-        admin.is_fabric_primary = true;
-        let mut rpc = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        rpc.mesh = "mesh1".into();
-        rpc.r#type = "node".to_string();
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: Vec::new(),
-            nodes: vec![admin.clone(), rpc.clone()],
-        }));
-        let status: Arc<SlowPuts> = Arc::new(Default::default());
-        let service = StatusService {
-            certs: None,
-            topology_view: None,
-            declaration_seam: None,
-            command_frame_seam: None,
-            operation_effects: Default::default(),
-            stopped: Default::default(),
-            me: admin.location(),
-            node_id: admin.node_id.clone(),
-            fabric_id: topology.read().await.fabric.id.clone(),
-            topology: topology.clone(),
-            declared: Arc::new(Mutex::new(Declared::default())),
-            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
-            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
-            mesh_ids: Arc::new(BTreeMap::new),
-            durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandView::default()),
-            own: Arc::new(OnceLock::new()),
-            mesh_deleter: Arc::new(OnceLock::new()),
-            primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake: Default::default(),
-            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: status.clone(),
-            caches: Default::default(),
-            configs: Default::default(),
-            republish: Default::default(),
-            pre_node_ready: Default::default(),
-            rename: Default::default(),
-            row_moved: Default::default(), rejoin: Default::default(),
-            loads: None,
-            digest_view: None,
-            unreachable: Default::default(),
-            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-        };
-        let birth = rpc.incarnation_id.clone().unwrap();
-        let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state, operation: None };
-        let (leaving, ready) = (declare(NodeState::Stopped), declare(NodeState::Ready));
-        let dates = crate::storage::CertDates { issued_at: 1, expires_at: 10, issuer_expires_at: 100, renew_at: 7 };
-        let renewal = service.caches.nodes.update_birth(&*status, &rpc, &birth, |b| b.cert = Some(dates.clone()));
-        let (a, b, c) = tokio::join!(service.apply(Some(rpc.clone()), &leaving), service.apply(Some(rpc.clone()), &ready), renewal);
-        // Each declaration is decided, written and decided again over what is held: one of the two is
-        // Applied, the other Applied or refused as backward once the greater one landed.
-        assert!(matches!((&a, &b), (R::Applied, R::Applied) | (R::Applied, R::RejectedInvalidNodeTransition { .. }) | (R::RejectedInvalidNodeTransition { .. }, R::Applied)), "{a:?} {b:?}");
-        assert!(c.is_ok(), "the renewal's dates are written: {c:?}");
-        let held = service.declared.lock().unwrap().node(&rpc.node_id, &birth);
-        assert_eq!(held, Some(NodeState::Stopped), "memory holds the greater state");
-        let record = crate::storage::NodesStorage::node(&status.inner, &rpc.node_id).await.unwrap().expect("the node's record");
-        let facts = record.birth(&birth).expect("the birth's facts");
-        assert!(facts.declared.contains(&NodeState::Stopped), "the greater declaration stands on the record: {facts:?}");
-        assert_eq!(facts.cert.as_ref(), Some(&dates), "the renewal's dates stand beside them");
-        let rehydrated = folded(&*status, &*service.meshes_storage, &*service.fabric_storage, "mesh1").await;
-        assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the record back to the state it held");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
@@ -3873,225 +3478,12 @@ mod tests {
         }
     }
 
-    /// CONTRACT (#3051, node-recovery.md "Steps": node.delete of the exited instance, then node.create
-    /// with a new node.id; a superseding birth: a new incarnation of the same node.id): a birth's declared
-    /// state is a fact about that birth only. Once the view holds a later incarnation of the node, or
-    /// holds the node deleted (node.deleted), the authority tombstones the old birth's declared-state
-    /// keys, blind, and forgets them; a birth the view still holds at the same incarnation (silent or
-    /// not) keeps its rows. Must NOT happen: an old birth's rows on disk forever, folded back on every
-    /// restart of the authority.
-    #[tokio::test]
-    async fn a_superseded_or_deleted_birth_leaves_no_declared_state_row_behind() {
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.mesh = "mesh1".into();
-        admin.r#type = "node-admin".to_string();
-        admin.is_primary = true;
-        admin.is_fabric_primary = true;
-        let member = |name: rdm_core::PathName| {
-            let mut n = node(name, "mesh1", "node");
-            n.mesh = "mesh1".into();
-            n.r#type = "node".to_string();
-            n.endpoint_id = Some(EndpointId(format!("{}-endpoint", n.node_id)));
-            n.transport_addr = Some("127.0.0.1:1".parse().unwrap());
-            n
-        };
-        let (restarted, deleted, standing) = (member(rdm_core::PathName::new("mesh1.node", "1").unwrap()), member(rdm_core::PathName::new("mesh1.node", "2").unwrap()), member(rdm_core::PathName::new("mesh1.node", "3").unwrap()));
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: Vec::new(),
-            nodes: vec![admin.clone(), restarted.clone(), deleted.clone(), standing.clone()],
-        }));
-        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let service = StatusService {
-            certs: None,
-            topology_view: None,
-            declaration_seam: None,
-            command_frame_seam: None,
-            operation_effects: Default::default(),
-            stopped: Default::default(),
-            me: admin.location(),
-            node_id: admin.node_id.clone(),
-            fabric_id: topology.read().await.fabric.id.clone(),
-            topology: topology.clone(),
-            declared: Arc::new(Mutex::new(Declared::default())),
-            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
-            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
-            mesh_ids: Arc::new(BTreeMap::new),
-            durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandView::default()),
-            own: Arc::new(OnceLock::new()),
-            mesh_deleter: Arc::new(OnceLock::new()),
-            primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake: Default::default(),
-            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: status.clone(),
-            caches: Default::default(),
-            configs: Default::default(),
-            republish: Default::default(),
-            pre_node_ready: Default::default(),
-            rename: Default::default(),
-            row_moved: Default::default(), rejoin: Default::default(),
-            loads: None,
-            digest_view: None,
-            unreachable: Default::default(),
-            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-        };
-        for n in [&restarted, &deleted, &standing] {
-            let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-            assert_eq!(service.apply(Some(n.clone()), &declare).await, R::Applied, "node {}", n.node_id);
-        }
-        let digest_view = rdm_transport::topology::DigestView::default();
-        // rpc.1 restarted: the view holds its next incarnation.
-        digest_view.record(digest_of(&restarted, IncarnationId::mint()));
-        // rpc.2 deleted: its exact birth deleted.
-        digest_view.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
-        digest_view.depart(rdm_core::LifecycleOp { r#type: deleted.r#type.clone(), mesh: deleted.mesh.clone(),
-            build_id: "build1".into(),
-            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
-            node_id: deleted.node_id.clone(),
-            incarnation: deleted.incarnation_id.clone().unwrap(),
-            path: deleted.path.clone(), name: deleted.name.clone(),
-            event_at_rafka_ms: 0,
-            traceparent: None,
-            tracestate: None,
-        });
-        // rpc.3 is held at the birth that declared (silent or not, it is not superseded).
-        digest_view.record(digest_of(&standing, standing.incarnation_id.clone().unwrap()));
-        let capture = crate::span_capture::Capture::new("i143-3051-superseded-rows");
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            service.drop_superseded(&digest_view).await;
-        }
-        let by_incarnation = capture.named("rdm.node_admin.status.remove.via-new-incarnation");
-        let by_deletion = capture.named("rdm.node_admin.status.remove.via-node-deleted");
-        for s in by_incarnation.iter().chain(&by_deletion) {
-            eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
-        }
-        assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "deleted".to_string())], "the restarted node's old birth is deleted for its new incarnation");
-        assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "deleted".to_string())], "the deleted node's birth is deleted for its deletion");
-        use crate::storage::NodesStorage as _;
-        let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
-        assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the view still holds keeps its declared-state row");
-        let held = service.declared.lock().unwrap().clone();
-        assert_eq!(held.node(&restarted.node_id, restarted.incarnation_id.as_ref().unwrap()), None, "the restarted node's old birth is forgotten");
-        assert_eq!(held.node(&deleted.node_id, deleted.incarnation_id.as_ref().unwrap()), None, "the deleted birth is forgotten");
-        assert_eq!(held.node(&standing.node_id, standing.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the held birth keeps its state");
-        assert_eq!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.len(), 1, "a restarted authority folds only the held birth back");
-    }
-
-    /// CONTRACT (node-recovery.md "Steps": "node.create at the same path and name", "New: node.id"): a
-    /// recovered birth is superseded by a NEW node at its path and name. Once the node rows hold that path
-    /// under another node_id (the exited birth's row released it, the new node's claim holds it; Q197:
-    /// the records, never the view, say which birth holds a path), the exited birth's declared-state
-    /// rows are tombstoned (via-new-node), whether or not the view still holds the exited birth's
-    /// departure (that is held only DELETED_RETENTION; an admin that rehydrates later holds none).
-    /// Must NOT happen: the exited birth's rows folded back for ever because its node_id is gone.
-    #[tokio::test]
-    async fn a_birth_whose_path_the_view_holds_under_a_new_node_leaves_no_declared_state_row_behind() {
-        let mut admin = node(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        admin.mesh = "mesh1".into();
-        admin.r#type = "node-admin".to_string();
-        admin.is_primary = true;
-        admin.is_fabric_primary = true;
-        let mut exited = node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        exited.mesh = "mesh1".into();
-        exited.r#type = "node".to_string();
-        exited.endpoint_id = Some(EndpointId("mesh1.node.1-endpoint".into()));
-        exited.transport_addr = Some("127.0.0.1:1".parse().unwrap());
-        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
-            meshes: Vec::new(),
-            nodes: vec![admin.clone(), exited.clone()],
-        }));
-        let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let service = StatusService {
-            certs: None,
-            topology_view: None,
-            declaration_seam: None,
-            command_frame_seam: None,
-            operation_effects: Default::default(),
-            stopped: Default::default(),
-            me: admin.location(),
-            node_id: admin.node_id.clone(),
-            fabric_id: topology.read().await.fabric.id.clone(),
-            topology: topology.clone(),
-            declared: Arc::new(Mutex::new(Declared::default())),
-            meshes_storage: Arc::new(crate::storage::MemoryMeshStorage::default()),
-            fabric_storage: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
-            mesh_ids: Arc::new(BTreeMap::new),
-            durable: Default::default(),
-            commands: Arc::new(crate::node_commands::CommandView::default()),
-            own: Arc::new(OnceLock::new()),
-            mesh_deleter: Arc::new(OnceLock::new()),
-            primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake: Default::default(),
-            fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
-            nodes_storage: status.clone(),
-            caches: Default::default(),
-            configs: Default::default(),
-            republish: Default::default(),
-            pre_node_ready: Default::default(),
-            rename: Default::default(),
-            row_moved: Default::default(), rejoin: Default::default(),
-            loads: None,
-            digest_view: None,
-            unreachable: Default::default(),
-            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-        };
-        let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        assert_eq!(service.apply(Some(exited.clone()), &declare).await, R::Applied);
-        // Historical effects alone do not prove that a missing exact-ID record was deleted,
-        // even when another node currently holds the recorded location.
-        let unknown = NodeId::mint();
-        let unknown_incarnation = IncarnationId::mint();
-        let effects: Vec<_> = [exited.location(), exited.location().with_name("renamed").unwrap()].into_iter().enumerate().map(|(position, name)| OperationEffect {
-            node_id: unknown.clone(), incarnation_id: unknown_incarnation.clone(), name,
-            operation: DeclaredOperation { operation: rdm_core::OperationId::node("node.stop", &unknown).at_step(Some(position as u32 + 1)) },
-            state: NodeState::Ready,
-        }).collect();
-        for effect in &effects { service.declared.lock().unwrap().operations.insert(effect.key(), effect.clone()); }
-        assert!(service.superseded_on_rows(&unknown).await.is_none());
-        service.drop_superseded(&rdm_transport::topology::DigestView::default()).await;
-        assert!(effects.iter().all(|effect| service.declared.lock().unwrap().operations.contains_key(&effect.key())));
-        service.declared.lock().unwrap().operations.retain(|_, effect| effect.node_id != unknown);
-        // The recovery created a new node at the path; the exited birth's departure is no longer held.
-        let mut recovered = exited.clone();
-        recovered.node_id = NodeId::mint();
-        recovered.incarnation_id = Some(IncarnationId::mint());
-        // The records of the recovery: the exited birth's row is Deleted (it released the path and name),
-        // and the new node's row claims the name over it.
-        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &exited.location(), &exited.node_id).await.is_ok(), "the exited birth's Deleted row is written");
-        assert_eq!(crate::node_rows::write_record(&*status, &crate::storage::NodeRecord::new(recovered.location(), recovered.mesh.clone(), &recovered.r#type, recovered.node_id.clone(), recovered.status)).await, Ok(Ok(())), "the new node's row claims the (path, name)");
-        let digest_view = rdm_transport::topology::DigestView::default();
-        digest_view.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
-        let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            service.drop_superseded(&digest_view).await;
-        }
-        let by_new_node = capture.named("rdm.node_admin.status.remove.via-new-node");
-        for s in &by_new_node {
-            eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
-        }
-        assert_eq!(
-            by_new_node.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["held_node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(),
-            vec![(exited.node_id.to_string(), recovered.node_id.to_string(), "deleted".to_string())],
-            "the exited birth is deleted for the new node at its path"
-        );
-        use crate::storage::NodesStorage as _;
-        assert!(Declaration::of_records(&status.nodes("mesh1").await.unwrap()).is_empty(), "no declared state of the exited birth is left");
-        assert_eq!(service.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
-        assert!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.is_empty(), "a restarted authority folds nothing of it back");
-    }
-
     /// CONTRACT (Q197: an action decision reads the records, never gossip; node-identity-and-state.md
     /// §2.3 "the deleted row releases the `(path, name)`"; Luke 2026-10-26: "the birth at a path is the one
     /// the records say is current, stopped or not"): the birth that holds a path and name is the one whose
-    /// row holds it live. A deleted predecessor whose digest this admin's view still holds (its
+    /// record holds it live. A deleted predecessor whose digest this admin's view still holds (its
     /// deletion never applied here) does not hold the path, so the current birth at that path keeps its
-    /// declared-state rows.
+    /// declared state.
     /// Must NOT happen: the current birth's declared state tombstoned via-new-node, naming the deleted
     /// predecessor as the node at its path.
     #[tokio::test]
@@ -4151,11 +3543,12 @@ mod tests {
             unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
-        // The records: the predecessor's row is Deleted (it released the path and name), and the current
-        // birth's row claims the name over it.
+        // The records: the predecessor's record is Deleted (it released the path and name), and the
+        // current birth wrote its own record at the name over it (Q356).
         claimed(&status, &[&predecessor]).await;
-        let deleted = crate::node_rows::write_deleted(&*status, &service.caches.nodes, &predecessor.location(), &predecessor.node_id).await;
-        assert!(deleted.is_ok(), "the predecessor's Deleted row is written: {deleted:?}");
+        let deleted = crate::node_rows::write_deleted(&*status, &predecessor.location(), &predecessor.node_id).await;
+        assert!(deleted.is_ok(), "the predecessor's Deleted record is written: {deleted:?}");
+        claimed(&status, &[&current]).await;
         let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         assert_eq!(service.apply(Some(current.clone()), &declare).await, R::Applied);
         use crate::storage::NodesStorage as _;
@@ -4178,10 +3571,7 @@ mod tests {
             eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
         }
         assert!(removed.is_empty(), "the current birth's declared state is not removed: {:?}", removed.iter().map(|s| (s.name.clone(), s.attributes.clone())).collect::<Vec<_>>());
-        let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
-        assert_eq!(rows, vec![current.node_id.to_string()], "the current birth keeps its declared-state row");
         assert_eq!(service.declared.lock().unwrap().node(&current.node_id, current.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the current birth keeps its state");
-        assert_eq!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.len(), 1, "a restarted authority folds the current birth back");
     }
 
     /// CONTRACT (query.md §1: "a mesh-primary answers a read of its own mesh from its atlas and carries

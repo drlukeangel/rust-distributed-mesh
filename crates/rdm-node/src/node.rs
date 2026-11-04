@@ -1934,7 +1934,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     if let (StatusReply::CertRenewed { .. }, Some(dates)) = (&reply, cert_dates) {
                         let initial = property_snapshot(&me.property_writer, me.topology_view.config().unwrap_or_default());
                         if let Err(error) = me.property_writer.update(initial, move |record| record.cert = Some(dates), |_| {}).await {
-                            return Ok(rdm_core::reply::status::bounded_node_row_refused(&me.digest.node.node_id.to_string(), &error.to_string()));
+                            return Ok(rdm_core::reply::status::bounded_node_record_refused(&me.digest.node.node_id.to_string(), &error.to_string()));
                         }
                     }
                     Ok(reply)
@@ -1994,7 +1994,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         topology.set_tags(record.tags.clone());
                     }).await {
                         Ok(_) => Ok(rdm_core::reply::applied()),
-                        Err(error) => Ok(rdm_core::reply::status::bounded_node_row_refused(
+                        Err(error) => Ok(rdm_core::reply::status::bounded_node_record_refused(
                             &me.topology_view.node_name().to_string(), &error.to_string())),
                     }
                 }
@@ -2024,7 +2024,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let topology = me.topology_view.clone();
                     match me.property_writer.tags(initial, change, move |record| topology.set_tags(record.tags.clone())).await {
                         Ok(reply) => Ok(reply),
-                        Err(error) => Ok(rdm_core::reply::status::bounded_node_row_refused(&me.topology_view.node_name().to_string(), &error.to_string())),
+                        Err(error) => Ok(rdm_core::reply::status::bounded_node_record_refused(&me.topology_view.node_name().to_string(), &error.to_string())),
                     }
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {

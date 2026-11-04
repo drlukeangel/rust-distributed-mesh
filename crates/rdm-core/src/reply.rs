@@ -71,8 +71,8 @@ pub fn config_not_applied(node: String, answered: String, reason: String) -> Sta
 pub fn rejected_admitting_connections(status: NodeStatus, held_connections: Vec<ConnectionId>) -> StatusReply { StatusReply::RejectedAdmittingConnections { status, held_connections } }
 /// Construct the typed name-held outcome.
 pub fn name_held(location: crate::PathName, by: NodeId) -> StatusReply { StatusReply::NameHeld { path: location.path, name: location.name, by } }
-/// Construct the typed node-row-refused outcome.
-pub fn node_row_refused(node: String, reason: String) -> StatusReply { StatusReply::NodeRowRefused { node, reason } }
+/// Construct the typed node-record-refused outcome.
+pub fn node_record_refused(node: String, reason: String) -> StatusReply { StatusReply::NodeRecordRefused { node, reason } }
 /// Construct the typed name-not-applied outcome.
 pub fn name_not_applied(node: String, answered: String, reason: String) -> StatusReply { StatusReply::NameNotApplied { node, answered, reason } }
 /// Construct the typed rejected-connection-scope outcome.
@@ -106,8 +106,8 @@ pub fn bounded_start_failed(step: &str, reason: &str) -> StatusReply { StatusRep
 pub fn bounded_rejected_tags(reason: &str) -> StatusReply { StatusReply::rejected_tags(reason) }
 /// Construct the bounded rejected-filter outcome (Q167 R-RD2).
 pub fn bounded_rejected_filter(reason: &str) -> StatusReply { StatusReply::rejected_filter(reason) }
-/// Construct the bounded node-row-refused outcome.
-pub fn bounded_node_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::node_row_refused(node, reason) }
+/// Construct the bounded node-record-refused outcome.
+pub fn bounded_node_record_refused(node: &str, reason: &str) -> StatusReply { StatusReply::node_record_refused(node, reason) }
 /// Construct the bounded rejected-name outcome.
 pub fn bounded_rejected_name(reason: &str) -> StatusReply { StatusReply::rejected_name(reason) }
 /// Construct the bounded rejected-admitting-connections outcome.
