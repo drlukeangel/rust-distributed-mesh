@@ -121,7 +121,6 @@ async fn broker(
         |s| s,
         None,
         |b, _| b,
-        &[KIND, LARGE],
     )
     .await
     .unwrap()
@@ -169,18 +168,15 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         .await
         .unwrap();
         root.stop_reconciling().await;
-        assert!(root.topology_view.held_types().is_empty());
         let node = broker(&root, &dir.join("broker"), &root_dir).await;
-        assert!(root.topology_view.app_types().is_empty());
-        assert_eq!(
-            root.topology_view.held_types(),
-            [KIND.to_string(), LARGE.to_string()].into()
-        );
-        assert_eq!(node.topology_view.held_types(), node.topology_view.app_types());
-        let sender = node.topology_view.join_channel(KIND).await.unwrap();
-        let mut receiver = root.topology_view.join_channel(KIND).await.unwrap();
-        let large_sender = node.topology_view.join_channel(LARGE).await.unwrap();
-        let mut large_receiver = root.topology_view.join_channel(LARGE).await.unwrap();
+        // RDM provides the channels and the consumer names them (gossip.md §8, Q362): the node-admin
+        // joins each first, and the broker joins each naming the node-admin, by its endpoint_id, as its
+        // first neighbour.
+        let root_endpoint = root.digest.lock().unwrap().node.endpoint_id.clone();
+        let mut receiver = root.topology_view.join_channel(KIND, &[]).await.unwrap();
+        let mut large_receiver = root.topology_view.join_channel(LARGE, &[]).await.unwrap();
+        let sender = node.topology_view.join_channel(KIND, std::slice::from_ref(&root_endpoint)).await.unwrap();
+        let large_sender = node.topology_view.join_channel(LARGE, std::slice::from_ref(&root_endpoint)).await.unwrap();
         // Observe actual per-channel neighbour establishment; elapsed boot time proves nothing.
         tokio::time::timeout(BOUND, async {
             loop {

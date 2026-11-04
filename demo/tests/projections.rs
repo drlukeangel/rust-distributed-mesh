@@ -1,13 +1,14 @@
-//! The independent consumer's projection chain, on public RDM surfaces only: node-admin declares
-//! every kind and keeps a cache of what arrives on each channel; a node born later hydrates its own
-//! kinds from that cache through its `pre_node_ready` hook before it reports ready; what is published
-//! after the pull arrives live. The gateway holds three kinds, the compute two: one shared with the
-//! gateway and one its own (gossip.md §8: node-admin holds every channel as the app; "Entry ends
-//! with a pull"; fabric-node-hooks.md `pre_node_ready`).
+//! The independent consumer's projection chain, on public RDM surfaces only: node-admin joins every
+//! kind's channel and keeps a cache of what arrives on each; a node born later hydrates its own kinds
+//! from that cache through its `pre_node_ready` hook before it reports ready, and joins its kinds'
+//! channels naming the node-admin as their first neighbour; what is published after the pull arrives
+//! live. The gateway holds three kinds, the compute two: one shared with the gateway and one its own
+//! (gossip.md §8, Q362: RDM provides the channels, the application's nodes join the channels its own
+//! code names; "Entry ends with a pull"; fabric-node-hooks.md `pre_node_ready`).
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
-use rdm_core::{IncarnationId, NodeId, PathName};
+use rdm_core::{IncarnationId, NodeId};
 use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
 use rdm_node::gossip::{Channel, Event};
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
@@ -116,9 +117,9 @@ impl PreNodeReady for Hydrate {
     }
 }
 
-/// A member of `type` at `ordinal` in the root admin's mesh, launched by the root admin, declaring
-/// `kinds`, hydrating through `hook`.
-async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, r#type: &str, ordinal: u32, kinds: &[&str], hook: NodeHooks) -> rdm_node::node::RunningNode {
+/// A member of `type` at `ordinal` in the root admin's mesh, launched by the root admin, hydrating
+/// through `hook`.
+async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, r#type: &str, ordinal: u32, hook: NodeHooks) -> rdm_node::node::RunningNode {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("demo-proj")).unwrap();
@@ -168,7 +169,6 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         |s| s,
         None,
         |b, _| b,
-        kinds,
     )
     .await
     .unwrap()
@@ -184,7 +184,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
     let dir = std::env::temp_dir().join(format!("demo-proj-{}", NodeId::mint()));
     let capture = rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-projections").unwrap();
     capture.run(4, async {
-        // node-admin: declares every kind, serves the pull from its cache.
+        // node-admin: joins every kind's channel, serves the pull from its cache.
         let cache: Cache = Default::default();
         let serve = {
             let cache = cache.clone();
@@ -207,7 +207,6 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         let root = start_with(
             config(&root_dir),
             Wiring {
-                types: ALL_KINDS.iter().map(|k| k.to_string()).collect(),
                 serve_app: Some(serve),
                 fabric_hooks: FabricHooks::no_app_work(),
                 ..Wiring::no_certs()
@@ -216,26 +215,26 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         .await
         .unwrap();
         root.stop_reconciling().await;
-        assert_eq!(root.topology_view.held_types(), ALL_KINDS.iter().map(|k| k.to_string()).collect());
         for kind in ALL_KINDS {
-            feed(&cache, root.topology_view.join_channel(kind).await.unwrap());
+            feed(&cache, root.topology_view.join_channel(kind, &[]).await.unwrap());
         }
+        // Every member names the node-admin, by its endpoint_id, as each channel's first neighbour.
+        let root_endpoint = root.digest.lock().unwrap().node.endpoint_id.clone();
+        let admin = std::slice::from_ref(&root_endpoint);
 
         // The first gateway and compute: born into an empty cache, they publish.
         let g1_held: Cache = Default::default();
         let c1_held: Cache = Default::default();
-        let g1 = member(&root, &dir.join("gateway.1"), &root_dir, "gateway", 1, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
-        let c1 = member(&root, &dir.join("compute.1"), &root_dir, "compute", 1, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
+        let g1 = member(&root, &dir.join("gateway.1"), &root_dir, "gateway", 1, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
+        let c1 = member(&root, &dir.join("compute.1"), &root_dir, "compute", 1, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
         assert!(g1_held.lock().unwrap().is_empty() && c1_held.lock().unwrap().is_empty(), "nothing was published yet");
-        assert_eq!(g1.topology_view.held_types(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect());
-        assert_eq!(c1.topology_view.held_types(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect());
         let mut g1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
         for kind in GATEWAY_KINDS {
-            g1_channels.insert(kind, g1.topology_view.join_channel(kind).await.unwrap());
+            g1_channels.insert(kind, g1.topology_view.join_channel(kind, admin).await.unwrap());
         }
         let mut c1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
         for kind in COMPUTE_KINDS {
-            c1_channels.insert(kind, c1.topology_view.join_channel(kind).await.unwrap());
+            c1_channels.insert(kind, c1.topology_view.join_channel(kind, admin).await.unwrap());
         }
         // Each channel has node-admin as a neighbour before anything is published: the admin's
         // channel count of the kind reaches one.
@@ -291,8 +290,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         // A gateway and a compute born now hydrate their own kinds from the cache, before ready.
         let g2_held: Cache = Default::default();
         let c2_held: Cache = Default::default();
-        let g2 = member(&root, &dir.join("gateway.2"), &root_dir, "gateway", 2, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g2_held.clone() }))).await;
-        let c2 = member(&root, &dir.join("compute.2"), &root_dir, "compute", 2, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c2_held.clone() }))).await;
+        let g2 = member(&root, &dir.join("gateway.2"), &root_dir, "gateway", 2, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g2_held.clone() }))).await;
+        let c2 = member(&root, &dir.join("compute.2"), &root_dir, "compute", 2, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c2_held.clone() }))).await;
         let g2_rows = g2_held.lock().unwrap().clone();
         let c2_rows = c2_held.lock().unwrap().clone();
         assert_eq!(g2_rows.keys().map(|s| type_of(s).to_string()).collect::<std::collections::BTreeSet<_>>(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect(), "the gateway hydrated exactly its three kinds");
@@ -304,8 +303,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         assert!(!c2_rows.contains_key("demo.principal/alice") && !c2_rows.contains_key("demo.path-config/root"), "a compute holds no gateway-only kind");
 
         // What is published after the pull arrives live on both, and node-admin's cache follows.
-        let mut g2_topic = g2.topology_view.join_channel(SHARED).await.unwrap();
-        let mut c2_topic = c2.topology_view.join_channel(SHARED).await.unwrap();
+        let mut g2_topic = g2.topology_view.join_channel(SHARED, admin).await.unwrap();
+        let mut c2_topic = c2.topology_view.join_channel(SHARED, admin).await.unwrap();
         tokio::time::timeout(BOUND, async {
             loop {
                 let spans = capture.spans().unwrap();

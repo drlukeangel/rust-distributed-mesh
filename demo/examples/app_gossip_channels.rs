@@ -1,12 +1,11 @@
-//! `app-gossip-channels`: declared application publication channels over the CloudEvents gossip
-//! envelope (`docs/architecture/gossip.md:1`, `crates/rdm-transport/src/gossip.rs:48`).
+//! `app-gossip-channels`: application channels over the CloudEvents gossip envelope (gossip.md §8,
+//! Q362): RDM provides the channels, and an application's nodes join the channels its own code names.
 //!
-//! A process declares the application event types it publishes at boot (`types`), and the mesh's
-//! held-type union (`held_types`) lets any member join and receive a type held in its mesh via
-//! `topology_view.join_channel(kind)`. Events carry `subject`, `sequence`, `dataschema`, and opaque
-//! `data` bytes; RDM delivers them with their original author's [`rdm_node::gossip::Birth`] and a
-//! receive span parented to the author's span. Joining or publishing a type not held in the mesh is
-//! refused with [`ChannelError::UndeclaredType`].
+//! `topology_view.join_channel(name, peers)` joins the channel `name` with `peers`, its first
+//! neighbours by `endpoint_id`: here the node-admin joins first, naming none, and the broker joins
+//! naming the node-admin. Nothing is declared to RDM. Events carry `subject`, `sequence`, `dataschema`,
+//! and opaque `data` bytes; RDM delivers them with their original author's
+//! [`rdm_node::gossip::Birth`] and a receive span parented to the author's span.
 //!
 //! Build: `cargo build --example app_gossip_channels` in `demo/`.
 //! Run against a live estate (`scripts/demo-estate.sh up`):
@@ -19,7 +18,7 @@ use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_client::{Filter, MeshNode, Nodes, Peers};
 use rdm_core::{IncarnationId, NodeId};
-use rdm_node::gossip::{ChannelError, Event};
+use rdm_node::gossip::Event;
 use std::time::Duration;
 
 const KIND: &str = "demo.records";
@@ -44,10 +43,7 @@ fn main() -> Result<()> {
             let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
             let rows = Nodes::new(peers.carrier_at(birth.location())).get(&Filter::new()).await?;
             let first = rows.first().ok_or_else(|| anyhow!("node.get returned no rows"))?;
-            println!(
-                "live estate node path {:?}, name {:?}: types={:?} held={:?} held_hash={:?}",
-                first.path, first.name, first.types, first.held, first.held_hash
-            );
+            println!("live estate node path {:?}, name {:?}: {:?}", first.path, first.name, first.state);
         }
 
         let root_dir = dir.join("admin");
@@ -115,17 +111,12 @@ fn main() -> Result<()> {
             |s| s,
             None,
             |b, _| b,
-            &[KIND],
         )
         .await?;
 
-        println!("broker app_types={:?}, admin held_types={:?}", node.topology_view.app_types(), root.topology_view.held_types());
-        let refused = node.topology_view.join_channel("demo.undeclared").await.err();
-        assert!(matches!(refused, Some(ChannelError::UndeclaredType { .. })));
-        println!("undeclared channel refused: {}", refused.unwrap());
-
-        let sender = node.topology_view.join_channel(KIND).await?;
-        let mut receiver = root.topology_view.join_channel(KIND).await?;
+        // The node-admin joins first; the broker names it, by its endpoint_id, as its first neighbour.
+        let mut receiver = root.topology_view.join_channel(KIND, &[]).await?;
+        let sender = node.topology_view.join_channel(KIND, &[d.node.endpoint_id.clone()]).await?;
         tokio::time::timeout(BOUND, async {
             while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.channel.update.via-neighbour" && s["attributes"]["event_type"] == KIND).count() < 2 {
                 tokio::task::yield_now().await;
