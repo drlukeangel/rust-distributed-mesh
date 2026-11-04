@@ -92,6 +92,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
 | [node.connection.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
 | [node recovery (RDM)](lifecycles/node-recovery.md) | Replacing a member whose exit its mesh-primary found |
+| [mesh recovery (RDM)](lifecycles/mesh-recovery.md) | Restoring a mesh's primary after the node-admin that held it is lost: the successor its election names, two node-admins that each investigate the other, and the fabric-primary when the mesh has no node-admin left |
 | [node status (internal)](lifecycles/node-status.md) | The node's status report and its mesh-primary's apply; not a caller op |
 | [node.topology.get](lifecycles/node-topology-get.md) | Reading a node's held topology; a [running node's reconnect](lifecycles/node-topology-get.md#running-node-reconnect) |
 | [node.name.update](lifecycles/node-name-update.md) | Renaming a node |

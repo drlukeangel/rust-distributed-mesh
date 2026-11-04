@@ -48,7 +48,7 @@ own. A recovery that ends failed is run again by the next check that finds the n
    [node investigation](node-investigation.md) on the exact birth: the by-destination connections index, node.runtime.inspect (`exited` or `os-stopped` is the verdict, and no tickle is sent), node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at once. Any answer from the exact birth ends the ladder and cancels the
    probes still running; one failed peer probe does not cancel the other; every probe names the same
    exact `(node.id, incarnation)`. For a lost mesh-primary the successor its election names runs it as for
-   any member ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh));
+   any member ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh); [mesh recovery](mesh-recovery.md));
    the fabric-primary runs it, without the half-floor wait, only when the mesh's aggregate stays unheard for twice the staleness floor (60 s at the default floor): no successor took the role in the floor after the election, which is the mesh's own node-admin's to act in (Q335, Q349).
 3. **The verdict is the one decision (Q111).** `reached`: a held birth that answered, or that is heard
    again by its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the primary

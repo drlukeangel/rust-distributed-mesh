@@ -400,7 +400,7 @@ builds.storage = each Build entity and the execution evidence of its attempts
 21. `LifecycleTransitionPipeline` owns Node/Mesh/Fabric transition policy and blocking hooks. `LifecycleTransition.transition_id` identifies one transition execution and keys hook receipts; Node/Mesh/Fabric status-control RPCs carry no transition id and are idempotent on their natural keys.
 22. Normal joining/restarted admins do not self-Ready around missing control hydration. Day 0 and the explicitly fenced single-admin recovery-root are the only lifecycle roots that may establish Ready without an already-live Ready authority; election still runs afterward.
 23. SN/MN/MM are minimum proof rungs, not caps.
-24. Mesh creation is a Build. There is no mesh recovery: a mesh is alive while it holds a node, and a mesh with no node-admin gets one through mesh investigation, on the same Build and its own MeshId. Replace is Rafka's recipe of node primitives, submitted as one Build.
+24. Mesh creation is a Build. A mesh is alive while it holds a node. A lost mesh-primary is mesh recovery (lifecycles/mesh-recovery.md; Q335, Q371): the successor its election names, or, with no node-admin left, the fabric-primary re-creates a node-admin under the mesh's own MeshId, never as a Build (Q342). Replace is Rafka's recipe of node primitives, submitted as one Build.
 25. Fabric/Mesh views expose current owning node-admin control endpoints; tests never depend on hidden maps.
 26. Node RPC certainty commits only after complete request send + request-direction finish. Incomplete send -> 499/NotSent.
 27. Direct/Proxy connection truth is imported from the i66.e3 parity source; RDM does not create a second carrier-evidence or reconnect authority.
@@ -897,25 +897,14 @@ The mesh-primary span is a role projection, not a second election.
 <!-- section:6-6-new-mesh-recovery-ordering -->
 ### 6.6 A mesh that loses its node-admins
 
-There is no mesh recovery. A mesh is alive while it holds a node; a crash is not leaving. Only its mesh-primary leaves a mesh, always
+A mesh is alive while it holds a node; a crash is not leaving. Only its mesh-primary leaves a mesh, always
 last, at the end of mesh.delete; the mesh is then dead and never restarted (R-ML2). A dead mesh's name used again is mesh.create of a
 new mesh with a new MeshId.
 
-A peer mesh the fabric-primary stops hearing is mesh investigation (lifecycles/mesh-investigation.md), owned by the fabric-primary and
-timed on elapsed time since the last direct backbone receipt:
-- 20 s: probe 1, the exact mesh-primary first, then the other node-admins, each direct then via a peer;
-- 30 s: the silent mark;
-- 40 s: probe 2;
-- an admin answer or a backbone receipt stops it;
-- 60 s, the decision step, in two cases only:
-  - members live: a carrier-edge-lost verdict;
-  - fully crashed: the provider's exact exit proof of the mesh's node-admins, never silence.
-  Either case runs node.create of a node-admin into the mesh, in process, on the same accepted Build and the mesh's own MeshId.
-  Otherwise it holds.
-- When a mesh is given a new node-admin, both the mesh and the fabric carry degraded until the new mesh-primary's report clears them
-  (R-DG1).
-- The created node-admin joins as the mesh's successor primary, adopts the mesh's held state, and re-gossips once established.
-  Nobody publishes a mesh on its behalf (R-RX4). It brings back unreached members through node recovery.
+A lost mesh-primary is [mesh recovery](../architecture/lifecycles/mesh-recovery.md) (Q335, Q349, Q371): the successor its election
+names at the staleness floor investigates it as any member; with no node-admin of the mesh left, the fabric-primary investigates it
+once the mesh's aggregate is unheard for twice the floor and, on any verdict but `reached`, re-creates a node-admin under the mesh's
+own MeshId. Mesh investigation, its probe ladder and `degraded` are deleted (Q335).
 
 **Authority != executor:** the fabric-primary owns the investigation and the accepted topology. The created node-admin is the local
 executor of its own mesh's work.
@@ -1463,7 +1452,7 @@ i141 pins RDM once: the exact 40-hex merged `main` commit on which the complete 
 ### Repair/recovery
 - held-member repair heals a partition while each side retains neighbours;
 - failed rejoin is bounded and never marks Dead;
-- there is no mesh recovery: an unheard mesh is mesh investigation; a node-admin is created into a live mesh only on a carrier-edge-lost verdict or, fully crashed, on exact provider exit proof; both set degraded on the mesh and the fabric until the new mesh-primary reports;
+- a mesh is never re-born (R-ML2); a lost mesh-primary is mesh recovery (Q335, Q371): the successor investigates it as any member, and with no node-admin left the fabric-primary re-creates a node-admin into the live mesh on any verdict but `reached`; no `degraded` status (Q335);
 - nobody publishes a mesh on its behalf; the new mesh-primary re-gossips once established;
 - a node recovery proves the exact exit, then deletes and creates at the same path.name with a new node.id over the inherited data dir;
 - exact-runtime work in another provider domain uses valid remote/domain-local execution, never local PID/container guessing;
@@ -1546,7 +1535,7 @@ the deleted birth and the created birth at the same path.name (node.id, incarnat
 the provider's exact exit proof (its inspection verdict)
 ```
 
-A mesh none of whose node-admins can be reached is [mesh investigation](../architecture/lifecycles/mesh-investigation.md): its proof is its probes' outcomes and its decision step (the node.create of a node-admin into the live mesh, or none). There is no mesh recovery.
+A mesh none of whose node-admins can be reached is [mesh recovery](../architecture/lifecycles/mesh-recovery.md#no-node-admin-of-the-mesh-left) (Q335, Q371): its proof is the fabric-primary's node investigation of the lost mesh-primary and its verdict (`reached`: node.mesh.join; any other: the node.create of a node-admin into the live mesh).
 
 Amended 2026-10-19 by the lead, against the canon: `FabricRecord snapshots including build_id` became the current Build read from the Build facts (R-BI3 deleted `Fabric.build_id`); `current runtime-metadata snapshot/digest`, `recovery_admin_node_id` and `runtime_metadata_digest` are dropped (nothing produces them; the runtime evidence is the provider's adopt, inspect and exit evidence above); the mesh-recovery counts (`desired_shape`, `live_before`, `preserved_count`, `tombstoned_count`, `created_count`, `live_after`) are dropped with mesh recovery itself (mesh-investigation.md).
 
