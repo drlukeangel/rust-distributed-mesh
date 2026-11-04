@@ -2786,7 +2786,6 @@ source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=1766eb229
 dependencies = [
  "async-trait",
  "blake3",
- "bytes",
  "chrono",
  "dashmap",
  "futures-lite",
@@ -2866,6 +2865,7 @@ source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=1766eb229
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "futures-util",
  "hex",
  "iroh",
