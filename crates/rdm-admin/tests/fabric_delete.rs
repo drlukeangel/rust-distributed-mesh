@@ -22,11 +22,11 @@ use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentP
 use rdm_admin::executor::{executor_for, role_move};
 use rdm_admin::fabric_storage::{FabricIdentity, MemoryFabricStorage};
 use rdm_admin::join::Joins;
-use rdm_admin::mesh_delete::{accepted_roster, complete_fabric_delete, first_mismatch, handoff_verdict, leaving_roster, manifest_of, manifest_reference, members_exited, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, stored_roster, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
+use rdm_admin::mesh_delete::{accepted_roster, complete_fabric_delete, first_mismatch, handoff_verdict, leaving_roster, manifest_of, manifest_reference, members_exited, mesh_left_rows, operation, owner_resume, record_completion, roster_records, stored_roster, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
-use rdm_admin::node_rows::{RowFor, RowCreated, NodeRows};
+use rdm_admin::node_rows::NodeRows;
 use rdm_admin::status_rpc::Declared;
-use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRecord, NodesStorage, RuntimeRow};
+use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRecord, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_core::status::MeshState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -154,7 +154,7 @@ async fn left_manifest(builds: &dyn BuildStateAdapter, of: &[&BuildId], key: &Me
 /// `build_id` (D67: the topology of the moment is the records).
 async fn records_roster(storage: &MemoryNodesStorage, builds: &dyn BuildStateAdapter, build_id: &BuildId, mesh: &str, mesh_id: &MeshId) -> Vec<RosterBirth> {
     let steps = builds.read_build(build_id).await.unwrap().steps;
-    stored_roster(&storage.nodes(mesh).await.unwrap(), mesh, mesh_id, &steps)
+    stored_roster(&storage.nodes(mesh).await.unwrap(), mesh, &steps)
 }
 
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
@@ -162,19 +162,12 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
         // The record a create wrote: the node's row and its birth.
         let mut row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
-            row.birth_mut(incarnation, &n.location());
+            row.incarnation = incarnation.clone();
         }
         storage.put_node(&row).await.unwrap();
-        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         let h = handle(50_000);
         storage
-            .put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(),
-                node_id: n.node_id.clone(),
-                path: n.path.clone(), name: n.name.clone(),
-                incarnation_id: n.incarnation_id.clone().unwrap(),
-                runtime: h.fact().unwrap(),
-                data_dir: None,
-            })
+            .put_node(&rdm_node::nodes_storage::NodeRecord { runtime: h.fact().unwrap(), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type.clone().to_string(), n.node_id.clone(), n.incarnation_id.clone().unwrap(), rdm_core::model::NodeStatus::Ready) })
             .await
             .unwrap();
     }
@@ -390,7 +383,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let proj = builds.read_build(&build_id).await.unwrap();
     assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
     assert!(!fleet.terminated.lock().unwrap().contains(&m1_a1.node_id), "fabric-primary is still alive at fabric.deleted");
-    assert_eq!(nodes_storage.record_at(&m1_a1.location()).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
+    assert_eq!(nodes_storage.record_at(&m1_a1.location()).await.unwrap().unwrap().state, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
     // It is a Delete of the fabric-primary's node.id, its own Build (build.md §1), composed from the
@@ -419,7 +412,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Every node row is Deleted, and both mesh rows are deleted in status.storage and mesh.storage.
     for n in &all_nodes {
         let row = nodes_storage.node(&n.node_id).await.unwrap().expect("node row exists");
-        assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
+        assert_eq!(row.record.state, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
     }
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
         assert!(mesh_storage.mesh(&id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted), "{name} status row is deleted");

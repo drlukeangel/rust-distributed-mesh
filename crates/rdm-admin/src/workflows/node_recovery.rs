@@ -86,13 +86,13 @@ mod tests {
         let durable_deleted_id = NodeId::mint();
         let durable_rows = vec![
             // Path not in view, planned, not deleted -> included as PendingReconnect
-            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4100, 10), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node".into(), "3".into()).unwrap(), "node", durable_unheard_id.clone(), durable_unheard_inc.clone(), rdm_core::model::NodeStatus::Ready) },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4100, 10), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "3").unwrap(), "node", durable_unheard_id.clone(), durable_unheard_inc.clone(), rdm_core::model::NodeStatus::Ready) },
             // Path already in view (`mesh1.node.2`) -> skipped
             rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4101, 11), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(ready_member.path.clone(), ready_member.name.clone()).unwrap(), "node", ready_member.node_id.clone(), ready_member.incarnation_id.clone().unwrap(), rdm_core::model::NodeStatus::Ready) },
             // Deleted birth -> skipped
-            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4102, 12), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node".into(), "4".into()).unwrap(), "node", durable_deleted_id.clone(), IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4102, 12), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "4").unwrap(), "node", durable_deleted_id.clone(), IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) },
             // Unplanned path -> skipped
-            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4103, 13), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node".into(), "99".into()).unwrap(), "node", NodeId::mint(), IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4103, 13), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "99").unwrap(), "node", NodeId::mint(), IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) },
         ];
 
         let planned = |p: &PathName| *p != rdm_core::PathName::new("mesh1.node", "99").unwrap();

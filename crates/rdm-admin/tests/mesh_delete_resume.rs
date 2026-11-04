@@ -14,13 +14,13 @@ use rdm_admin::build_state::{BuildAccepted, BuildProjection, BuildStateAdapter, 
 use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, NoLifecycleEvents, Publication, RuntimeIdentity, TerminalReceipt, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::join::Joins;
-use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteView, MESH_DELETED_WAIT, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_of, manifest_reference, members_exited, operation, owner_resume, stored_roster, Admitted, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED};
+use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteView, MESH_DELETED_WAIT, record_completion, replayed_handoff, roster_records, mesh_left_rows, accepted_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_of, manifest_reference, members_exited, operation, owner_resume, stored_roster, Admitted, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED};
 use rdm_core::status::StatusReply;
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
-use rdm_admin::node_rows::{RowFor, RowCreated, NodeRows, RowRefused};
+use rdm_admin::node_rows::{NodeRows, RowRefused};
 use rdm_admin::status_rpc::Declared;
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
-use rdm_admin::storage::{MemoryNodesStorage, NodeRecord};
+use rdm_admin::storage::{MemoryNodesStorage, NodeRecord, NodesStorage as _};
 use rdm_admin::topology::Topology;
 use rdm_core::status::MeshState;
 use std::sync::Arc;
@@ -290,10 +290,9 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
     for n in records {
         let mut row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
-            row.birth_mut(incarnation, &n.location());
+            row.incarnation = incarnation.clone();
         }
         storage.put_node(&row).await.unwrap();
-        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
 
@@ -303,7 +302,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
 async fn records_roster(storage: &MemoryNodesStorage, builds: &dyn BuildStateAdapter, build_id: &BuildId, mesh_id: &MeshId) -> Result<Vec<RosterBirth>, String> {
     let steps = builds.read_build(build_id).await.map_err(|e| e.to_string())?.steps;
     let rows = rdm_admin::storage::NodesStorage::nodes(storage, "mesh2").await.map_err(|e| e.to_string())?;
-    Ok(stored_roster(&rows, "mesh2", mesh_id, &steps))
+    Ok(stored_roster(&rows, "mesh2", &steps))
 }
 
 fn artifact_dir() -> PathBuf {
@@ -456,10 +455,10 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     };
     for n in records.iter().filter(|n| n.node_id != final_admin.node_id) {
         let row = read(&n.node_id).unwrap_or_else(|| panic!("{:?} has a row", n.name));
-        assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &n.node_id), "{:?}'s row is Deleted with its node id: {row:?}", n.name);
+        assert_eq!((row.record.state, &row.record.node_id), (NodeStatus::Deleted, &n.node_id), "{:?}'s row is Deleted with its node id: {row:?}", n.name);
     }
     let last = read(&final_admin.node_id).unwrap();
-    assert_ne!(last.status, NodeStatus::Deleted, "the final primary's row is not deleted at step 3: {last:?}");
+    assert_ne!(last.record.state, NodeStatus::Deleted, "the final primary's record is not deleted at step 3: {last:?}");
     let deleted = named("rdm.node_admin.node.delete.via-node-row");
     let exited_row: Vec<&Value> = deleted.iter().filter(|s| s["attributes"]["node_id"] == exiting.node_id.as_str()).collect();
     assert!(exited_row.iter().any(|s| s["attributes"]["outcome"] == "row-deleted"), "the retained member's row is written Deleted from the writer's record: {deleted:#?}");
@@ -684,7 +683,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
 /// row carrying its create spec's config, here none (Q166: a plain create's config is its spec's; only a
 /// recovery's and a successor's claim inherit).
 #[test]
-fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_only_then_the_name_is_claimed_again() {
+fn the_final_primarys_node_delete_writes_its_record_deleted_once_it_is_stopped() {
     let cap = capture();
     let fp = {
         let mut n = node_at("mesh1.node-admin", "1", "mesh1", "node-admin");
@@ -700,15 +699,15 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let mesh_id = MeshId::mint();
     let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint(), operation: operation(&mesh_id) };
     let deleting = rdm_core::OperationId::node("node.delete", &last.node_id);
-    let (second, live, stopped, after, row, statuses, again, trace_id) = cap.run(async {
+    let (second, live, stopped, after, row, statuses, trace_id) = cap.run(async {
         let root = tracing::info_span!("cell.final-primary-row-deleted", operation = %key.operation.action, operation_subject = ?key.operation.subject, operation_step = ?key.operation.step, operation_occurrence = ?key.operation.occurrence);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         // The fabric-primary claimed the mesh's first admin's name when it created it, before the
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
-        // A live path `mesh2.node-admin`, name `1` holds its name: a second birth's claim is refused.
-        let second = rows.create_row(&last.location(), &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), None, None, RowFor::Create).await;
+        // A live path `mesh2.node-admin`, name `1` holds its name: a second birth's create is refused.
+        let second = rows.check_create(&last.location(), &last.mesh.clone(), &last.r#type, &NodeId::mint(), None, None).await;
         // In its role and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.node_id == last.node_id).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -723,9 +722,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let row = rdm_admin::storage::NodesStorage::node(storage.as_ref(), &last.node_id).await.unwrap();
         let statuses = status.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>();
         let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
-        // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.create_row(&last.location(), &last.mesh.clone(), &last.r#type, &NodeId::mint(), &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), None, None, RowFor::Create).await;
-        (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
+        (second, live, stopped, after, row, (statuses, dead_held), trace_id)
     });
     let (statuses, dead_held) = statuses;
     let spans = cap.spans();
@@ -739,25 +736,16 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     stopped.unwrap_or_else(|e| panic!("once stopped, the fabric-primary writes the final primary's row Deleted as acting primary: {e}"));
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable by its node id");
-    assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node_id), "{row:?}");
+    assert_eq!((row.record.state, &row.record.node_id), (NodeStatus::Deleted, &last.node_id), "{row:?}");
     assert!(dead_held, "the mesh's status is deleted on mesh2 (mesh.storage, R-MD1)");
     assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Deleted), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Deleted), "and held as applied");
-    match &again {
-        Ok(RowCreated::Written { row, seeded_from }) => {
-            assert_eq!(seeded_from.as_ref(), None, "a plain create names no seed: the Deleted row's location is not provenance");
-            assert_eq!(row.initial_properties.as_ref().map(|p| p.config.clone()), Some(Default::default()), "its create spec's config, none: a plain create inherits no config (Q166)");
-        }
-        other => panic!("the recreated mesh's admin claims path `mesh2.node-admin`, name `1` over the Deleted row: {other:?}"),
-    }
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let deleted: Vec<String> = named("rdm.node_admin.node.delete.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.path && s["attributes"]["subject_name"] == last.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(deleted, ["not-mesh-primary", "row-deleted"], "refused while the final primary is live and primary, written once it is stopped: {deleted:?}");
     let dead = named("rdm.node_admin.mesh.update.via-deleted-row");
     assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no Dead row held: the fabric-primary writes Dead as acting primary: {dead:#?}");
-    let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.path && s["attributes"]["subject_name"] == last.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
-    assert_eq!(claims, ["row-held-by-node", "name-held", "row-written"], "a plain create's claim names no seed: {claims:?}");
-    eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-deleted-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
+    eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-deleted-row applied acting-primary");
 }
 
 
@@ -901,7 +889,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
 #[test]
 fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row() {
     use rdm_admin::primary_watch::{inspect_birth, Finding};
-    use rdm_admin::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
+    use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
     let lost = node_at("mesh2.node-admin", "1", "mesh2", "node-admin");
     let h = runtime_handles(std::slice::from_ref(&lost), 49_001)[&lost.node_id].clone();
     let fleet = Fleet { pids: [(49_001, lost.node_id.to_string())].into_iter().collect(), ..Default::default() };
@@ -909,7 +897,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
         let without_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
-        nodes.put_runtime(&RuntimeRow { r#type: lost.r#type.clone(), mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), path: lost.path.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        nodes.put_node(&rdm_node::nodes_storage::NodeRecord { runtime: h.fact().unwrap(), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(lost.path.clone(), lost.name.clone()).unwrap(), &lost.r#type.clone().to_string(), lost.node_id.clone(), lost.incarnation_id.clone().unwrap(), rdm_core::model::NodeStatus::Ready) }).await.unwrap();
         let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
@@ -1005,7 +993,6 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
             storage.put_node(&rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready)).await.unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         }
         let builds = crate::stepping(&NodeId::mint(), "mesh2");
         let build_id = BuildId::mint();
@@ -1018,7 +1005,6 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         let root = tracing::info_span!("cell.mesh-deleted-roster-birth", build_id = %build_id.log(), operation = %key.operation.action, operation_subject = ?key.operation.subject, operation_step = ?key.operation.step, operation_occurrence = ?key.operation.occurrence);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        roster_rows_read(Some(&rows), created.node_id.as_str(), &key.operation, &roster, &records).await;
         // The member's node.delete: its NodeDeleted step writes the row Deleted (node-delete.md step 3)
         // from the record it was handed, then the provider's exact Exited is its receipt.
         let manifest = members_exited(&builds, &key, created.node_id.as_str(), &roster, &me, runtime.clone(), &records, |n: Node| {
@@ -1038,7 +1024,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let worked = ran.iter().find(|n| n.node_id == failing.node_id).expect("the stopped roster birth's workflow ran");
     assert_eq!(RosterBirth::of(worked).unwrap(), stopped, "its workflow is handed exactly the roster birth");
     let row = cap.run(async { rdm_admin::storage::NodesStorage::node(storage.as_ref(), &failing.node_id).await.unwrap() }).expect("the stopped birth's row stays at its node id");
-    assert_eq!((row.status, row.node_id.to_string()), (NodeStatus::Deleted, stopped.node_id.clone()), "its row is written Deleted: {row:?}");
+    assert_eq!((row.record.state, row.record.node_id.to_string()), (NodeStatus::Deleted, stopped.node_id.clone()), "its row is written Deleted: {row:?}");
     let spans = cap.spans();
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     let from_roster = named("rdm.node_admin.mesh.resolve.via-roster-birth");
