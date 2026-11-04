@@ -48,7 +48,7 @@ fn birth_of(n: &NodeView) -> ExactBirth {
 /// (`rdm.node_admin.node.serve.via-forward` at mesh2's mesh-primary naming the fabric-primary). With
 /// the fabric-primary's runtime held (SIGSTOP), `node.get` of mesh2 sent to mesh2's mesh-primary still
 /// answers mesh2's node by its tag, from its own view and the node records each node writes itself
-/// (`rdm.node_admin.node.serve.via-get` at mesh2's mesh-primary, record-read spans naming only mesh2 candidate IDs). Must NOT happen:
+/// (`rdm.node_admin.node.serve.via-get` at mesh2's mesh-primary, record-read spans naming every mesh2 candidate ID). Must NOT happen:
 /// another mesh's read answered by mesh2's mesh-primary from its own view (rows without their tags,
 /// `[]`); its own mesh's read sent to the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -108,9 +108,11 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     let own_read = answered.last().unwrap_or_else(|| panic!("{mp_name:?} answers [mesh2, blue] itself"));
     assert_eq!(attr(own_read, "nodes"), "1", "{own_read}");
     assert!(attr(own_read, "io_calls").parse::<u64>().expect("I/O count") > 0, "the node records are read from storage: {own_read}");
-    let property_ids: BTreeSet<String> = named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record").into_iter().filter(|sp| sp["trace_id"] == own_read["trace_id"] && sp["parent_span_id"] == own_read["span_id"]).map(|sp| attr(sp, "subject_id")).collect();
+    // One record per node (Q366): the read takes the record of each birth its view holds from the store,
+    // its own mesh's candidates among them, and the fabric-primary held is never asked.
+    let record_ids: BTreeSet<String> = named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record").into_iter().filter(|sp| sp["trace_id"] == own_read["trace_id"] && sp["parent_span_id"] == own_read["span_id"]).map(|sp| attr(sp, "subject_id")).collect();
     let expected_ids: BTreeSet<String> = views.iter().filter(|node| node.mesh() == "mesh2").map(|node| node.node_id.to_string()).collect();
-    assert_eq!(property_ids, expected_ids, "the local query reads only its own mesh’s candidate node records");
+    assert!(expected_ids.is_subset(&record_ids), "the local query reads every one of its own mesh’s candidate node records {expected_ids:?} from the store: {record_ids:?}");
     let trace = up["trace_id"].as_str().unwrap_or_default().to_string();
     println!("carried read: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
