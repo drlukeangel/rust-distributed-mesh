@@ -1678,6 +1678,8 @@ struct Run {
     roles: Option<BTreeSet<PathName>>,
     /// Topology writes the cell sent to an admin that is not the fabric-primary, to see them refused.
     refused_writes: Vec<Value>,
+    /// Every admin the cell SIGKILLed ([`kill_admin`]): its record, node, node_id and kill_ns.
+    kills: Vec<Value>,
 }
 
 /// An accepted topology write (`Run::write`): the node call and the node, or the mesh, it names.
@@ -1744,7 +1746,7 @@ fn progress(msg: &str) {
 impl Run {
     fn new(seed: u64, nodes: &[Value]) -> Self {
         let known = nodes.iter().filter(|n| n["type"] == "node-admin").map(|n| location(&n)).collect();
-        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known, probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new() }
+        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known, probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new(), kills: Vec::new() }
     }
 
     /// The admins a read is asked of, each by path.name: the entry first, then every other admin ever seen.
@@ -2094,6 +2096,7 @@ async fn kill_admin(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName) -
     let rec = json!({"event": "admin.kill", "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation"], "pid": pid, "kill_ns": t, "observed_gone_ns": gone_ns, "was_primary": n["is_primary"]});
     a.actions.push(json!({"t_ms": now_ms(), "action": "admin.kill", "via": format!("SIGKILL pid {pid} ({node:?}); a non-fabric-primary death the story names"), "node": node}));
     progress(&format!("killed {node:?} (pid {pid})"));
+    a.kills.push(rec.clone());
     rec
 }
 
@@ -2364,8 +2367,13 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     assert_eq!(rejected_updates, 0, "no BuildService refused a node command: node commands are not Builds (Q342)");
     // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the `BuildService`.
     assert_eq!(rejected_creates, a.probes.len() + at_the_build_service.len(), "every rejected topology write at the BuildService's build.create is a writer probe's answer or a write the cell sent the writer to see it refused");
-    let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_the_build_service.len();
-    let without_the_role = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().filter(|sp| !s(&sp["attributes"]["route"]).is_empty()).count();
+    // An admin the cell SIGKILLed flushed no evidence (test-otlp-capture.md: a process flushes its spans at exit):
+    // the spans it had not exported died with it, so its refusals are its answers alone, counted on neither side.
+    let killed: Vec<(PathName, String, u64)> = a.kills.iter().map(|k| (location(&k["node"]), s(&k["node_id"]), k["kill_ns"].as_u64().unwrap_or(0))).collect();
+    let by_killed = |x: &Value| killed.iter().any(|(_, id, _)| x["node_id"] == id.as_str());
+    let at_killed = |sp: &Value| killed.iter().any(|(at, _, kill_ns)| at_location(sp, at) && start_ns(sp) < *kill_ns);
+    let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary" && !by_killed(x)).count()).sum::<usize>() + a.refused_writes.len() - at_the_build_service.len();
+    let without_the_role = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().filter(|sp| !s(&sp["attributes"]["route"]).is_empty() && !at_killed(sp)).count();
     assert_eq!(without_the_role, non_writer_refusals, "every refusal by an admin without the fabric-primary role is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();
     for p in &a.probes {
@@ -2377,11 +2385,11 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
         assert_eq!(unknown.len(), 1, "probe round {}: exactly one admin validated the write to {path:?}: {unknown:?}", p["round"]);
         let mut rejected: Vec<(String, String, String)> = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary")
             .into_iter()
-            .filter(|sp| !s(&sp["attributes"]["route"]).is_empty() && (from..=to).contains(&start_ns(sp)))
+            .filter(|sp| !s(&sp["attributes"]["route"]).is_empty() && (from..=to).contains(&start_ns(sp)) && !at_killed(sp))
             .map(|sp| (s(&sp["attributes"]["node_path"]), s(&sp["attributes"]["node_name"]), s(&sp["attributes"]["fabric_primary"])))
             .collect();
         rejected.sort();
-        let mut want: Vec<(String, String, String)> = p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").map(|x| (s(&x["admin"]["path"]), s(&x["admin"]["name"]), s(&p["fabric_primary_node_id"]))).collect();
+        let mut want: Vec<(String, String, String)> = p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary" && !by_killed(x)).map(|x| (s(&x["admin"]["path"]), s(&x["admin"]["name"]), s(&p["fabric_primary_node_id"]))).collect();
         want.sort();
         assert_eq!(rejected, want, "probe round {}: each non-writer's own reject span names the fabric-primary", p["round"]);
         rounds.push(json!({"round": p["round"], "label": p["label"], "fabric_primary": p["fabric_primary"], "writer_reject_span": unknown[0]["span_id"], "non_writers": want.iter().map(|w| Estate::path(&w.0, &w.1)).collect::<Vec<_>>()}));
@@ -3528,7 +3536,8 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
     (rec, st2)
 }
 
-/// The spans of one deletion: build.create.via-node-rpc (a new accepted Build) -> reconcile
+/// The spans of one deletion: build.create.via-node-rpc (a new accepted Build), its drive (a root of
+/// the same build_id) -> reconcile
 /// (`node.delete:<node>`) -> node.delete.via-build -> pipeline -> the steps in their documented order;
 /// NodeDeleting and NodeDeleted naming the old birth; the receivers' removal; and no Ready span of the
 /// NodeId at or after its departure.
@@ -3550,7 +3559,10 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
         .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && plans_on(sp, op, &target, &id))
         .cloned()
         .unwrap_or_else(|| panic!("{node:?}: no reconcile executed {op} of {target:?}"));
-    assert!(descends_from(spans, &reconcile, &create), "{node:?}: the deleting reconcile descends from its request");
+    // Each pass of the Build drive is its own root, joined by build_id (telemetry.md §4): the deleting
+    // reconcile runs under a drive of its Build, never as a child of the request.
+    let drives: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|d| d["attributes"]["build_id"] == reconcile["attributes"]["build_id"]).collect();
+    assert!(drives.iter().any(|d| descends_from(spans, &reconcile, d)), "{node:?}: the deleting reconcile runs under a drive of its Build: {reconcile}");
     let operation_span = "rdm.node_admin.node.delete.via-build";
     let del = named(spans, operation_span).into_iter().find(|sp| at_location(sp, &target) && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node:?}: no {operation_span} of {target:?} under the reconcile"));
     let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == del["span_id"]).cloned().unwrap_or_else(|| panic!("{node:?}: no deployment pipeline under its {operation_span}"));
@@ -5479,7 +5491,8 @@ async fn control_run(cell: &str, shape: Shape) {
         // run was re-created on a verdict other than `reached` about the birth it was formed with.
         recovery_follows_the_verdict(spans, marks.0, verified_at);
         for (path, old_id) in &renewed_ids {
-            let verdicts: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == old_id.as_str() && sp["attributes"]["disposition"] == "created").collect();
+            // A recovery that re-created its node ends `complete` (the primary's own workflow, Q342).
+            let verdicts: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == old_id.as_str() && sp["attributes"]["outcome"] == "complete").collect();
             assert!(!verdicts.is_empty() && verdicts.iter().all(|sp| sp["attributes"]["verdict"] != "reached"), "{path:?} ({old_id}) holds a new node.id only after a recovery opened on a verdict other than `reached` (node-recovery.md step 3): {verdicts:?}");
         }
         // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
