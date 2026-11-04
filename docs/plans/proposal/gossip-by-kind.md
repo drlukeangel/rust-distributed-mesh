@@ -138,7 +138,7 @@ has none of that.
 - **R3. One home per kind.** `Digest`, the full topology, the difference and status each in one
   place: its author, its channels, its forwarder, its dedup, its retention and the receive rule that
   installs it into the cache, as the §3.1 row states it.
-- **R4. Status is one message** (Q374), `{ type: Node | Mesh | Fabric, status }`, , one shape for all three types; who
+- **R4. Status is one message** (Q374), `{ type: Node | Mesh | Fabric, status }`, one shape for all three types; who
   sets each status stays as states.md's "Who sets each state" table names it.
 - **R5. Application channels on their own handle**, apart from the cache and the topology channels.
 - **R6. The join span names both lists**: the peers the caller named and the peers dialled.
