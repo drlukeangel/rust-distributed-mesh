@@ -194,13 +194,14 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     assert!(under("rdm.node_admin.node.delete.via-node-recovery").is_some(), "the lost birth is deleted under its recovery: {first}");
     let created = under("rdm.node_admin.node.create.via-node-recovery").unwrap_or_else(|| panic!("a node-admin is created under the recovery: {first}"));
     let recovery_admin = PathName::new(attr(&created, "node_path"), attr(&created, "node_name")).expect("a create names its location");
-    // Its node id is the one its create wrote its row for.
-    let recovery_admin_id = named(&spans, "rdm.node_admin.node.create.via-node-row")
+    // Its node id is the one it joins with: the node writes its own record (Q356), so the create
+    // writes none; its first join after the loss names it.
+    let recovery_admin_id = named(&spans, "rdm.node.mesh.update.via-joining")
         .into_iter()
-        .filter(|c| rdm_test::estate::names_location(c, "subject", &recovery_admin) && attr(c, "moment") == "create" && at(c) > at(first))
-        .min_by_key(|c| at(c))
-        .map(|c| attr(c, "node_id"))
-        .unwrap_or_else(|| panic!("{recovery_admin:?}'s create wrote its row for a node id"));
+        .filter(|j| attr(j, "node_path") == recovery_admin.path && attr(j, "node_name") == recovery_admin.name && at(j) > at(first))
+        .min_by_key(|j| at(j))
+        .map(|j| attr(j, "node_id"))
+        .unwrap_or_else(|| panic!("{recovery_admin:?} joined with a node id after the loss"));
     let joined: Vec<&Value> = named(&spans, "rdm.node.mesh.update.via-joining").into_iter().filter(|j| rdm_test::estate::of_node(j, &recovery_admin, &recovery_admin_id) && at(j) > at(first)).collect();
     assert!(!joined.is_empty() && joined.iter().all(|j| attr(j, "mesh_id") == lost_mesh_id), "{recovery_admin:?} joined under {lost}'s own MeshId: it never minted: {joined:?}");
     // The adopter is the admin the span names; the held state's publisher is the mesh's lost primary.
