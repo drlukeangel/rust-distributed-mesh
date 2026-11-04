@@ -17,6 +17,13 @@
 //!    `incomplete`: `rdm.build.ended` and the application's `on_build_ended`. A run whose every
 //!    section finished ends `complete` the same way.
 //!
+//! Each store call of a pass (the Build, the current Build, the Mesh records, the node records, the
+//! `rdm.build.started` and `rdm.build.ended` writes) is made under the drive's one `Send` (Q344):
+//! when it is spent the Build ends by name (`failed` before it started, `incomplete` once it runs),
+//! or, when nothing can be written, the drive ends [`DriveEnd::Unwritten`]; nothing runs it again on
+//! its own. A drive that waits on the world ([`DriveEnd::Stalled`]) is ensured again by the event
+//! that ends the wait.
+//!
 //! Callers (`build.create`) read the [`Drive`]'s frames; a cut caller cancels nothing, because the
 //! drive is its own task and the caller is a view of its frames. A successor fabric-primary resumes
 //! from the Build and its events: no step whose event ended `complete` runs twice.
@@ -240,6 +247,18 @@ pub struct Drive {
     /// The sections of this run that ended short of their end, by mesh (Q346): nothing of a mesh here
     /// is dispatched again in this run, and the Build ends `incomplete` naming each.
     unfinished: Mutex<std::collections::BTreeMap<String, UnfinishedSection>>,
+    /// The drive ended and wrote no `rdm.build.ended` ([`DriveEnd::Unwritten`]): [`Drives::ensure`]
+    /// starts nothing of it until the next build.create ([`Drives::write_unwritten`]).
+    unwritten: Mutex<Option<Unwritten>>,
+}
+
+/// How a drive ended without writing the Build's `rdm.build.ended`.
+#[derive(Debug, Clone)]
+struct Unwritten {
+    /// The terminal whose `rdm.build.ended` could not be written, owed until the next build.create
+    /// writes it; `None` when the drive had none to write (the Build could not be read, or nothing
+    /// drives it).
+    owed: Option<BuildReply>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -271,6 +290,7 @@ impl Drive {
             created: Mutex::new(Default::default()),
             replayed: AtomicBool::new(false),
             unfinished: Mutex::new(Default::default()),
+            unwritten: Mutex::new(None),
         })
     }
 
@@ -316,6 +336,12 @@ impl Drive {
     /// Whether the Build completed under this drive.
     pub fn completed(&self) -> bool {
         matches!(self.state.lock().unwrap().terminal, Some(BuildReply::Complete { .. }))
+    }
+
+    /// Whether the drive ended writing no `rdm.build.ended` ([`DriveEnd::Unwritten`]), and the next
+    /// build.create has not yet written what it owes.
+    pub fn unwritten(&self) -> bool {
+        self.unwritten.lock().unwrap().is_some()
     }
 
     /// Whether the drive ended: a terminal, or the role lost.
@@ -442,7 +468,8 @@ impl DriveReader {
 pub enum RoleMoveEnd {
     /// node.primary.update was refused before its row.
     Refused(String),
-    /// It did not complete.
+    /// It did not complete: it could not be run, or its call's `Send` was spent (Q344). Its step ends
+    /// the section, as any operation's does (Q346).
     Incomplete(String),
     /// A step of it failed.
     Failed {
@@ -469,8 +496,15 @@ impl std::fmt::Display for RoleMoveEnd {
 pub enum DriveEnd {
     /// The Build has its terminal.
     Terminal,
-    /// The drive cannot go on until the world changes; the Build stays in progress.
+    /// The drive waits on the world (a step in flight of a Build a fabric.delete interrupts, a role
+    /// target the view does not name yet, the fabric's ready state): the event that ends the wait
+    /// ensures the drive again ([`Drives::ensure`]). The Build stays in progress.
     Stalled(String),
+    /// The drive ended and wrote no `rdm.build.ended`: the Build could not be read, nothing drives it,
+    /// or its `rdm.build.ended` was not written with its `Send` spent (Q344). Its callers are told, and
+    /// nothing runs it again: the next build.create writes the terminal it owes first
+    /// ([`Drives::write_unwritten`]).
+    Unwritten(String),
     /// The fabric-primary role moved off this admin.
     RoleLost(String),
 }
@@ -609,6 +643,9 @@ pub struct DriveEnv {
     pub notices: BuildNotices,
     /// This admin's stop gate.
     pub turns: crate::stop_gate::StopGate,
+    /// How each store call of the drive is sent (Q344): its attempts and the time limit of one. When
+    /// it is spent the Build ends by name, and nothing runs it again.
+    pub send: rdm_transport::Send,
 }
 
 impl DriveEnv {
@@ -638,7 +675,9 @@ impl Drives {
         let drive = {
             let mut drives = self.drives.lock().unwrap();
             match drives.get(build_id) {
-                Some(d) if d.completed() => return d.clone(),
+                // A drive that ended writing no `rdm.build.ended` is run by nothing until the next
+                // build.create writes what it owes ([`Drives::write_unwritten`]).
+                Some(d) if d.completed() || d.unwritten() => return d.clone(),
                 Some(d) if d.ended() => {
                     drives.remove(build_id);
                 }
@@ -661,6 +700,7 @@ impl Drives {
                         let end = env.run(&d).await;
                         // An ensure that found this run in progress (an event's pass, a submit) is run
                         // now: the run may have read the world before that event and ended waiting on it.
+                        // Only a wait is run again; a drive that ended is never.
                         let again = {
                             let tasks = drives.tasks.lock().unwrap();
                             let again = matches!(end, DriveEnd::Stalled(_)) && !tasks.1 && d.again.swap(false, Ordering::SeqCst);
@@ -712,6 +752,58 @@ impl Drives {
         tracing::info_span!("rdm.node_admin.build.update.via-reconciling-stopped", drives = ended as u64)
             .in_scope(|| tracing::info!("this admin drives no Build from now on: every drive's task is ended and none starts"));
         ended
+    }
+
+    /// What every drive that ended writing no `rdm.build.ended` ([`DriveEnd::Unwritten`]) owes, written
+    /// before a build.create is admitted or refused: an owed terminal's `rdm.build.ended` under the
+    /// drive's `Send`, then `on_build_ended` from that write; a drive that owes none is forgotten, so
+    /// the create, and the events after it, drive its Build afresh. `Err` names the owed write whose
+    /// `Send` was spent again: the create is refused with that cause.
+    pub async fn write_unwritten(&self, env: &Arc<DriveEnv>) -> Result<(), String> {
+        let held: Vec<Arc<Drive>> = self.drives.lock().unwrap().values().filter(|d| d.unwritten()).cloned().collect();
+        if held.is_empty() {
+            return Ok(());
+        }
+        let me = env.held_name().await;
+        for d in held {
+            let owed = d.unwritten.lock().unwrap().as_ref().and_then(|u| u.owed.clone());
+            let span = tracing::info_span!("rdm.node_admin.build.update.via-owed-ended", build_id = %d.build_id.log(), node_path = %me.path, node_name = %me.name, owed = owed.as_ref().map(|t| t.name()).unwrap_or("none"), outcome = tracing::field::Empty, reason = tracing::field::Empty);
+            let Some(terminal) = owed else {
+                *d.unwritten.lock().unwrap() = None;
+                self.forget_drive(&d);
+                span.record("outcome", "forgotten");
+                span.in_scope(|| tracing::info!("the drive owed no rdm.build.ended: it is forgotten, and the Build is driven afresh"));
+                continue;
+            };
+            let state = ended_state(&terminal);
+            match env.store_call(|| env.notices.ended(&me, &d.build_id, state.clone(), &span)).instrument(span.clone()).await {
+                Ok(()) => {
+                    *d.unwritten.lock().unwrap() = None;
+                    env.ended_written(&d, &terminal).await;
+                    if !d.completed() {
+                        self.forget_drive(&d);
+                    }
+                    self.ended.send_modify(|v| *v += 1);
+                    span.record("outcome", "written");
+                    span.in_scope(|| tracing::info!("the owed rdm.build.ended is written before the build.create is decided"));
+                }
+                Err(e) => {
+                    let why = format!("path {me_path:?}, name {me_name:?}: the owed rdm.build.ended of Build {} could not be written: {e}", d.build_id, me_path = &me.path, me_name = &me.name);
+                    span.record("outcome", "spent").record("reason", why.as_str());
+                    span.in_scope(|| tracing::info!("the owed rdm.build.ended was not written with its Send spent: the build.create is refused with that cause"));
+                    return Err(why);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget `d`, when it is the drive held of its Build.
+    fn forget_drive(&self, d: &Arc<Drive>) {
+        let mut held = self.drives.lock().unwrap();
+        if held.get(&d.build_id).is_some_and(|h| Arc::ptr_eq(h, d)) {
+            held.remove(&d.build_id);
+        }
     }
 
     /// The drive a re-submit of an ended Build is answered from.
@@ -835,6 +927,7 @@ impl DriveEnv {
             DriveEnd::Terminal => span.record("outcome", "terminal"),
             DriveEnd::Stalled(w) => span.record("outcome", "stalled").record("detail", w.as_str()),
             DriveEnd::RoleLost(w) => span.record("outcome", "role-lost").record("detail", w.as_str()),
+            DriveEnd::Unwritten(w) => span.record("outcome", "unwritten").record("detail", w.as_str()),
         };
         drop(span);
         drop(last_turn);
@@ -876,11 +969,68 @@ impl DriveEnv {
         None
     }
 
+    /// The drive waits on the world, `why` naming what it waits on: the event that ends the wait
+    /// ensures it again. Never a store call that failed: that ends the Build ([`Self::store_spent`]).
     fn stalled(&self, me: &PathName, drive: &Arc<Drive>, why: String) -> DriveEnd {
         if drive.stall_is_new(StallKey::Reason(why.clone())) {
-            tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id.log(), node_path = %me.path, node_name = %me.name, reason = %why).in_scope(|| tracing::info!("the drive cannot go on until the world changes"));
+            tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id.log(), node_path = %me.path, node_name = %me.name, reason = %why).in_scope(|| tracing::info!("the drive waits: the event that ends the wait drives it again"));
         }
         DriveEnd::Stalled(why)
+    }
+
+    /// One call to the Build store under the drive's `Send` (Q344): an error that is the store's
+    /// answer (`UnknownBuild`, `ConflictingIntent`, `RoleYielded`) is not sent again; `Io` is.
+    async fn builds_call<T, F, Fut>(&self, call: F) -> Result<T, String>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, BuildStateError>>,
+    {
+        self.send.run(|e: &BuildStateError| !matches!(e, BuildStateError::Io(_)), call).await.map_err(|e| e.to_string())
+    }
+
+    /// One store call the gate makes (the Mesh records, the node records) or one event written, under
+    /// the drive's `Send` (Q344).
+    async fn store_call<T, F, Fut>(&self, call: F) -> Result<T, String>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        self.send.run(|_: &String| false, call).await.map_err(|e| e.to_string())
+    }
+
+    /// A store call of the drive's pass over `p` ended with its `Send` spent (Q344): the Build ends by
+    /// name, and nothing runs it again. A Build not started yet ends `failed` (it could not start,
+    /// build.md §4); a Build running ends `incomplete`, the fabric-primary's own section naming `store`
+    /// (the store's page name: `builds`, `events`, `meshes` or `nodes`) as its step, the first
+    /// operation left as its operation, and the cause as its reason. A Build that ended already (a
+    /// failed or incomplete one resubmitted, before its `rdm.build.started`) is written nothing again.
+    async fn store_spent(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, store: &str, cause: String, span: &tracing::Span) -> DriveEnd {
+        use rdm_core::outcome::Code;
+        let id = &drive.build_id;
+        tracing::info_span!("rdm.node_admin.build.update.via-store-spent", build_id = %id.log(), node_path = %me.path, node_name = %me.name, store, state = ?p.state, reason = %cause)
+            .in_scope(|| tracing::info!("a store call of the drive ended with its Send spent: the Build ends by name, and nothing runs it again"));
+        match p.state {
+            BuildState::Pending => self.end(me, drive, rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(cause), Code::Unavailable), span).await,
+            BuildState::Running => {
+                let t = self.topology.read().await.clone();
+                let operation = left(drive, p, &t).first().map(|op| op.key().to_string()).unwrap_or_else(|| "fabric.change".into());
+                let mut sections = drive.unfinished.lock().unwrap().clone();
+                sections.entry(self.me_mesh.clone()).or_insert_with(|| UnfinishedSection { mesh: self.me_mesh.clone(), operation, step: store.into(), reason: crate::build_run::bounded_reason(cause), code: Code::Unavailable });
+                self.end(me, drive, rdm_core::reply::build::incomplete(id.to_string(), sections.into_values().collect()), span).await
+            }
+            _ => self.unwritten(me, drive, None, rdm_core::reply::build::not_ready(cause.clone()), cause),
+        }
+    }
+
+    /// The drive ends writing no `rdm.build.ended` (`why`): its callers are told `told`, and nothing
+    /// runs it again until the next build.create writes `owed`, the terminal it could not write, or
+    /// forgets the drive when it owes none ([`Drives::write_unwritten`]).
+    fn unwritten(&self, me: &PathName, drive: &Arc<Drive>, owed: Option<BuildReply>, told: BuildReply, why: String) -> DriveEnd {
+        tracing::info_span!("rdm.node_admin.build.update.via-unwritten", build_id = %drive.build_id.log(), node_path = %me.path, node_name = %me.name, owed = owed.as_ref().map(|t| t.name()).unwrap_or("none"), reason = %why)
+            .in_scope(|| tracing::info!("the drive ends and writes no rdm.build.ended: nothing runs it again until the next build.create"));
+        *drive.unwritten.lock().unwrap() = Some(Unwritten { owed });
+        drive.finish(told);
+        DriveEnd::Unwritten(why)
     }
 
     /// The peer mesh `op` acts on, held unheard on the backbone (R-D1), with how long.
@@ -892,17 +1042,26 @@ impl DriveEnv {
         Some((node.clone(), self.gate.mesh_unheard_ms(op.mesh()?)?))
     }
 
-    /// The Build ends `terminal`: its `rdm.build.ended` and `on_build_ended`, then every reader.
+    /// The Build ends `terminal`: its `rdm.build.ended` under the drive's `Send` and `on_build_ended`,
+    /// then every reader. When the write's `Send` is spent the drive ends [`DriveEnd::Unwritten`], the
+    /// terminal owed to the next build.create.
     async fn end(&self, me: &PathName, drive: &Arc<Drive>, terminal: BuildReply, span: &tracing::Span) -> DriveEnd {
-        if let Err(cause) = self.notices.ended(me, &drive.build_id, ended_state(&terminal), span).await {
-            return self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the rdm.build.ended event of Build {} could not be written: {cause}", drive.build_id, me_path = &me.path, me_name = &me.name));
+        let state = ended_state(&terminal);
+        if let Err(cause) = self.store_call(|| self.notices.ended(me, &drive.build_id, state.clone(), span)).await {
+            let why = format!("path {me_path:?}, name {me_name:?}: the rdm.build.ended event of Build {} could not be written: {cause}", drive.build_id, me_path = &me.path, me_name = &me.name);
+            return self.unwritten(me, drive, Some(terminal.clone()), terminal, why);
         }
-        match &terminal {
+        self.ended_written(drive, &terminal).await;
+        drive.finish(terminal);
+        DriveEnd::Terminal
+    }
+
+    /// The gate is told the Build ended `terminal`, its `rdm.build.ended` written.
+    async fn ended_written(&self, drive: &Arc<Drive>, terminal: &BuildReply) {
+        match terminal {
             BuildReply::Complete { .. } => self.gate.build_completed(&drive.build_id).await,
             _ => self.gate.build_failed(&drive.build_id).await,
         }
-        drive.finish(terminal);
-        DriveEnd::Terminal
     }
 
     /// Pass on, once, a `Step` frame for each step whose event ended `complete`: a drive that holds no
@@ -935,59 +1094,71 @@ impl DriveEnv {
             }
             let me = self.held_name().await;
             let span = tracing::Span::current();
-            let p = match self.builds.read_build(&id).await {
+            // Each store call is made under the drive's `Send` (Q344). The Build unread, the drive does
+            // not know whether it ended: it writes nothing, and nothing runs it again.
+            let p = match self.builds_call(|| self.builds.read_build(&id)).await {
                 Ok(p) => p,
-                Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} could not be read: {e}", me_path = &me.path, me_name = &me.name)),
+                Err(e) => {
+                    let why = format!("path {me_path:?}, name {me_name:?}: Build {id} could not be read: {e}", me_path = &me.path, me_name = &me.name);
+                    return self.unwritten(&me, drive, None, rdm_core::reply::build::not_ready(why.clone()), why);
+                }
             };
             self.replay(drive, &p);
+            if p.state == BuildState::Complete {
+                drive.finish(BuildReply::Complete { build_id: id.to_string() });
+                return DriveEnd::Terminal;
+            }
+            let drivable = match self.builds_call(|| crate::build_state::drivable(&*self.builds, &p)).await {
+                Ok(drivable) => drivable,
+                Err(e) => return self.store_spent(&me, drive, &p, "builds", format!("path {me_path:?}, name {me_name:?}: the current Build could not be read to admit Build {id}: {e}", me_path = &me.path, me_name = &me.name), &span).await,
+            };
             match p.state {
-                BuildState::Complete => {
-                    drive.finish(BuildReply::Complete { build_id: id.to_string() });
-                    return DriveEnd::Terminal;
-                }
-                BuildState::Failed if !matches!(crate::build_state::drivable(&*self.builds, &p).await, Ok(true)) => {
+                BuildState::Failed if !drivable => {
                     let f = p.failure.clone().unwrap_or(crate::build_state::BuildFailure { reason: String::new(), code: "UNKNOWN".into() });
                     drive.finish(rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(f.reason), crate::build_state::code_of_name(&f.code)));
                     return DriveEnd::Terminal;
                 }
-                BuildState::Incomplete if !matches!(crate::build_state::drivable(&*self.builds, &p).await, Ok(true)) => {
+                BuildState::Incomplete if !drivable => {
                     drive.finish(rdm_core::reply::build::incomplete(id.to_string(), p.unfinished.clone()));
                     return DriveEnd::Terminal;
                 }
                 _ => {}
             }
-            match crate::build_state::drivable(&*self.builds, &p).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    // A fabric.delete accepted after this Build interrupts it (build.md §1): it ends
-                    // `incomplete`, each section it did not finish naming the delete, and nothing of it
-                    // runs again.
-                    if let Ok(Some(delete)) = crate::build_state::interrupted_by(&*self.builds, &p).await {
-                        let reason = crate::build_state::interrupted_reason(&id, &delete.build_id);
-                        let t = self.topology.read().await.clone();
-                        let mut sections: std::collections::BTreeMap<String, UnfinishedSection> = Default::default();
-                        for op in left(drive, &p, &t) {
-                            let mesh = op.mesh().unwrap_or(&self.me_mesh).to_string();
-                            sections.entry(mesh.clone()).or_insert_with(|| UnfinishedSection { mesh, operation: op.key().to_string(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
-                        }
-                        // Every operation ran, and the fabric change it waits on never completes: the
-                        // fabric is never ready again under the delete (Q154).
-                        if sections.is_empty() && changes_the_fabric(&p) {
-                            sections.insert(self.me_mesh.clone(), UnfinishedSection { mesh: self.me_mesh.clone(), operation: "fabric.change".into(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
-                        }
-                        let terminal = if p.state == BuildState::Pending { rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(reason), rdm_core::outcome::Code::Aborted) } else { rdm_core::reply::build::incomplete(id.to_string(), sections.into_values().collect()) };
-                        return self.end(&me, drive, terminal, &span).await;
+            if !drivable {
+                let interrupted = match self.builds_call(|| crate::build_state::interrupted_by(&*self.builds, &p)).await {
+                    Ok(interrupted) => interrupted,
+                    Err(e) => return self.store_spent(&me, drive, &p, "builds", format!("path {me_path:?}, name {me_name:?}: the current Build could not be read for whether a fabric.delete interrupts Build {id}: {e}", me_path = &me.path, me_name = &me.name), &span).await,
+                };
+                // A fabric.delete accepted after this Build interrupts it (build.md §1): it ends
+                // `incomplete`, each section it did not finish naming the delete, and nothing of it
+                // runs again.
+                if let Some(delete) = interrupted {
+                    let reason = crate::build_state::interrupted_reason(&id, &delete.build_id);
+                    let t = self.topology.read().await.clone();
+                    let mut sections: std::collections::BTreeMap<String, UnfinishedSection> = Default::default();
+                    for op in left(drive, &p, &t) {
+                        let mesh = op.mesh().unwrap_or(&self.me_mesh).to_string();
+                        sections.entry(mesh.clone()).or_insert_with(|| UnfinishedSection { mesh, operation: op.key().to_string(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
                     }
-                    let current = self.builds.current_build().await.ok().and_then(|c| c.into_build_id()).map(|c| c.to_string()).unwrap_or_else(|| "none".into());
-                    return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} ({:?}) is neither the current Build ({current}) nor a failed Build accepted after it: nothing drives it", p.state, me_path = &me.path, me_name = &me.name));
+                    // Every operation ran, and the fabric change it waits on never completes: the
+                    // fabric is never ready again under the delete (Q154).
+                    if sections.is_empty() && changes_the_fabric(&p) {
+                        sections.insert(self.me_mesh.clone(), UnfinishedSection { mesh: self.me_mesh.clone(), operation: "fabric.change".into(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
+                    }
+                    let terminal = if p.state == BuildState::Pending { rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(reason), rdm_core::outcome::Code::Aborted) } else { rdm_core::reply::build::incomplete(id.to_string(), sections.into_values().collect()) };
+                    return self.end(&me, drive, terminal, &span).await;
                 }
-                Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the current Build could not be read to admit Build {id}: {e}", me_path = &me.path, me_name = &me.name)),
+                // Nothing drives it: no wait, and nothing written.
+                let current = self.builds.current_build().await.ok().and_then(|c| c.into_build_id()).map(|c| c.to_string()).unwrap_or_else(|| "none".into());
+                let why = format!("path {me_path:?}, name {me_name:?}: Build {id} ({:?}) is neither the current Build ({current}) nor a failed Build accepted after it: nothing drives it", p.state, me_path = &me.path, me_name = &me.name);
+                return self.unwritten(&me, drive, None, rdm_core::reply::build::rejected("not-accepted".into(), why.clone()), why);
             }
             // A Build not yet started, or a failed one a caller resubmitted, starts: `rdm.build.started`
             // and the application's on_build_started from that write (build.md §4.1).
             if matches!(p.state, BuildState::Pending | BuildState::Failed | BuildState::Incomplete) {
-                if let Err(cause) = self.notices.started(&me, &id, &crate::build::current_context()).await {
-                    return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the rdm.build.started event of Build {id} could not be written: {cause}", me_path = &me.path, me_name = &me.name));
+                let context = crate::build::current_context();
+                if let Err(cause) = self.store_call(|| self.notices.started(&me, &id, &context)).await {
+                    return self.store_spent(&me, drive, &p, "events", format!("path {me_path:?}, name {me_name:?}: the rdm.build.started event of Build {id} could not be written: {cause}", me_path = &me.path, me_name = &me.name), &span).await;
                 }
                 self.gate.build_started(&id).await;
                 // A new run: no section of it has ended yet.
@@ -997,34 +1168,36 @@ impl DriveEnv {
             // A fabric.delete's teardown runs once every Build it interrupts has ended, each by its own
             // drive once its steps in flight have ended (build.md §1).
             if p.deletes_fabric() {
-                match crate::build_state::interrupted_open(&*self.builds, &p).await {
+                match self.builds_call(|| crate::build_state::interrupted_open(&*self.builds, &p)).await {
                     Ok(open) if open.is_empty() => {}
                     Ok(open) => {
+                        // A wait: each interrupted Build's drive ends at its terminal once its steps in
+                        // flight have ended, and that end (`Drives::subscribe_ended`) ensures this one again.
                         let waits: Vec<String> = open.iter().map(ToString::to_string).collect();
                         return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: fabric.delete {id} interrupts Build {}, which has not ended: the teardown runs once its steps in flight have ended and it has ended incomplete", waits.join(", "), me_path = &me.path, me_name = &me.name));
                     }
-                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the Builds fabric.delete {id} interrupts could not be read: {e}", me_path = &me.path, me_name = &me.name)),
+                    Err(e) => return self.store_spent(&me, drive, &p, "builds", format!("path {me_path:?}, name {me_name:?}: the Builds fabric.delete {id} interrupts could not be read: {e}", me_path = &me.path, me_name = &me.name), &span).await,
                 }
             }
             // A mesh the Mesh records hold Dead is done whatever the view shows: read at every pass.
             let observed = self.topology.read().await.clone();
-            match self.gate.deleted_meshes(&observed).await {
+            match self.store_call(|| self.gate.deleted_meshes(&observed)).await {
                 Ok(dead) => *drive.dead.lock().unwrap() = dead,
-                Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id}: the Mesh records could not be read for which meshes are Dead: {e}", me_path = &me.path, me_name = &me.name)),
+                Err(e) => return self.store_spent(&me, drive, &p, "meshes", format!("path {me_path:?}, name {me_name:?}: Build {id}: the Mesh records could not be read for which meshes are Dead: {e}", me_path = &me.path, me_name = &me.name), &span).await,
             }
             // A fabric.delete's remaining meshes are the Mesh rows on the store: read at every pass.
             if p.deletes_fabric() {
-                match self.gate.mesh_rows().await {
+                match self.store_call(|| self.gate.mesh_rows()).await {
                     Ok(rows) => *drive.mesh_rows.lock().unwrap() = Some(rows),
-                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} is a fabric.delete and the Mesh rows could not be read for the meshes it deletes: {e}", me_path = &me.path, me_name = &me.name)),
+                    Err(e) => return self.store_spent(&me, drive, &p, "meshes", format!("path {me_path:?}, name {me_name:?}: Build {id} is a fabric.delete and the Mesh rows could not be read for the meshes it deletes: {e}", me_path = &me.path, me_name = &me.name), &span).await,
                 }
                 // A node.delete it began and has not completed acts on a birth the view may have let go:
                 // the birth is its node record's (fabric-delete.md "Failure"; D67).
                 let owed: Vec<rdm_core::NodeId> = begun_deletes(&p).into_iter().filter(|id| !observed.nodes.iter().any(|n| &n.node_id == id)).collect();
-                let rows = if owed.is_empty() { Ok(Vec::new()) } else { self.gate.node_rows(&owed).await };
+                let rows = if owed.is_empty() { Ok(Vec::new()) } else { self.store_call(|| self.gate.node_rows(&owed)).await };
                 match rows {
                     Ok(rows) => *drive.node_rows.lock().unwrap() = rows,
-                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} is a fabric.delete and the node records of the node.deletes it began could not be read: {e}", me_path = &me.path, me_name = &me.name)),
+                    Err(e) => return self.store_spent(&me, drive, &p, "nodes", format!("path {me_path:?}, name {me_name:?}: Build {id} is a fabric.delete and the node records of the node.deletes it began could not be read: {e}", me_path = &me.path, me_name = &me.name), &span).await,
                 }
             }
             // The creates this Build's own ops made, as the atlas holds them: never surplus.
@@ -1061,8 +1234,8 @@ impl DriveEnv {
                 Ok(false) => {}
                 Err(end) => return end,
             }
-            if let Some(end) = self.updates_acknowledged(&me, drive, &ops).await {
-                return end;
+            if self.updates_acknowledged(&me, drive, &ops).await {
+                continue;
             }
             // The sections: this admin's own (the leading operations it executes or no admin does yet),
             // and every other mesh's, by the mesh's primary.
@@ -1235,17 +1408,31 @@ impl DriveEnv {
     }
 
     /// node.primary.updated is acknowledged for every update that precedes an operation left, before
-    /// any is dispatched (node-primary-update.md failure contract).
-    async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, ops: &[BuildOperation]) -> Option<DriveEnd> {
-        let mut asked: Vec<PrecedingUpdate> = ops.iter().flat_map(preceding_updates).collect();
-        asked.dedup();
-        if asked.is_empty() {
-            return None;
+    /// any is dispatched (node-primary-update.md failure contract). The acknowledgement is the
+    /// successor's answer to one call on its `Send` (`primary_update::call_successor`): an update not
+    /// acknowledged, that call spent among the causes, ends the section of the operation it precedes
+    /// (Q344, Q346), by name, and nothing asks for it again in this run. `true` when a section ended:
+    /// the drive plans again.
+    async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, ops: &[BuildOperation]) -> bool {
+        let mut asked: Vec<PrecedingUpdate> = Vec::new();
+        let mut ended = false;
+        for op in ops {
+            let mesh = op.mesh().unwrap_or(&self.me_mesh).to_string();
+            if drive.unfinished.lock().unwrap().contains_key(&mesh) {
+                continue;
+            }
+            let updates: Vec<PrecedingUpdate> = preceding_updates(op).into_iter().filter(|u| !asked.contains(u)).collect();
+            if updates.is_empty() {
+                continue;
+            }
+            asked.extend(updates.iter().cloned());
+            let Err(why) = self.gate.primaries_updated(&updates, &drive.build_id).await else { continue };
+            let names = updates.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
+            let reason = format!("path {me_path:?}, name {me_name:?}: node.primary.updated was not acknowledged for the update that precedes operation {} (one of {names}): {why}", op.key(), me_path = &me.path, me_name = &me.name);
+            role_move_unfinished(me, drive, &self.me_mesh, op, "primary-update".into(), reason, rdm_core::outcome::Code::Unavailable);
+            ended = true;
         }
-        let why = self.gate.primaries_updated(&asked, &drive.build_id).await.err()?;
-        let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
-        let why = format!("path {me_path:?}, name {me_name:?}: Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id, me_path = &me.path, me_name = &me.name);
-        Some(self.stalled(me, drive, why))
+        ended
     }
 
     /// The roles the first operation left moves, moved first as a step of the Build
@@ -1265,20 +1452,27 @@ impl DriveEnv {
             Err(RoleMoveEnd::Refused(why)) => {
                 let reason = format!("path {me_path:?}, name {me_name:?}: the roles of node {} did not move before operation {}: node.primary.update was refused before its row: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name);
                 // The role move is a step of the operation's mesh section: its end ends that section (Q346).
-                role_move_unfinished(drive, &self.me_mesh, op, "primary-update".into(), reason, rdm_core::outcome::Code::FailedPrecondition);
+                role_move_unfinished(me, drive, &self.me_mesh, op, "primary-update".into(), reason, rdm_core::outcome::Code::FailedPrecondition);
                 Ok(true)
             }
             Err(RoleMoveEnd::Failed { step, reason, code }) => {
-                role_move_unfinished(drive, &self.me_mesh, op, step, reason, code);
+                role_move_unfinished(me, drive, &self.me_mesh, op, step, reason, code);
                 Ok(true)
             }
             Ok(()) if !still => Ok(true),
             Err(RoleMoveEnd::Incomplete(_)) if !still => Ok(true),
-            other => {
-                let why = match other {
-                    Err(why) => format!("path {me_path:?}, name {me_name:?}: the role of node {} did not move before operation {}: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name),
-                    Ok(()) => format!("path {me_path:?}, name {me_name:?}: node.primary.update of node {} answered, and this view still names it the primary operation {} moves", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name),
-                };
+            Err(RoleMoveEnd::Incomplete(why)) => {
+                // The update could not be run, or its call ended without its answer, its `Send` spent
+                // (Q344): its step ends its section, as any operation's does (Q346), and nothing runs it
+                // again in this run.
+                let reason = format!("path {me_path:?}, name {me_name:?}: the role of node {} did not move before operation {}: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name);
+                role_move_unfinished(me, drive, &self.me_mesh, op, "primary-update".into(), reason, rdm_core::outcome::Code::Unavailable);
+                Ok(true)
+            }
+            Ok(()) => {
+                // A wait: the view still names the primary the answered update moved, until the view
+                // installed after it (an event) shows the move.
+                let why = format!("path {me_path:?}, name {me_name:?}: node.primary.update of node {} answered, and this view still names it the primary operation {} moves", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name);
                 Err(self.stalled(me, drive, why))
             }
         }
@@ -1287,9 +1481,11 @@ impl DriveEnv {
 
 /// The section of `op`'s mesh ended short at its role move (Q346): nothing more of that mesh runs in
 /// this run.
-fn role_move_unfinished(drive: &Drive, me_mesh: &str, op: &BuildOperation, step: String, reason: String, code: rdm_core::outcome::Code) {
+fn role_move_unfinished(me: &PathName, drive: &Drive, me_mesh: &str, op: &BuildOperation, step: String, reason: String, code: rdm_core::outcome::Code) {
     let mesh = op.mesh().unwrap_or(me_mesh).to_string();
     let u = UnfinishedSection { mesh: mesh.clone(), operation: op.key().to_string(), step, reason: crate::build_run::bounded_reason(reason), code };
+    tracing::info_span!("rdm.node_admin.build.update.via-section-unfinished", build_id = %drive.build_id.log(), node_path = %me.path, node_name = %me.name, mesh = %u.mesh, operation = %u.operation, step = %u.step, reason = %u.reason, code = u.code.name())
+        .in_scope(|| tracing::info!("the mesh's section ended short of its end at its role move: nothing more of that mesh runs in this run, and the other sections run on"));
     drive.unfinished.lock().unwrap().insert(mesh, u);
 }
 

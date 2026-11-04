@@ -73,7 +73,7 @@ pub mod stream;
 /// The Node RPC ALPN.
 pub const ALPN: &[u8] = b"rafka-node-rpc/1";
 
-pub use client::{AcceptTrigger, CallEvidence, CallEnd, CallEndObserver, CallEndsSlot, CallFailedReason, CallOptions, CarriedIdentity, ConnectionObserver, Decode, NodeRpcClient, Send, RoutePolicy, TimeLimit, TRANSPORT_LIMIT};
+pub use client::{AcceptTrigger, CallEvidence, CallEnd, CallEndObserver, CallEndsSlot, CallFailedReason, CallOptions, CarriedIdentity, ConnectionObserver, Decode, NodeRpcClient, Send, SendEnd, RoutePolicy, TimeLimit, TRANSPORT_LIMIT};
 pub use delivery::{Acceptance, Delivery, DeliverySeams, DeliveryStats, Pacing};
 pub use forward::{CarriedReplies, CarrierConnections};
 pub use pre_node_ready::{CancelToken, PreNodeReadyGate, BirthCancel};

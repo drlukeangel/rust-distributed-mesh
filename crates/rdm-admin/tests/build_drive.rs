@@ -161,6 +161,7 @@ async fn rig_for(t: Topology, change: impl FnOnce(&Topology) -> BuildChange, run
         gate: switch.clone(),
         notices: crate::written_by(told.notices(), &*builds, &fabric_id, &fp_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
+        send: rdm_transport::Send::default(),
     });
     Rig { builds, env, switch, dispatch, ran, build: opened.build_id, told }
 }
@@ -179,6 +180,7 @@ fn env_with(e: &DriveEnv, gate: Option<Arc<dyn Gate>>, dispatcher: Option<Arc<dy
         gate: gate.unwrap_or_else(|| e.gate.clone()),
         notices: e.notices.clone(),
         turns: e.turns.clone(),
+        send: e.send,
     })
 }
 
@@ -1008,25 +1010,32 @@ async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_u
     assert_eq!(r.ran.0.lock().unwrap().len(), 1, "it ran once: {:?}", r.ran.0.lock().unwrap());
 }
 
-/// CONTRACT (as above; C1 step 8: "Only then does the commanding Build continue"): an update the row
-/// records that this admin cannot acknowledge (the successor's call fails, the row cannot be read)
-/// leaves the Build where it is: the drive stalls naming why on its span, frames nothing to the caller
-/// (node-rpc-envelope.md: Pending's only source is the subject's Status `Pending`), and dispatches nothing.
-/// Must NOT happen: the operation on the old primary dispatched past an update not acknowledged.
-#[tokio::test]
-async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dispatches_nothing() {
+/// CONTRACT (as above; C1 step 8: "Only then does the commanding Build continue"; Q344: the
+/// successor's call is one call on its `Send`, the only retry; Q346: a step that ends short ends its
+/// mesh's section): an update the row records that this admin cannot acknowledge (the successor's
+/// call spent, the row cannot be read) ends the section of the operation it precedes, by name: the
+/// Build ends `incomplete`, its section at the step `primary-update` naming the update and why, and
+/// nothing is dispatched or asked again (node-rpc-envelope.md: Pending's only source is the subject's
+/// Status `Pending`, so no Pending frame). Must NOT happen: the operation on the old primary dispatched
+/// past an update not acknowledged, or the acknowledgement asked again on the next event.
+#[tokio::test(start_paused = true)]
+async fn an_update_the_drive_cannot_acknowledge_ends_its_section_by_name_and_dispatches_nothing() {
     let (r, env, gate, row) = after_the_row(Some("the successor's call ended indeterminate")).await;
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader();
-    match env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains(&row.operation.action) && why.contains("the successor's call ended indeterminate"), "the stall names the update and why: {why}"),
-        other => panic!("an update not acknowledged stalls the drive: {other:?}"),
+    assert_eq!(env.run(&drive).await, DriveEnd::Terminal, "the Build ends");
+    let frames = frames_now(&mut reader).await;
+    match frames.last() {
+        Some(Read::Terminal(BuildReply::Incomplete { sections, .. })) => assert!(
+            matches!(sections.as_slice(), [u] if u.mesh == "mesh1" && u.step == "primary-update" && u.reason.contains(&row.operation.action) && u.reason.contains("the successor's call ended indeterminate")),
+            "the section names the update and why: {sections:?}"
+        ),
+        other => panic!("an update not acknowledged ends its section and the Build incomplete: {other:?}; frames {frames:?}"),
     }
     assert_eq!(gate.asked.lock().unwrap().len(), 1, "asked once: {:?}", gate.asked.lock().unwrap());
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
-    let waiting = frames_now(&mut reader).await;
-    assert_eq!(pending_of(&waiting), Vec::<BuildReply>::new(), "the update not acknowledged frames no Pending to the caller: the stall names it on its span");
+    assert_eq!(pending_of(&frames), Vec::<BuildReply>::new(), "the update not acknowledged frames no Pending to the caller");
 }
 
 /// The view before the primary's row: the fabric-primary `mesh1.node-admin.1` holds both roles, and
@@ -1301,6 +1310,7 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
             gate: switch,
             notices: crate::written_by(Default::default(), &*builds, &fabric_id, &fp_birth),
             turns: rdm_admin::stop_gate::StopGate::new(),
+            send: rdm_transport::Send::default(),
         });
 
         let drive = Drive::detached(opened.build_id.clone());
@@ -1466,6 +1476,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
         gate: gate.clone(),
         notices: crate::written_by(Default::default(), &*builds, &t.fabric.id, &birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
+        send: rdm_transport::Send::default(),
     });
     let drive = Drive::detached(day0.clone());
     let mut reader = drive.reader();
@@ -2338,4 +2349,233 @@ async fn build_drive_fires_on_build_started_on_each_run_and_on_build_ended_on_ea
     let events = r.builds.events().of_build(&r.build).await.unwrap();
     let ends: Vec<&str> = events.iter().map(|e| e.r#type.as_str()).filter(|t| *t == BUILD_STARTED || *t == BUILD_ENDED).collect();
     assert_eq!(ends, vec![BUILD_STARTED, BUILD_ENDED, BUILD_STARTED, BUILD_ENDED], "each notice is from its event's write");
+}
+
+/// An events store whose appends of one event type fail while `failing` is set (the store could not be
+/// written), every other call served by `inner`; `tried` counts the failed appends.
+struct WritesFail {
+    inner: Arc<dyn rdm_admin::events_storage::EventsStorage>,
+    r#type: &'static str,
+    failing: AtomicBool,
+    tried: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::events_storage::EventsStorage for WritesFail {
+    async fn append(&self, event: &rdm_admin::events_storage::Event) -> Result<(), rdm_admin::storage_error::StorageError> {
+        if event.r#type == self.r#type && self.failing.load(Ordering::SeqCst) {
+            self.tried.fetch_add(1, Ordering::SeqCst);
+            return Err(rdm_admin::storage_error::StorageError::Io { file: "events.jsonl".into(), reason: "the store is unreachable".into() });
+        }
+        self.inner.append(event).await
+    }
+    async fn event(&self, id: &rdm_admin::events_storage::EventId) -> Result<Option<rdm_admin::events_storage::Event>, rdm_admin::storage_error::StorageError> {
+        self.inner.event(id).await
+    }
+    async fn of_build(&self, build_id: &BuildId) -> Result<Vec<rdm_admin::events_storage::Event>, rdm_admin::storage_error::StorageError> {
+        self.inner.of_build(build_id).await
+    }
+    async fn of_node(&self, node_id: &rdm_core::NodeId) -> Result<Vec<rdm_admin::events_storage::Event>, rdm_admin::storage_error::StorageError> {
+        self.inner.of_node(node_id).await
+    }
+    async fn of_storage_changes(&self) -> Result<Vec<rdm_admin::events_storage::Event>, rdm_admin::storage_error::StorageError> {
+        self.inner.of_storage_changes().await
+    }
+}
+
+/// `r`'s drive env with its Build-level events written through a store whose `r#type` appends fail.
+fn writes_failing(r: &Rig, r#type: &'static str) -> (Arc<DriveEnv>, Arc<WritesFail>) {
+    let store = Arc::new(WritesFail { inner: r.builds.events(), r#type, failing: AtomicBool::new(true), tried: Default::default() });
+    let mut events = rdm_admin::events_storage::EventsWriter::on(store.clone(), &r.env.topology.try_read().expect("no writer holds the view").fabric.id.clone(), &r.env.birth.node_id);
+    events.source.incarnation = r.env.birth.incarnation.clone();
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me_mesh: e.me_mesh.clone(),
+        me_path: e.me_path.clone(),
+        me_name: e.me_name.clone(),
+        birth: e.birth.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: e.gate.clone(),
+        notices: r.told.notices().writing_to(events),
+        turns: e.turns.clone(),
+        send: e.send,
+    });
+    (env, store)
+}
+
+/// A gate whose Mesh records cannot be read (the store could not be read); `reads` counts the reads.
+#[derive(Default)]
+struct MeshRecordsUnread {
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Gate for MeshRecordsUnread {
+    async fn deleted_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<MeshId>, String> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Err("the Mesh record of mesh1 could not be read: meshes.jsonl: the store is unreachable".into())
+    }
+}
+
+/// CONTRACT (Q344: "One `Send { attempts, TimeLimit }` on every call, the only retry mechanism ... No
+/// call keeps a retry of its own: the Build drive's next-pass pickup ... go"; build.md §4: "The Build ends
+/// ... `incomplete` when it ran and not every section finished (what ran stands)"): a running Build
+/// whose Mesh records cannot be read is read under the drive's `Send`, its three attempts, and then
+/// ends `incomplete`, the fabric-primary's own section naming the store `meshes` as its step and the
+/// cause as its reason. Nothing runs it again: the reconcile loop's ensure drives nothing, and the
+/// Mesh records are read no more. Must NOT happen: a stall the next event runs again, or a read past
+/// the Send's attempts.
+#[tokio::test(start_paused = true)]
+async fn a_store_read_spent_once_the_build_runs_ends_it_incomplete_by_name_and_nothing_runs_it_again() {
+    let r = rig().await;
+    let gate = Arc::new(MeshRecordsUnread::default());
+    let env = env_with(&r.env, Some(gate.clone()), None);
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    match terminal_of(&drives.ensure(&env, &r.build)).await {
+        BuildReply::Incomplete { sections, .. } => assert!(
+            matches!(sections.as_slice(), [u] if u.mesh == "mesh1" && u.step == "meshes" && u.reason.contains("the store is unreachable") && u.reason.contains("its Send spent: 3 attempts") && u.code == rdm_core::outcome::Code::Unavailable),
+            "the fabric-primary's own section names the store and the cause: {sections:?}"
+        ),
+        other => panic!("the running Build ends incomplete: {other:?}"),
+    }
+    assert_eq!(gate.reads.load(Ordering::SeqCst), 3, "the read is made under the drive's Send: three attempts, then the Build ends");
+    assert!(matches!(ended_states(&*r.builds, &r.build).await.as_slice(), [rdm_admin::events_storage::EndedState::Incomplete { .. }]), "one rdm.build.ended, incomplete");
+    assert!(rdm_admin::build_op::ensure_active(&drives, &env).await.is_empty(), "the reconcile loop's ensure drives nothing of it");
+    assert_eq!(gate.reads.load(Ordering::SeqCst), 3, "nothing reads for it again");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of it ran");
+}
+
+/// CONTRACT (Q344; build.md §4: "`failed` only when it could not start"): a Build whose
+/// `rdm.build.started` cannot be written is written under the drive's `Send`, its three attempts, and
+/// then ends `failed`, code `UNAVAILABLE`, the cause by name: it could not start. Nothing runs it again.
+/// Must NOT happen: a stall the next event runs again, a step run, or a started event.
+#[tokio::test(start_paused = true)]
+async fn a_started_write_spent_ends_the_build_failed_by_name_and_nothing_runs_it_again() {
+    use rdm_admin::events_storage::{BUILD_STARTED, EndedState};
+    let r = rig().await;
+    let (env, store) = writes_failing(&r, BUILD_STARTED);
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    match terminal_of(&drives.ensure(&env, &r.build)).await {
+        BuildReply::Failed { reason, code, .. } => assert!(code == rdm_core::outcome::Code::Unavailable && reason.contains("rdm.build.started") && reason.contains("its Send spent: 3 attempts"), "failed by name: {reason} {code:?}"),
+        other => panic!("a Build that could not start ends failed: {other:?}"),
+    }
+    assert_eq!(store.tried.load(Ordering::SeqCst), 3, "three attempts at the write");
+    assert!(matches!(ended_states(&*r.builds, &r.build).await.as_slice(), [EndedState::Failed { code, .. }] if code == "UNAVAILABLE"), "one rdm.build.ended, failed");
+    assert!(rdm_admin::build_op::ensure_active(&drives, &env).await.is_empty(), "the reconcile loop's ensure drives nothing of it");
+    assert_eq!(store.tried.load(Ordering::SeqCst), 3, "nothing writes for it again");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of it ran");
+}
+
+/// CONTRACT (Q344; build.md §4.1: `on_build_ended` is "sent from the write of `rdm.build.ended`"): a
+/// Build whose `rdm.build.ended` cannot be written past the drive's `Send` ends its drive `Unwritten`:
+/// its callers read the terminal, and the drive is held, so every later ensure (the reconcile loop's
+/// among them) is handed it and runs nothing. The next build.create writes the owed `rdm.build.ended`
+/// first (`Drives::write_unwritten`): spent again it names the cause; once written, the Build holds
+/// the one ending. Must NOT happen: the Build run again, or a second ending.
+#[tokio::test(start_paused = true)]
+async fn an_ended_write_spent_is_owed_to_the_next_build_create_and_nothing_runs_the_build_again() {
+    use rdm_admin::events_storage::{BUILD_ENDED, EndedState};
+    let r = rig().await;
+    let (env, store) = writes_failing(&r, BUILD_ENDED);
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    let drive = drives.ensure(&env, &r.build);
+    assert!(matches!(terminal_of(&drive).await, BuildReply::Complete { .. }), "the callers read the terminal");
+    assert!(drive.unwritten(), "the drive ended unwritten");
+    assert_eq!(store.tried.load(Ordering::SeqCst), 3, "three attempts at the write");
+    assert!(ended_states(&*r.builds, &r.build).await.is_empty(), "no ending is written");
+    assert!(Arc::ptr_eq(&drives.ensure(&env, &r.build), &drive), "a later ensure is handed the held drive");
+    let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await;
+    assert!(ensured.iter().all(|d| Arc::ptr_eq(d, &drive)), "the reconcile loop's ensure starts no drive");
+    assert_eq!(r.dispatch.dispatched.lock().unwrap().len(), 1, "one section was sent: nothing runs the Build again");
+    let refused = drives.write_unwritten(&env).await.expect_err("the owed write is spent again");
+    assert!(refused.contains("owed rdm.build.ended") && refused.contains("the store is unreachable"), "the cause by name: {refused}");
+    store.failing.store(false, Ordering::SeqCst);
+    drives.write_unwritten(&env).await.expect("the owed ending is written");
+    assert!(!drive.unwritten(), "nothing is owed once written");
+    assert_eq!(ended_states(&*r.builds, &r.build).await, vec![EndedState::Complete], "the one ending");
+    assert_eq!(r.dispatch.dispatched.lock().unwrap().len(), 1, "the Build ran once");
+}
+
+/// CONTRACT (build.md §1: "When every step of the interrupted Build in flight has ended, that Build
+/// ends `incomplete`, each section it did not finish naming the delete, and the teardown's steps run";
+/// a wait is ended by its event, never a timer): a fabric.delete accepted while a Build's create is in
+/// flight waits on it: its drive names the interrupted Build. When that step ends, the interrupted
+/// Build's drive ends at its terminal, the end the reconcile loop wakes on (`Drives::subscribe_ended`),
+/// and the delete's next drive goes on past the wait. Must NOT happen: the delete going on while the
+/// step is in flight, or a wait no event ends.
+#[tokio::test]
+async fn a_fabric_delete_waiting_on_an_interrupted_builds_step_in_flight_goes_on_when_that_step_ends() {
+    let (began, mut running) = tokio::sync::watch::channel(false);
+    let let_go = Arc::new(tokio::sync::Semaphore::new(0));
+    let held = let_go.clone();
+    let change = move |t: &rdm_admin::topology::Topology| crate::grown(t, &[MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 2)])]);
+    let r = rig_for(view(), change, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(HeldUntilLetGo { ran, began, let_go: held }) }).await;
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    let mut ended = drives.subscribe_ended();
+    let grow = drives.ensure(&r.env, &r.build);
+    tokio::time::timeout(Duration::from_secs(5), running.wait_for(|b| *b)).await.expect("the section never reached its operation").unwrap();
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    let at = r.builds.newest_accepted_at_ms().await.unwrap().unwrap_or(0) + 1;
+    let delete = rdm_admin::build_state::BuildAccepted { build_id: BuildId::mint(), topology: p.topology.clone(), change: BuildChange::DeleteFabric, source: None, time: at };
+    rdm_admin::build_state::accept(&*r.builds, &delete, Some(&r.build), r.switch.node_id.as_str(), "accepted").await.unwrap();
+    match tokio::time::timeout(Duration::from_secs(10), r.env.run(&Drive::detached(delete.build_id.clone()))).await.expect("the delete's drive ends") {
+        DriveEnd::Stalled(why) => assert!(why.contains(r.build.as_str()) && why.contains("steps in flight"), "the delete waits on the interrupted Build by name: {why}"),
+        other => panic!("the delete waits while the step is in flight: {other:?}"),
+    }
+    ended.mark_unchanged();
+    let_go.add_permits(1);
+    assert!(matches!(terminal_of(&grow).await, BuildReply::Incomplete { .. }), "the interrupted Build ends incomplete once its step ended");
+    tokio::time::timeout(Duration::from_secs(5), ended.changed()).await.expect("the interrupted drive's end is the event the reconcile loop wakes on").unwrap();
+    // The delete goes on: its teardown runs, or its drive ends past the wait.
+    if let Ok(DriveEnd::Stalled(why)) = tokio::time::timeout(Duration::from_secs(10), r.env.run(&Drive::detached(delete.build_id.clone()))).await {
+        assert!(!why.contains("steps in flight"), "the delete still waits once the step ended: {why}");
+    }
+}
+
+/// A gate whose own primaries' update ends `end` (`Incomplete`, its call spent, unless a cell sets
+/// another) while the view still names the primary it moves; `calls` counts the updates sent.
+struct SpentUpdate {
+    inner: Arc<Switch>,
+    calls: std::sync::atomic::AtomicUsize,
+    end: rdm_admin::build_drive::RoleMoveEnd,
+}
+
+#[async_trait::async_trait]
+impl Gate for SpentUpdate {
+    async fn target(&self) -> Result<Option<NodeId>, BuildStateError> {
+        self.inner.target().await
+    }
+    async fn target_set(&self) {
+        self.inner.target_set().await
+    }
+    async fn update_primaries(&self, _m: &rdm_admin::executor::RoleMove, _build_id: &BuildId, _operation: &rdm_core::OperationId) -> Result<(), rdm_admin::build_drive::RoleMoveEnd> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(self.end.clone())
+    }
+}
+
+/// CONTRACT (Q344: "One `Send { attempts, TimeLimit }` on every call, the only retry mechanism ... node
+/// commands"; Q346: a step that ends short ends its mesh's section; build.md §4): the fabric-primary's
+/// own update of the primaries its Build's first operation moves ends without its answer, its call's
+/// `Send` spent, and the view still names the primary. The role move ends its mesh's section by name:
+/// the Build ends `incomplete`, the section at the step `primary-update` naming the cause, and the
+/// update is sent once. Must NOT happen: a stall the next event runs again, or a second update.
+#[tokio::test(start_paused = true)]
+async fn a_primary_update_whose_send_is_spent_ends_its_section_by_name_and_is_sent_once() {
+    let r = rig_for(view_primary_of_both(), move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: "mesh1.node-admin".into(), name: "1".into() }]), |ran, _| ran).await;
+    let gate = Arc::new(SpentUpdate { inner: r.switch.clone(), calls: Default::default(), end: rdm_admin::build_drive::RoleMoveEnd::Incomplete("node.primary.update is uncertain: its call ended with its Send spent: NotSent".into()) });
+    let env = env_with(&r.env, Some(gate.clone()), None);
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    match terminal_of(&drives.ensure(&env, &r.build)).await {
+        BuildReply::Incomplete { sections, .. } => assert!(
+            matches!(sections.as_slice(), [u] if u.mesh == "mesh1" && u.step == "primary-update" && u.reason.contains("its Send spent") && u.code == rdm_core::outcome::Code::Unavailable),
+            "the role move ends its section by name: {sections:?}"
+        ),
+        other => panic!("a spent update ends its section and the Build incomplete: {other:?}"),
+    }
+    assert!(rdm_admin::build_op::ensure_active(&drives, &env).await.is_empty(), "the reconcile loop's ensure drives nothing of it");
+    assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "the update is sent once");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
 }

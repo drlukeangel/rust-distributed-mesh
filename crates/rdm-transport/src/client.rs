@@ -59,6 +59,59 @@ impl Send {
     pub fn with_time_limit(d: Duration) -> Self {
         Self { time_limit: TimeLimit(d), ..Self::default() }
     }
+
+    /// `call` made under this Send, a call that is not a Node RPC call (a store's read or write; Q344:
+    /// one `Send` on every call, the only retry mechanism): at most `attempts` attempts, each bounded by
+    /// the time limit, each after the first after its delay on [`crate::Pacing::from_cadences`]
+    /// (node-rpc.md §43). An error `answered` reads as an answer (asked again, it answers the same) ends
+    /// the call at once and is never sent again.
+    pub async fn run<T, E, F, Fut>(&self, answered: impl Fn(&E) -> bool, mut call: F) -> Result<T, SendEnd<E>>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
+        let pacing = crate::delivery::Pacing::from_cadences();
+        let attempts = self.attempts.max(1);
+        let mut last = None;
+        for n in 1..=attempts {
+            if n > 1 {
+                tokio::time::sleep(pacing.after(u32::from(n - 1))).await;
+            }
+            match tokio::time::timeout(self.time_limit.0, call()).await {
+                Ok(Ok(v)) => return Ok(v),
+                Ok(Err(e)) if answered(&e) => return Err(SendEnd::Answered(e)),
+                Ok(Err(e)) => last = Some(e),
+                Err(_) => last = None,
+            }
+        }
+        Err(SendEnd::Spent { attempts, time_limit: self.time_limit, last })
+    }
+}
+
+/// How a call made under a [`Send`] ([`Send::run`]) ended without its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendEnd<E> {
+    /// The call answered with an error that is an answer: it was not sent again.
+    Answered(E),
+    /// Its attempts are spent: the last attempt's error, `None` when that attempt passed its time limit.
+    Spent {
+        /// The attempts made.
+        attempts: u8,
+        /// The time limit of each.
+        time_limit: TimeLimit,
+        /// The last attempt's error.
+        last: Option<E>,
+    },
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for SendEnd<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Answered(e) => write!(f, "{e}"),
+            Self::Spent { attempts, last: Some(e), .. } => write!(f, "{e} (its Send spent: {attempts} attempts)"),
+            Self::Spent { attempts, time_limit, last: None } => write!(f, "its last attempt passed its time limit of {} ms (its Send spent: {attempts} attempts)", time_limit.0.as_millis()),
+        }
+    }
 }
 
 /// The transport's share of an attempt (Q311, "plus 10 s for the transport"): the most an attempt's

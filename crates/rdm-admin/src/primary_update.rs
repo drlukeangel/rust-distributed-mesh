@@ -571,7 +571,7 @@ impl PrimaryUpdate {
             Ok(Reply::PrimaryUpdated { node_id }) => Ok(node_id),
             Ok(Reply::Failed { step, reason, code }) => Err(RoleMoveEnd::Failed { step, reason, code }),
             Ok(refusal) => Err(RoleMoveEnd::Refused(format!("{} refused node.primary.update of {}: {} ({refusal:?})", to.node_id, primary.node_id, refusal.name()))),
-            Err(why) => Err(RoleMoveEnd::Incomplete(format!("path {me_path:?}, name {me_name:?}: node.primary.update {operation:?} of {} is uncertain and the step is incomplete; the drive's next run sends the identical command: {why}", primary.node_id, me_path = &me.path, me_name = &me.name))),
+            Err(why) => Err(RoleMoveEnd::Incomplete(format!("path {me_path:?}, name {me_name:?}: node.primary.update {operation:?} of {} is uncertain: its call ended with its Send spent, the step ends its section, and a resubmission of the Build sends the identical command: {why}", primary.node_id, me_path = &me.path, me_name = &me.name))),
         }
     }
 

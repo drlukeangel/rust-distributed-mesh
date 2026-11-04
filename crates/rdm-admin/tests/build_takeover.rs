@@ -153,6 +153,7 @@ fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_
             gate: Arc::new(Open),
             notices: crate::written_by(Default::default(), &*builds, &fabric_id, &fp),
             turns: rdm_admin::stop_gate::StopGate::new(),
+            send: rdm_transport::Send::default(),
         });
         let (node2, node3) = (created_id(&builds, &build, "2").await, created_id(&builds, &build, "3").await);
         // The first run: A completes mesh2.node.2 and is lost in mesh2.node.3.

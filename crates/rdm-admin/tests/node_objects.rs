@@ -239,6 +239,7 @@ async fn build_service_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOn
         gate: Arc::new(OpenGate),
         notices: crate::written_by(rig.told.notices(), &*rig.builds, &fabric_id, &executor_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
+        send: rdm_transport::Send::default(),
     });
     Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
@@ -268,6 +269,7 @@ async fn build_service_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildService> {
         gate: Arc::new(OpenGate),
         notices: crate::written_by(rig.told.notices(), &*rig.builds, &fabric_id, &executor_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
+        send: rdm_transport::Send::default(),
     });
     Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
@@ -891,7 +893,7 @@ fn a_reconcile_tick_whose_build_ended_incomplete_between_its_reads_drives_nothin
         crate::end_build(&*rig.builds, &b0, &by, short).await;
         let read = rig.builds.read_build(&b0).await.unwrap();
         let e = &service.env;
-        let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me_path: e.me_path.clone(), me_name: e.me_name.clone(), birth: e.birth.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheEnd { inner: rig.builds.clone(), current: before }), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
+        let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me_path: e.me_path.clone(), me_name: e.me_name.clone(), birth: e.birth.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheEnd { inner: rig.builds.clone(), current: before }), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), notices: e.notices.clone(), turns: e.turns.clone(), send: e.send });
         let drives = Arc::new(Drives::default());
         let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await.len();
         let held = drives.get(&b0).is_some();

@@ -1795,6 +1795,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), primary_update: primary_update.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone(), fabric_states: states_slot.clone() }),
                                     notices: build_notices.clone(),
                                     turns: stop_gate.clone(),
+                                    send: rdm_transport::Send::default(),
                                 });
                                 let _ = control.node_rows.set(nodes_storage.clone());
                                 let _ = control.node_id.set(node_id.clone());

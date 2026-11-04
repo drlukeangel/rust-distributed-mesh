@@ -196,6 +196,11 @@ impl BuildService {
     }
 
     async fn create(&self, submit: BuildSubmit, caller: Option<iroh::PublicKey>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        // A drive that ended writing no `rdm.build.ended` owes it to this create, written first under
+        // its `Send` (Q344); spent again, the create is refused with that cause.
+        if let Err(cause) = self.drives.write_unwritten(&self.env).await {
+            return Ok(rdm_core::reply::build::not_ready(cause));
+        }
         match submit {
             BuildSubmit::Change(change) => {
                 let (opened, disposition) = match self.admit_change(&change).await {
