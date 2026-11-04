@@ -176,26 +176,13 @@ impl RefusedCallers {
                 return Err((CallerDecision::NoRecord, "build-unread".into()));
             }
         };
-        // A birth this primary holds deleted, from its own recovery's verdict until its NodeDeleted and from
-        // the NodeDeleted on (node-recovery.md step 3: "A birth that comes back once its verdict is not
-        // `reached`, during its replacement's birth or after it, is a deleted birth"), is decided from what
-        // the primary holds, never from a record line the returned birth may have written since: it is
-        // never re-admitted (Q217).
-        let held_deleted = self.recovery.digest_view.is_recovering(node_id.as_str(), incarnation) || self.recovery.digest_view.is_deleted(node_id.as_str());
         // The caller's record at its node id, and the record the current-pair lookup names at its
-        // (path, name) (query.md §1); for a birth held deleted, the pair's other records only, so its
-        // own later line is never a second claimant there.
+        // (path, name) (query.md §1).
         let read = async {
             let stores = (self.stores)().ok_or_else(|| "this admin's node records are not open".to_string())?;
             let reader = stores.reader();
             let Some(caller) = reader.row(node_id).await? else { return Ok((None, None)) };
-            let at = caller.location();
-            let at_path = if held_deleted {
-                let others: Vec<_> = stores.nodes.records_at(&at).await.map_err(|e| e.to_string())?.into_iter().filter(|r| r.node_id != *node_id).collect();
-                rdm_node::pair_record::resolve(others, &at).map_err(|e| format!("the record at path {:?}, name {:?} could not be read: {e}", at.path, at.name))?
-            } else {
-                reader.row_at(&at).await?
-            };
+            let at_path = reader.row_at(&caller.location()).await?;
             Ok::<_, String>((Some(caller), at_path))
         };
         let (caller, at_path) = match read.await {
@@ -206,6 +193,12 @@ impl RefusedCallers {
             }
         };
         let own = atlas.refused_caller(caller.as_ref(), at_path.as_ref(), incarnation, &planned);
+        // A birth this primary holds deleted, from its own recovery's verdict until its NodeDeleted and from
+        // the NodeDeleted on (node-recovery.md step 3: "A birth that comes back once its verdict is not
+        // `reached`, during its replacement's birth or after it, is a deleted birth"), is decided from what
+        // the primary holds, never from a record line the returned birth may have written since: it is
+        // never re-admitted (Q217).
+        let held_deleted = self.recovery.digest_view.is_recovering(node_id.as_str(), incarnation) || self.recovery.digest_view.is_deleted(node_id.as_str());
         let own = match own {
             CallerDecision::ReAdmit { path, name } if held_deleted => CallerDecision::DeleteDeletedBirth { path, name, needed: true },
             other => other,
