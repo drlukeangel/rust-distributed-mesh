@@ -19,7 +19,7 @@ struct Stores {
 async fn stores(root: &rdm_admin::store_root::StoreRoot, writer: &IncarnationId) -> Stores {
     let data_dir = root.dir().join(format!("data-{}", writer.as_str()));
     Stores {
-        nodes: Arc::new(FileNodesStorage::open(&data_dir, root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
+        nodes: Arc::new(FileNodesStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
         meshes: Arc::new(FileMeshStorage::open(root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
         fabric: Arc::new(FileFabricStorage::open(root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint(), writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap()),
     }
