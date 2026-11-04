@@ -1,4 +1,4 @@
-# Proposal: gossip code by kind
+# Proposal: gossip by kind
 
 Status: **for Luke's review. No code moves until he says yes.** Written by the lead, 2026-11-04, from
 the conversation of the same day (Q374, Q375). Every claim below is read from the page, the code on
@@ -16,8 +16,10 @@ main `678f15455` or the spans of lane 4's release run at `df12ed232`; each says 
 - **Four kinds** (Q374): `Digest`; the full topology; the topology difference; status, one message
   `{ type: Node | Mesh | Fabric, status }` carrying every status states.md names for that type.
 - **The full-topology and difference frames lose `Mesh`** (Q375).
-- **A channel is joined; a cache is not** (§5): the joiner reads its topology with
-  `node.topology.get`, then joins its channels, and deltas, fulls and top-ups keep the cache current.
+- **A channel is joined; a cache is not.** node-start.md: after the accepted join the mesh channel is
+  joined (and the backbone, a node-admin), then `pre_node_ready` runs, then the start "obtain[s]
+  topology once through node.topology.get, as the final" step; gossip.md §9: the node "joins its
+  gossip channels before or while it reads". Deltas, fulls and top-ups keep the cache current.
 - **Application channels** (§8, Q362): RDM provides channels; the app's nodes join the channels its
   own code names. They carry the app's messages and fill nothing in the topology.
 
@@ -125,8 +127,9 @@ has none of that.
 
 ## 3. Proposed shape
 
-- **R1. The cache is its own type.** It is created, then filled by `node.topology.get`; the receive
-  rules of the four kinds install into it. No channel call creates it.
+- **R1. The cache is its own type.** No channel call creates it. The node joins its channels, and
+  `node.topology.get`, the start's final step, fills it; the receive rules of the four kinds install
+  into it before and after that read.
 - **R2. One join per channel.** A node joins its mesh channel; a node-admin joins its mesh channel
   and the backbone as two calls; an app joins its application channels. One RDM call,
   `join(channel, peers)`, takes the caller for its span: the first call subscribes, a later one
@@ -135,8 +138,8 @@ has none of that.
 - **R3. One home per kind.** `Digest`, the full topology, the difference and status each in one
   place: its author, its channels, its forwarder, its dedup, its retention and the receive rule that
   installs it into the cache, as the §3.1 row states it.
-- **R4. Status is one message** (Q374), `{ type: Node | Mesh | Fabric, status }`, with one publisher,
-  one send rule and one recovery rule for all three types.
+- **R4. Status is one message** (Q374), `{ type: Node | Mesh | Fabric, status }`, , one shape for all three types; who
+  sets each status stays as states.md's "Who sets each state" table names it.
 - **R5. Application channels on their own handle**, apart from the cache and the topology channels.
 - **R6. The join span names both lists**: the peers the caller named and the peers dialled.
   Telemetry only; it lands first, on its own.
@@ -146,10 +149,12 @@ durable-format commit marker and come with their byte fixtures.
 
 ## 4. Open for Luke
 
-- **O1. The bootstrap rule.** What a node passes as the bootstrap when it joins each channel. The
-  code's rule today is "whoever launched me, plus whoever I hold" (2.4), and it names a mesh1
-  node-admin for mesh2's channel. The lead proposed two rules (the nodes the cache holds; the
-  accepting primary) and Luke refused both. No rule is written here until Luke gives one.
+- **O1. A mesh's first node-admin's mesh-channel bootstrap.** gossip.md §5: "a mesh with no live
+  listener has its channel created again by its first listener under the mesh's own MeshId". The
+  code hands that node-admin its launcher, a node-admin of another mesh, as its mesh-channel
+  bootstrap (2.4, 13.02), and `topology.refeed` dials it on that channel again (14.03, 19.05,
+  20.05). Every other subscribe in 2.4 names its launcher, which is on the channel. The launch
+  already carries the launcher's mesh (`rdm_core::launch::Launcher { mesh, .. }`).
 - **O2. The frame names** (Q375): the full topology and the difference, given the two `Topology`
   types already in the code.
 - **O3. The word for the node status frames** where the page says "lifecycle event" (2.8).
