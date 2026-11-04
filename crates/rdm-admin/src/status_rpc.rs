@@ -610,7 +610,13 @@ pub fn decide(service: &StatusService, view: &Topology, declared: &Declared, req
             // The role first: an admin that is no mesh-primary, and runs no fabric recovery, answers that
             // it is not the primary, whatever it holds of the subject (node-status.md "Status report").
             let recovering = service.fabric_recovery.get().is_some_and(|read| read(view).is_some_and(|fr| service.running_birth(view).is_some_and(|birth| crate::fabric_recovery::executes_for(Some(read), view, &birth, &fr.target.mesh))));
-            if !me.is_primary && !recovering {
+            // The mesh-primary role this admin installed (fabric-recovery.md, the restore: "the node installs
+            // both roles, acknowledges directly"; node.primary.update's receiver): its primary record names
+            // this admin's exact birth, and it is that role's primary for declarations at once, before its own
+            // election's recompute names it. Who wins the election does not move.
+            let installed = service.digest_view.as_ref().and_then(|v| v.primaries.mesh(&me.mesh)).is_some_and(|p| p.node_id == me.node_id && me.incarnation_id.as_ref() == Some(&p.incarnation));
+            let is_primary = me.is_primary || installed;
+            if !is_primary && !recovering {
                 let mesh = view.births().find(|n| n.node_id == *node_id).map_or(me.mesh.as_str(), |n| n.mesh.as_str());
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {mesh}") }), None);
             }
@@ -633,7 +639,7 @@ pub fn decide(service: &StatusService, view: &Topology, declared: &Declared, req
             // mesh has no mesh-primary, its executor takes the declarations of the node it re-creates at
             // the target's path and name: its own node.create waits on them (build.md §5.3, Q122).
             let recovers = service.fabric_recovery.get().is_some_and(|read| service.running_birth(view).is_some_and(|birth| crate::fabric_recovery::executes_for(Some(read), view, &birth, &subject.mesh)) && read(view).is_some_and(|fr| fr.at.as_ref() == Some(&subject.location())));
-            if !(me.is_primary && me.mesh == subject.mesh) && !recovers {
+            if !(is_primary && me.mesh == subject.mesh) && !recovers {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
             }
             // The exact birth: a declaration for an incarnation the view no longer holds is stale.
