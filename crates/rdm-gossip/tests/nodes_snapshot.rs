@@ -18,8 +18,8 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{backbone_channel, learn_addresses, Backbone, Frame, TopologyView, MAX_FRAME};
-use rdm_transport::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
+use rdm_gossip::topology::{backbone_channel, learn_addresses, Backbone, Frame, TopologyView, MAX_FRAME};
+use rdm_gossip::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -141,7 +141,7 @@ fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
     last.expect("a snapshot has at least one chunk")
 }
 
-fn installed(t: Taken) -> rdm_transport::snapshot::Install {
+fn installed(t: Taken) -> rdm_gossip::snapshot::Install {
     match t {
         Taken::Installed(i) => *i,
         other => panic!("expected an installed snapshot: {other:?}"),
@@ -255,7 +255,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let last = chunks.len() - 1;
         assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Waiting { held: 1, .. }));
         assert!(matches!(rx.take_chunk(chunk_of(&chunks[last])), Taken::Waiting { held: 2, .. }));
-        assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Refused(rdm_transport::snapshot::Refusal::Duplicate)), "a duplicate chunk is ignored by name and adds nothing");
+        assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Refused(rdm_gossip::snapshot::Refusal::Duplicate)), "a duplicate chunk is ignored by name and adds nothing");
         assert_eq!(rx.held_version("mesh2"), held_before, "a partial snapshot moves no version");
         assert!(rx.held_full("mesh2").is_none(), "a partial snapshot installs nothing");
         // A delta derived from the incomplete one is not applied either.
@@ -280,7 +280,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(matches!(rx.take_chunk(chunk_of(&older[0])), Taken::Waiting { .. }));
         assert!(matches!(rx.take_chunk(chunk_of(&newer[0])), Taken::Waiting { .. }), "a newer snapshot drops the stale partial");
         let stale = rx.take_chunk(chunk_of(&older[1]));
-        assert!(matches!(stale, Taken::Refused(rdm_transport::snapshot::Refusal::OlderThanPending { .. })), "a chunk of the dropped snapshot is refused by name: {stale:?}");
+        assert!(matches!(stale, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanPending { .. })), "a chunk of the dropped snapshot is refused by name: {stale:?}");
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 5)), "neither partial moved the held version");
         let mut last_install = None;
         for c in &newer[1..] {
@@ -302,14 +302,14 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         }
         assert!(refreshed.expect("the new publication completes").refreshed);
         for c in &again {
-            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Refused(rdm_transport::snapshot::Refusal::Duplicate)), "each installed publication chunk is ignored on its exact repeat");
+            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Refused(rdm_gossip::snapshot::Refusal::Duplicate)), "each installed publication chunk is ignored on its exact repeat");
         }
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 7)));
 
         // Malformed chunks are refused by name.
         let mut bad = chunk_of(&chunks[0]);
         bad.chunk_index = bad.chunk_count;
-        assert!(matches!(rx.take_chunk(bad), Taken::Refused(rdm_transport::snapshot::Refusal::MalformedChunk { .. })));
+        assert!(matches!(rx.take_chunk(bad), Taken::Refused(rdm_gossip::snapshot::Refusal::MalformedChunk { .. })));
 
         // ---- 4. deltas: exactly the base, a copy is a no-op, anything else desynchronizes -------
         let f7 = rx.held_full("mesh2").unwrap().clone();
@@ -383,7 +383,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         }
         assert_eq!(done.expect("the newer snapshot completes").topology_version, 10);
         let straggler = rx.take_chunk(chunk_of(&lossy2[1]));
-        assert!(matches!(straggler, Taken::Refused(rdm_transport::snapshot::Refusal::OlderThanHeld { held_version: 10, offered_version: 9 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
+        assert!(matches!(straggler, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { held_version: 10, offered_version: 9 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 10)));
 
         // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------

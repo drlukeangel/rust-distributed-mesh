@@ -893,7 +893,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
     let lost = node_at("mesh2.node-admin", "1", "mesh2", "node-admin");
     let h = runtime_handles(std::slice::from_ref(&lost), 49_001)[&lost.node_id].clone();
     let fleet = Fleet { pids: [(49_001, lost.node_id.to_string())].into_iter().collect(), ..Default::default() };
-    let digest_view = rdm_transport::topology::DigestView::default();
+    let digest_view = rdm_gossip::topology::DigestView::default();
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
         let without_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;

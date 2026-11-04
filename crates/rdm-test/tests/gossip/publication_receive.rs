@@ -1,7 +1,7 @@
 //! Snapshot/delta receiver contracts, through the live channel and real `TopologyService`.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, mesh_channel, backbone_channel, Backbone, Frame, TopologyView};
-use rdm_transport::snapshot::{Chunk, PublisherId, Taken};
+use rdm_gossip::topology::{learn_addresses, mesh_channel, backbone_channel, Backbone, Frame, TopologyView};
+use rdm_gossip::snapshot::{Chunk, PublisherId, Taken};
 use std::time::Duration;
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
@@ -125,7 +125,7 @@ fn story(story: Story) {
                 expected=11;
             },
             Story::TwoForwarders => {
-                let owner_b = rdm_transport::envelope::Birth { fabric: receiver.fabric_id().clone(), node: NodeId::mint(), incarnation: IncarnationId::mint() };
+                let owner_b = rdm_gossip::envelope::Birth { fabric: receiver.fabric_id().clone(), node: NodeId::mint(), incarnation: IncarnationId::mint() };
                 send(&sender, &receiver, baseline.clone().authored(&owner_b, 0, 100), 2).await;
                 let installs = || capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed").count();
                 assert_eq!(installs(), 2, "a second forwarder's counter 1 is a distinct publication install");

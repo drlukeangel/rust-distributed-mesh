@@ -225,7 +225,7 @@ pub struct Atlas {
     callers: std::sync::OnceLock<Arc<crate::refused_caller::RefusedCallers>>,
     /// This admin's primary records, the ones a primary update's answer is held against
     /// ([`Atlas::primaries`]), installed with its first answer.
-    records: std::sync::OnceLock<rdm_transport::topology::PrimaryView>,
+    records: std::sync::OnceLock<rdm_gossip::topology::PrimaryView>,
 }
 
 /// The exact birth step `s` of `p` acted on: the birth the Build's acceptance pinned for its subject,
@@ -369,7 +369,7 @@ impl Atlas {
     /// the new primary from the answer streamed back, never waiting on gossip. A record that names
     /// another node already carried the change here: nothing is held. The same answer again changes
     /// nothing.
-    pub(crate) fn primary_updated(&self, records: &rdm_transport::topology::PrimaryView, mesh: &str, r#type: &str, primary: &NodeId, node_id: &NodeId) {
+    pub(crate) fn primary_updated(&self, records: &rdm_gossip::topology::PrimaryView, mesh: &str, r#type: &str, primary: &NodeId, node_id: &NodeId) {
         let key = (mesh.to_owned(), r#type.to_owned());
         let record = records.node_type_primary(mesh, r#type).filter(|r| r.node_id == *primary && r.node_id != *node_id);
         let _ = self.records.set(records.clone());
@@ -387,7 +387,7 @@ impl Atlas {
     /// `primary`, this admin (Q355): `is_fabric_primary` on `node_id`, removed from `primary`
     /// ([`Self::primaries`]), held as [`Self::primary_updated`] holds one, against the fabric-primary's
     /// record.
-    pub(crate) fn fabric_primary_updated(&self, records: &rdm_transport::topology::PrimaryView, primary: &NodeId, node_id: &NodeId) {
+    pub(crate) fn fabric_primary_updated(&self, records: &rdm_gossip::topology::PrimaryView, primary: &NodeId, node_id: &NodeId) {
         let record = records.fabric().filter(|r| r.node_id == *primary && r.node_id != *node_id);
         let _ = self.records.set(records.clone());
         self.held.lock().unwrap().is_fabric_primary = record.map(|record| Updated { record, node_id: node_id.clone() });
@@ -1100,7 +1100,7 @@ mod tests {
         fp.is_fabric_primary = true;
         let gossip = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![Mesh { id: None, name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: None, name: "mesh2".into(), status: ScopeStatus::Ready }], nodes: vec![fp.clone(), old.clone(), new.clone()] };
         let record = |n: &crate::model::Node, mesh: &str, revision: u64| Primary { mesh: mesh.into(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
-        let records = rdm_transport::topology::PrimaryView::default();
+        let records = rdm_gossip::topology::PrimaryView::default();
         records.take(PrimaryRole::MeshPrimary, &record(&old, "mesh2", 3));
         records.take(PrimaryRole::FabricPrimary, &record(&fp, "mesh1", 7));
         let atlas = TestAtlas::new();
@@ -1164,7 +1164,7 @@ mod tests {
         // mesh2's delete itself, refused as not mesh2's writer).
         let (old, new, third) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
         let record = |id: &NodeId, revision: u64| Primary { mesh: "mesh2".into(), node_id: id.clone(), incarnation: IncarnationId::mint(), revision };
-        let records = rdm_transport::topology::PrimaryView::default();
+        let records = rdm_gossip::topology::PrimaryView::default();
         records.take(PrimaryRole::MeshPrimary, &record(&old, 3));
         let atlas = TestAtlas::new();
         atlas.primary_updated(&records, "mesh2", rdm_core::NODE_ADMIN, &old, &new);
@@ -1191,7 +1191,7 @@ mod tests {
         let (mp, b1, b2, g1) = (node("mesh2", "node-admin", "1", true), node("mesh2", "broker", "1", true), node("mesh2", "broker", "2", false), node("mesh2", "gateway", "1", true));
         let gossip = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![Mesh { id: None, name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: None, name: "mesh2".into(), status: ScopeStatus::Ready }], nodes: vec![fp.clone(), mp.clone(), b1.clone(), b2.clone(), g1.clone()] };
         let record = |n: &crate::model::Node, revision: u64| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
-        let records = rdm_transport::topology::PrimaryView::default();
+        let records = rdm_gossip::topology::PrimaryView::default();
         records.take(PrimaryRole::MeshPrimary, &record(&mp, 3));
         records.take(PrimaryRole::FabricPrimary, &record(&fp, 7));
         records.take(PrimaryRole::NodePrimary("broker".into()), &record(&b1, 2));

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use rdm_core::{FabricId, MeshId, NodeId};
 use rdm_test::channel_member::{Member, MemberAddr};
-use rdm_transport::gossip::{channel_id, Channel, ChannelError, Event};
+use rdm_gossip::gossip::{channel_id, Channel, ChannelError, Event};
 use std::time::Duration;
 
 const TYPE: &str = "rafka.entity.channel-proof";
@@ -61,7 +61,7 @@ fn event(sequence: u64, data: Vec<u8>) -> Event {
     }
 }
 
-async fn receive(channel: &mut Channel) -> rdm_transport::gossip::Received {
+async fn receive(channel: &mut Channel) -> rdm_gossip::gossip::Received {
     tokio::time::timeout(Duration::from_secs(10), channel.recv())
         .await
         .expect("the event arrives within the cell's bound")
@@ -106,7 +106,7 @@ async fn a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped(
     assert_eq!(older.data, Bytes::from_static(&[1]));
     assert_eq!(
         older.source,
-        rdm_transport::envelope::Birth::publisher(a.topology_view.fabric_id(), &b.author)
+        rdm_gossip::envelope::Birth::publisher(a.topology_view.fabric_id(), &b.author)
     );
     assert_eq!(older.dataschema.as_deref(), Some("proof.v1"));
 }
@@ -123,7 +123,7 @@ fn the_channel_id_differs_across_fabrics_for_one_type() {
 async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked() {
     let (_a, _b, mut receiver, sender, _raw, mut events) = pair().await;
     let data = vec![0x5a; 3900];
-    assert!(data.len() < rdm_transport::topology::MAX_FRAME);
+    assert!(data.len() < rdm_gossip::topology::MAX_FRAME);
     sender.publish(event(1, data.clone())).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), data.as_slice());
     loop {
@@ -134,7 +134,7 @@ async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked()
             .unwrap();
         if let iroh_gossip::api::Event::Received(message) = ev {
             assert!(
-                message.content.len() <= rdm_transport::topology::MAX_FRAME,
+                message.content.len() <= rdm_gossip::topology::MAX_FRAME,
                 "every complete chunk includes metadata and both vector prefixes"
             );
             let (attributes, _): (Vec<(String, String)>, Vec<u8>) =
@@ -269,10 +269,10 @@ async fn the_channel_surface_has_one_owned_receiver(mut channel: Channel, event:
     let _: u64 = channel.dropped();
     let _: tokio::sync::watch::Receiver<u64> = channel.lost();
     channel.publish(event).await.unwrap();
-    let _: Option<rdm_transport::gossip::Received> = channel.recv().await;
+    let _: Option<rdm_gossip::gossip::Received> = channel.recv().await;
     let (publisher, mut subscriber) = channel.split();
-    let _: rdm_transport::gossip::Publisher = publisher;
-    let _: Option<rdm_transport::gossip::Received> = subscriber.recv().await;
+    let _: rdm_gossip::gossip::Publisher = publisher;
+    let _: Option<rdm_gossip::gossip::Received> = subscriber.recv().await;
 }
 
 #[test]
@@ -388,18 +388,18 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
     let rlib = records
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|m| m["reason"] == "compiler-artifact" && m["target"]["name"] == "rdm_transport")
+        .filter(|m| m["reason"] == "compiler-artifact" && m["target"]["name"] == "rdm_gossip")
         .flat_map(|m| m["filenames"].as_array().cloned().unwrap_or_default())
         .filter_map(|v| v.as_str().map(str::to_string))
         .find(|f| f.ends_with(".rlib"))
-        .expect("the current build's transport library");
+        .expect("the current build's gossip library");
     let dir = std::env::temp_dir().join(format!("channel-ownership-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
     let compile = |body: &str| {
         let source = dir.join("ownership.rs");
         std::fs::write(
             &source,
-            format!("use rdm_transport::gossip::Channel; {body}"),
+            format!("use rdm_gossip::gossip::Channel; {body}"),
         )
         .unwrap();
         std::process::Command::new("rustc")
@@ -413,7 +413,7 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
             .arg("--out-dir")
             .arg(&dir)
             .arg("--extern")
-            .arg(format!("rdm_transport={rlib}"))
+            .arg(format!("rdm_gossip={rlib}"))
             .arg("-L")
             .arg(format!(
                 "dependency={}",

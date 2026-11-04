@@ -217,7 +217,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     estate.enter(&fp).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let starts_before = estate.starts_of_build(&accepted).await;
-    let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
+    let (floor, gossip) = (rdm_gossip::topology::staleness_floor(), rdm_gossip::topology::gossip_interval());
     let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_pid(runtime_of(&estate, &lost_id));
     let recreated = wait_for(&format!("{lost:?} re-created at its path.name, ready and mesh2's primary"), floor * 4 + Duration::from_secs(60), || {
@@ -297,7 +297,7 @@ async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_n
         assert_eq!(name.as_deref(), Some(first_id.as_str()), "{first:?}'s name stays held by its node id on the store root");
     };
     intact();
-    let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
+    let (floor, gossip) = (rdm_gossip::topology::staleness_floor(), rdm_gossip::topology::gossip_interval());
     let before = f.before.clone();
     let Some(cut) = cut_between(&mut f.estate, &before, &mine, &theirs).await else { return };
     let cut_ns = now_ns();
@@ -369,7 +369,7 @@ async fn a_lost_mesh_primary_heard_again_and_its_successor_settle_on_one_mesh_pr
     let (successor, successor_id) = (location(&successor_row), s(&successor_row["node_id"]));
     let births: Vec<(PathName, String, String)> = [&first_row, &successor_row].iter().map(|r| (location(r), s(&r["node_id"]), s(&r["incarnation"]))).collect();
     let others: Vec<PathName> = f.before.iter().map(location).filter(|l| *l != first).collect();
-    let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
+    let (floor, gossip) = (rdm_gossip::topology::staleness_floor(), rdm_gossip::topology::gossip_interval());
     let before = f.before.clone();
     let Some(cut) = cut_between(&mut f.estate, &before, &[first.clone()], &others).await else { return };
     let cut_ns = now_ns();

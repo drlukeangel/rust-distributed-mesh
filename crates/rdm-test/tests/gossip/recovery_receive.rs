@@ -2,8 +2,8 @@
 use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId, PrimaryRole, Primary};
-use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, TopologyView, StatusEvent};
-use rdm_transport::snapshot::{Chunk, Taken};
+use rdm_gossip::topology::{learn_addresses, mesh_channel, Frame, TopologyView, StatusEvent};
+use rdm_gossip::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use std::{sync::{Arc, OnceLock}, time::Duration};
 
@@ -12,8 +12,8 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip) {
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     (ep, gossip)
 }
-async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64, author: &rdm_transport::envelope::Birth) {
-    let source = match frame.data() { Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => author.clone() };
+async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64, author: &rdm_gossip::envelope::Birth) {
+    let source = match frame.data() { Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => author.clone() };
     sender.broadcast_neighbors(frame.authored(&source, 10, 1).encode().into()).await.unwrap();
     sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: author.node.to_string(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -44,7 +44,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let mut own=birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 10);
         own.node.endpoint_id=EndpointId(server_ep.id().to_string());own.node.transport_addr=server_addr;
         let publisher=PublisherId::from(&own.node);
-        let author=rdm_transport::envelope::Birth::publisher(&fabric,&publisher);
+        let author=rdm_gossip::envelope::Birth::publisher(&fabric,&publisher);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
         let server_topology_view=TopologyView::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,own.node.node_id.as_str(),Arc::new(time.clone()),vec![]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());

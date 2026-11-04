@@ -4,8 +4,8 @@
 //! `DELETED_RETENTION` while keeping the final mesh topology in `SnapshotReceiver` and `Forwarder`.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rdm_transport::topology::Frame;
-use rdm_transport::snapshot::SnapshotReceiver;
+use rdm_gossip::topology::Frame;
+use rdm_gossip::snapshot::SnapshotReceiver;
 
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
@@ -54,7 +54,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
         incarnation: m3_a1.node.incarnation.clone(),
      node_id: m3_a1.node.node_id.clone(), };
     let mut rx = SnapshotReceiver::default();
-    let chunk = rdm_transport::snapshot::Chunk {
+    let chunk = rdm_gossip::snapshot::Chunk {
         mesh: "mesh3".into(),
         publisher: pub_id.clone(),
         forwarded_by: None,
@@ -67,7 +67,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
         deleted: vec![],
     };
     let taken = rx.take_chunk(chunk);
-    assert!(matches!(taken, rdm_transport::snapshot::Taken::Installed(_)));
+    assert!(matches!(taken, rdm_gossip::snapshot::Taken::Installed(_)));
     let _ = Frame::MeshTopology {
         mesh: "mesh3".into(),
         publisher: pub_id,

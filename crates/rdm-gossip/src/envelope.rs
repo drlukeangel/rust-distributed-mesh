@@ -1,7 +1,7 @@
 //! CloudEvents 1.0 binary-mode gossip binding. Data is selected only after context validation.
 
 use crate::topology::Frame;
-use crate::wire::{self, WireError};
+use rdm_transport::wire::{self, WireError};
 use rdm_core::{FabricId, NodeId, IncarnationId, PublisherId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -183,7 +183,7 @@ impl Context {
             Frame::NewFabricPrimary { primary, .. } => { identity = vec![primary.node_id.to_string(), primary.incarnation.to_string()]; format!("fabric/{}/primary", author.fabric) }
             Frame::Authored { .. } => unreachable!(),
         };
-        let (trace, _) = sanitized_trace(crate::current_traceparent(), crate::current_tracestate());
+        let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
         Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
 

@@ -22,7 +22,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::Event;
 use rdm_core::{FabricId, MeshId};
 use rdm_client::NodeView;
-use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
+use rdm_gossip::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::typed::until_arrival;
 use serde_json::{json, Value};

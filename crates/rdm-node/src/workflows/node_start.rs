@@ -39,7 +39,7 @@ use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
 use crate::wire::JoinAnswer;
 use rdm_core::MeshDigest;
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{CancelToken, NodeRpcClient, NodeTarget};
 use std::future::Future;
 use std::pin::Pin;

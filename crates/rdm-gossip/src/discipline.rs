@@ -1,6 +1,6 @@
 //! Which heartbeats may discipline a node's rafka-time, and the spans that say what became of them.
 //!
-//! The clock ([`crate::clock::RafkaTime::observe_at`]) decides what a sample does; this module
+//! The clock ([`rdm_transport::clock::RafkaTime::observe_at`]) decides what a sample does; this module
 //! decides whether a stamp is a sample at all. The rule is the lineage and nothing else:
 //!
 //! - A member (any node that is not its mesh's primary) observes the digest of its CURRENT mesh
@@ -20,7 +20,7 @@
 //! `Frame::MeshTopology::published_at_rafka_ms` is read from the same clock at the start of
 //! `Backbone::publish`, before the chunks are built and sent.
 
-use crate::clock::{Ignored, Observed, SharedClock};
+use rdm_transport::clock::{Ignored, Observed, SharedClock};
 use rdm_core::{MemberStatus, MeshDigest, PublisherId};
 
 use crate::topology::PrimaryView;

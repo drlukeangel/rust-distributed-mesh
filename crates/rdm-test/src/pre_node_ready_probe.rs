@@ -254,7 +254,7 @@ pub struct TestPreNodeReady {
     pub pulls_dropped: AtomicU32,
     /// Side effects emitted: one per row version applied, never per arrival.
     pub effects: AtomicU32,
-    digest_view: std::sync::OnceLock<rdm_transport::topology::DigestView>,
+    digest_view: std::sync::OnceLock<rdm_gossip::topology::DigestView>,
 }
 
 /// Counts a pull dropped before it finished.
@@ -315,7 +315,7 @@ impl TestPreNodeReady {
 
     /// The topology view the first attempt was handed: what the app subscribes to before it
     /// takes its snapshot.
-    pub fn digest_view(&self) -> Option<rdm_transport::topology::DigestView> {
+    pub fn digest_view(&self) -> Option<rdm_gossip::topology::DigestView> {
         self.digest_view.get().cloned()
     }
 

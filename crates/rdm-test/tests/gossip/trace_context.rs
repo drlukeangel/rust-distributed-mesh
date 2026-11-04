@@ -1,6 +1,6 @@
 //! CloudEvents tracing is authored context, never a receive decision.
 use rdm_core::{FabricId, MeshId};
-use rdm_transport::topology::{Frame, TopologyView, mesh_channel, learn_addresses};
+use rdm_gossip::topology::{Frame, TopologyView, mesh_channel, learn_addresses};
 use std::time::Duration;
 
 async fn held(receiver: &TopologyView, mesh: &str, stamp: u64) {

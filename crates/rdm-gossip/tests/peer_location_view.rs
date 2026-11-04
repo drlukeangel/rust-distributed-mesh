@@ -21,7 +21,7 @@
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{Backbone, TopologyView};
+use rdm_gossip::topology::{Backbone, TopologyView};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;

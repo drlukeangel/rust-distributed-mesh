@@ -12,7 +12,7 @@
 use crate::model::{IncarnationId, Node};
 use crate::status_rpc::StatusServiceSlot;
 use rdm_core::status::{Status, StatusRequest};
-use rdm_transport::topology::DigestView;
+use rdm_gossip::topology::DigestView;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

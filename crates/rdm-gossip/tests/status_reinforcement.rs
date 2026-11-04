@@ -9,8 +9,8 @@
 //! original publisher; and no status travels inside `MeshTopology`.
 
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_transport::snapshot::PublisherId;
-use rdm_transport::topology::{
+use rdm_gossip::snapshot::PublisherId;
+use rdm_gossip::topology::{
     forward_of, Backbone, Frame, TopologyView, StatusView, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,
 };
 use serde_json::{json, Value};
@@ -65,7 +65,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // A changed mesh status: the frame at once, then exactly four repeats one second apart, then
         // nothing however long the clock runs; every send is the same fact at the same instant.
         // The mesh's first state is a heard Pending with no instant (Q272): stamped here, once.
-        let first_state = rdm_transport::topology::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
+        let first_state = rdm_gossip::topology::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
         let mut mesh = StatusPublisher::new(me, StatusScope::Mesh("mesh1".into()));
         mesh.set_role(true);
         let first = mesh.observe("pending", Some(first_state.clone()), true, base, 1_000).expect("a change is sent at once");
@@ -118,7 +118,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // is sent until its checklist completes; then the adopted fact is sent, the old instant, five sends.
         let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         successor.set_role(true);
-        let heard = rdm_transport::topology::StatusFact { status: "ready".into(), changed_at_rafka_ms: 2 };
+        let heard = rdm_gossip::topology::StatusFact { status: "ready".into(), changed_at_rafka_ms: 2 };
         assert!(successor.observe("ready", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
         assert!(successor.awaiting_checklist(), "the adopted status waits for its checklist");
         assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "no timer republishes an adopted status");
@@ -302,7 +302,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 #[test]
 fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
     let base = Instant::now();
-    let fact = |status: &str, at: u64| rdm_transport::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
+    let fact = |status: &str, at: u64| rdm_gossip::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
     let publisher = || {
         let mut p = StatusPublisher::new("mesh2.node-admin.1", StatusScope::Mesh("mesh2".into()));
         p.set_role(true);
@@ -376,7 +376,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
 
         let pending = Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
         assert!(topology_view.digest_view.statuses.take(&pending, &fabric));
-        let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
+        let lost_author = rdm_gossip::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
         let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
             .authored(&lost_author, 3, 1_000);
         assert!(topology_view.digest_view.statuses.take(&mesh2_ready, &fabric));

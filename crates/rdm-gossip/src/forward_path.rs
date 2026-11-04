@@ -483,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_forward_is_named_and_the_next_publication_owes_a_full() {
         let spans = Spans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         // The channel refuses the second send: the delta v10 to v11.
         let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
@@ -512,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn a_queue_with_no_sender_task_is_named_and_owes_a_full() {
         let spans = Spans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let owes = Arc::new(AtomicBool::new(false));
         let (queue, rx) = mpsc::unbounded_channel();
@@ -574,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
         let spans = Spans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());

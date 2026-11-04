@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/rdm-transport",
+    "crates/rdm-gossip",
     "crates/rdm-node",
     "crates/rdm-test",
     "crates/rdm-admin",

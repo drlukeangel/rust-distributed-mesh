@@ -3,7 +3,7 @@
 //! Every node serves it: it reads what the node holds (its topology view and the snapshot
 //! receiver's held sources, each with the publisher and `topology_version` it holds them at) and
 //! streams one snapshot per mesh, chunked by the one method gossip's `MeshTopology` snapshots use
-//! ([`rdm_transport::snapshot::chunks_of`]). It mutates nothing at the target.
+//! ([`rdm_gossip::snapshot::chunks_of`]). It mutates nothing at the target.
 //!
 //! The caller ([`get_topology`]) installs a mesh only once every chunk of one snapshot is held,
 //! through the receiver the Mesh channel's snapshots install into
@@ -11,8 +11,8 @@
 
 use rdm_core::wire::ProjectionEntry;
 use rdm_core::{MeshDigest, PublisherId};
-use rdm_transport::topology::TopologyView;
-use rdm_transport::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
+use rdm_gossip::topology::TopologyView;
+use rdm_gossip::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::catalog::OpOwner;
@@ -406,7 +406,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     let mut read = read_with(client, target, &node_name, mesh, since, |c| {
         let mesh = c.mesh.clone();
         let taken = topology_view.take_read_chunk(c, answerer_mesh);
-        if matches!(taken, Taken::Refused(rdm_transport::snapshot::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
+        if matches!(taken, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
             older_than_held.push(mesh);
         }
         taken
@@ -439,11 +439,11 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// between its pulls a node keeps its rafka-time disciplined from its own primary's heartbeats only
 /// (`crate::rafka_time`), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
-pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopUpFetch {
+pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFetch {
     Arc::new(move |topology_view: TopologyView, primary: MeshDigest, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
-            let mut done = rdm_transport::topology::TopUpDone::default();
+            let mut done = rdm_gossip::topology::TopUpDone::default();
             for mesh in meshes {
                 let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.mesh, &topology_view, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
@@ -458,7 +458,7 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopU
 /// whom to reach; what it holds as nodes stays what it hears itself.
 /// Read the topology from `target`.
 pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    let mut receiver = rdm_transport::snapshot::SnapshotReceiver::default();
+    let mut receiver = rdm_gossip::snapshot::SnapshotReceiver::default();
     read_with(client, target, node, mesh, since, |c| receiver.take_chunk(c)).await
 }
 

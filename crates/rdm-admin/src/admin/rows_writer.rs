@@ -124,15 +124,15 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
 /// record's included: an election input (elections §3), each
 /// held only when it supersedes the record held. The records record the role; the election decides it.
 /// The store root is the fabric's own, so every record on it is of this fabric.
-pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, primaries: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
+pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, primaries: &rdm_gossip::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
         let record = |revision| rdm_core::Primary { mesh: r.mesh(), node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), revision };
         if let Some(revision) = r.is_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_type(&r.r#type), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
+            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_type(&r.r#type), &record(revision)), rdm_gossip::topology::RoleTaken::Held { .. }));
         }
         if let Some(revision) = r.is_fabric_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
+            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_gossip::topology::RoleTaken::Held { .. }));
         }
     }
     Ok(taken)
@@ -395,7 +395,7 @@ impl FabricRowsWriter {
 
     /// One sweep on the primary records `roles` holds: while the fabric-primary role names this birth, the write
     /// of the fabric's identity row, until the store answers it.
-    pub(crate) async fn sweep(&mut self, primaries: &rdm_transport::topology::PrimaryView) {
+    pub(crate) async fn sweep(&mut self, primaries: &rdm_gossip::topology::PrimaryView) {
         if !primaries.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
             return;
         }

@@ -1,7 +1,7 @@
 //! Live receive-path cells for operation facts: exact identity, independent of unrelated traffic.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, Frame, TopologyView};
+use rdm_gossip::topology::{learn_addresses, Frame, TopologyView};
 use serde_json::Value;
 use std::time::Duration;
 

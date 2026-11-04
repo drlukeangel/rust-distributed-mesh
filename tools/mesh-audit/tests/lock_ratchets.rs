@@ -311,17 +311,17 @@ fn emit() { tracing::info_span!(target: "rafka.customer-target", "rdm.node_rpc.r
 #[test]
 fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-transport/src/topology.rs", "crate::envelope::encode(context, frame)", "serde_json::to_vec(self)");
+    t.edit("crates/rdm-gossip/src/topology.rs", "crate::envelope::encode(context, frame)", "serde_json::to_vec(self)");
     let v = only(check(t.root()), Ratchet::NoJsonOnTheWire);
     assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("topology.rs") && token == "serde_json::to_vec")), "{v:?}");
 
     let envelope = Planted::of_tree();
-    envelope.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "serde_json::to_vec(&(context.attributes(dataschema)?, data))");
+    envelope.edit("crates/rdm-gossip/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "serde_json::to_vec(&(context.attributes(dataschema)?, data))");
     only(check(envelope.root()), Ratchet::NoJsonOnTheWire);
 
     // A direct postcard call beside the shared codec.
     let t = Planted::of_tree();
-    t.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "postcard::to_allocvec(&(context.attributes(dataschema)?, data))");
+    t.edit("crates/rdm-gossip/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "postcard::to_allocvec(&(context.attributes(dataschema)?, data))");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
 
     // A Node RPC source takes no JSON either.
@@ -475,9 +475,9 @@ fn handover_wire_refuses_a_moved_position_or_a_lost_golden() {
 #[test]
 fn gossip_envelope_wire_is_atomic_holds_context_goldens_and_receive_controls() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-transport/src/envelope.rs", "pub traceparent: Option<String>", "pub lost_parent: Option<String>");
+    t.edit("crates/rdm-gossip/src/envelope.rs", "pub traceparent: Option<String>", "pub lost_parent: Option<String>");
     only(check(t.root()), Ratchet::GossipEnvelopeWireIsAtomic);
     let g = Planted::of_tree();
-    g.edit("crates/rdm-transport/tests/digest_frames_wire.rs", "fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn missing_traced_golden");
+    g.edit("crates/rdm-gossip/tests/digest_frames_wire.rs", "fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn missing_traced_golden");
     only(check(g.root()), Ratchet::GossipEnvelopeWireIsAtomic);
 }

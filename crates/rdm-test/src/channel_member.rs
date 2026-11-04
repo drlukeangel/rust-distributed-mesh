@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PublisherId};
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 
 /// Where a [`Member`] is reached: the seed another member joins through.
 #[derive(Debug, Clone)]

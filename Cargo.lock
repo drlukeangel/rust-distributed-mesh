@@ -2740,6 +2740,7 @@ dependencies = [
  "rand 0.8.6",
  "rdm-client",
  "rdm-core",
+ "rdm-gossip",
  "rdm-node",
  "rdm-transport",
  "serde",
@@ -2791,6 +2792,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdm-gossip"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "chrono",
+ "ctor",
+ "futures-lite",
+ "futures-util",
+ "iroh",
+ "iroh-gossip",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "postcard",
+ "proptest",
+ "rdm-core",
+ "rdm-test",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rdm-mesh-audit"
 version = "0.1.0"
 dependencies = [
@@ -2817,6 +2848,7 @@ dependencies = [
  "rand 0.8.6",
  "rdm-client",
  "rdm-core",
+ "rdm-gossip",
  "rdm-transport",
  "serde",
  "serde_json",
@@ -2841,6 +2873,7 @@ dependencies = [
  "rdm-admin",
  "rdm-client",
  "rdm-core",
+ "rdm-gossip",
  "rdm-node",
  "rdm-transport",
  "serde",
@@ -2884,6 +2917,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rdm-core",
+ "rdm-gossip",
  "rdm-test",
  "serde",
  "serde_json",

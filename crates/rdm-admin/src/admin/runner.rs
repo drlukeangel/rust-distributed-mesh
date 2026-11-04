@@ -174,7 +174,7 @@ impl GossipLifecycle {
 pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, op: &rdm_core::LifecycleOp) {
     let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
     async {
-        backbone.publish_status_event(rdm_transport::topology::StatusEvent::Stopped, op).await;
+        backbone.publish_status_event(rdm_gossip::topology::StatusEvent::Stopped, op).await;
         if let Some(project) = project {
             project().await;
         }
@@ -221,7 +221,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn deleting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
-            self.backbone.publish_status_event(rdm_transport::topology::StatusEvent::Deleting, op).await;
+            self.backbone.publish_status_event(rdm_gossip::topology::StatusEvent::Deleting, op).await;
             tracing::info!("the node is being removed: every mesh hears it is not routable");
         }
         .instrument(span)
@@ -246,7 +246,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         });
     }
     async fn deleted(&self, op: &rdm_core::LifecycleOp) {
-        let f = rdm_transport::topology::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
+        let f = rdm_gossip::topology::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
             if let Err(e) = self.topology_view.publish_lifecycle(&f).await {
@@ -1948,7 +1948,7 @@ mod tests {
         use crate::build_state::BuildAccepted;
         use crate::deployment::process::ProcessDeploymentProvider;
         use crate::lifecycle::{HookRegistry, LifecycleTransitionPipeline, MemoryReceiptLog};
-        use rdm_transport::topology::{Backbone, TopologyView};
+        use rdm_gossip::topology::{Backbone, TopologyView};
 
         let dir = crate::test_support::tempdir(cell);
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[41u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();

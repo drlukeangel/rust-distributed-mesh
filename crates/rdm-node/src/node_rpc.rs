@@ -8,7 +8,7 @@
 //! every caller by clone; nothing builds a resolver or a client per call.
 
 use rdm_core::MeshDigest;
-use rdm_transport::topology::DigestView;
+use rdm_gossip::topology::DigestView;
 use rdm_transport::{Applied, LiveNodeResolver, NodeRpcClient, ResolvedNode};
 use std::sync::Arc;
 

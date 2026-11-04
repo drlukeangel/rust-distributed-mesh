@@ -324,13 +324,13 @@ mod reserved_receive;
 mod recovery_receive;
 
 /// The synthetic probe owns this birth; it is never inferred from a path or endpoint.
-fn gossip_author(fabric: &rdm_core::FabricId) -> rdm_transport::envelope::Birth {
+fn gossip_author(fabric: &rdm_core::FabricId) -> rdm_gossip::envelope::Birth {
     static BIRTH: std::sync::OnceLock<(rdm_core::NodeId, rdm_core::IncarnationId)> = std::sync::OnceLock::new();
     let (node, incarnation) = BIRTH.get_or_init(|| (rdm_core::NodeId::mint(), rdm_core::IncarnationId::mint()));
-    rdm_transport::envelope::Birth { fabric: fabric.clone(), node: node.clone(), incarnation: incarnation.clone() }
+    rdm_gossip::envelope::Birth { fabric: fabric.clone(), node: node.clone(), incarnation: incarnation.clone() }
 }
 
-fn declare_gossip_probe(topology_view: &rdm_transport::topology::TopologyView) {
+fn declare_gossip_probe(topology_view: &rdm_gossip::topology::TopologyView) {
     let birth = gossip_author(topology_view.fabric_id());
     topology_view.set_author(&rdm_core::PublisherId { node_id: birth.node, incarnation: birth.incarnation }, None);
 }
@@ -341,10 +341,10 @@ mod envelope_receive;
 mod trace_context;
 
 /// Encoding arguments for a synthetic sender: its supplied owned birth and declared fixture revision.
-async fn forward_gossip_probe(topology_view: &rdm_transport::topology::TopologyView, frame: &rdm_transport::topology::Frame) -> anyhow::Result<()> {
+async fn forward_gossip_probe(topology_view: &rdm_gossip::topology::TopologyView, frame: &rdm_gossip::topology::Frame) -> anyhow::Result<()> {
     if frame.context().is_some() { return topology_view.forward(frame).await; }
     let author = match frame.data() {
-        rdm_transport::topology::Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
+        rdm_gossip::topology::Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
         _ => topology_view.author_birth().expect("the synthetic publisher supplied its owned birth"),
     };
     topology_view.forward(&frame.clone().authored(&author, 1, 1)).await

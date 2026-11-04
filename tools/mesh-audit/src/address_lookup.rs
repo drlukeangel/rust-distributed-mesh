@@ -30,6 +30,7 @@ pub const N0_TOKENS: &[&str] = &["presets::N0", "DnsAddressLookup", "PkarrPublis
 /// and the topology/entry modules of the transport crate.
 pub const CANONICAL: &[&str] = &[
     "crates/rdm-transport/src",
+    "crates/rdm-gossip/src",
     "crates/rafka-node-rpc/src",
     "crates/rdm-node/src",
     "crates/rdm-test/src",

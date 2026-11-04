@@ -13,8 +13,8 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Primary, PrimaryRole};
-use rdm_transport::topology::{learn_addresses, Backbone, Frame, TopologyView, StatusEvent};
-use rdm_transport::snapshot::PublisherId;
+use rdm_gossip::topology::{learn_addresses, Backbone, Frame, TopologyView, StatusEvent};
+use rdm_gossip::snapshot::PublisherId;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -195,7 +195,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let late_from = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
         m1.forward(&late_full).await.unwrap();
         m1.forward(&late_delta).await.unwrap();
-        m2.forward(&late_stop.clone().authored(&rdm_transport::envelope::Birth::publisher(&fabric(), &pub2), 0, 1)).await.unwrap();
+        m2.forward(&late_stop.clone().authored(&rdm_gossip::envelope::Birth::publisher(&fabric(), &pub2), 0, 1)).await.unwrap();
         m2.forward(&late_heartbeat).await.unwrap();
         // A newer heartbeat from each sender, after its late frames: once the member holds it, the late
         // frames ahead of it on the same channel were received.
@@ -270,7 +270,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let fwd_bb = Backbone::join(&forwarder.gossip, &forwarder.ep, &fwd, "mesh1", PublisherId::from(&forwarder_birth.node), vec![source_addr]).await.unwrap();
         source_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
-        let mut linked = source.gossip.subscribe(rdm_transport::topology::backbone_channel(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
+        let mut linked = source.gossip.subscribe(rdm_gossip::topology::backbone_channel(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(20), linked.joined()).await.unwrap().unwrap();
         assert!(source_bb.publish(&src, vec![]).await);
         until("the forwarder to install the empty source", || fwd_bb.held_source("mesh2").is_some()).await;
@@ -287,8 +287,8 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
         let reader_id = NodeId::mint();
         let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let chunk = rdm_transport::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted };
-        assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)));
+        let chunk = rdm_gossip::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted };
+        assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
 
         // A subsequent material change uses the same author through the delta path.
@@ -315,8 +315,8 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let backbone = Backbone::join(&source.gossip, &source.ep, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
-        let mut local = probe.gossip.subscribe(rdm_transport::topology::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
-        let mut remote = probe.gossip.subscribe(rdm_transport::topology::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
+        let mut local = probe.gossip.subscribe(rdm_gossip::topology::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
+        let mut remote = probe.gossip.subscribe(rdm_gossip::topology::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), local.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), remote.joined()).await.unwrap().unwrap();
         let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();
@@ -336,7 +336,7 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
             }).await.unwrap();
             for event in events {
                 let context = event.context().unwrap();
-                assert_eq!(context.source, rdm_transport::envelope::Birth::publisher(&fabric(), &author));
+                assert_eq!(context.source, rdm_gossip::envelope::Birth::publisher(&fabric(), &author));
                 assert_eq!(context.sequence.as_deref(), Some("00000000000000000001"));
                 assert!(ids.insert(context.id.clone()), "distinct source and forwarded publications reused {}", context.id);
             }

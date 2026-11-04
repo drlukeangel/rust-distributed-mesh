@@ -1,7 +1,7 @@
 //! A live mesh-channel probe of the replacement-state receive contract.
 
 use rdm_core::{FabricId, MeshId};
-use rdm_transport::topology::{learn_addresses, Frame, TopologyView};
+use rdm_gossip::topology::{learn_addresses, Frame, TopologyView};
 use std::time::Duration;
 
 pub(super) async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
@@ -223,7 +223,7 @@ fn delayed_status_predecessors_lose_by_committed_revision() {
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let sender = TopologyView::join(&gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
-        let birth = || rdm_transport::envelope::Birth { fabric: fabric.clone(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let birth = || rdm_gossip::envelope::Birth { fabric: fabric.clone(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let (successor, predecessor) = (birth(), birth());
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == "mesh1.node.1") { tokio::time::sleep(Duration::from_millis(10)).await; }

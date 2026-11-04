@@ -5,7 +5,7 @@
 use bytes::Bytes;
 use rdm_core::{FabricId, MeshId};
 use rdm_test::channel_member::Member;
-use rdm_transport::gossip::{channel_id, Event};
+use rdm_gossip::gossip::{channel_id, Event};
 use std::time::Duration;
 
 const TYPE: &str = "testkit.channel-member";
@@ -38,11 +38,11 @@ fn two_members_publish_and_receive_one_event() {
         to_b.publish(event(1, b"from a")).await.expect("a publishes");
         let got = tokio::time::timeout(BOUND, from_a.recv()).await.expect("b receives a's event").expect("b's channel is open");
         assert_eq!((got.data.as_ref(), got.sequence, got.dataschema.as_deref()), (&b"from a"[..], Some(1), Some("testkit.v1")));
-        assert_eq!(got.source, rdm_transport::envelope::Birth::publisher(&fabric, &a.author), "sourced from a's author");
+        assert_eq!(got.source, rdm_gossip::envelope::Birth::publisher(&fabric, &a.author), "sourced from a's author");
 
         to_a.publish(event(2, b"from b")).await.expect("b publishes");
         let got = tokio::time::timeout(BOUND, from_b.recv()).await.expect("a receives b's event").expect("a's channel is open");
         assert_eq!((got.data.as_ref(), got.sequence), (&b"from b"[..], Some(2)));
-        assert_eq!(got.source, rdm_transport::envelope::Birth::publisher(&fabric, &b.author), "sourced from b's author");
+        assert_eq!(got.source, rdm_gossip::envelope::Birth::publisher(&fabric, &b.author), "sourced from b's author");
     })
 }

@@ -19,7 +19,7 @@ mod tests {
     use rdm_core::{ConnectionId, MemberStatus, MeshDigest, MeshNode};
     use rdm_node::node_self::{ChannelFrames, NodeSelf};
     use rdm_node::storage::MemoryConnectionsStorage;
-    use rdm_transport::topology::TopologyView;
+    use rdm_gossip::topology::TopologyView;
     use rdm_transport::{LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

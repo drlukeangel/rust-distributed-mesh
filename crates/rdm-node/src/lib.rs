@@ -259,7 +259,7 @@ pub async fn run_on(
 }
 
 /// Application channels and their events (gossip.md §8): an application's nodes join the channels its code names.
-pub use rdm_transport::gossip;
+pub use rdm_gossip::gossip;
 /// Data-plane connections over registered application ALPNs (`i148`).
 pub use rdm_transport::connections;
 

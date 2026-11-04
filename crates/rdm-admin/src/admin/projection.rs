@@ -629,12 +629,12 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
 /// or forgotten; a mesh status; the meshes the accepted Build names: states.md "Routing", applied on
 /// receipt; and a birth silent past the staleness floor, marked by the pruner's sweep, the one clock the
 /// projection reads), the records' inputs ([`Records::inputs`]), the primary records the election reads
-/// ([`rdm_transport::topology::PrimaryView::subscribe`]), the states this admin applied
+/// ([`rdm_gossip::topology::PrimaryView::subscribe`]), the states this admin applied
 /// ([`crate::status_rpc::Declared::subscribe`]) and the node rows this admin writes
 /// ([`crate::node_rows::WrittenRows::subscribe_names`]). A watch whose sender is gone leaves the wait;
-/// the others are still waited on ([`rdm_transport::topology::RoutingWatch::moved`]).
+/// the others are still waited on ([`rdm_gossip::topology::RoutingWatch::moved`]).
 pub(crate) struct ViewWake {
-    inputs: rdm_transport::topology::RoutingWatch,
+    inputs: rdm_gossip::topology::RoutingWatch,
 }
 
 impl ViewWake {

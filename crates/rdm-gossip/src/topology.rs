@@ -14,7 +14,7 @@
 //! Every member heard is registered with the endpoint at its gossip address
 //! (its one endpoint), so HyParView reaches a peer it learned by id.
 
-use crate::clock::SharedClock;
+use rdm_transport::clock::SharedClock;
 use crate::forward_path::ForwardPath;
 use crate::snapshot::{Chunk, Delta, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use anyhow::Result;
@@ -39,7 +39,7 @@ pub use rdm_core::cadence::{backbone_gossip_interval, gossip_interval, staleness
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
 /// The largest encoded frame: the payload that fits iroh-gossip's frame limit with its framing.
-pub const MAX_FRAME: usize = crate::chunking::MAX_MESSAGE_BYTES;
+pub const MAX_FRAME: usize = rdm_transport::chunking::MAX_MESSAGE_BYTES;
 
 /// A mesh's topology channel.
 pub fn mesh_channel(fabric: &FabricId, mesh_id: &MeshId) -> TopicId {
@@ -285,7 +285,7 @@ pub fn runqueue_wait_since_ms(since: Option<Duration>) -> u64 {
     }
 }
 
-/// What travels on a mesh channel or the backbone: one postcard frame ([`crate::wire`]). A digest
+/// What travels on a mesh channel or the backbone: one postcard frame ([`rdm_transport::wire`]). A digest
 /// travels as its wire shape (`#[serde(with)]`), never as the JSON-shaped `MeshDigest`.
 ///
 /// The complete gossip message is postcard `(Vec<(String, String)>, Vec<u8>)`: standard CloudEvents
@@ -304,7 +304,7 @@ pub enum Frame {
     /// Schema index 0, never a wire kind.
     Digest {
         /// The member's digest, in its wire shape.
-        #[serde(with = "crate::wire::digest")]
+        #[serde(with = "rdm_transport::wire::digest")]
         digest: MeshDigest,
     },
     /// One chunk of a snapshot of `mesh`'s topology (gossip.md §3.1). On the backbone it is the
@@ -342,7 +342,7 @@ pub enum Frame {
         chunk_count: u32,
         /// The members this chunk carries, each a member projection entry: its digest, then the
         /// status its mesh-primary holds (gossip.md §3.1).
-        #[serde(with = "crate::wire::entries")]
+        #[serde(with = "rdm_transport::wire::entries")]
         digests: Vec<MeshDigest>,
         /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
@@ -369,7 +369,7 @@ pub enum Frame {
         published_at_rafka_ms: u64,
         /// The births added or changed, each a member projection entry: its digest, then the status
         /// its mesh-primary holds (gossip.md §3.1).
-        #[serde(with = "crate::wire::entries")]
+        #[serde(with = "rdm_transport::wire::entries")]
         changed: Vec<MeshDigest>,
         /// The node ids no longer listed.
         removed: Vec<String>,
@@ -602,7 +602,7 @@ impl Frame {
         match context { Some(context) => Self::Authored { context, frame: Box::new(self) }, None => self }
     }
     pub(crate) fn kind_index(&self) -> usize {
-        let encoded = crate::wire::encode(self.data()).expect("domain data serializes");
+        let encoded = rdm_transport::wire::encode(self.data()).expect("domain data serializes");
         encoded[0] as usize
     }
     /// The frame as one postcard message.
@@ -610,8 +610,8 @@ impl Frame {
         match self { Self::Authored { context, frame } => crate::envelope::encode(context, frame).expect("event serializes"), _ => panic!("gossip encoding requires an explicitly supplied author birth") }
     }
     /// The frame `bytes` carry, or why they are not one.
-    pub fn decode(bytes: &[u8]) -> Result<Self, crate::wire::WireError> {
-        crate::envelope::decode(bytes).map_err(|e| crate::wire::WireError::new(format!("{e:?}")))
+    pub fn decode(bytes: &[u8]) -> Result<Self, rdm_transport::wire::WireError> {
+        crate::envelope::decode(bytes).map_err(|e| rdm_transport::wire::WireError::new(format!("{e:?}")))
     }
 }
 
@@ -1580,7 +1580,7 @@ impl Channel {
                             let received_event = crate::envelope::decode_received(&m.content);
                             let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", node = %node, channel = %channel, sender = %m.delivered_from.fmt_short(), bytes = m.content.len());
                             if let Some(parent) = received_event.trace.traceparent.as_deref() {
-                                crate::set_remote_parent(&span, parent, received_event.trace.tracestate.as_deref());
+                                rdm_transport::set_remote_parent(&span, parent, received_event.trace.tracestate.as_deref());
                             }
                             span.in_scope(|| {
                                 if !received_event.dropped.is_empty() {
@@ -1880,11 +1880,11 @@ impl Channel {
 
 /// Split `items` into runs whose frame (as `frame` builds it, sized as a forward would be)
 /// encodes within [`MAX_FRAME`], by the one method the Build facts share
-/// ([`crate::chunking::pack_in_order`]). An item that fits no message on its own is left out and
+/// ([`rdm_transport::chunking::pack_in_order`]). An item that fits no message on its own is left out and
 /// named.
 #[cfg(test)]
 pub(crate) fn pack<T: Clone>(items: Vec<T>, frame: impl Fn(Vec<T>) -> Frame) -> Vec<Vec<T>> {
-    let (runs, refused) = crate::chunking::pack_in_order(items, |run: &[T]| {
+    let (runs, refused) = rdm_transport::chunking::pack_in_order(items, |run: &[T]| {
         let bytes = frame(run.to_vec()).encode();
         if bytes.len() > MAX_FRAME {
             Err(bytes.len())
@@ -2690,7 +2690,7 @@ pub struct TopologyView {
     /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
     digest_seq: Arc<std::sync::atomic::AtomicU64>,
     /// This process's CPU and RAM, sampled into every digest it publishes.
-    load: Arc<crate::load::LoadSampler>,
+    load: Arc<rdm_transport::load::LoadSampler>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     forward_path: ForwardPath,
     /// This birth's own config (node-config-update.md; Q203): the map the application reads
@@ -2752,7 +2752,7 @@ mod own_config_tests {
 
 impl TopologyView {
     /// The process's iroh endpoint this topology view rides: for read-only observations
-    /// (`crate::iroh_obs`), never for sending.
+    /// (`rdm_transport::iroh_obs`), never for sending.
     pub fn endpoint(&self) -> Endpoint {
         self.mesh.endpoint.clone()
     }
@@ -2833,7 +2833,7 @@ impl TopologyView {
         let name = view.held_name.clone();
         let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone());
         let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
-        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
+        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(rdm_transport::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
         me.watch_meshes();
         Ok(me)
     }
@@ -3343,7 +3343,7 @@ impl TopologyView {
     pub fn top_ups(&self, fetch: TopUpFetch) -> impl std::future::Future<Output = ()> + Send + 'static {
         let me = self.clone();
         async move {
-            let pacing = crate::delivery::Pacing::from_cadences();
+            let pacing = rdm_transport::delivery::Pacing::from_cadences();
             let mut again = 0u32;
             loop {
                 // One attempt per signal: a delta heard on a desynchronized source signals again,
@@ -6641,7 +6641,7 @@ mod tests {
     #[test]
     fn a_non_primary_admin_ends_a_stop_only_when_its_primarys_projection_moves_past_it() {
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = test_view("mesh1", "mesh1.node-admin.2");
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
@@ -7855,7 +7855,7 @@ mod tests {
     #[test]
     fn a_capture_receives_its_own_span_at_a_callsite_another_thread_hit_first() {
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         std::thread::spawn(open_shared_callsite).join().unwrap();
         open_shared_callsite();
         assert_eq!(spans.named("capture.shared-callsite").len(), 1, "the capture's own span reached it");
@@ -7895,7 +7895,7 @@ mod tests {
     #[test]
     fn a_mesh_status_is_taken_whatever_its_publishers_name_resolves_to_and_an_older_change_is_not() {
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         let departure = op_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &x, &x_inc, "node.delete");
@@ -7933,7 +7933,7 @@ mod tests {
     #[test]
     fn a_lifecycle_overlay_arriving_after_its_mesh_left_is_refused_by_the_deleted_retention_by_name() {
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
@@ -7966,7 +7966,7 @@ mod tests {
     #[test]
     fn a_departure_refused_by_the_deleted_retention_is_refused_by_name_once_and_its_copies_silently() {
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
@@ -8501,7 +8501,7 @@ mod tests {
     /// `ReceiveOrder` to ignore `MeshTopologyDelta(1 -> 2)` as `via-stale`.
     #[tokio::test]
     async fn interleaved_backbone_publishes_and_neighbour_up_replay_stamp_and_forward_in_version_order() {
-        use crate::clock::{Clock, SharedClock};
+        use rdm_transport::clock::{Clock, SharedClock};
         use iroh::protocol::Router;
         use std::sync::atomic::AtomicU64;
         use std::sync::OnceLock;
@@ -8540,13 +8540,13 @@ mod tests {
         }
 
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (admin, rpc1, rpc2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1));
         let p = publisher_of(&admin);
 
         let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-        let ep = crate::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
 
@@ -8585,15 +8585,15 @@ mod tests {
     async fn a_primary_refuses_a_read_of_its_own_source_below_the_version_it_published() {
         use iroh::protocol::Router;
         let spans = OpenedSpans::default();
-        let _capture = crate::test_span_capture::install(spans.clone());
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (admin, rpc1, rpc2, rpc3) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 1));
         let p = publisher_of(&admin);
         let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-        let ep = crate::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", crate::clock::os_clock(), vec![]).await.unwrap();
+        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", p.clone(), vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone()]).await);

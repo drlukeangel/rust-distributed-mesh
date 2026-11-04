@@ -6,7 +6,7 @@
 use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
 use rdm_core::{IncarnationId, NodeId, Primary, PrimaryRole};
-use rdm_transport::topology::{Frame, PrimaryView, RoleTaken};
+use rdm_gossip::topology::{Frame, PrimaryView, RoleTaken};
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();

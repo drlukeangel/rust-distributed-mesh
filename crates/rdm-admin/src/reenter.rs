@@ -15,7 +15,7 @@
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRecord;
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -518,7 +518,7 @@ mod tests {
                 },
                 ..local_digest.clone()
             };
-            let snap = rdm_transport::snapshot::SourceSnapshot {
+            let snap = rdm_gossip::snapshot::SourceSnapshot {
                 mesh: "mesh1".into(),
                 publisher: rdm_core::PublisherId {
                     incarnation: IncarnationId::mint(),
@@ -532,7 +532,7 @@ mod tests {
             for r in crate::topology_read::snapshot_replies(&snap, 1) {
                 if let rdm_core::topology::TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } = r {
                     let _ = local_view.take_read_chunk(
-                        rdm_transport::snapshot::Chunk {
+                        rdm_gossip::snapshot::Chunk {
                             mesh,
                             publisher,
                             forwarded_by: Some("topology-read".into()),

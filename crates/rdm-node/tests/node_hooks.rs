@@ -16,7 +16,7 @@ use rdm_node::node_hooks::{
     HookOutcome, NoAcceptingPrimary, NodeHooks, NodeReadyCtx, OnCallFailed, OnNodeReady,
     PreNodeReady, PreNodeReadyState, StartKind,
 };
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{
     CallOptions, CancelToken, NodeRpcClient, NodeTarget, Send, ResolvedNode, ServedBirth,
     ServerBuilder, StaticResolver, TimeLimit, ALPN,

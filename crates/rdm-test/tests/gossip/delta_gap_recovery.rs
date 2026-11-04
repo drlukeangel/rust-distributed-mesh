@@ -26,7 +26,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rdm_core::{FabricId, MemberStatus, MeshDigest, MeshId};
 use rdm_client::NodeView;
-use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
+use rdm_gossip::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use rdm_test::typed::until_arrival;
@@ -95,7 +95,7 @@ struct Seen {
 /// A member of the backbone and mesh1's channel: it records every frame it decodes and can
 /// broadcast one frame on mesh1's channel.
 struct Observer {
-    author: rdm_transport::envelope::Birth,
+    author: rdm_gossip::envelope::Birth,
     endpoint: Endpoint,
     _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,

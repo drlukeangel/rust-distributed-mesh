@@ -35,7 +35,7 @@ use rdm_core::PrimaryRole;
 use rdm_core::catalog::OpOwner;
 use rdm_node::member_handover::{after_updating, call_successor, call_update, entries_named, updating, Answered, Entry, STEP};
 use rdm_transport::stream::{NotStarted, ReplySink};
-use rdm_transport::topology::{Backbone, DigestView, TopologyView};
+use rdm_gossip::topology::{Backbone, DigestView, TopologyView};
 use rdm_transport::{CallOptions, NodeRpcClient, PeerContext, ServerBuilder};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;

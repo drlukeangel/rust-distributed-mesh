@@ -192,7 +192,7 @@ word forced onto it (observability-conventions.md, "No verb-laundering").
 - **Kebab-case, with a prefix.** `via-<cause>` when the code this span is in caused the action
   directly (`rdm.node_rpc.request.reject.via-busy`); `from-<cause>` when it fires because
   something else happened (`rdm.mesh.topology.update.from-node-started`,
-  `crates/rdm-transport/src/topology.rs`) (node-identity-and-state.md §9;
+  `crates/rdm-gossip/src/topology.rs`) (node-identity-and-state.md §9;
   observability-conventions.md §"Reason prefixes").
 - **The reason carries the discriminator.** What distinguishes one outcome or path from another
   goes in the name, never in an attribute: `reject.via-busy` and `reject.via-not-ready` are two

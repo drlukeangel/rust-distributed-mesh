@@ -8,10 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
-const APPROVED: [&str; 6] = [
+const APPROVED: [&str; 7] = [
     "rdm-node",
     "rdm-admin",
     "rdm-transport",
+    "rdm-gossip",
     "rdm-test",
     "rdm-core",
     "rdm-client",

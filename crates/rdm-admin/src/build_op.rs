@@ -20,7 +20,7 @@ use crate::control_plane::{ControlPlane, Refusal};
 use crate::model::PathName;
 use crate::topology::Topology;
 use rdm_core::IncarnationId;
-use rdm_transport::topology::PrimaryView;
+use rdm_gossip::topology::PrimaryView;
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
 use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition};

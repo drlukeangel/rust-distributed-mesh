@@ -14,6 +14,7 @@ async-trait = "0.1"
 rdm-admin = { path = "../rdm-admin", default-features = false }
 rdm-client = { path = "../rdm-client" }
 rdm-transport = { path = "../rdm-transport" }
+rdm-gossip = { path = "../rdm-gossip" }
 rdm-core = { path = "../rdm-core" }
 rdm-node = { path = "../rdm-node", default-features = false }
 iroh = { workspace = true }
@@ -34,7 +35,7 @@ default = ["testkit-skew", "testkit-gossip", "testkit-store", "rig", "file-backe
 # estate's proof (`tests/memory_estate.rs`) alone: no binary and no other cell.
 file-backend = ["rdm-admin/file-backend", "rdm-node/file-backend"]
 testkit-skew = ["rdm-transport/testkit-skew"]
-testkit-gossip = ["rdm-transport/testkit-gossip", "rdm-node/testkit-gossip"]
+testkit-gossip = ["rdm-transport/testkit-gossip", "rdm-gossip/testkit-gossip", "rdm-node/testkit-gossip"]
 testkit-store = ["rdm-node/testkit-store"]
 
 [dev-dependencies]

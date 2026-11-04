@@ -102,7 +102,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     rig_with_digest_view(None).await
 }
 
-async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::DigestView>) -> (Rig, BTreeMap<&'static str, Birth>) {
+async fn rig_with_digest_view(digest_view: Option<rdm_gossip::topology::DigestView>) -> (Rig, BTreeMap<&'static str, Birth>) {
     let admin = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
     let mut others = BTreeMap::new();
     others.insert("admin2", birth(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", "mesh1", false, false));
@@ -2286,7 +2286,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
@@ -2436,7 +2436,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
@@ -2494,7 +2494,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
 /// the start's `NodeJoined` frame; otherwise after it. What the mesh-primary holds of the birth once
 /// it took `NodeJoined` is checked by `joined`, before `NodeStarted` is sent; the spans the run
 /// exported are returned.
-fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_transport::topology::DigestView) + Send + Sync + 'static) -> Capture {
+fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, joined: impl Fn(&Rig, &Birth, &rdm_gossip::topology::DigestView) + Send + Sync + 'static) -> Capture {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
     let cap = capture();
     cap.run(async move {
@@ -2504,7 +2504,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let digest_view = topology_view.digest_view.clone();
         let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;
@@ -2575,7 +2575,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
 
 /// What the mesh-primary holds of mesh1.node.2's birth once it took the start's `NodeJoined`: the
 /// declared `state`, the member status `status`, its stop over and the birth held again.
-fn held_after_node_joined(rig: &Rig, rpc: &Birth, digest_view: &rdm_transport::topology::DigestView, state: NodeState, status: rdm_core::MemberStatus) {
+fn held_after_node_joined(rig: &Rig, rpc: &Birth, digest_view: &rdm_gossip::topology::DigestView, state: NodeState, status: rdm_core::MemberStatus) {
     let incarnation = rpc.node.incarnation_id.clone().unwrap();
     assert_eq!(rig.service.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(state), "the start's NodeJoined belongs to the Pending its join report recorded: it applies as already applied and the birth stays declared {state:?}");
     assert_eq!(digest_view.member_status(&rpc.node.node_id, &incarnation), Some(status), "the view holds the birth {status:?}: NodeJoined sets nothing back");
@@ -2697,7 +2697,7 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let digest_view = topology_view.digest_view.clone();
         let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;

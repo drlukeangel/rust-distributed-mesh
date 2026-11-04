@@ -20,8 +20,8 @@ mod tests {
     use rdm_core::topology::{SourceVersion, StoredNode, TopologyReply};
     use rdm_core::views::{NodeStatus, NodeView, ProviderKind};
     use rdm_core::{MemberStatus, MeshDigest, MeshNode, PublisherId};
-    use rdm_transport::snapshot::{Chunk, SourceSnapshot, Taken};
-    use rdm_transport::topology::TopologyView;
+    use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
+    use rdm_gossip::topology::TopologyView;
     use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
     use std::collections::{BTreeMap, BTreeSet};
     use std::net::SocketAddr;

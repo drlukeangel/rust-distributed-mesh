@@ -433,6 +433,7 @@ per_exe node-base rafka-node-base
 per_exe rdm-node rdm-node
 per_exe mesh-transport rafka-mesh-transport
 per_exe rdm-transport rdm-transport
+per_exe rdm-gossip rdm-gossip
 echo "i143-2777-process sh:scripts/i143-acceptance-gate.sh i143-2777-process" >> $D/jobs
 echo "i143-2780-process sh:scripts/i143-acceptance-gate.sh i143-2780-process" >> $D/jobs
 echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >> $D/jobs

@@ -2,7 +2,7 @@
 name = "rdm-transport"
 version = "0.1.0"
 edition = "2021"
-description = "RDM transport substrate: gossip on iroh, Node RPC runtime, wire framing, and OTLP HTTP telemetry"
+description = "RDM transport substrate: the Node RPC runtime, the endpoint, the clock, wire framing, and OTLP HTTP telemetry"
 publish = false
 autotests = false
 
@@ -49,6 +49,8 @@ testkit-gossip = []
 tokio = { workspace = true, features = ["rt", "time"] }
 # The testkit's channel member: the one rig the app-channel cells and an embedding's use.
 rdm-test = { path = "../rdm-test" }
+# connections.rs's cell over a topology view on both ends.
+rdm-gossip = { path = "../rdm-gossip" }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 ctor = "0.2"
 proptest = "1"

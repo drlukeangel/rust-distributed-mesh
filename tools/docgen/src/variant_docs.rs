@@ -5,7 +5,7 @@
 //! a Node RPC body    each `impl NodeProtocol`'s request and reply enums, and every workspace enum
 //!                    their fields carry: each serialized variant's last doc paragraph is
 //!                    "Position <n> on the wire." (postcard encodes a variant by its declaration index)
-//! the gossip Frame   `Frame` (rdm-transport topology.rs): "Schema index <n>, never a wire kind." (its
+//! the gossip Frame   `Frame` (rdm-gossip topology.rs): "Schema index <n>, never a wire kind." (its
 //!                    data is selected by the CloudEvents type, with no kind discriminant); the enums its
 //!                    fields carry take positions as a body's do
 //! a status           every `pub enum *Status` / `*State`: "Serialized as `<serde name>`." when it
@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 /// The header of an op table in a crate's docs.
 pub const OP_TABLE: &str = "| op | name | protocol | request | reply |";
 
-const FRAME_CRATE: &str = "rdm-transport";
-const FRAME_FILE: &str = "crates/rdm-transport/src/topology.rs";
+const FRAME_CRATE: &str = "rdm-gossip";
+const FRAME_FILE: &str = "crates/rdm-gossip/src/topology.rs";
 const FRAME: &str = "Frame";
 
 /// One Node RPC op as its `impl NodeProtocol` declares it.

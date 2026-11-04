@@ -58,7 +58,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     estate.resize_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let fp = PathName::new("mesh1.node-admin", "1").unwrap();
     let standby = PathName::new("mesh1.node-admin", "2").unwrap();
     let standby_id = estate.node_view(&standby).await.node_id;
@@ -135,7 +135,7 @@ async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives
     estate.resize_shape("fabric1", &[("mesh1", 2, 1)]).await;
     estate.settled_views(&[("mesh1", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let fp = PathName::new("mesh1.node-admin", "1").unwrap();
     let standby = PathName::new("mesh1.node-admin", "2").unwrap();
     let standby_id = estate.node_view(&standby).await.node_id;

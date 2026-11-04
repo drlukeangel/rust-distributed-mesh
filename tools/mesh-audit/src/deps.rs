@@ -31,6 +31,7 @@ use std::process::Command;
 pub const GENERIC_PACKAGES: &[&str] = &[
     "rdm-core",
     "rdm-transport",
+    "rdm-gossip",
     "rafka-mesh-transport",
     "rafka-node-rpc",
     "rdm-admin",
@@ -55,6 +56,7 @@ pub const PUBLIC_INTERFACES: &[&str] = &[
     "rdm-node",
     "rdm-core",
     "rdm-transport",
+    "rdm-gossip",
     "rdm-test",
     "rafka-node-rpc-testkit",
     "rafka-mesh-telemetry",

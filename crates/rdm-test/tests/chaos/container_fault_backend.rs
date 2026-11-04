@@ -1387,7 +1387,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     estate.resize_shape("fabric1", &[("mesh1", 3, 3)]).await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let build_id = estate.accepted_build_id().await;
     let nodes0 = estate.node_values().await;
     let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["type"] == "node").cloned().collect();
@@ -1625,7 +1625,7 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     let silenced = container_faults::prepare_silence(&estate, &[name.clone()], &fabric_primary).await.expect("the exact container and its addresses are resolved before the cut");
     silenced.install().expect("the node's container is silenced");
     let cut_at = now_nanos();
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let recovered = wait_for(&format!("{name:?} re-created as a new birth"), floor * 4 + Duration::from_secs(120), || async {
         let n = estate.node_value_opt(&name).await?;
         (n["state"] == "ready" && n["node_id"] != id.as_str()).then_some(n)

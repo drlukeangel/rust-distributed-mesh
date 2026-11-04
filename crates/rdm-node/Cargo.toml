@@ -16,7 +16,7 @@ default = ["file-backend"]
 # boundaries and their memory backends only.
 file-backend = []
 # Forward testkit fault seams on rdm-transport to rdm-test; absent from production builds.
-testkit-gossip = ["rdm-transport/testkit-gossip"]
+testkit-gossip = ["rdm-transport/testkit-gossip", "rdm-gossip/testkit-gossip"]
 # The testkit's cut on a store file's tail read (`store_log::read_cut`), for rdm-test; absent from
 # production builds.
 testkit-store = []
@@ -26,6 +26,7 @@ futures-util = "0.3"
 rdm-core = { path = "../rdm-core" }
 rdm-client = { path = "../rdm-client" }
 rdm-transport = { path = "../rdm-transport" }
+rdm-gossip = { path = "../rdm-gossip" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 # A store line's `time`, RFC 3339 (Q365).

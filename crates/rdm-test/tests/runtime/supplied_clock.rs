@@ -20,7 +20,7 @@ use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rdm_core::{FabricId, MeshDigest, MeshId, NodeState};
-use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
+use rdm_gossip::topology::{backbone_channel, learn_addresses, mesh_channel, Frame};
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::typed::until_arrival;
@@ -69,7 +69,7 @@ struct Seen {
 /// A member of the backbone and one mesh channel: it records every frame it decodes and can
 /// broadcast one frame on the mesh channel.
 struct Observer {
-    author: rdm_transport::envelope::Birth,
+    author: rdm_gossip::envelope::Birth,
     endpoint: Endpoint,
     _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
@@ -127,7 +127,7 @@ impl Observer {
     }
 
     async fn broadcast(&self, f: &Frame) {
-        let author = match f.data() { Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => self.author.clone() };
+        let author = match f.data() { Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => self.author.clone() };
         self.mesh_sender.broadcast(Bytes::from(f.clone().authored(&author, 0, 1).encode())).await.unwrap();
     }
 }

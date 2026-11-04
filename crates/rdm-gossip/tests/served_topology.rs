@@ -9,8 +9,8 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{Backbone, Frame, TopologyView};
-use rdm_transport::snapshot::{chunks_of, Chunk, PublisherId, SourceSnapshot, Taken};
+use rdm_gossip::topology::{Backbone, Frame, TopologyView};
+use rdm_gossip::snapshot::{chunks_of, Chunk, PublisherId, SourceSnapshot, Taken};
 use serde_json::Value;
 
 fn fabric() -> FabricId {
@@ -141,7 +141,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>();
         assert_eq!((served.publisher.clone(), served.topology_version), (publisher.clone(), n), "the read serves the version its content was published at");
         let again = take_read(&reader, &served, 2);
-        assert!(!matches!(again, Taken::Refused(rdm_transport::snapshot::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
+        assert!(!matches!(again, Taken::Refused(rdm_gossip::snapshot::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
         assert!(served.digests.iter().all(|d| d.node.node_id != two), "the read serves no member under version {n} that version {n} does not carry: {:?}", names(&served));
         assert_eq!(served.full(), published.full(), "the read serves the version-{n} publication as published: {:?} against {:?}", names(&served), names(&published));
 

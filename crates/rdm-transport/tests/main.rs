@@ -30,26 +30,6 @@ pub(crate) fn evidence_dir() -> std::path::PathBuf {
 }
 
 // gossip & topology cells
-mod nodes_snapshot;
-mod status_reinforcement;
-mod refeed_scheduler;
-mod channel_stopped;
-mod peer_location_view;
-mod gossip_stats;
-mod load_sampling;
-mod heartbeat_spans;
-mod lifecycle_frames_wire;
-mod digest_frames_wire;
-mod primary_frames_wire;
-mod publication_wake;
-mod forward_role;
-mod no_acting_publication;
-mod peer_mesh_deletion;
-mod deleted_mesh_aggregate;
-mod stopped_birth;
-mod served_topology;
-mod publisher_handover;
-mod deleted_status;
 
 // node-rpc cells
 mod catalog_seam;
@@ -86,9 +66,5 @@ mod otlp_http_export;
 mod runtime_watchdog;
 mod span_end_nonblocking;
 
-#[allow(dead_code)]
-#[path = "../../../tools/test-support/gossip_wire.rs"]
-mod gossip_wire;
 
-mod app_channels;
 mod connections;

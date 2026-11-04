@@ -16,7 +16,7 @@ use crate::model::{FabricId, IncarnationId, Node, NodeId, PathName};
 use crate::checklist::{fabric_missing, missing_members, reports_of, Missing};
 use crate::topology::Topology;
 use crate::wiring::{FabricHooks, FabricReadyCtx};
-use rdm_transport::topology::{Announced, DigestView};
+use rdm_gossip::topology::{Announced, DigestView};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -1002,7 +1002,7 @@ mod tests {
     }
 
     use crate::model::{MeshId, NodeStatus as NS};
-    use rdm_transport::topology::DigestView;
+    use rdm_gossip::topology::DigestView;
 
     fn member(name: PathName, mesh: &str, r#type: &str, primary: bool, fabric_primary: bool) -> Node {
         let mut n = Node::allocated(name.clone(), mesh, r#type);

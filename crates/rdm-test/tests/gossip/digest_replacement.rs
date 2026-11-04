@@ -1,6 +1,6 @@
 //! Digest replacement: exact birth, digest_seq, and the heartbeat's wire content (never status).
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, TopologyView};
+use rdm_gossip::topology::{learn_addresses, mesh_channel, Frame, TopologyView};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
@@ -45,12 +45,12 @@ fn story(story: Story) {
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         if matches!(story, Story::ReadFloor) {
-            let read = rdm_transport::snapshot::Chunk {
-                mesh: "mesh1".into(), publisher: rdm_transport::snapshot::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
+            let read = rdm_gossip::snapshot::Chunk {
+                mesh: "mesh1".into(), publisher: rdm_gossip::snapshot::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
                 forwarded_by: None, topology_version: 5, snapshot_id: 1, chunk_index: 0, chunk_count: 1,
                 digests: vec![digest.clone()], in_flight: vec![], deleted: vec![],
             };
-            assert!(matches!(receiver.take_read_chunk(read, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
+            assert!(matches!(receiver.take_read_chunk(read, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
         } else {
             send(&sender, &receiver, digest.clone(), 1).await;
         }

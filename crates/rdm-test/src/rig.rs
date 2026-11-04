@@ -6,7 +6,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_transport::topology::{Backbone, TopologyView};
+use rdm_gossip::topology::{Backbone, TopologyView};
 use rdm_admin::deployment::pipeline::NodeObserver;
 use rdm_admin::model::Node;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -367,7 +367,7 @@ impl AdminSide {
                 digest.digest_seq += 1;
                 digest.emitted_at_rafka_ms += 1;
                 digest_view.record(digest.clone());
-                tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
+                tokio::time::sleep(rdm_gossip::topology::gossip_interval()).await;
             }
         })))
     }
@@ -459,7 +459,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let seeds = match &role {
         SideRole::Primary => vec![],
         SideRole::Silent { seed } => {
-            rdm_transport::topology::learn_addresses(&admin_ep, std::slice::from_ref(seed)).unwrap();
+            rdm_gossip::topology::learn_addresses(&admin_ep, std::slice::from_ref(seed)).unwrap();
             vec![seed.clone()]
         }
     };
@@ -517,7 +517,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // The admin side holds its own mesh at a version its primary put into the mesh, as a running
     // admin does; it serves the topology it holds like every node.
     let admin_publisher = rdm_core::PublisherId { incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() };
-    let held = rdm_transport::snapshot::Chunk {
+    let held = rdm_gossip::snapshot::Chunk {
         mesh: "mesh1".into(),
         publisher: admin_publisher,
         forwarded_by: Some("topology-read".into()),
@@ -531,7 +531,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     // A silent admin side holds only what its primary publishes into the mesh.
     if matches!(role, SideRole::Primary) {
-        assert!(matches!(topology_view.take_read_chunk(held, "peer"), rdm_transport::snapshot::Taken::Installed(_)));
+        assert!(matches!(topology_view.take_read_chunk(held, "peer"), rdm_gossip::snapshot::Taken::Installed(_)));
     }
     let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
@@ -633,12 +633,12 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             AbortOnDrop(tokio::spawn(async move {
                 loop {
                     backbone.publish(&topology_view, backbone.own_members(&topology_view)).await;
-                    backbone.publication_wake(&topology_view, tokio::time::Instant::now() + rdm_transport::topology::gossip_interval()).await;
+                    backbone.publication_wake(&topology_view, tokio::time::Instant::now() + rdm_gossip::topology::gossip_interval()).await;
                 }
             }))
         };
         let cell = digest_cell.clone();
-        (Some(publications), Some(AbortOnDrop(topology_view.publish_every(rdm_transport::topology::gossip_interval(), move || cell.lock().unwrap().clone()))))
+        (Some(publications), Some(AbortOnDrop(topology_view.publish_every(rdm_gossip::topology::gossip_interval(), move || cell.lock().unwrap().clone()))))
     } else {
         (None, None)
     };

@@ -25,7 +25,7 @@ pub struct FabricBuildStateAdapter {
     /// The decision gate every fabric-primary mutation passes (ruling R-A2): the fabric-primary writes
     /// every Build record (Q118), and a mesh-primary that is not the fabric-primary writes none.
     gate: DecisionGate,
-    location_view: rdm_transport::topology::LocationView,
+    location_view: rdm_gossip::topology::LocationView,
 }
 
 /// What the fabric-primary record this admin holds says of this birth's Build log.
@@ -121,7 +121,7 @@ impl DecisionGate {
 impl FabricBuildStateAdapter {
     /// The Build state of the admin named `node` over its Build journal `local`, its fabric-primary
     /// decisions gated by `role`. `location_view` names this admin's path and name as its view holds it.
-    pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: rdm_core::NodeId, role: PrimarySource) -> Self {
+    pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_gossip::topology::LocationView, node: rdm_core::NodeId, role: PrimarySource) -> Self {
         Self { local, gate: DecisionGate::new(node, role), location_view: location_view.clone() }
     }
 
@@ -209,7 +209,7 @@ mod tests {
     async fn a_fabric_primary_record_naming_another_birth_refuses_this_admins_decisions_by_name() {
         use futures_util::FutureExt as _;
         use rdm_core::{IncarnationId, NodeId, PrimaryRole, Primary};
-        let primaries = rdm_transport::topology::PrimaryView::default();
+        let primaries = rdm_gossip::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let next = Primary { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
@@ -267,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn a_fabric_primary_change_waits_for_the_decision_in_flight_and_refuses_every_later_one() {
         use rdm_core::{IncarnationId, NodeId, PrimaryRole, Primary};
-        let primaries = rdm_transport::topology::PrimaryView::default();
+        let primaries = rdm_gossip::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(primaries.subscribe());

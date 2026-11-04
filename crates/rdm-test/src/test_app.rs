@@ -230,10 +230,10 @@ pub fn app_channel_knob(root: &std::path::Path) -> bool {
 }
 
 /// This process's publisher on [`APP_CHANNEL`], once its [`JoinsAppChannel`] joined it.
-static APP_CHANNEL_PUBLISHER: std::sync::OnceLock<rdm_transport::gossip::Publisher> = std::sync::OnceLock::new();
+static APP_CHANNEL_PUBLISHER: std::sync::OnceLock<rdm_gossip::gossip::Publisher> = std::sync::OnceLock::new();
 
 /// This process's publisher on [`APP_CHANNEL`], `None` before it joined the channel.
-pub fn app_channel_publisher() -> Option<&'static rdm_transport::gossip::Publisher> {
+pub fn app_channel_publisher() -> Option<&'static rdm_gossip::gossip::Publisher> {
     APP_CHANNEL_PUBLISHER.get()
 }
 

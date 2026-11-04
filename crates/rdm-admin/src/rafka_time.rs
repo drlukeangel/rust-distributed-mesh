@@ -45,7 +45,7 @@ pub async fn run_role_move_pull(
     me: crate::model::PathName,
     me_id: NodeId,
     client: Arc<rdm_transport::NodeRpcClient>,
-    topology_view: rdm_transport::topology::TopologyView,
+    topology_view: rdm_gossip::topology::TopologyView,
 ) {
     let primaries = topology_view.primaries().clone();
     let mut changed = primaries.subscribe();
@@ -86,7 +86,7 @@ async fn pull_from_fabric_primary(
     me: &crate::model::PathName,
     me_id: &NodeId,
     client: &rdm_transport::NodeRpcClient,
-    topology_view: &rdm_transport::topology::TopologyView,
+    topology_view: &rdm_gossip::topology::TopologyView,
     moved_to: rdm_core::Primary,
 ) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
@@ -150,7 +150,7 @@ pub(crate) async fn adopt_from_reachable(
     me_id: &NodeId,
     client: &rdm_transport::NodeRpcClient,
     resolver: &rdm_transport::LiveNodeResolver,
-    topology_view: &rdm_transport::topology::TopologyView,
+    topology_view: &rdm_gossip::topology::TopologyView,
     contacts: Vec<crate::reenter::MapNode>,
     parent: &tracing::Span,
 ) -> Result<NodeId, String> {

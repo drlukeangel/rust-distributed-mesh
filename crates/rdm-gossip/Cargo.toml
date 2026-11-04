@@ -1,0 +1,48 @@
+[package]
+name = "rdm-gossip"
+version = "0.1.0"
+edition = "2021"
+description = "RDM gossip on iroh-gossip: channels, the topology view, the Digest, the full topology and its delta, status, and the gossip frame codec"
+publish = false
+autotests = false
+
+[lib]
+doctest = false
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+rdm-transport = { path = "../rdm-transport" }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures-lite = "2"
+futures-util = "0.3"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
+thiserror = "1"
+blake3 = "1"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+opentelemetry = { workspace = true }
+
+[features]
+# One-shot chunk loss for public consumer qualification; absent from production builds.
+testkit-gossip = ["rdm-transport/testkit-gossip"]
+
+[dev-dependencies]
+rdm-transport = { path = "../rdm-transport", features = ["testkit-gossip"] }
+tokio = { workspace = true, features = ["rt", "time"] }
+rdm-test = { path = "../rdm-test" }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+ctor = "0.2"
+proptest = "1"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

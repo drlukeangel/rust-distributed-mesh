@@ -1,6 +1,6 @@
 //! Position 10 has one receive effect: refuse it, with no status, fact or role installation.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PrimaryRole, Primary};
-use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, TopologyView};
+use rdm_gossip::topology::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, TopologyView};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {

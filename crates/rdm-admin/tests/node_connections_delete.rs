@@ -17,7 +17,7 @@ use rdm_core::node_command::{NodeCommand, NodeCommandRequest};
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NotPrimary, StatusReply};
 use rdm_core::{ConnectionId, MemberStatus, MeshDigest, MeshNode};
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{
     LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder,
 };

@@ -14,8 +14,8 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Primary, PrimaryRole};
-use rdm_transport::topology::{learn_addresses, Backbone, DigestView, Frame, TopologyView, StatusEvent};
-use rdm_transport::snapshot::{chunks_of, Chunk, PublisherId};
+use rdm_gossip::topology::{learn_addresses, Backbone, DigestView, Frame, TopologyView, StatusEvent};
+use rdm_gossip::snapshot::{chunks_of, Chunk, PublisherId};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -164,7 +164,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 }
 
 /// The chunks of `mesh`'s snapshot in `topology` as a topology read delivers them.
-fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
+fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
     let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
     chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
         mesh: s.mesh.clone(),

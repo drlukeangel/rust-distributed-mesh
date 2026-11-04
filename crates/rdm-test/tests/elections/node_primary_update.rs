@@ -302,7 +302,7 @@ async fn a_mesh_cut_from_the_backbone_with_a_node_admin_left_on_each_side_is_rec
     };
     let other_primary_row = nodes.iter().find(|n| n["type"] == "node-admin" && rdm_test::estate::mesh_of(&n) != rdm_test::estate::mesh_of(&fp_node) && n["is_primary"] == true).cloned().expect("the other mesh's primary");
     let (other_primary, other_primary_id) = (location(&other_primary_row), s(&other_primary_row["node_id"]));
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let fp_id = s(&fp_node["node_id"]);
     let cut = match Partition::start(&udp_ports(&nodes, &mine), &udp_ports(&nodes, &theirs)) {
         Ok(p) => p,

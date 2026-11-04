@@ -99,7 +99,7 @@ python3 -I - "$OUTPUT/metadata.json" "$CANDIDATE" "$RDM_URL" <<'PY' || exit 1
 import json, sys
 meta, cand, url = sys.argv[1:4]
 m = json.load(open(meta))
-APPROVED = {"rdm-node", "rdm-admin", "rdm-transport", "rdm-test",
+APPROVED = {"rdm-node", "rdm-admin", "rdm-transport", "rdm-gossip", "rdm-test",
             "rdm-core", "rdm-client"}
 bad = []
 rdm = []

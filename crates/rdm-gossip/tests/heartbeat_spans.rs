@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -67,7 +67,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-heartbeat").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let (a, b) = (node().await, node().await);
-        rdm_transport::topology::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
+        rdm_gossip::topology::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
         let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
         // Each node joins under its node id, as every node does; its digest names its (path, name).
         let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
@@ -80,7 +80,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());
 
         // Past one heartbeat period, so each loop has marked twice; then B falls silent past the floor.
-        tokio::time::sleep(rdm_transport::topology::HEARTBEAT_EVERY + Duration::from_millis(1500)).await;
+        tokio::time::sleep(rdm_gossip::topology::HEARTBEAT_EVERY + Duration::from_millis(1500)).await;
         pb.abort();
         tokio::time::sleep(Duration::from_millis(3500)).await;
         pa.abort();
@@ -91,7 +91,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node_path"] == "mesh1.node" && s["attributes"]["node_name"] == "1").collect();
         // ~6.5 s of 500 ms digests is 13 publishes: the heartbeat is the 5 s cadence, not the digest cadence.
-        let due = (ran.as_millis() / rdm_transport::topology::HEARTBEAT_EVERY.as_millis()) as usize + 1;
+        let due = (ran.as_millis() / rdm_gossip::topology::HEARTBEAT_EVERY.as_millis()) as usize + 1;
         assert!(beats.len() == due || beats.len() + 1 == due, "heartbeat spans of mesh1.node.1 over {ran:?} ({due} due at most, one fewer when the last mark falls at the window's edge): {beats:#?}");
         let last = beats.iter().max_by_key(|s| num(s, "digest_seq")).unwrap();
         assert_eq!(num(last, "peer_count"), 1, "the heartbeat counts the other member, not itself: {last}");

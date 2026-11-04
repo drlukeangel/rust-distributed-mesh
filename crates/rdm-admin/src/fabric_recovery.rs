@@ -18,7 +18,7 @@ use crate::election::Incumbency;
 use crate::model::{Node, NodeId, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::Primary;
-use rdm_transport::topology::DigestView;
+use rdm_gossip::topology::DigestView;
 use std::sync::{Arc, Mutex};
 use tracing::Instrument as _;
 
@@ -318,7 +318,7 @@ impl FabricRecoveryService {
                         if let Some(incarnation) = node.incarnation_id.clone() {
                             *self.asked.lock().unwrap() = Some(rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation });
                         }
-                        tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
+                        tokio::time::sleep(rdm_gossip::topology::gossip_interval()).await;
                         continue;
                     };
                     investigated = true;
@@ -330,7 +330,7 @@ impl FabricRecoveryService {
                                 heard_again.command(&held, inc).await;
                             }
                             investigated = false;
-                            next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
+                            next_look = std::time::Instant::now() + rdm_gossip::topology::staleness_floor();
                         }
                         // From the backbone, `running`: the investigation's report stands and the executor
                         // writes nothing, no row, no name release, no mark against the birth in its own view,
@@ -340,7 +340,7 @@ impl FabricRecoveryService {
                         (crate::node_investigation::Finding::Running, _) if !fr.own_mesh && fr.executor.is_some() => {
                             tracing::info!(subject_path = %node.path, subject_name = %node.name, verdict = finding.name(), "the backbone arm read the fabric-primary's runtime running: the report stands and nothing is written");
                             investigated = false;
-                            next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
+                            next_look = std::time::Instant::now() + rdm_gossip::topology::staleness_floor();
                         }
                         // From its own mesh, `running` with no eligible peer of the mesh to tickle through:
                         // only this executor failed to reach the fabric-primary, so it is unreachable from
@@ -351,7 +351,7 @@ impl FabricRecoveryService {
                         (crate::node_investigation::Finding::Running, _) if fr.own_mesh && crate::offline::eligible_carriers(&view, &node, Some(&self.me_id)).next().is_none() => {
                             tracing::info!(subject_path = %node.path, subject_name = %node.name, verdict = finding.name(), "the own-mesh arm read the fabric-primary's runtime running and reached it through no peer: unreachable from this executor, not lost; nothing is written");
                             investigated = false;
-                            next_look = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
+                            next_look = std::time::Instant::now() + rdm_gossip::topology::staleness_floor();
                         }
                         (_, Some(inspected)) => {
                             submitted = true;
@@ -377,7 +377,7 @@ impl FabricRecoveryService {
                 }
                 _ => {}
             }
-            tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
+            tokio::time::sleep(rdm_gossip::topology::gossip_interval()).await;
         }
     }
 

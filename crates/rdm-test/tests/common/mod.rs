@@ -665,7 +665,7 @@ pub async fn node_command_completion(client: &rdm_transport::NodeRpcClient, targ
 
 /// Old cell request builders retain their assertion vocabulary; their command hop is 0x22.
 /// The fixture primary records progress before acknowledging recovery, as the product owner does.
-pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::status::StatusRequest, opts: &rdm_transport::CallOptions, digest_view: Option<&rdm_transport::topology::DigestView>) -> Option<rdm_core::status::StatusReply> {
+pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::status::StatusRequest, opts: &rdm_transport::CallOptions, digest_view: Option<&rdm_gossip::topology::DigestView>) -> Option<rdm_core::status::StatusReply> {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
     use rdm_core::status::{StatusReply as R, StatusRequest as S};
     use rdm_transport::stream::StreamItem;

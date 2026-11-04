@@ -81,7 +81,7 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_whi
     let victim_incarnation = s(&victim_view["incarnation"]);
     assert!(!victim_incarnation.is_empty(), "the victim has an incarnation");
     let mesh1: Vec<PathName> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1").map(location).collect();
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
 
     let cut = match Partition::start(&udp_ports(&nodes, &[mesh2_primary.clone()]), &udp_ports(&nodes, &mesh1)) {
         Ok(p) => p,

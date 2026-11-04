@@ -28,7 +28,7 @@
 //! owner (`fabric-node-hooks.md` "on_call_failed"). It gates nothing.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName};
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{CancelToken, PreNodeReadyGate, NodeRpcClient};
 use std::sync::Arc;
 use tracing::Instrument;

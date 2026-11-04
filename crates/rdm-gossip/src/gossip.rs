@@ -2,7 +2,7 @@
 //! nodes join the channels its own code names (gossip.md §8, Q362). Application ordering stays with the application.
 
 pub use crate::envelope::Birth;
-use crate::{clock::SharedClock, wire};
+use rdm_transport::{clock::SharedClock, wire};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh_gossip::{
@@ -177,8 +177,8 @@ impl State {
         let id = identity.finalize().to_hex()[..32].to_string();
         let time = self.clock.now_rafka_ms();
         let trace = rdm_core::context::CallContext {
-            traceparent: crate::current_traceparent(),
-            tracestate: crate::current_tracestate(),
+            traceparent: rdm_transport::current_traceparent(),
+            tracestate: rdm_transport::current_tracestate(),
             ..Default::default()
         }
         .sanitized()
@@ -360,7 +360,7 @@ struct Attributes {
     trace: rdm_core::context::CallContext,
 }
 impl Attributes {
-    fn encode(&self, data: &[u8]) -> Result<Vec<u8>, crate::wire::WireError> {
+    fn encode(&self, data: &[u8]) -> Result<Vec<u8>, rdm_transport::wire::WireError> {
         let context = crate::envelope::Context {
             source: self.source.clone(),
             id: self.id.clone(),
@@ -663,7 +663,7 @@ impl Hub {
                     // `delivered_from`); `source` is its author.
                     let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), delivered_from = %message.delivered_from, bytes = h.data.len());
                     if let Some(parent) = trace.traceparent.as_deref() {
-                        crate::set_remote_parent(&span, parent, trace.tracestate.as_deref());
+                        rdm_transport::set_remote_parent(&span, parent, trace.tracestate.as_deref());
                     }
                     if !dropped.is_empty() {
                         span.in_scope(|| tracing::info_span!("rdm.mesh.topology.update.via-context-dropped", context_dropped = %rdm_core::context::dropped_as_str(&dropped)).in_scope(|| tracing::info!("malformed tracing metadata dropped; the event continues")));
@@ -802,7 +802,7 @@ mod tests {
             lost: watch::channel(0).0,
             kind: "app.author".into(),
             author: Default::default(),
-            clock: crate::clock::os_clock(),
+            clock: rdm_transport::clock::os_clock(),
             ids: Arc::new(AtomicU64::new(1)),
             id_nonce: [0; 32],
             finished: watch::channel(false).0,
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn a_full_channel_queue_drops_the_newest_by_name_and_the_carrier_keeps_receiving() {
         let dir = std::env::temp_dir().join(format!("channel-queue-{}", rdm_core::NodeId::mint()));
-        let capture = crate::EvidenceCapture::start(&dir, "channel-queue").unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "channel-queue").unwrap();
         capture.run(1, async {
             let state = State {
                 sender: Mutex::new(None),
@@ -831,7 +831,7 @@ mod tests {
                 lost: watch::channel(0).0,
                 kind: "app.queue".into(),
                     author: Default::default(),
-                clock: crate::clock::os_clock(),
+                clock: rdm_transport::clock::os_clock(),
                 ids: Arc::new(AtomicU64::new(1)),
                 id_nonce: [0; 32],
                 finished: watch::channel(false).0,

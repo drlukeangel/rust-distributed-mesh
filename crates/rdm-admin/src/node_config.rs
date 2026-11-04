@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub struct NodeConfigs {
     records: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
     own_properties: std::sync::OnceLock<rdm_node::node_records::NodePropertyWriter>,
-    own_channels: std::sync::OnceLock<rdm_transport::topology::TopologyView>,
+    own_channels: std::sync::OnceLock<rdm_gossip::topology::TopologyView>,
     client: Arc<NodeRpcClient>,
     one_at_a_time: tokio::sync::Mutex<()>,
     /// The tick of this admin's installed view ([`Self::watch_views`]).
@@ -113,7 +113,7 @@ impl NodeConfigs {
 
     /// Bind the configured provider's nodes store, where each node's record is, both its parts (Q333);
     /// `provider` answers the provider it is written to now. Every access follows provider migration.
-    pub fn uses_records(&self, records: Arc<dyn crate::storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static, channels: rdm_transport::topology::TopologyView) {
+    pub fn uses_records(&self, records: Arc<dyn crate::storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static, channels: rdm_gossip::topology::TopologyView) {
         let writer = rdm_node::node_records::NodePropertyWriter::new(records.clone(), provider);
         let held = channels.clone();
         writer.named_by(move || held.own_row().map(|row| row.location()));
@@ -200,7 +200,7 @@ impl NodeConfigs {
     /// Record this admin's own roles on its own record (Q356; node-primary-update.md step 5): the
     /// roles `primaries` names its birth `birth` in `mesh` ([`rdm_node::node_records::write_own_roles`]),
     /// written at each change of the view, from its start's record on, until the view is dropped.
-    pub async fn record_own_roles(&self, primaries: rdm_transport::topology::PrimaryView, birth: crate::storage::BirthRef, mesh: String) {
+    pub async fn record_own_roles(&self, primaries: rdm_gossip::topology::PrimaryView, birth: crate::storage::BirthRef, mesh: String) {
         let (Some(channels), Some(writer)) = (self.own_channels.get().cloned(), self.own_properties.get().cloned()) else { return };
         let mut changed = primaries.subscribe();
         let mut written = (None, None);
@@ -762,7 +762,7 @@ mod tests {
         };
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-        let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let channels = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
         let configs = NodeConfigs::new(client);
         let records = Arc::new(MemoryNodesStorage::default());

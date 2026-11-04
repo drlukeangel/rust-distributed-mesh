@@ -13,7 +13,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::framing::Birth;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PrimaryRole, Primary};
-use rdm_transport::topology::{Backbone, TopologyView};
+use rdm_gossip::topology::{Backbone, TopologyView};
 use rdm_admin::admin::Records;
 use rdm_admin::election::{resolve_with, Incumbency};
 use rdm_admin::primary_update::{update_operation, PrimaryUpdate, PrimaryUpdateSlot, Moving, ProjectView};

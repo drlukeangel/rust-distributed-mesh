@@ -51,7 +51,7 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WireError> {
 pub use rdm_core::wire::{digest, entries, ProjectionEntry, WireDigest};
 
 /// Consume one postcard value from a selected data schema, retaining its remaining fields.
-pub(crate) fn take<T: DeserializeOwned>(bytes: &mut &[u8]) -> Result<T, WireError> {
+pub fn take<T: DeserializeOwned>(bytes: &mut &[u8]) -> Result<T, WireError> {
     let (value, rest) = postcard::take_from_bytes(bytes).map_err(|e| WireError::new(format!("postcard field: {e}")))?;
     *bytes = rest;
     Ok(value)

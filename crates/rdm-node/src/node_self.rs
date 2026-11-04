@@ -31,7 +31,7 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{NodeRpcClient, NodeRpcServer};
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, StatusReply, StatusRequest, WhichMesh};
@@ -294,7 +294,7 @@ pub struct NodeSelf {
     /// The backbone, for a node-admin: its state hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
-    pub backbone: Option<rdm_transport::topology::Backbone>,
+    pub backbone: Option<rdm_gossip::topology::Backbone>,
     /// The bound of this birth's `node.connection.delete { All }`, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch or its
     /// admin config): the eligible work in flight is let finish until it passes. Strictly shorter
@@ -374,7 +374,7 @@ impl NodeSelf {
     }
 
     /// This surface, publishing its state hooks on `backbone` as well as its mesh channel.
-    pub fn with_backbone(mut self, backbone: rdm_transport::topology::Backbone) -> Self {
+    pub fn with_backbone(mut self, backbone: rdm_gossip::topology::Backbone) -> Self {
         self.backbone = Some(backbone);
         self
     }
@@ -1493,7 +1493,7 @@ impl NodeSelf {
 /// when it is a node-admin's, each left emitting `rdm.node.mesh.update.via-left`. The one place the
 /// channel leave is written: each session's `leave_channels`, a birth that holds no session, and a
 /// commanded `node.mesh.join` whose start failed at a step call it.
-pub async fn leave_channels(topology_view: &TopologyView, backbone: Option<&rdm_transport::topology::Backbone>, node_id: &NodeId) {
+pub async fn leave_channels(topology_view: &TopologyView, backbone: Option<&rdm_gossip::topology::Backbone>, node_id: &NodeId) {
     topology_view.stop().await;
     tracing::info_span!(
         "rdm.node.mesh.update.via-left",
@@ -1726,7 +1726,7 @@ mod tests {
     use rdm_core::filter::Filter;
     use rdm_core::{EndpointId, FabricId, MeshId, MeshNode, RuntimeFact};
     use rdm_transport::connections::ConnectionsRegistry;
-    use rdm_transport::topology::Backbone;
+    use rdm_gossip::topology::Backbone;
     use rdm_transport::{BirthCancel, LiveNodeResolver, ServerBuilder, ServedBirth};
     use std::sync::atomic::{AtomicBool, Ordering};
 

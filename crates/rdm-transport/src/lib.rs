@@ -1,11 +1,11 @@
-//! RDM transport substrate: gossip on iroh (topology digest view, frames, topology snapshots),
-//! the Node RPC runtime (client, server, pool, admission), stream wire framing, and the OTLP span
-//! and log exporter over HTTP.
+//! RDM transport substrate: the Node RPC runtime (client, server, pool, admission), the endpoint,
+//! the clock, stream wire framing, and the OTLP span and log exporter over HTTP. Gossip is
+//! `rdm-gossip`, built on this crate.
 //!
 //! # Where it sits
 //!
-//! Above `rdm-core`, whose types it carries, and below `rdm-node` and `rdm-admin`, which build a
-//! node's process on it. A node serves its ops through a [`ServerBuilder`] and calls a peer's through a
+//! Above `rdm-core`, whose types it carries, and below `rdm-gossip`, `rdm-node` and `rdm-admin`,
+//! which build a node's process on it. A node serves its ops through a [`ServerBuilder`] and calls a peer's through a
 //! [`NodeRpcClient`]; every call ends in one [`rdm_core::RpcOutcome`].
 //!
 //! # Example
@@ -35,24 +35,19 @@
 //! # Guide
 //!
 //! [Node RPC runtime](../../guide/architecture/node-rpc.html),
-//! [Node RPC envelope](../../guide/architecture/node-rpc-envelope.html) and
-//! [Gossip](../../guide/architecture/gossip.html), in the docs site `scripts/docs-site.sh` builds.
+//! and [Node RPC envelope](../../guide/architecture/node-rpc-envelope.html), in the docs site
+//! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
-// gossip & topology modules
+// the pieces rdm-gossip shares with the Node RPC runtime
 pub mod chunking;
-pub mod envelope;
-pub mod gossip;
-pub(crate) mod forward_path;
 pub mod clock;
-pub(crate) mod discipline;
 pub mod iroh_obs;
 pub mod load;
-pub mod topology;
-pub(crate) mod receive_order;
-pub mod snapshot;
-#[cfg(test)]
-mod test_span_capture;
+/// A unit cell's own span capture: this crate's cells, and `rdm-gossip`'s through its `testkit-gossip`
+/// dev-dependency feature.
+#[cfg(any(test, feature = "testkit-gossip"))]
+pub mod test_span_capture;
 pub mod wire;
 
 // node-rpc modules & re-exports

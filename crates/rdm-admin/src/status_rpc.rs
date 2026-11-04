@@ -308,10 +308,10 @@ impl RoleFold {
     /// The fold is the successor's acquisition of the held member statuses (node-status-heartbeat-
     /// connections.md §A.3), and `digest_view`, this admin's digest view, is what its member projection is
     /// published from: each folded birth of the mesh whose state is ahead of what the view holds for
-    /// it is adopted there ([`DigestView::adopt_status`](rdm_transport::topology::DigestView::adopt_status)), before the view naming this admin primary is
+    /// it is adopted there ([`DigestView::adopt_status`](rdm_gossip::topology::DigestView::adopt_status)), before the view naming this admin primary is
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
     /// transition). One `rdm.node_admin.status.update.via-successor-fold` per birth adopted or refused.
-    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, digest_view: Option<&rdm_transport::topology::DigestView>) {
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, digest_view: Option<&rdm_gossip::topology::DigestView>) {
         let holds = now.is_mesh_primary(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
@@ -361,7 +361,7 @@ impl RoleFold {
 impl RoleFold {
     /// Adopt into `digest_view` every birth of this admin's mesh that `declared` holds a state for ahead of
     /// what `digest_view` holds for that exact birth: the status its predecessor set, held by the successor.
-    fn adopt_into(&self, declared: &Mutex<Declared>, digest_view: &rdm_transport::topology::DigestView, me_name: &crate::model::PathName) {
+    fn adopt_into(&self, declared: &Mutex<Declared>, digest_view: &rdm_gossip::topology::DigestView, me_name: &crate::model::PathName) {
         let held: Vec<(NodeId, IncarnationId, crate::model::PathName, NodeState)> = {
             let declared = declared.lock().unwrap();
             declared
@@ -453,7 +453,7 @@ pub enum MemberStatusReceipt<'a> {
 /// authority, writes a member's status. `Ok(true)` when the view holds the status for the birth;
 /// `Ok(false)` when it sets nothing (a birth of another mesh, or one the view holds nothing of);
 /// `Err` naming why a role fold adopts nothing. The view's own span of each cause is its record.
-pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
+pub fn set_member_status(digest_view: &rdm_gossip::topology::DigestView, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
     use rdm_core::MemberStatus as M;
     match receipt {
         MemberStatusReceipt::Declared(row) => Ok(match row.state {
@@ -472,7 +472,7 @@ pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, rece
 /// and the rows it writes.
 pub struct StatusService {
     /// This admin's topology view.
-    pub topology_view: Option<rdm_transport::topology::TopologyView>,
+    pub topology_view: Option<rdm_gossip::topology::TopologyView>,
     /// This admin's `(path, name)`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
@@ -572,7 +572,7 @@ pub struct StatusService {
     /// This admin's digest view: as its mesh's primary it sets each member's status there through
     /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
     /// owns a digest view.
-    pub digest_view: Option<rdm_transport::topology::DigestView>,
+    pub digest_view: Option<rdm_gossip::topology::DigestView>,
     /// The births this admin, as their mesh-primary, marks `PendingReconnect` at once for its tick
     /// (node-recovery.md step 1): a `ReportCallFailed` it takes marks there (node-rpc.md §43).
     pub unreachable: crate::offline::UnreachableMarks,
@@ -1708,7 +1708,7 @@ impl StatusService {
     /// Forget effects only when exact-ID records prove the node deleted, or exact-ID digest
     /// evidence identifies a different incarnation or deletion. A historical location and its
     /// current occupant do not prove anything about the original node's lifetime.
-    pub async fn drop_superseded(&self, digest_view: &rdm_transport::topology::DigestView) {
+    pub async fn drop_superseded(&self, digest_view: &rdm_gossip::topology::DigestView) {
         let me_name = digest_view.held_path_name().unwrap_or_else(|| self.me.clone());
         // Collect identities only; historical operation locations are not lifecycle evidence.
         let held: std::collections::HashSet<(NodeId, IncarnationId)> = {
@@ -2098,9 +2098,9 @@ impl StatusService {
         let incarnation = me.incarnation_id.as_ref()?;
         let primaries = channels.primaries();
         let taken = commander.map(|r| match primaries.take(rdm_core::PrimaryRole::MeshPrimary, r) {
-            rdm_transport::topology::RoleTaken::Held { .. } => "held",
-            rdm_transport::topology::RoleTaken::Same => "same",
-            rdm_transport::topology::RoleTaken::Refused { .. } => "refused",
+            rdm_gossip::topology::RoleTaken::Held { .. } => "held",
+            rdm_gossip::topology::RoleTaken::Same => "same",
+            rdm_gossip::topology::RoleTaken::Refused { .. } => "refused",
         });
         let held = primaries.mesh(&me.mesh);
         let named = held.as_ref().is_some_and(|h| h.is_birth(&self.node_id, incarnation));
@@ -2165,7 +2165,7 @@ impl StatusService {
             // too: it is the mesh's first state, which the publisher stamps once (Q272).
             if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
                 if let Some(view) = &self.topology_view {
-                    let taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(*state).to_string(), changed_at_rafka_ms: *at });
+                    let taken = view.adopt_mesh_status(rdm_gossip::topology::StatusFact { status: mesh_status_name(*state).to_string(), changed_at_rafka_ms: *at });
                     self.wake.report_notify.notify_waiters();
                     tracing::info_span!("rdm.node_admin.mesh.update.via-held-mesh-status", mesh = %mesh, state = ?state, changed_at_rafka_ms = *at, taken).in_scope(|| tracing::info!("the hand-off's state is held as this admin's MeshStatus at the instant it carries"));
                 }
@@ -2256,7 +2256,7 @@ impl StatusService {
         let mut taken = false;
         if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
             if let Some(view) = &self.topology_view {
-                taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(state).to_string(), changed_at_rafka_ms: at });
+                taken = view.adopt_mesh_status(rdm_gossip::topology::StatusFact { status: mesh_status_name(state).to_string(), changed_at_rafka_ms: at });
                 self.wake.report_notify.notify_waiters();
             }
         }
@@ -3572,7 +3572,7 @@ mod tests {
         assert_eq!(crate::node_rows::record_at(&*status, &current.location()).await.unwrap().map(|r| r.node_id), Some(current.node_id.clone()), "the current birth's record holds the (path, name)");
         // This admin's view still holds the predecessor's digest (its deletion never applied here), and
         // holds nothing of the current birth yet.
-        let digest_view = rdm_transport::topology::DigestView::default();
+        let digest_view = rdm_gossip::topology::DigestView::default();
         digest_view.record(digest_of(&predecessor, predecessor.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("superseded-rows-read-from-records");
         {

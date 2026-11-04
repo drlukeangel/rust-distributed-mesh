@@ -28,7 +28,7 @@ const WRONG: Duration = Duration::from_secs(120);
 /// the peers it named.
 #[derive(Default)]
 struct JoinsMembers {
-    channel: Mutex<Option<rdm_transport::gossip::Channel>>,
+    channel: Mutex<Option<rdm_gossip::gossip::Channel>>,
     named: Mutex<Option<Vec<String>>>,
 }
 #[async_trait::async_trait]
@@ -128,7 +128,7 @@ fn a_node_joins_a_channel_naming_its_node_admin_and_the_node_admins_application_
         .await
         .expect("the app.members channel's neighbours are up on both sides");
         let (to_admin, _from_admin) = member_app.channel.lock().unwrap().take().expect("the member joined").split();
-        let published = rdm_transport::gossip::Event { subject: "members/1".into(), sequence: Some(1), dataschema: Some("members.v1".into()), data: bytes::Bytes::from_static(b"from the node") };
+        let published = rdm_gossip::gossip::Event { subject: "members/1".into(), sequence: Some(1), dataschema: Some("members.v1".into()), data: bytes::Bytes::from_static(b"from the node") };
         to_admin.publish(published).await.expect("the member publishes");
 
         let mut channel = admin_app.channel.lock().unwrap().take().expect("the node-admin's application joined");

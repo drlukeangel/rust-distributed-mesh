@@ -106,7 +106,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     lose_mesh1_unproven(&estate, &nodes).await;
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     // Fabric recovery starts at the mark, at the staleness floor (fabric-recovery.md step 2, Q335).
     let decision = floor;
     estate
@@ -149,7 +149,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
     let backbone = location(&nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin").expect("mesh2's admin"));
     lose_mesh1(&estate, &nodes, "-KILL").await;
     estate.enter(&backbone).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let deleted = wait_for("the lost mesh1.node-admin.1's row is written Deleted", floor * 12 + Duration::from_secs(60), || async {
         let rows = spans_where(&estate.spans(), "rdm.node_admin.node.delete.via-node-row", "subject", &Estate::path("mesh1.node-admin", "1"));
         rows.into_iter().find(|r| r.contains(&old_id) && r.contains("row-deleted"))
@@ -211,7 +211,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     let backbone = location(&nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin").expect("mesh2's admin"));
     lose_mesh1_unproven(&estate, &nodes).await;
     estate.enter(&backbone).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let recreated = new_birth_within(&estate, &Estate::path("mesh1.node-admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
         Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await),
@@ -276,7 +276,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     }
     estate.kill_bootstrap();
     estate.enter(&winner_name).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let recreated = new_birth_within(&estate, &Estate::path("mesh1.node-admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
         Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await),
@@ -319,7 +319,7 @@ async fn node_admin_hearing_no_mesh_primary_elects_itself() {
     let victim_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is not its primary");
     let (victim, victim_id) = (location(&victim_row), s(&victim_row["node_id"]));
     let others: Vec<PathName> = nodes.iter().map(|n| location(&n)).filter(|n| *n != victim).collect();
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &others)) {
@@ -356,7 +356,7 @@ async fn mesh_primary_hearing_no_fabric_primary_finds_a_node_admin_of_its_mesh_l
     let victim_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
     let (victim, victim_id) = (location(&victim_row), s(&victim_row["node_id"]));
     let others: Vec<PathName> = nodes.iter().map(|n| location(&n)).filter(|n| *n != victim).collect();
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     // Its clock on mesh1 starts at its first direct backbone receipt of mesh1 (gossip.md §3.2): the cut
@@ -425,8 +425,8 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     };
     intact();
 
-    let floor = rdm_transport::topology::staleness_floor();
-    let gossip = rdm_transport::topology::gossip_interval();
+    let floor = rdm_gossip::topology::staleness_floor();
+    let gossip = rdm_gossip::topology::gossip_interval();
     let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);

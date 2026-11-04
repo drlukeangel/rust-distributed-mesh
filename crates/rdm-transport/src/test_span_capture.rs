@@ -6,7 +6,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 
 /// Install `layer` as this thread's subscriber for as long as the guard lives, every callsite
 /// enabled first.
-pub(crate) fn install<L>(layer: L) -> tracing::subscriber::DefaultGuard
+pub fn install<L>(layer: L) -> tracing::subscriber::DefaultGuard
 where
     L: tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
 {

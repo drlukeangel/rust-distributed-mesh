@@ -276,7 +276,7 @@ pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<Lifec
         .chain(full.in_flight().into_iter().map(Item::InFlight))
         .chain(full.deleted().into_iter().map(Item::Deleted))
         .collect();
-    let (sized, refused) = crate::chunking::pack_in_order(items, |run: &[Item]| {
+    let (sized, refused) = rdm_transport::chunking::pack_in_order(items, |run: &[Item]| {
         let (d, i, x) = split(run.to_vec());
         let bytes = encode(&shape(d, i, x, u32::MAX, u32::MAX));
         if bytes.len() > MAX_FRAME { Err(bytes.len()) } else { Ok(bytes.into()) }

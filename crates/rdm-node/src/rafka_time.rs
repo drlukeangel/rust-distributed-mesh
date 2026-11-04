@@ -25,7 +25,7 @@
 use rdm_core::topology::PrimaryKind;
 use rdm_core::NodeId;
 use rdm_transport::clock::{Adopted, RafkaTime};
-use rdm_transport::topology::PrimaryView;
+use rdm_gossip::topology::PrimaryView;
 
 /// Who is pulling, by the primary it is in its own view when it pulls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

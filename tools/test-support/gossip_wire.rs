@@ -1,7 +1,7 @@
 //! Independent postcard reference writer for gossip byte goldens. Expected context strings and
 //! data bytes are assembled from the ruled grammar and literal data goldens, without the codec.
 use rdm_core::{FabricId, NodeId, IncarnationId};
-use rdm_transport::{envelope::Birth, topology::Frame};
+use rdm_gossip::{envelope::Birth, topology::Frame};
 
 pub fn author() -> Birth {
     Birth { fabric: FabricId::parse("04raj09p3zp7").unwrap(), node: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh4").unwrap() }
@@ -90,12 +90,12 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
 
 /// Active kinds round trip; reserved types are refused before decoding their literal data.
 pub fn assert_roundtrip(f: &Frame, golden: &[u8]) {
-    match rdm_transport::envelope::decode(golden) {
+    match rdm_gossip::envelope::decode(golden) {
         Ok(back) => { assert_eq!(back.encode(), golden); match (back.data(), f.data()) {
             (Frame::Digest { digest: a }, Frame::Digest { digest: b }) => assert_eq!(rdm_core::wire::WireDigest::from(a), rdm_core::wire::WireDigest::from(b)),
             _ => assert_eq!(format!("{:?}", back.data()), format!("{:?}", f.data())),
         } }
-        Err(rdm_transport::envelope::DecodeError::Reserved(_, _)) => assert!(matches!(f.data(), Frame::NodeRestarting { .. } | Frame::Concern { .. } | Frame::NodeConnectionsDeleting { .. } | Frame::NodeConnectionsDeleted { .. } | Frame::NodeLeaving { .. } | Frame::NodeLeft { .. } | Frame::NewFabricPrimary { .. })),
+        Err(rdm_gossip::envelope::DecodeError::Reserved(_, _)) => assert!(matches!(f.data(), Frame::NodeRestarting { .. } | Frame::Concern { .. } | Frame::NodeConnectionsDeleting { .. } | Frame::NodeConnectionsDeleted { .. } | Frame::NodeLeaving { .. } | Frame::NodeLeft { .. } | Frame::NewFabricPrimary { .. })),
         other => panic!("{other:?}"),
     }
 }
@@ -109,6 +109,6 @@ impl WireGolden for Frame {
     fn type_position(&self) -> u8 {
         let (attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&self.golden_encode()).unwrap();
         let kind = &attrs.iter().find(|(name, _)| name == "type").unwrap().1;
-        rdm_transport::envelope::TYPES.iter().position(|k| k == kind).unwrap() as u8
+        rdm_gossip::envelope::TYPES.iter().position(|k| k == kind).unwrap() as u8
     }
 }

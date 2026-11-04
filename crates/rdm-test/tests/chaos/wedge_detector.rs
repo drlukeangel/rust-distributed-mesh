@@ -831,7 +831,7 @@ fn primaries_detail_after_str(nodes: &[Value]) -> String {
 /// calls to it, by its process state and CPU use, and by what the control plane does about it,
 /// never by how long it has been quiet.
 async fn silent_case(run: &Run) {
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let id = "silent-runtime:hang-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;

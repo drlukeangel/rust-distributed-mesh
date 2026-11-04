@@ -911,7 +911,7 @@ impl StorageChanges {
 /// the start, an admin the fabric-primary record names resumes a change its predecessor started and
 /// did not end ([`StorageChanges::resume`]). It reads the record it is woken by: the view rebuilt from
 /// that record later would miss the change that woke it.
-pub async fn keep_resumed(changes: Arc<StorageChanges>, primaries: rdm_transport::topology::PrimaryView) {
+pub async fn keep_resumed(changes: Arc<StorageChanges>, primaries: rdm_gossip::topology::PrimaryView) {
     let mut changed = primaries.subscribe();
     loop {
         if primaries.fabric().is_some_and(|p| p.node_id == changes.node_id) {

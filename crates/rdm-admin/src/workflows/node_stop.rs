@@ -21,7 +21,7 @@ mod tests {
     use rdm_core::{MemberStatus, MeshDigest, MeshNode};
     use rdm_node::connections_writer::{ConnectionsWriter, RowsHeld};
     use rdm_node::storage::MemoryConnectionsStorage;
-    use rdm_transport::topology::TopologyView;
+    use rdm_gossip::topology::TopologyView;
     use rdm_transport::{CancelToken, LiveNodeResolver, NodeRpcClient, ServerBuilder};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

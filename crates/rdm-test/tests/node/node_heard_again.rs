@@ -139,7 +139,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
     estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
 
     // A node, then the node-admin that is not the mesh-primary: every node follows the path.
     let rpc = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
@@ -243,7 +243,7 @@ async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
     estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let node = estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     let first = hold_past_the_floor_then_release(&estate, &node, floor).await;
     let second = hold_past_the_floor_then_release(&estate, &node, floor).await;
@@ -271,7 +271,7 @@ async fn a_birth_stopped_and_started_by_builds_and_held_later_is_still_commanded
     estate.resize_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settled_views(&[("mesh1", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let floor = rdm_transport::topology::staleness_floor();
+    let floor = rdm_gossip::topology::staleness_floor();
     let node = &estate.node_view(&PathName::new("mesh1.node", "2").unwrap()).await;
     let before = estate.node_view_by_id(&node.node_id).await;
     estate.stop_then_start(&node.location()).await;

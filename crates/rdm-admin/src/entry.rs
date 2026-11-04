@@ -119,7 +119,7 @@ pub async fn run_on_started(
         // A start that ended Failed at its hook leaves this admin Pending, its process running (Q350).
         // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
         // answer: it ends, and its exit is the death proof the fabric recovers from.
-        reason = rdm_transport::topology::until_transport_stopped() => {
+        reason = rdm_gossip::topology::until_transport_stopped() => {
             tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
                 .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
             eprintln!("{service}: the mesh transport stopped: {reason}");
