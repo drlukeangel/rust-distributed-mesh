@@ -57,9 +57,11 @@ impl RuntimeProvider {
     }
 }
 
-/// The exact runtime inside its control domain.
+/// The exact runtime inside its control domain. One shape on every codec (Q366): serde's external
+/// tagging, the variant then its fields, so the Status wire's postcard reads it as it is written; in
+/// JSON (`runtime.json`, the node record) `{"process": {"pid", "start"}}` or `{"container": {"id"}}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case")]
 pub enum RuntimeLocator {
     /// A pid and the kernel's start time of that process (clock ticks since
     /// boot): together they never name a later process.

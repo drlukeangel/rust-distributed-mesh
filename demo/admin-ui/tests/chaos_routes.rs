@@ -18,7 +18,7 @@ fn node(name: &PathName, fabric_primary: bool) -> (std::process::Child, NodeFact
     let child = Command::new("sleep").arg("60").stdout(Stdio::null()).spawn().unwrap();
     let dir = std::env::temp_dir().join(format!("chaos-{}-{}-{}", std::process::id(), name.path, name.name));
     std::fs::create_dir_all(&dir).unwrap();
-    let record = json!({"deployment_id": "dep", "provider": "process", "control_domain": local_control_domain(), "locator": {"kind": "process", "pid": child.id(), "start": start_token(child.id()).unwrap()}});
+    let record = json!({"deployment_id": "dep", "provider": "process", "control_domain": local_control_domain(), "locator": {"process": {"pid": child.id(), "start": start_token(child.id()).unwrap()}}});
     std::fs::write(dir.join("runtime.json"), record.to_string()).unwrap();
     let facts = NodeFacts { name: name.clone(), mesh: "mesh1".into(), is_fabric_primary: fabric_primary, data_dir: Some(dir.display().to_string()), transport_port: Some(40000) };
     (child, facts, dir)

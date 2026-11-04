@@ -156,8 +156,8 @@ impl ExactRuntime {
         Ok(Self {
             deployment_id: v["deployment_id"].as_str().unwrap_or_default().to_string(),
             control_domain: v["control_domain"].as_str().filter(|d| !d.is_empty()).ok_or_else(|| Refusal::NoPublishedFact { reason: format!("{}: no control_domain", file.display()) })?.to_string(),
-            pid: field("pid", v["locator"]["pid"].as_u64())? as u32,
-            start: field("start", v["locator"]["start"].as_u64())?,
+            pid: field("pid", v["locator"]["process"]["pid"].as_u64())? as u32,
+            start: field("start", v["locator"]["process"]["start"].as_u64())?,
         })
     }
 

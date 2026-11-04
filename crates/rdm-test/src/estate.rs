@@ -1268,7 +1268,7 @@ impl Estate {
         }
         let dir = self.advertised_data_dir(node).await?;
         let fact: Value = serde_json::from_slice(&std::fs::read(Path::new(&dir).join(rdm_core::runtime::RUNTIME_FILE)).ok()?).ok()?;
-        let id = fact["locator"]["id"].as_str().filter(|_| fact["locator"]["kind"] == "container")?.to_string();
+        let id = fact["locator"]["container"]["id"].as_str()?.to_string();
         (docker(&["inspect", "--format", "{{.State.Running}}", &id]).ok()?.trim() == "true").then_some(id)
     }
 

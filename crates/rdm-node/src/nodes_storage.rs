@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let attributes = crate::store_log::Attributes { id: lines[0].attributes.id.clone(), source: writer.source(), r#type: "node-record".into(), subject: Some(node_id.to_string()), time: None, dataschema: "node-record/2".into(), traceparent: None, tracestate: None };
         let zero = "0".repeat(64);
-        let data = format!(r#"{{"node_id":"{node_id}","path":"mesh1.node","name":"1","type":"node","incarnation":"{incarnation}","state":"ready","endpoint_id":"{zero}","transport_addr":"127.0.0.1:1","listeners":[],"runtime":{{"deployment_id":"fixture-deployment","provider":"process","control_domain":"fixture","locator":{{"kind":"process","pid":1,"start":1}}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{{"persistence":null,"data_dir":null}},"executable":null,"config":{{}},"tags":[]}}"#);
+        let data = format!(r#"{{"node_id":"{node_id}","path":"mesh1.node","name":"1","type":"node","incarnation":"{incarnation}","state":"ready","endpoint_id":"{zero}","transport_addr":"127.0.0.1:1","listeners":[],"runtime":{{"deployment_id":"fixture-deployment","provider":"process","control_domain":"fixture","locator":{{"process":{{"pid":1,"start":1}}}}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{{"persistence":null,"data_dir":null}},"executable":null,"config":{{}},"tags":[]}}"#);
         assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8(crate::store_log::encode_line(&attributes, data.as_bytes())).unwrap());
         assert_eq!(lines[0].attributes.source_node_id(), Some(writer.node_id.as_str()), "the source names the writer's node id");
     }
