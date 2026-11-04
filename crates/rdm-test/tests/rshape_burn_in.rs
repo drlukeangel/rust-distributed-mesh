@@ -5037,15 +5037,19 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
         // A death, a tombstone, a departure, a rebirth or a terminate. Not among them (Q89,
         // fabric-recovery.md): a role moved back after a heal, and the provider inspection a takeover
         // makes of the lost birth, which adopts its runtime handle.
-        .filter(|n| {
-            n.contains(".node.delete.")
-                || n.contains(".deployment.delete.")
-                || n.contains(".deployment.update.")
-                || n.contains("topology.remove.")
-                || n.contains("topology.reject.via-deleted-birth")
-                || n.contains("node.create.via-deployment")
-        })
+        .filter(|n| is_lifecycle_mark(n))
         .collect()
+}
+
+/// A span name that marks a death, a tombstone, a departure, a rebirth or a provider terminate
+/// ([`lifecycle_marks`]).
+fn is_lifecycle_mark(n: &str) -> bool {
+    n.contains(".node.delete.")
+        || n.contains(".deployment.delete.")
+        || n.contains(".deployment.update.")
+        || n.contains("topology.remove.")
+        || n.contains("topology.reject.via-deleted-birth")
+        || n.contains("node.create.via-deployment")
 }
 
 /// Every named member is ready in `view`.
@@ -6594,7 +6598,11 @@ async fn soak_run(cell: &str, story: Story) {
     estate.stop().await;
     let mut inv = Invariants::default();
     let left = provider_left_of(&bound, &estate.root, stop_t, &mut inv).await;
-    let spans = estate.spans();
+    // Only the spans this analysis reads, in one pass (`Estate::spans_where`): a soak's whole span set
+    // parsed at once grew the test process past the host's memory, and the kernel killed it at its end.
+    let (spans, exported) = estate.spans_where(|n| {
+        is_lifecycle_mark(n) || n == "rdm.node_rpc.testkit_store.serve.via-request" || n == "rdm.node_admin.build.update.via-reconcile" || n.starts_with("rdm.node_rpc.route.resolve.")
+    });
     let index = copy_spans(&estate, &dir);
 
     // The driver's verdict first: the evidence below is written for a red run too.
@@ -6690,7 +6698,7 @@ async fn soak_run(cell: &str, story: Story) {
             "estate_manifest": estate.artifacts.join("manifest.json"),
             "rpc_ledger": estate.artifacts.join("rpc-ledger.jsonl"),
             "spans_dir": estate.kept_evidence(),
-            "exported_spans": spans.len(),
+            "exported_spans": exported,
             "proof_store_serve_spans": served,
             "build_section_spans": reconciles,
         },

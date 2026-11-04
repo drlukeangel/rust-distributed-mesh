@@ -985,6 +985,36 @@ impl Estate {
         self.spans.lock().unwrap().all(&self.evidence)
     }
 
+    /// Every span the estate's files hold whose `name` passes `keep`, read once with nothing kept
+    /// between calls, and the count of every span line read: an end-of-run analysis of a long run
+    /// (a soak) reads what it judges without holding every span of the run in memory, which
+    /// [`Self::spans`] does (a 30-minute soak's spans parsed whole grew the test process to tens of GB
+    /// and the kernel killed it, 2026-11-04). A line whose name fails `keep` is never parsed.
+    pub fn spans_where(&self, keep: impl Fn(&str) -> bool) -> (Vec<Value>, usize) {
+        let (mut kept, mut lines) = (Vec::new(), 0usize);
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&self.evidence).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".spans.jsonl")).collect();
+        files.sort();
+        for path in files {
+            let Ok(file) = std::fs::File::open(&path) else { continue };
+            for line in std::io::BufRead::split(std::io::BufReader::new(file), b'\n').map_while(Result::ok) {
+                let line = line.strip_suffix(b"\r").unwrap_or(&line);
+                if line.is_empty() {
+                    continue;
+                }
+                lines += 1;
+                if !line_names(line).any(|n| keep(n)) {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                    if v["name"].as_str().is_some_and(&keep) {
+                        kept.push(v);
+                    }
+                }
+            }
+        }
+        (kept, lines)
+    }
+
     /// [`Self::spans`], keeping only spans whose `name` is one of `names` and deciding that from the
     /// line's bytes before parsing it into a [`Value`]. Each name set keeps its own file offsets and
     /// kept spans.
@@ -1631,6 +1661,21 @@ impl SpanStream {
 
 /// Whether `line` contains a `"name":"<value>"` field whose value is one of `names`, checked on the
 /// raw bytes before parsing the line as JSON.
+/// Every `"name":"..."` value a span line spells, read from its bytes before it is parsed: the span's
+/// own name among them (an attribute may also be called `name`).
+fn line_names(line: &[u8]) -> impl Iterator<Item = &str> {
+    const FIELD: &[u8] = b"\"name\":\"";
+    let mut rest = line;
+    std::iter::from_fn(move || {
+        let pos = rest.windows(FIELD.len()).position(|w| w == FIELD)?;
+        let after = &rest[pos + FIELD.len()..];
+        let end = after.iter().position(|&b| b == b'"')?;
+        let name = std::str::from_utf8(&after[..end]).ok();
+        rest = &after[end..];
+        Some(name.unwrap_or_default())
+    })
+}
+
 fn line_carries_name(mut line: &[u8], names: &[&str]) -> bool {
     const FIELD: &[u8] = b"\"name\":";
     while let Some(pos) = line.windows(FIELD.len()).position(|w| w == FIELD) {
