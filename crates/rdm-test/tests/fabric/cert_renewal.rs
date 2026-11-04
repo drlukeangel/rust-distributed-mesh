@@ -774,7 +774,9 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         // From here the old issuer's primary is not reached by its own renewal.
         cut_calls(&root, &holder);
         let update = until("the fabric-primary's update of mesh1.node-admin.2 is received", BOUND, async || {
-            named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.node-admin.2") && f.get("outcome").map(String::as_str) == Some("installed"))
+            // The update of this re-mint, never the first install of the old issuer (its previous expiry 0),
+            // which a loaded run's spans can show here too.
+            named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.node-admin.2") && f.get("outcome").map(String::as_str) == Some("installed") && num(f, "previous_issuer_expires_at") == old.cert.expiry_ms)
         })
         .await;
         assert_eq!(num(&update, "issuer_expires_at"), num(&rotated, "issuer_expires_at"));
