@@ -182,7 +182,9 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             template: &template,
             timeouts: timeouts(),
         };
-        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
+        // Each birth is its own node's create: a create's incarnation and deployment id are its operation's
+        // (A1), so B, re-born at A's path, is a new node id and a new create.
+        let create = |build_id, node_id: rdm_core::NodeId| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id, mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id),
             path: "mesh1.node".into(), name: "1".into(),
             spec: &NODE_SPEC,
@@ -192,7 +194,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
 
         // Birth A, then A exits.
         let a = pipeline
-            .create(&create(publish_build(&builds, add_node()).await))
+            .create(&create(publish_build(&builds, add_node()).await, rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())))
             .await
             .unwrap_or_else(|e| panic!("create A: {e}"));
         process
@@ -203,7 +205,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
 
         // Birth B at the same path, ready.
         let b = pipeline
-            .create(&create(publish_build(&builds, add_node()).await))
+            .create(&create(publish_build(&builds, add_node()).await, rdm_core::NodeId::mint()))
             .await
             .unwrap_or_else(|e| panic!("create B: {e}"));
         assert_ne!(b.node.incarnation_id, a.node.incarnation_id, "a new birth");
