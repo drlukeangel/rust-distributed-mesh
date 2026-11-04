@@ -1154,6 +1154,8 @@ impl NodeSelf {
             let progress = progress.clone();
             let frame = rdm_core::reply::node_command::connections_deleting(self.node_id.clone(), self.incarnation.clone());
             async move {
+                // The node's own record first (Q356): connections-deleting before its frame.
+                self.write_state(crate::model::NodeStatus::ConnectionsDeleting).await;
                 if let Some(progress) = progress {
                     let _ = progress.lock().await.progress(frame).await;
                 }
