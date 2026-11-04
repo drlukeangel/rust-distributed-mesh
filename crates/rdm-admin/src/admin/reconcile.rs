@@ -72,6 +72,10 @@ impl crate::build_drive::Gate for RoleGate {
         self.control.atlas.primaries(t)
     }
 
+    fn answered_mesh_primary(&self, mesh: &str) -> Option<rdm_core::NodeId> {
+        self.control.atlas.answered_mesh_primary(mesh)
+    }
+
     async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId) -> Result<(), String> {
         for u in updates {
             if u.primary.is_none() && u.mesh == self.primary_update.topology_view.mesh_name() {

@@ -393,6 +393,17 @@ impl Atlas {
         self.held.lock().unwrap().is_fabric_primary = record.map(|record| Updated { record, node_id: node_id.clone() });
     }
 
+    /// The mesh-primary of `mesh` as the answer to the node.primary.update this admin commanded names
+    /// it (Q355), while that answer stands: the node a command for the mesh goes to (Q373), whether or
+    /// not the view holds that node yet.
+    pub fn answered_mesh_primary(&self, mesh: &str) -> Option<NodeId> {
+        let records = self.records.get()?;
+        let held = self.held.lock().unwrap();
+        let u = held.is_primary.get(&(mesh.to_string(), rdm_core::NODE_ADMIN.to_string()))?;
+        let record = records.node_type_primary(mesh, rdm_core::NODE_ADMIN);
+        (record.as_ref() == Some(&u.record) || record.is_some_and(|r| r.node_id == u.node_id)).then(|| u.node_id.clone())
+    }
+
     /// `t` with `is_primary` and `is_fabric_primary` as the primary updates' answers this atlas holds
     /// set them (Q355): this admin reads a node's mesh-primary, every node type's primary and the
     /// fabric-primary from here wherever it decides which node runs a node command (the Build drive and
@@ -1143,6 +1154,26 @@ mod tests {
     /// record of the broker role ends the answer, and another type's or mesh's role is untouched. Must
     /// NOT happen: the stale gossip `is_primary` read after the answer (a second update of the node the
     /// first moved), or the answer laid on mesh2's mesh-primary.
+    #[test]
+    fn an_answered_mesh_primary_is_named_while_no_view_holds_it() {
+        use rdm_core::{Primary, PrimaryRole};
+        // CONTRACT (Q355, Q373): the fabric-primary's node.primary.update of mesh2 answered `updated`,
+        // naming a node its view does not hold (it vanished from the view, Pending): the atlas names
+        // that node mesh2's mesh-primary, the node mesh2's commands go to. A later record naming another
+        // node ends the answer. Must NOT happen: no mesh-primary named for mesh2 (the drive then ran
+        // mesh2's delete itself, refused as not mesh2's writer).
+        let (old, new, third) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
+        let record = |id: &NodeId, revision: u64| Primary { mesh: "mesh2".into(), node_id: id.clone(), incarnation: IncarnationId::mint(), revision };
+        let records = rdm_transport::topology::PrimaryView::default();
+        records.take(PrimaryRole::MeshPrimary, &record(&old, 3));
+        let atlas = TestAtlas::new();
+        atlas.primary_updated(&records, "mesh2", rdm_core::NODE_ADMIN, &old, &new);
+        assert_eq!(atlas.answered_mesh_primary("mesh2"), Some(new.clone()), "the answer names mesh2's mesh-primary");
+        assert_eq!(atlas.answered_mesh_primary("mesh1"), None, "another mesh is untouched");
+        records.take(PrimaryRole::MeshPrimary, &record(&third, 5));
+        assert_eq!(atlas.answered_mesh_primary("mesh2"), None, "a later record naming another node ends the answer");
+    }
+
     #[test]
     fn an_answered_node_type_primary_update_is_read_from_the_atlas_before_gossip() {
         use rdm_core::{Primary, PrimaryRole};

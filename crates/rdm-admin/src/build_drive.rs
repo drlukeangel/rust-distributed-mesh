@@ -83,6 +83,11 @@ pub trait Gate: Send + Sync {
     /// the answers to the primary updates this admin sent, and those streamed back to it
     /// (node-primary-update.md step 6). The drive decides from this view, never waiting on gossip.
     fn primaries(&self, _t: &mut Topology) {}
+    /// The mesh-primary of `mesh` as the answer to an update this admin commanded names it, while the
+    /// answer stands (`crate::atlas::Atlas::answered_mesh_primary`, Q355, Q373).
+    fn answered_mesh_primary(&self, _mesh: &str) -> Option<rdm_core::NodeId> {
+        None
+    }
     /// The Build's `rdm.build.started` is written: the fabric's change, which names the accepted Build
     /// once it runs, decides again now.
     async fn build_started(&self, _build_id: &BuildId) {}
@@ -1307,7 +1312,11 @@ impl DriveEnv {
                         continue;
                     }
                 }
-                match crate::executor::executor_for(op, &t) {
+                // Every command for a mesh goes to its primary of the moment (Q373): a mesh whose
+                // mesh-primary this admin's atlas names from an update's answer, while the view does not
+                // hold that node yet, is that node's to run, never this admin's in process.
+                let answered = op.mesh().filter(|m| *m != self.me_mesh).and_then(|m| self.gate.answered_mesh_primary(m)).filter(|a| *a != self.birth.node_id && t.own(a).is_none());
+                match answered.clone().or_else(|| crate::executor::executor_for(op, &t)) {
                     Some(to) if to == self.birth.node_id => {
                         if own_open {
                             own.push(op.clone());
@@ -1358,7 +1367,7 @@ impl DriveEnv {
                 // observed view still names the one it moved: its section goes to the new one's exact
                 // birth (step 6).
                 let named = |v: &Topology| v.node_type_primary(&mesh, "node-admin").map(|n| n.node_id.clone());
-                let to = named(&t).filter(|p| Some(p) != named(&observed).as_ref());
+                let to = named(&t).filter(|p| Some(p) != named(&observed).as_ref()).or_else(|| self.gate.answered_mesh_primary(&mesh).filter(|a| t.own(a).is_none()));
                 let runs_at = to.clone().or_else(|| crate::executor::mesh_primary(&mesh, &t).map(|b| b.node_id));
                 runs.push(Box::pin(async move {
                     env.notices.dispatched(&me, &drive.build_id, &mesh).await;
