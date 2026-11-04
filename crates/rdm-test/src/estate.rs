@@ -896,6 +896,20 @@ impl Estate {
         Some(record)
     }
 
+    /// Every line of `node_id`'s record in the root's `nodes.jsonl` (R-SR1), oldest first: the node id
+    /// its writer's CloudEvents `source` names, and the record it wrote, decoded whole. A node writes
+    /// its own record (Q356); its mesh-primary writes it only for a node that is lost, killed or deleted.
+    /// Empty while the file cannot be read whole.
+    pub fn record_lines(&self, node_id: &rdm_core::NodeId) -> Vec<(String, rdm_node::nodes_storage::NodeRecord)> {
+        let file = self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE);
+        rdm_admin::store_log::read_file(&file)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|l| l.kind() == rdm_node::nodes_storage::RECORD_KIND && l.subject() == node_id.as_str())
+            .map(|l| (l.attributes.source_node_id().unwrap_or_default().to_string(), l.decode(&file).expect("a whole node record")))
+            .collect()
+    }
+
     /// The latest record of `node_id` in the root's `nodes.jsonl` (R-SR1), as
     /// `{"type", "subject", "dataschema", "data"}`; `None` while there is none, or while the file cannot be read whole.
     pub fn node_record(&self, node_id: &str) -> Option<serde_json::Value> {

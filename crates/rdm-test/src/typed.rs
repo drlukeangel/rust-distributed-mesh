@@ -435,8 +435,8 @@ impl Estate {
         let path = name.clone();
         let entry = self.entry().await;
         // A mesh the admin does not hold is the empty list (Q167 R-RD3).
-        // A read refused not-ready (a node whose own property record is not written yet answers its
-        // properties unavailable) is read again, bounded; past the bound the refusal is the panic.
+        // A read refused not-ready (a node whose record is not written yet) is read again, bounded;
+        // past the bound the refusal is the panic.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         let views = loop {
             match self.nodes_obj().await.get(&rdm_client::Filter::new().eq("path", [&path.path]).eq("name", [&path.name])).await {

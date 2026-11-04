@@ -145,8 +145,8 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
 /// node-admin (one node beside it, so its store names a node and Q200's Day 0 is not this case),
 /// changes its own config, is lost, and a person starts a node-admin again on its data dir (fabric
 /// recovery, a new birth at its path and name). The new birth's config is the changed map, read from
-/// the lost birth's own part of its record in nodes.jsonl by the recovery's claim, and the new birth
-/// writes that map as its own part. Must NOT happen: the new birth starting from an empty launch
+/// the lost birth's record in nodes.jsonl (the lone fabric-primary's read, Q227), and the new birth
+/// writes that map on its own record. Must NOT happen: the new birth starting from an empty launch
 /// snapshot, the change made before the loss gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
@@ -187,7 +187,7 @@ async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     let spans = estate.spans();
     let own = rdm_test::estate::named(&spans, "rdm.node.record.update.via-properties").into_iter()
         .find(|s| s["attributes"]["node_id"] == after.node_id.as_str())
-        .unwrap_or_else(|| panic!("the restarted fabric-primary {} wrote its own part", after.node_id));
+        .unwrap_or_else(|| panic!("the restarted fabric-primary {} wrote its own record", after.node_id));
     estate.record_trace_url(&written);
     estate.record_trace_url(own["trace_id"].as_str().unwrap());
 }

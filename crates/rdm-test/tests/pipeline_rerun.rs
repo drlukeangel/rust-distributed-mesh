@@ -14,7 +14,6 @@ use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildSta
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts};
 use rdm_admin::join::Joins;
-use rdm_admin::storage::NodesStorage;
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{
     DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode,
@@ -177,8 +176,8 @@ async fn killed_then_rerun(kill_at: KillAt) {
         _ = reached.notified() => {}
     }
     let first_pid = *first.spawned.lock().unwrap().first().expect("the first run spawned the runtime");
-    // A run past WaitForBind: the birth writes its own part of its record as it bound at its join, the
-    // value the rerun reads for that step (D67).
+    // A run past WaitForBind: the birth writes its own record, its first line at its start with the
+    // addresses it bound, the value the rerun reads for that step (D67).
     if kill_at == KillAt::InWaitForMeshJoin {
         crate::common::until_bound(&nodes, &node_id).await;
     }
@@ -287,8 +286,8 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
             _ = reached.notified() => {}
         }
         let first_pid = *first.spawned.lock().unwrap().first().expect("the first run spawned the runtime");
-        // The birth writes its own part of its record as it bound at its join: the value the rerun reads
-        // for WaitForBind (D67).
+        // The birth writes its own record, its first line at its start with the addresses it bound: the
+        // value the rerun reads for WaitForBind (D67).
         crate::common::until_bound(&nodes, &node_id).await;
 
         // The admin process restarts: nothing of the admitted birth is in memory; its durable rows stand.

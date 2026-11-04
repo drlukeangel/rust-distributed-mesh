@@ -184,7 +184,7 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
 /// serve `node.get` or acceptance ... Properties are read separately at the subject node ID"): a
 /// caller's `node.config.update` of a node of the other mesh, sent to the fabric-primary, ends
 /// `node.config.updated`, and the fabric-primary's `mesh.nodes.get` answers the node's config at once,
-/// from the node's own property record. The fabric-primary is then stopped and its process killed; the
+/// from the node's own record. The fabric-primary is then stopped and its process killed; the
 /// surviving admin of its mesh, the new fabric-primary, takes every mesh into its atlas's scope as it
 /// becomes the fabric-primary and answers the same config from the same record. Spans: the old
 /// fabric-primary's `rdm.node_admin.node.update.via-fabric-primary` (`config-updated`, sent to the
@@ -243,7 +243,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     // The receiving fabric-primary is named by its node id on this span.
     let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "receiver_node_id") == fp_id.to_string() && rdm_test::estate::names_location(sp, "subject", &subject_name)).collect();
     assert_eq!(sent.len(), 1, "one node.config.update at the fabric-primary: {sent:?}");
-    // The config is the node's own property record, read at the subject node id (query.md); no atlas
+    // The config is on the node's own record, read at the subject node id (query.md); no atlas
     // copy of it is written.
     assert_eq!(attr(sent[0], "outcome"), "config-updated", "{:?}", sent[0]);
     let scoped: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-scope").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &successor)).collect();

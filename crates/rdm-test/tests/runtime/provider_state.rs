@@ -141,8 +141,8 @@ async fn hold_until_recovered(estate: &Estate, path: &PathName) -> Held {
 /// `os-stopped`, its recovery is submitted on that verdict, and the path is re-created as a new birth
 /// over a newly allocated data dir while the held runtime is sent nothing: still `T`, no CPU used, its
 /// TerminateRuntime reading `os-stopped`. Then mesh2.node-admin.2 is held the same way, so each of mesh2's
-/// admins runs one recovery: the create finds no allocation of the deleted birth, whose row stands Deleted
-/// (node-delete.md step 3), written by mesh2's one row writer (node-identity-and-state.md §4.3). No Build
+/// admins runs one recovery: the create finds no allocation of the deleted birth, whose record stands
+/// Deleted (node-delete.md step 3), written by mesh2's mesh-primary, the node being gone (Q356). No Build
 /// is opened and the fabric-primary investigates neither. Must NOT happen: a `running` finding of the
 /// held runtime, a recovery with no inspection span, a signal to a held runtime (`via-lost-executor`
 /// naming its deployment), or the new birth over its data dir.

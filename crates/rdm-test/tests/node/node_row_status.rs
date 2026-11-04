@@ -1,14 +1,14 @@
 //! product=mesh, feature=node-lifecycle, subfeature=node-row-status, rung=MN, provider=process.
 //!
-//! A node's status is the readiness on its durable row (node-identity-and-state.md §4: "its
-//! **status** — the readiness on its durable row: starting, pending, ready, ..."), set by
-//! the node's mesh-primary at each transition states.md "Who sets each state" names, and durable before
-//! the reply (states.md "Setting a state"). The row is read where it is stored: the newest line for the
-//! node's id in the nodes store on the fabric's store root.
+//! A node's `state` is on its node record (Q366), written by the node itself at each transition
+//! states.md "Who sets each state" gives it (Q356), durable before it reports it; its mesh-primary writes
+//! the record only where the node cannot: a deleted node's deleting and deleted. The record is read
+//! where it is stored: its lines at the node's id in the nodes store on the fabric's store root, each
+//! line's CloudEvents `source` naming its writer.
 
 use rdm_client::{Frame, NodeView};
 use rdm_core::PathName;
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{Estate, Owner};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
@@ -38,40 +38,57 @@ async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
     out
 }
 
-/// The `status` of the newest record of `node_id` in the nodes store on `root`.
+/// The `state` of the newest record of `node_id` in the nodes store on `root`.
 fn row_status(root: &Path, node_id: &str) -> String {
     let file = root.join(rdm_admin::store_root::NODES_FILE);
     let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("the nodes store {} could not be read: {e}", file.display()));
     let row: Value = text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|l| l["subject"] == node_id).unwrap_or_else(|| panic!("the nodes store holds no record of {node_id}"));
-    row["data"]["state"].as_str().unwrap_or_else(|| panic!("the record of {node_id} carries no status: {row}")).to_string()
+    row["data"]["state"].as_str().unwrap_or_else(|| panic!("the record of {node_id} carries no state: {row}")).to_string()
 }
 
-/// CONTRACT: every node of a ready fabric has `ready` on its durable row, as
-/// stored. Through `node.connection.delete { All }`, `node.stop`, `node.start` and `node.delete` of one
-/// node, its row says, once each call completes, `connections-deleted`, `stopped`,
-/// `ready` and `deleted`; and its mesh-primary wrote on its row each status "Who sets each
-/// state" names, from the node's frame or its own receipt (one
-/// `rdm.node_admin.node.update.via-row-status` span each, `written`; states.md and the paragraph after
-/// its table, Q233): pending and ready at its create; connections-deleting and
-/// connections-deleted; then node.stop's frames, its acknowledgement setting stopping over the
-/// connections-deleted row: stopping, connections-deleting, connections-deleted, leaving, left, stopped;
-/// then starting from the start's acknowledgement, pending and ready, a starting that reaches it after the
-/// same start's pending or ready moving the row nowhere (node-start.md step 2, Q248); then deleting from
-/// node.delete's claim and the frames of the stop it composes, stopping through stopped (delete is the
-/// mesh-primary's workflow). The node's Stopped declaration may reach the mesh-primary before a stop
-/// stream's last frames, whichever first is applied (node-stop.md step 5): each frame after it leaves
-/// the row stopped (`node_stop::stop_row_writes`).
+/// `states`, each as the record serializes it, with each run of one state taken once: a write that
+/// leaves the state where it stood (a config, a role, a cert) is a line of the same state.
+fn runs(states: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in states {
+        if out.last() != Some(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Whether `states` is `pattern` in order, each `(state, optional)` taken once or, when optional, skipped.
+fn fits(states: &[String], pattern: &[(&str, bool)]) -> bool {
+    match (states.split_first(), pattern.split_first()) {
+        (None, None) => true,
+        (_, Some(((_, true), rest))) if fits(states, rest) => true,
+        (Some((s, more)), Some(((p, _), rest))) => s == p && fits(more, rest),
+        _ => false,
+    }
+}
+
+/// CONTRACT (states.md "Who sets each state"; Q356): every node of a ready fabric has `ready` on its
+/// record, as stored. Through `node.connection.delete { All }`, `node.stop`, `node.start` and
+/// `node.delete` of one node, its record says, once each call completes, `connections-deleted`,
+/// `stopped`, `ready` and `deleted`. Every line of the record up to the delete is the node's own (its
+/// `source` the node), carrying each state the node takes, in order: pending and ready at its create;
+/// connections-deleting and connections-deleted; then node.stop's, stopping, connections-deleting and
+/// connections-deleted (each written only where it moves the record), leaving, left, stopped; then the
+/// start's starting (refused once its join's pending is written, node-start.md step 2, Q248), pending and
+/// ready; then the stop node.delete composes. The delete's deleted is the mesh-primary's line, the last.
+/// Must NOT happen: a line of the live node written by another node, or a state out of order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
-    let mut estate = Estate::bootstrap(owner("a_node_row_carries_its_status_through_ready_stop_and_start"), "fabric1", "mesh1").await;
+async fn a_node_record_carries_its_state_through_ready_stop_and_start() {
+    let mut estate = Estate::bootstrap(owner("a_node_record_carries_its_state_through_ready_stop_and_start"), "fabric1", "mesh1").await;
     estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let views: Vec<NodeView> = estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let root = estate.fabric_store_root();
 
-    // Ready: every node's row says so.
+    // Ready: every node's record says so.
     let ready: Vec<(String, String)> = views.iter().map(|v| (v.node_id.to_string(), row_status(&root, v.node_id.as_str()))).collect();
-    assert!(ready.iter().all(|(_, s)| s == "ready"), "every node of a ready fabric is ready on its row: {ready:?}");
+    assert!(ready.iter().all(|(_, s)| s == "ready"), "every node of a ready fabric is ready on its record: {ready:?}");
 
     // The node that is not its type's primary: a primary is stopped only after node.primary.update.
     let subject = views.iter().find(|v| v.r#type == "node" && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds a node that is not its type's primary: {views:?}"));
@@ -87,33 +104,23 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
         };
         let frames = frames(stream.unwrap_or_else(|e| panic!("{call} of {path:?} was refused: {e}"))).await;
         assert_eq!(frames.last(), Some(&Frame::Complete), "{call}: {frames:?}");
-        assert_eq!(row_status(&root, &node_id), then, "{path:?}'s row says {then} once {call} completed");
+        assert_eq!(row_status(&root, &node_id), then, "{path:?}'s record says {then} once {call} completed");
     }
 
     estate.stop().await;
-    let spans = estate.spans();
-    // Every status write on the node's row, written or unchanged, in the order its mesh-primary made them
-    // (`in_write_order`).
-    let mut rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| sp["attributes"]["node_id"] == node_id.as_str()).collect();
-    crate::node_stop::in_write_order(&mut rows);
-    let at = |sp: &Value| (sp["attributes"]["status"].as_str().unwrap_or_default().to_string(), sp["attributes"]["outcome"].as_str().unwrap_or_default().to_string());
-    let all: Vec<(String, String)> = rows.iter().map(|sp| at(sp)).collect();
-    let written = |statuses: &[&str]| statuses.iter().map(|s| (s.to_string(), "written".to_string())).collect::<Vec<_>>();
-    let created = written(&["Pending", "Ready", "ConnectionsDeleting", "ConnectionsDeleted"]);
-    // The start's join and its stream are two calls with no order between them (node-start.md step 2,
-    // Q248): starting written first, then pending and ready; or the join's pending first, the late
-    // starting moving the row nowhere, before or after the start's ready. Starting is written or
-    // unchanged, never dropped, and never moves the row back from pending or ready.
-    let unchanged = ("Starting".to_string(), "unchanged".to_string());
-    let starts: Vec<Vec<(String, String)>> = vec![
-        written(&["Starting", "Pending", "Ready"]),
-        [written(&["Pending"]), vec![unchanged.clone()], written(&["Ready"])].concat(),
-        [written(&["Pending", "Ready"]), vec![unchanged]].concat(),
-    ];
-    let deleting = written(&["Deleting"]);
-    let stops = crate::node_stop::stop_row_writes();
-    assert!(
-        stops.iter().any(|stop| starts.iter().any(|start| stops.iter().any(|deleted| created.iter().chain(stop).chain(start).chain(&deleting).chain(deleted).eq(all.iter())))),
-        "{path:?}'s mesh-primary wrote each status from the node's frame or its own receipt, in states.md's order, each stop's frames moving the row until the node's stopped is taken: {all:?}"
-    );
+    let lines = estate.record_lines(&subject.node_id);
+    estate.artifact("record-lines.json", &serde_json::json!(lines));
+    let state = |r: &rdm_node::nodes_storage::NodeRecord| serde_json::to_value(r.state).unwrap().as_str().unwrap_or_default().to_string();
+    let (last_writer, last) = lines.last().unwrap_or_else(|| panic!("{path:?} has a record"));
+    assert_ne!(last_writer, &node_id, "the deleted node's deleted is its mesh-primary's line: {lines:?}");
+    assert_eq!(state(last), "deleted", "the delete's deleted is the record's last line: {lines:?}");
+    // Up to the delete, every line is the node's own.
+    let deleting = lines.iter().position(|(w, r)| w != &node_id || state(r) == "deleting").unwrap_or(lines.len());
+    let own: Vec<String> = runs(lines[..deleting].iter().map(|(_, r)| state(r)));
+    assert!(lines[..deleting].iter().all(|(w, _)| w == &node_id), "every line of the live node is its own: {lines:?}");
+    // `?` marks a state written only where it moves the record; the delete's own stop is cut short where
+    // the mesh-primary's deleting is taken.
+    let order = "starting? pending ready connections-deleting connections-deleted stopping connections-deleting? connections-deleted? leaving left stopped starting? pending ready stopping? connections-deleting? connections-deleted? leaving? left? stopped?";
+    let pattern: Vec<(&str, bool)> = order.split(' ').map(|t| t.strip_suffix('?').map_or((t, false), |t| (t, true))).collect();
+    assert!(fits(&own, &pattern), "{path:?} wrote each state it took on its own record, in states.md's order: {own:?}");
 }

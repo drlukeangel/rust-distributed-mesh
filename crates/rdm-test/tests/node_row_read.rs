@@ -144,7 +144,7 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
         admin.deployed(&launch, &key);
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts over a nodes store it cannot fold");
         assert!(nodes_folds(&seen).is_empty(), "gw1's start folds no nodes.jsonl (Q227)");
-        // The start appended gw1's own part of its record after the line, reading none of it (Q333).
+        // The start appended gw1's own record after the line, reading none of it (Q227, Q356).
         let started = std::fs::read_to_string(&file).unwrap();
         assert!(started.starts_with(&line), "the start leaves the line it cannot read as it is");
 

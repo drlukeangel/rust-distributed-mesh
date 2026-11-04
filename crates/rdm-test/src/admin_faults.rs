@@ -143,8 +143,8 @@ pub enum CutSpec {
     /// disk job that owns the file's append lock (`rdm_node::store_log::write_cut`): before the line is
     /// written (a provider completion delayed: every later append to the file, and every wait for the
     /// writes this birth issued, waits behind it), or, `after`, once the line is written and fsynced and
-    /// before its caller is answered (the persistence boundary a process is terminated at). A lifecycle
-    /// record's key, like a property record's, is its node id (Q323).
+    /// before its caller is answered (the persistence boundary a process is terminated at). A node
+    /// record's key is its node id (Q366).
     StoreAppend {
         /// The store file's path, as the admin opens it.
         file: String,

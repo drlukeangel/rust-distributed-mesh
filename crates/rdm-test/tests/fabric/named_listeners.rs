@@ -5,7 +5,7 @@
 //! deployment-provider page's assigned endpoints): the application's wiring names each type's
 //! listeners. A create assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds
 //! them, keeps every bind open through its join and reports the ports the operating system selected;
-//! the accepting primary verifies the report against the assignment and the node appends its property record with them.
+//! the accepting primary verifies the report against the assignment and the node writes them on its own record (Q356).
 //!
 //! Every estate runs the testkit's faulted node-admin, whose application declares `kafka`, `rest` and
 //! `proxy` on the gateway (`rdm_test::test_app::listeners`).
@@ -56,7 +56,7 @@ fn wanted(gateways: u32) -> BTreeSet<PathName> {
     locations
 }
 
-/// The latest appended node-owned property record, selected by globally unique node ID.
+/// The node's record, its latest line at its node id.
 fn row_of(estate: &Estate, node: &NodeView) -> Value {
     serde_json::to_value(estate.record(&node.node_id).expect("the node's record"))
         .expect("a record serializes")
@@ -101,7 +101,7 @@ async fn published(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)
     let mut view = node.listeners.clone();
     row.sort();
     view.sort();
-    assert_eq!(row, view, "{:?}: its node-owned property record on the store root publishes the listeners the view carries", node.name);
+    assert_eq!(row, view, "{:?}: its record on the store root carries the listeners the view carries", node.name);
     let reported = join_reported(estate, node).await.unwrap_or_else(|| panic!("{:?}: no admitted join of it in the spans", node.name));
     for (n, a) in &node.listeners {
         assert!(reported.split(',').any(|e| e == format!("{n}={a}")), "{:?}: its join reported {n}={a}: {reported}", node.name);

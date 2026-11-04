@@ -359,7 +359,7 @@ pub fn stepping(fabric: &FabricId, mesh: &str) -> rdm_admin::build_run::FramedBu
 }
 
 /// `nodes.storage` on the fabric's store root `template` names, as `admin` opens it: where a birth
-/// launched from `template` writes its own part of its record (`NodeRecord`) at its join.
+/// launched from `template` writes its own record (`NodeRecord`), its first line at its start.
 pub async fn store_root_nodes(admin: &AdminSide, template: &LaunchTemplate) -> Arc<dyn rdm_admin::storage::NodesStorage> {
     let scope = rdm_admin::storage_backend::StorageScope {
         data_dir: template.data_root.join("admin"),

@@ -315,7 +315,7 @@ impl Run {
     }
 
     /// The node `is` names in the views, once a read answers it: a read refused not-ready while a node
-    /// has no property record yet answers nothing (`node_views`), and is read again.
+    /// has no record yet answers nothing (`node_views`), and is read again.
     async fn primary_where(&self, what: &str, is: impl Fn(&rdm_client::NodeView) -> bool) -> PathName {
         rdm_test::estate::wait_for(what, Duration::from_secs(30), || {
             let found = async { self.estate.node_views().await.into_iter().find(|n| is(n)).map(|n| n.location()) };

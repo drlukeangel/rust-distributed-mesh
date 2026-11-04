@@ -127,8 +127,9 @@ async fn stop_then_start(test: &str, node: &PathName) {
     }
     // node.get shows it stopped: the same birth, the same process, alive.
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(stopped.state == NodeStatus::Stopped, "node.get lists {node:?} stopped: {stopped:?}");
-    assert_eq!(stopped.state, NodeStatus::Stopped, "the row's status as its mesh-primary wrote it from the stopped frame (Q233): {stopped:?}");
+    assert_eq!(stopped.state, NodeStatus::Stopped, "node.get lists {node:?} stopped, the state the node wrote on its own record at its stop (Q356): {stopped:?}");
+    let (writer, record) = estate.record_lines(&before.node_id).pop().expect("the node's record");
+    assert_eq!((writer.as_str(), record.state), (before.node_id.as_str(), rdm_core::model::NodeStatus::Stopped), "the record's latest line is the node's own stopped: {record:?}");
     assert_eq!((&stopped.node_id, &stopped.incarnation, &stopped.endpoint_id, &stopped.transport_addr), (&before.node_id, &before.incarnation, &before.endpoint_id, &before.transport_addr), "a stop keeps the node id, incarnation, endpoint key and port");
     assert!(alive(pid), "the stopped process {pid} is alive and stopped");
     assert_eq!(estate.pid_of(node).await, pid);
@@ -147,6 +148,8 @@ async fn stop_then_start(test: &str, node: &PathName) {
     }
     let after = view_of(&estate.nodes_obj().await, &path).await;
     assert!(after.state == NodeStatus::Ready, "node.get lists {node:?} ready again: {after:?}");
+    let (writer, record) = estate.record_lines(&before.node_id).pop().expect("the node's record");
+    assert_eq!((writer.as_str(), record.state), (before.node_id.as_str(), rdm_core::model::NodeStatus::Ready), "the record's latest line is the node's own ready: {record:?}");
     assert_eq!((&after.node_id, &after.incarnation, &after.endpoint_id, &after.transport_addr), (&before.node_id, &before.incarnation, &before.endpoint_id, &before.transport_addr), "a start keeps the node id, incarnation, endpoint key and port");
     assert_eq!(estate.pid_of(node).await, pid, "the same process");
 
@@ -248,60 +251,29 @@ fn command_frames(spans: &[Value], node: &PathName, operation: &str) -> Vec<Stri
     of.into_iter().map(|sp| attr(sp, "frame")).collect()
 }
 
-/// Every status write the mesh-primary made on `node`'s row from `from` on, in order, with its outcome
-/// (`written` or `unchanged`).
-fn rows_taken(spans: &[Value], node: &PathName, from: u64) -> Vec<(String, String)> {
-    let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| names_location(sp, "subject", node) && start_ns(sp) >= from).collect();
-    in_write_order(&mut of);
-    of.into_iter().map(|sp| (attr(sp, "status"), attr(sp, "outcome"))).collect()
-}
-
-/// `rows`, `rdm.node_admin.node.update.via-row-status` spans of one record, in the order its writer
-/// made the writes: by start. A node record carries no revision (node-identity-and-state.md §2.5), so
-/// the span's start, opened right after its write under the node's one writer, is the order it
-/// records.
-pub(crate) fn in_write_order(rows: &mut [&Value]) {
-    rows.sort_by_key(|sp| start_ns(sp));
-}
-
-/// Every order a stop's row writes can take at its mesh-primary, each `(status, outcome)`: the stop
-/// stream's frames in order, each written, until the node's Stopped is taken, which writes stopped,
-/// and every frame after it finds the row stopped and leaves it unchanged. The node's declaration of
-/// Stopped and the stream's own stopped frame are applied whichever first reaches the mesh-primary
-/// (node-stop.md step 5), so the declaration may be taken after any of the frames; taken before the
-/// stop's acknowledgement, the stop is applied already and stopping is not written at all.
-pub(crate) fn stop_row_writes() -> Vec<Vec<(String, String)>> {
-    let frames = ["Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Leaving", "Left"];
-    let at = |status: &str, outcome: &str| (status.to_string(), outcome.to_string());
-    let shape = |k: usize, from: usize| -> Vec<(String, String)> { frames[from..k].iter().map(|s| at(*s, "written")).chain([at("Stopped", "written")]).chain(frames[k..].iter().map(|s| at(*s, "unchanged"))).collect() };
-    (1..=frames.len()).map(|k| shape(k, 0)).chain([shape(1, 1)]).collect()
-}
-
-/// The statuses the mesh-primary wrote on `node`'s row from `from` on, in order.
-fn rows_written(spans: &[Value], node: &PathName, from: u64) -> Vec<String> {
-    let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| names_location(sp, "subject", node) && attr(sp, "outcome") == "written" && start_ns(sp) >= from).collect();
-    in_write_order(&mut of);
-    of.into_iter().map(|sp| attr(sp, "status")).collect()
-}
-
-/// Where `operation` began: the first span naming it, whoever recorded it. Its rows are read from here.
-fn began(spans: &[Value], operation: &str) -> u64 {
-    spans.iter().filter(|sp| attr(sp, "operation") == operation).map(start_ns).min().unwrap_or_else(|| panic!("no span names {operation}"))
+/// The states of the lines of `node`'s record from its stop's stopping on, each with its writer's node
+/// id, in the order they were written ([`Estate::record_lines`]).
+fn stop_lines(estate: &Estate, node: &rdm_core::NodeId) -> Vec<(String, String)> {
+    let lines: Vec<(String, String)> = estate.record_lines(node).into_iter().map(|(w, r)| (w, serde_json::to_value(r.state).unwrap().as_str().unwrap_or_default().to_string())).collect();
+    let from = lines.iter().rposition(|(_, s)| s == "stopping").unwrap_or(lines.len());
+    lines[from..].to_vec()
 }
 
 /// CONTRACT (Q205; node-stop.md steps 1-5; node-rpc-envelope.md, the node.stop row; states.md "Who
 /// sets each state"): a commanded stop is a workflow that calls its primitives, node.connection.delete
 /// `{ All }` then node.mesh.leave, and streams each one's acknowledgement and completion on the stop's
 /// own stream: the mesh-primary takes `command-accepted`, `connections-deleting`,
-/// `stop-connections-deleted`, `leaving`, `stop-mesh-left`, `node-stopped`, in that order, and writes
-/// the node's row from each: stopping, connections-deleting, connections-deleted, leaving, left,
-/// stopped. The node's owed `Stopped` declaration is held at the mesh-primary for the stop (the
-/// faulted admin's `declaration` cut), so the stream's frames reach it first; released, the declaration
-/// finds the stop applied (step 5: whichever of the two reaches it first is applied). Must NOT happen: a
-/// primitive's frame missing from the stop's stream, or a status the frames carry missing from the row.
+/// `stop-connections-deleted`, `leaving`, `stop-mesh-left`, `node-stopped`, in that order, and the node
+/// writes each state on its own record before it sends the frame (Q356): stopping,
+/// connections-deleting, connections-deleted, leaving, left, stopped, every line its own. The node's owed
+/// `Stopped` declaration is held at the mesh-primary for the stop (the faulted admin's `declaration`
+/// cut), so the stream's frames reach it first; released, the declaration finds the stop applied (step
+/// 5: whichever of the two reaches it first is applied). Must NOT happen: a primitive's frame missing
+/// from the stop's stream, a state the frames carry missing from the record, or a line of the stopping
+/// node written by another node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_its_mesh_primary_writes_each_status() {
-    let test = "a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_its_mesh_primary_writes_each_status";
+async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_the_node_writes_each_state() {
+    let test = "a_commanded_stop_streams_each_primitives_acknowledgement_and_completion_and_the_node_writes_each_state";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
     estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
@@ -326,11 +298,13 @@ async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion
         ["command-accepted", "connections-deleting", "stop-connections-deleted", "leaving", "stop-mesh-left", "node-stopped"],
         "the stop's stream carries each primitive's acknowledgement and completion"
     );
+    let written = stop_lines(&estate, &declared_id);
     assert_eq!(
-        rows_written(&spans, &node_at(), began(&spans, &operation)),
-        ["Stopping", "ConnectionsDeleting", "ConnectionsDeleted", "Leaving", "Left", "Stopped"],
-        "the mesh-primary writes the row from each frame"
+        written.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>(),
+        ["stopping", "connections-deleting", "connections-deleted", "leaving", "left", "stopped"],
+        "the node writes each state of its stop on its own record: {written:?}"
     );
+    assert!(written.iter().all(|(w, _)| w == declared_id.as_str()), "every line of the stop is the node's own: {written:?}");
     let declared: Vec<String> = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| attr(sp, "sender") == declared_id.as_str() && attr(sp, "state") == "Stopped").map(|sp| attr(sp, "outcome")).collect();
     assert_eq!(declared, ["already-applied"], "the released declaration finds the stop applied from its stream");
 }
@@ -407,7 +381,8 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
     assert!(stopped.state == NodeStatus::Stopped, "{stopped:?}");
 
-    // The rename of a stopped node: one call to its mesh-primary, the row moved and the bound process told.
+    // The rename of a stopped node: one call to its mesh-primary, which checks the name and tells the
+    // bound process, which writes the name on its own record (Q356).
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(stopped.node_id.clone()), node_id: stopped.node_id.clone(), incarnation: stopped.incarnation.clone().expect("the stopped node's birth") };
     let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed).await.expect("node.name.update answered");
     assert!(matches!(reply, StatusReply::NameUpdated { .. }), "a stopped node holds no connection and is renamed: {reply:?}");
@@ -488,8 +463,8 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    // The config the row holds is what node.get answers, from the fabric-primary's atlas (Q203: no
-    // digest carries it); read until the started birth is ready, within a staleness floor.
+    // The config the node's record holds is what node.get answers (Q203: no digest carries it); read
+    // until the started birth is ready, within a staleness floor.
     let until = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
     let after = loop {
         let v = view_of(&estate.nodes_obj().await, &path).await;
@@ -520,8 +495,8 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
 /// CONTRACT (R-JN1; Q345: "the old node is stopped, and its name changed with node.name.update";
 /// node-start.md step 2; R12/R13; CLAUDE.md read rule): in a mesh of three node-admins, the non-primary
 /// `mesh1.node-admin.3` is stopped and then renamed `renamed` at its mesh-primary. Every admin lists the
-/// stopped birth at the row's name, `mesh1.node-admin.2`, which performed no rename, included: its view
-/// reads the name from the row on the shared store root. `node.start` of the new name makes the same
+/// stopped birth at its record's name, `mesh1.node-admin.2`, which performed no rename, included: its
+/// view reads the name from the node's record on the shared store root. `node.start` of the new name makes the same
 /// process rejoin: its join presents the name it took while stopped and is admitted under it (`via-join`
 /// `admitted_as`); the node installs the answer's name before it publishes (`via-join-admitted`
 /// `installed`, then `via-ready` under that name). The stream carries `node.joined`, `node.started`
@@ -558,7 +533,7 @@ async fn a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_ever
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(before.node_id.clone()), node_id: before.node_id.clone(), incarnation: before.incarnation.clone().expect("the node's birth") };
     let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed).await.expect("node.name.update answered");
     assert!(matches!(reply, StatusReply::NameUpdated { .. }), "{reply:?}");
-    // Every admin's view names the stopped birth by its row, the one that performed no rename included.
+    // Every admin's view names the stopped birth by its record, the one that performed no rename included.
     for admin in &admins {
         let listed = estate
             .until_view_at(&admin.location(), &format!("{:?} lists the stopped birth at {renamed:?}", admin.name), Duration::from_secs(10), |view| {
@@ -569,7 +544,7 @@ async fn a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_ever
         assert_eq!((listed.state, listed.incarnation.clone()), (NodeStatus::Stopped, before.incarnation.clone()), "{:?}: {listed:?}", admin.name);
     }
 
-    // The start by the row's name: the same process rejoins under it.
+    // The start by its record's name: the same process rejoins under it.
     let started = frames(nodes.start(&renamed).await.expect("the start by the row's name was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
@@ -998,8 +973,8 @@ async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeVie
 /// 4. P calls node.primary.update on NA2's exact birth; NA2 installs the election's result the call
 ///    carries and answers node.primary.updated (`primary.update.via-primary-updated` at NA2, outcome
 ///    `held`, the mesh-primary entry P -> NA2, under P's update).
-/// 5. NA2, the mesh's writer from that moment, records `is_primary` on its own row ("The write records
-///    the role; it does not grant it").
+/// 5. NA2 records `is_primary` on its own record (Q356; "The write records the role; it does not grant
+///    it").
 /// 6. The fabric-primary installs NA2's answer and hands the caller's node command on to NA2, which runs
 ///    it as mesh2's primary, a node command and never a Build (Q342); every admin still answering names
 ///    NA2 mesh2's primary (`node.get`).
@@ -1210,11 +1185,11 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
 /// by the mesh primary that applied its Stopped, and a move of its mesh's role publishes it no second
 /// time. In a fabric of two meshes, mesh2's node that is not its node-type primary is stopped: it stops, declares its Stopped naming the
 /// stop, and mesh2's primary publishes NodeStopped. Then mesh2's primary is stopped: its Build moves
-/// mesh2's role to mesh2's other admin first, which folds the mesh's status rows (the stopped birth's
-/// Stopped among them), and the old primary's own stop declares its Stopped naming that stop to the new
-/// primary, which applies it and publishes the old primary's NodeStopped once. The stopped birth hears no
-/// role move (its gossip was cut at its stop, node-stop.md step 3): it re-declares nothing to the new
-/// primary, whose RoleFold already holds its row. The new primary starts the stopped birth, which rejoins
+/// mesh2's role to mesh2's other admin first, which folds the mesh's states from its view (the stopped
+/// birth's Stopped held from its NodeStopped; no record read, Q260, Q356), and the old primary's own stop
+/// declares its Stopped naming that stop to the new primary, which applies it and publishes the old
+/// primary's NodeStopped once. The stopped birth hears no role move (its gossip was cut at its stop,
+/// node-stop.md step 3): it re-declares nothing to the new primary, whose fold already holds it stopped. The new primary starts the stopped birth, which rejoins
 /// as the same birth. Must NOT happen: NodeStopped for the stopped birth twice (once per primary), or
 /// the old primary's stop declared as a state it measured.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

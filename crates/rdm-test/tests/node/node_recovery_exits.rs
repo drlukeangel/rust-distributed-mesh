@@ -10,7 +10,6 @@
 use crate::build_log;
 use rdm_client::{NodeStatus, PathName};
 use rdm_test::estate::{at_location, descends_from, location, named, wait_for, Estate, Owner};
-use rdm_core::{NodeId, OperationSubject};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -347,7 +346,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     assert!(!named(&spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| sp["attributes"]["pipeline"] == "recover"), "no recovery pipeline of its own");
     assert!(
         !named(&run, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| at_location(sp, node) && sp["attributes"]["pipeline"] == "update"),
-        "no node.update after the create: the create's row seeded what the recovery keeps"
+        "no node.update after the create: the new node writes what the recovery keeps from its launch snapshot"
     );
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
@@ -635,15 +634,15 @@ async fn a_hung_mesh_primary_is_investigated_and_recovered_by_its_successor_afte
         .find(|sp| sp["attributes"]["winner_node_id"] == standby_row["node_id"])
         .cloned()
         .expect("the election names the standby");
-    // The new birth at mesh2.node-admin.1 is created by mesh2's mesh-primary, the successor. No second
-    // recovery of the hung birth.
-    let created_rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row")
-        .into_iter()
-        .filter(|sp| rdm_test::estate::span_operation(sp, "node.create", &OperationSubject::Node(serde_json::from_value(after["node_id"].clone()).expect("the new birth's node id"))) && sp["attributes"]["node_id"] == after["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
-        .collect();
-    assert!(!created_rows.is_empty() && created_rows.iter().all(|sp| at_location(sp, &standby)), "the new birth at {mp_name:?} is created by {standby:?}, mesh2's primary, never by {fp}: {created_rows:#?}");
+    // The new birth at mesh2.node-admin.1 is created by mesh2's mesh-primary, the successor, in its
+    // recovery of the hung birth; it writes its own record at its start (Q356). No second recovery of
+    // the hung birth.
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == mp["node_id"]).collect();
     assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == successor), "the hung birth is recovered by {standby:?} alone: {recoveries:#?}");
+    let created: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["created_node_id"] == after["node_id"]).collect();
+    assert!(!created.is_empty() && created.iter().all(|c| recoveries.iter().any(|r| r["trace_id"] == c["trace_id"])), "the new birth at {mp_name:?} is created by {standby:?}'s recovery, never by {fp}: {created:#?}");
+    let (writer, _) = estate.record_lines(&serde_json::from_value(after["node_id"].clone()).expect("the new birth's node id")).into_iter().next().expect("the new birth's record");
+    assert_eq!(writer, s(&after["node_id"]), "the new birth writes its own record's first line");
     eprintln!(
         "mesh-primary loss cell: {mp_name:?} (birth {}) recovered by {successor}: trace {} | first aggregate trace {} | TerminateRuntime {} | {standby:?} primary (span {}) | new birth {}",
         s(&mp["node_id"]),
@@ -869,17 +868,15 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
 }
 
 /// CONTRACT: a recovered node keeps the config and the tags its mesh-primary told its predecessor
-/// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; proposal
-/// node-properties-own-commands.md §8, recovery: "the successor's claim over it seeds config and tags
-/// from that Deleted row and writes the tags index entries under the successor's id, in the same
-/// write that seeds config"; node-identity-and-state.md "A rewrite is lossless for every field its
-/// writer knows"). The caller puts `<mesh>.rpc.1`'s config and the tag `rabbit` through its
-/// mesh-primary (not the fabric-primary), the node carries them, then its runtime is killed: the
-/// mesh-primary's recovery writes the exited birth's Deleted row with that config and tag, the new
-/// node's row is seeded from it (`via-node-row` moment `create`, `seeded_from` the exited node,
-/// one key, `tags` rabbit), the new node (new node.id, same (path, name)) carries the config and the tag, and
-/// `node.get` by the tag names the new node and not the exited one. Nothing copies them after the
-/// create: no node.update runs.
+/// (node-recovery.md "Retained: ... config"; Q356: a node writes its own record, its mesh-primary only
+/// a lost, killed or deleted node's; a recovery's launch snapshot is the predecessor's record). The
+/// caller puts `<mesh>.rpc.1`'s config and the tag `rabbit` through its mesh-primary (not the
+/// fabric-primary), the node writes them on its own record and carries them, then its runtime is
+/// killed: the mesh-primary's recovery writes the exited birth's record Deleted from its latest line,
+/// config and tag kept, and creates the new node (new node.id, same (path, name)) with the exited
+/// record's config and tag as its launch snapshot; the new node writes them on its own record, carries
+/// them, and `node.get` by the tag names the new node and not the exited one. Nothing copies them
+/// after the create: no node.update runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor").await;
@@ -896,7 +893,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
         .config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path:?} at the fabric-primary: {e:?}"));
-    assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
+    assert_eq!(reply.name(), "config-updated", "the node wrote the config on its own record and applied it: {reply:?}");
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path:?} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
@@ -905,35 +902,34 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
         .tags_create(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.tag.create of {node_path:?} at the fabric-primary: {e:?}"));
-    assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
+    assert_eq!(tagged.name(), "tags-created", "the node wrote the label on its own record: {tagged:?}");
     wait_for(&format!("{node_path:?} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 
     estate.kill_node(node_path).await;
     let after = until_node_where(&estate, node_path, &format!("{node_path:?} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
-    // The new node's row, written by the mesh-primary, is seeded from the exited birth's
-    // Deleted row: its config is the one told.
-    let created = wait_for("the new node's row is exported", Duration::from_secs(60), || async {
+    // The recovery's create of the new node, by the mesh-primary.
+    let created = wait_for("the recovery's create is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "create").cloned()
+        named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().find(|sp| sp["attributes"]["created_node_id"] == after["node_id"]).cloned()
     })
     .await;
-    let a = &created["attributes"];
-    assert!(at_location(&created, &location(&mesh_primary)) && a["outcome"] == "row-seeded" && s(&a["seeded_from"]) == s(&before["node_id"]), "the mesh-primary writes the row at the name seeded from the exited birth's Deleted row: {created}");
-    assert_eq!(s(&a["keys"]), "1", "the seeded row carries the config told to the predecessor: {created}");
-    assert_eq!(s(&a["tags"]), "rabbit", "the create seeds the Deleted row's tags in the same write: {created}");
+    assert_eq!(created["attributes"]["node_id"], before["node_id"], "the recovery of the exited node creates the new one: {created}");
     let deleted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect();
-    assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
-    // The record and its config stay (node-delete.md step 3): the exited node's own property record,
-    // at its node id, still holds the config and the tag.
-    let exited = estate.record(&s(&before["node_id"]).parse().unwrap()).expect("the exited node's property record stays");
-    assert_eq!((exited.config.clone(), exited.tags.clone()), (told.clone(), labels.clone()), "the exited node's property record keeps its config and tag: {exited:?}");
-    // The new node writes its own property record from its launch snapshot, the exited birth's
-    // acknowledged config and tags (node-recovery.md; its join answer is not where config lives).
-    let own = wait_for("the new node's own property record", Duration::from_secs(30), || async { estate.record(&s(&after["node_id"]).parse().unwrap()) }).await;
+    assert_eq!(deleted.len(), 1, "one Deleted record line of the exited birth: {deleted:?}");
+    // The record and its config stay (node-delete.md step 3): the exited node's record, at its node id,
+    // written Deleted by the mesh-primary (the node being gone, Q356), still holds the config and the tag.
+    let exited_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
+    let exited = estate.record(&exited_id).expect("the exited node's record stays");
+    assert_eq!((exited.state, exited.config.clone(), exited.tags.clone()), (rdm_core::model::NodeStatus::Deleted, told.clone(), labels.clone()), "the exited node's record keeps its config and tag: {exited:?}");
+    let (deleted_by, _) = estate.record_lines(&exited_id).pop().expect("the exited node's record");
+    assert_eq!(deleted_by, s(&mesh_primary["node_id"]), "its Deleted line is its mesh-primary's");
+    // The new node writes its own record from its launch snapshot, the exited birth's acknowledged
+    // config and tags (node-recovery.md; its join answer is not where config lives).
+    let own = wait_for("the new node's own record", Duration::from_secs(30), || async { estate.record(&s(&after["node_id"]).parse().unwrap()) }).await;
     assert_eq!((own.config.clone(), own.tags.clone()), (told.clone(), labels.clone()), "the new node's own record holds the exited birth's config and tag: {own:?}");
     let carried = wait_for(&format!("the new {node_path:?} carries the config"), Duration::from_secs(30), || async { let n = estate.node_value(node_path).await; (n["config"] == told_json).then_some(n) }).await;
     assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
-    assert_eq!(estate.node_view(node_path).await.tags, labels, "the new node's row carries the exited node's tag");
+    assert_eq!(estate.node_view(node_path).await.tags, labels, "the new node's record carries the exited node's tag");
     let selected: Vec<String> = estate
         .nodes_obj()
         .await
@@ -946,7 +942,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     assert_eq!(selected, vec![s(&after["node_id"])], "the tags index names the new node under the label, and not the exited one");
     let told: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.update.via-config").into_iter().filter(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned().collect();
     assert!(told.is_empty(), "the join handed the config: no config call is sent to the starting node: {told:?}");
-    eprintln!("trace {}: via-node-row delete node_id={} keys={} tags={}; trace {}: via-node-row create writer={} node_id={} seeded_from={} keys={} tags={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&deleted[0]["attributes"]["tags"]), s(&created["trace_id"]), s(&mesh_primary["node_id"]), s(&after["node_id"]), s(&a["seeded_from"]), a["keys"], s(&a["tags"]));
+    eprintln!("trace {}: via-node-row delete node_id={}; trace {}: via-node-recovery create created_node_id={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), s(&created["trace_id"]), s(&after["node_id"]));
 }
 
 /// CONTRACT (node-recovery.md "Execution", Q342; node-stop.md, D40): mesh1 holds the fabric-primary and a

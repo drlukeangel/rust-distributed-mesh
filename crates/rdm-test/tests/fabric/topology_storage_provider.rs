@@ -348,8 +348,9 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     updated.unwrap_or_else(|e| panic!("node.config.update during the change is answered: {e}"));
     estate.artifact("ended.json", &done);
     assert!(completed(&done), "the change ends complete: {done}");
-    // The row the update wrote is on the provider its mesh-primary writes once unblocked, never the old.
-    assert!(!lines_naming(&target_root, "\"tier\":\"gold\"").is_empty() && lines_naming(&file_root, "\"tier\":\"gold\"").is_empty(), "the update's row is on {TOPOLOGY_STORAGE_TARGET} and not on {FILE}");
+    // The record line the update wrote is on the new provider, the one the node writes once its
+    // mesh-primary is unblocked, never the old.
+    assert!(!lines_naming(&target_root, "\"tier\":\"gold\"").is_empty() && lines_naming(&file_root, "\"tier\":\"gold\"").is_empty(), "the update's record line is on {TOPOLOGY_STORAGE_TARGET} and not on {FILE}");
 
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     let after = estate.node_views().await;
@@ -358,13 +359,13 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     assert!(after.iter().all(|v| v.state == NodeStatus::Ready), "every node is ready: {after:?}");
     let path: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
     // The update and the Build's own config of the node are a serial order of the two
-    // (node-config-update.md): whichever was written last on its own property record is the config
-    // the node carries (the node writes its own record, build.md: never a lifecycle row's copy).
+    // (node-config-update.md): whichever was written last on its own record is the config the node
+    // carries (the node writes its own record, Q356).
     let subject_after = after.iter().find(|v| v.location() == path).cloned().expect("mesh2.node.1 after the change");
-    let last_record: Value = rdm_admin::store_log::read_record(&target_root.join(rdm_admin::store_root::NODES_FILE), "node-properties", Some(subject_after.node_id.as_str()))
-        .expect("mesh2.node.1's property record is on the new provider");
-    let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["data"]["config"].clone()).expect("a property record carries its whole config map");
-    assert_eq!(subject_after.config, record_config, "mesh2.node.1 carries the config its last property record on {TOPOLOGY_STORAGE_TARGET} names");
+    let last_record: Value = rdm_admin::store_log::read_record(&target_root.join(rdm_admin::store_root::NODES_FILE), rdm_node::nodes_storage::RECORD_KIND, Some(subject_after.node_id.as_str()))
+        .expect("mesh2.node.1's record is on the new provider");
+    let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["data"]["config"].clone()).expect("a node record carries its whole config map");
+    assert_eq!(subject_after.config, record_config, "mesh2.node.1 carries the config its last record line on {TOPOLOGY_STORAGE_TARGET} names");
     let old = store_lines(&file_root);
     history_carried(&old, &store_lines(&target_root));
     // storage.md §2 step 3, "Switch": the fabric-primary appends the change's `rdm.storage.committed`

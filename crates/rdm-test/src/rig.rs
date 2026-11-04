@@ -243,8 +243,8 @@ pub struct AdminSide {
     pub fabric: FabricId,
     /// The births this admin side deployed and awaits a `JoinNode` from.
     pub joins: Arc<rdm_admin::join::Joins>,
-    /// This admin side's nodes.storage: where its `JoinService` keeps an admitted birth's report durable
-    /// (the birth's runtime row). A restarted admin side over the same store reads it back.
+    /// This admin side's nodes.storage: the node records its `JoinService` point-reads at a join (Q237),
+    /// each written by its node (Q356). A restarted admin side over the same store reads them back.
     pub nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rdm_core::launch::Launcher,
