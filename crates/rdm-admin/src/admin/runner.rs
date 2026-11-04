@@ -839,7 +839,28 @@ impl AdminRunner {
     /// (node-recovery.md step 2), from that delete's own receipt.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, node: &PathName, from: &crate::build::ExitedBirth, node_id: &crate::model::NodeId, read_exited: bool, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::deployment::pipeline::LaunchOf)>) -> Result<(), crate::executor::RunEnd> {
-        let (exited, _) = self.exited_birth("node.create", node, from).await?;
+        // A birth lost before it wrote its own record (Q356: a node writes its record itself, at its
+        // start) is held by neither the view nor the nodes store. A Build's create names its mesh and
+        // type in its own request, so the create runs on that; its runtime is the delete's, already
+        // ended. Every other case is the exited birth as before, and a recovery's create, which has no
+        // request, refuses as before.
+        let exited = match self.exited_birth("node.create", node, from).await {
+            Ok((exact, _)) => exact,
+            Err(e) => {
+                let unrecorded = matches!(self.nodes_storage.node(&from.node_id).await, Ok(None));
+                match requested {
+                    Some((req, _)) if unrecorded => {
+                        tracing::info_span!("rdm.node_admin.node.create.via-unrecorded-birth", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), mesh = %req.mesh, r#type = %req.r#type, build_id = ?build_id, "otel.kind" = "internal")
+                            .in_scope(|| tracing::info!("the exited birth wrote no record before it was lost: the Build's request names its mesh and type"));
+                        let mut exact = Node::allocated(node.clone(), &req.mesh, &req.r#type);
+                        exact.node_id = from.node_id.clone();
+                        exact.incarnation_id = Some(from.incarnation.clone());
+                        exact
+                    }
+                    _ => return Err(crate::executor::RunEnd::from(e)),
+                }
+            }
+        };
         let (mesh, r#type) = requested.map(|(req, _)| (req.mesh.clone(), req.r#type.clone())).unwrap_or_else(|| (exited.mesh.clone(), exited.r#type.clone()));
         // A node-admin a recovery re-creates into its live mesh is handed no state: it installs the
         // maker's complete topology snapshots, is mesh-primary under the election and, as the mesh's
