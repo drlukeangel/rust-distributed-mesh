@@ -1770,7 +1770,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = control.node_rows.set(nodes_storage.clone());
                                 let _ = control.node_id.set(node_id.clone());
                                 let _ = control.incarnation.set(incarnation.clone());
-                                records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))));
+                                let rows = crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone()));
+                                // The birth fabric recovery's executor check names (build.md §5.3, Q122).
+                                rows.writes_as(crate::storage::BirthRef { node_id: node_id.clone(), incarnation_id: incarnation.clone() });
+                                records.set_rows(Arc::new(rows));
                                 let _ = build_slot.set(Arc::new(crate::build_op::BuildService { me_path: name.path.clone(), me_name: name.name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: section_run_service, primaries: topology_view.primaries().clone(), incarnation: incarnation.clone() }));
                                 env
                             };
