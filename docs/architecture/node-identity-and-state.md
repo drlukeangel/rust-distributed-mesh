@@ -359,14 +359,14 @@ node in one mesh is a fabric of one mesh.
 <a id="3-the-three-gossip-planes-and-two-non-wire-adjuncts"></a>
 ## 3. The three gossip planes (and a non-wire adjunct)
 
-Lifecycle information moves on separate iroh-gossip planes that never share a topic. The planes,
+Lifecycle information moves on separate iroh-gossip planes that never share a channel. The planes,
 their subscription, the JoinNode (op `0x1D`), topology and every gossiped kind are
 [`gossip.md`](gossip.md).
 
 <a id="31-primary-mesh-gossip--gossipenvelope"></a>
 ### 3.1 Primary mesh gossip
 
-One topic per mesh; its frames, their authors, dedup and retention are
+One channel per mesh; its frames, their authors, dedup and retention are
 [gossip.md §3.1](gossip.md#31-frame-catalog).
 
 ### 3.2 The backbone — cross-mesh, node-admin-only
@@ -383,7 +383,7 @@ Who joins the backbone and who publishes on it are
 
 ### 3.4 Projection gossip, and the pull at entry
 
-The projected kinds' topics, the projection frame and the pull a node makes at entry are [gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth).
+The projected kinds' channels, the projection frame and the pull a node makes at entry are [gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth).
 
 ## 4. The state machine
 
@@ -671,4 +671,4 @@ Four rules the taxonomy enforces:
 
 ## Cross-references
 
-- **Gossip — delivery, topics, topology, the JoinNode (op `0x1D`), every gossiped kind:** [`gossip.md`](gossip.md)
+- **Gossip — delivery, channels, topology, the JoinNode (op `0x1D`), every gossiped kind:** [`gossip.md`](gossip.md)

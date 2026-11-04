@@ -1,4 +1,4 @@
-//! What a node publishes about itself on the fabric's topology topic.
+//! What a node publishes about itself on its mesh's topology channel.
 
 use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId, MeshId};
 use crate::runtime::RuntimeFact;

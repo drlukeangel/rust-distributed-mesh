@@ -26,15 +26,15 @@ const MAX: usize = crate::topology::MAX_FRAME;
 const CHUNK: &str = crate::envelope::CHUNK_TYPE;
 
 /// X1 of docs/plans/proposal/gossip-neighbour-drop-at-join.md: RDM hands `peers` to iroh-gossip on
-/// `topic` at `caller`, a dial when no connection to a peer exists yet. One span per site, so a join's
+/// `channel` at `caller`, a dial when no connection to a peer exists yet. One span per site, so a join's
 /// dials are named by the RDM code that asked for them.
-pub fn dial_span(caller: &'static str, node: &str, channel: &str, topic: &TopicId, peers: &[iroh::EndpointId]) {
+pub fn dial_span(caller: &'static str, node: &str, channel: &str, channel_id: &TopicId, peers: &[iroh::EndpointId]) {
     if peers.is_empty() {
         return;
     }
-    let topic: String = topic.as_bytes()[..4].iter().map(|b| format!("{b:02x}")).collect();
+    let channel_id: String = channel_id.as_bytes()[..4].iter().map(|b| format!("{b:02x}")).collect();
     let peers = peers.iter().map(|p| p.fmt_short().to_string()).collect::<Vec<_>>().join(",");
-    tracing::info_span!("rdm.mesh.connection.update.via-join-peers", caller, node, channel, topic = %topic, peers = %peers)
+    tracing::info_span!("rdm.mesh.connection.update.via-join-peers", caller, node, channel, channel_id = %channel_id, peers = %peers)
         .in_scope(|| tracing::info!("peers handed to iroh-gossip"));
 }
 
@@ -106,10 +106,10 @@ pub enum ChannelError {
         /// Gossip's error.
         detail: String,
     },
-    /// The channel's gossip topic could not be subscribed.
+    /// The channel could not be subscribed.
     #[error("subscribe to {} failed: {detail}", .r#type)]
     Subscribe {
-        /// The type whose topic was refused.
+        /// The type whose channel was refused.
         r#type: String,
         /// Gossip's error.
         detail: String,

@@ -283,7 +283,7 @@ pub fn carried_admission(end: crate::status_rpc::CarryEnd) -> (crate::deployment
 }
 
 /// How a node-admin leaves its mesh when stopped and joins it again when started
-/// (`node_self::Session`): its tasks are held at their gate, its gossip topics are left and its
+/// (`node_self::Session`): its tasks are held at their gate, its gossip channels are left and its
 /// connections are cut; a start joins the commanding admin again, takes the topology and runs its hook.
 pub(crate) struct AdminSession {
     pub(crate) gate: crate::stop_gate::StopGate,
@@ -379,7 +379,7 @@ impl AdminSession {
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
             // The row's name the join handed is held on this admin's digest and by its topology view
-            // before it re-enters its topic or says anything (R-JN1).
+            // before it re-enters its channel or says anything (R-JN1).
             {
                 let mut d = s.digest.lock().unwrap();
                 if let Some(n) = &joined.control.name {

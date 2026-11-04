@@ -38,7 +38,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    later start's acknowledgement is its own. The progression in [states](states.md) is an order,
    not a promise that every intermediate state is durably observed.
 3. Run [pre_node_ready](../fabric-node-hooks.md#pre_node_ready) with the
-   start kind and inherited-data-dir indication. The app subscribes its kind topics
+   start kind and inherited-data-dir indication. The app subscribes its kind channels
    through the joined channel and reads no topology snapshot as a prerequisite.
    Ready waits for the hook; its `Ok`, `Pending` and `Failed` answers under the hook's `Send`, the `Pending` probe
    answer and cancellation follow [Outcomes and the gate](../fabric-node-hooks.md#outcomes-and-the-gate).

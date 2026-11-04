@@ -5345,8 +5345,8 @@ impl Observer {
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Frame)>>> = Default::default();
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
-        for (channel, topic) in [("backbone", backbone_channel(fabric)), ("mesh", mesh_channel(fabric, mesh))] {
-            let (sender, mut receiver) = gossip.subscribe(topic, peers.clone()).await.unwrap().split();
+        for (channel, channel_id) in [("backbone", backbone_channel(fabric)), ("mesh", mesh_channel(fabric, mesh))] {
+            let (sender, mut receiver) = gossip.subscribe(channel_id, peers.clone()).await.unwrap().split();
             let seen = seen.clone();
             tokio::spawn(async move {
                 let _keep = sender;

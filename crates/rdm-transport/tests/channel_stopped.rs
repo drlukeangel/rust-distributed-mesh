@@ -1,8 +1,8 @@
-//! A node that stops leaves its mesh topic and a node that starts joins it again.
+//! A node that stops leaves its mesh channel and a node that starts joins it again.
 //!
 //! CONTRACT: stopping a topology view drops its gossip sender and receiver, so no one counts it as a
 //! neighbour and a publish on it is refused by name; nothing it would have said reaches the others.
-//! Starting joins the topic again through the peers it knows, its neighbours return, and its digest
+//! Starting joins the channel again through the peers it knows, its neighbours return, and its digest
 //! sequence continues from where it stopped. What must NOT happen: a stopped node still counted as a
 //! neighbour, a frame leaving a stopped node, or an start that leaves the node deaf.
 
@@ -91,7 +91,7 @@ async fn a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_star
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was stopped");
 
-    // B starts: the topic is joined again, the neighbours return and B's digest sequence continued.
+    // B starts: the channel is joined again, the neighbours return and B's digest sequence continued.
     mb.start().await;
     until("A and B are neighbours again", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
     mb.publish(&db).await.unwrap();

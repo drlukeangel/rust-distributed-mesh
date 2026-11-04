@@ -172,7 +172,7 @@ impl Running {
     }
 
     /// End a stopped birth (a `stop-node` completed): it says nothing and closes. Its stop already
-    /// cut its gossip neighbours and left its topics, and a stopped node gossips nothing
+    /// cut its gossip neighbours and left its channels, and a stopped node gossips nothing
     /// (node-stop.md step 4): every node holds it Leaving and stopped from the `NodeStopped` its
     /// stopped reply produced.
     pub async fn leave_after_stop(self) {

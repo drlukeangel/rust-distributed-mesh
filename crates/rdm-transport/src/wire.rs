@@ -1,6 +1,6 @@
 //! The shared postcard codec. Gossip uses the CloudEvents binary binding in `envelope`: literal
 //! standard metadata names and separately selected opaque data, with no numeric kind on the wire.
-//! Build-topic and directed RPC data retain their positional postcard schemas. Every caller
+//! Build-channel and directed RPC data retain their positional postcard schemas. Every caller
 //! measures its complete encoded message; this codec rejects a valid prefix with trailing bytes.
 //!
 //! Positional data contains no `skip_serializing_if`, internally tagged enums or JSON values.

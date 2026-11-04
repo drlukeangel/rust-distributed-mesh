@@ -159,7 +159,7 @@ pub trait Session: Send + Sync {
     fn callers_of(&self, _build: &str) -> Vec<iroh::PublicKey> {
         Vec::new()
     }
-    /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
+    /// Hard-cut the mesh connections: leave the gossip channels, close the pooled peer connections and
     /// the connections peers made, sparing the connections from `spare` (the commanders whose calls
     /// are in flight and answered on their connections) and, a stop's, the pooled connection to
     /// `mesh_primary` its owed declarations ride (node-stop.md "Transport cut"). The endpoint stays
@@ -174,7 +174,7 @@ pub trait Session: Send + Sync {
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
     /// `operation` is the start's own: the Ready the rejoin declares names it (i146 Q36).
     /// `held_again` is sent once the start holds its mesh again (node-mesh-join.md step 9: back on its
-    /// topic with a neighbour, its Pending presence published): what a commanded `node.mesh.join` answers on.
+    /// channel with a neighbour, its Pending presence published): what a commanded `node.mesh.join` answers on.
     async fn rejoin(&self, birth_cancel: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), StartFailed>;
     /// Leave the channels this birth is on (its mesh; the backbone too, a node-admin), its hook task
     /// ended and its hook gate closed, its connections kept: what a live birth does before its start
@@ -1009,7 +1009,7 @@ impl NodeSelf {
             None => rdm_transport::CancelToken::new(),
         };
         // The command's completion is the mesh held again (node-mesh-join.md step 9): the start's
-        // channel step re-subscribes the topic left above and says so once. No progress stream: the
+        // channel step re-subscribes the channel left above and says so once. No progress stream: the
         // start owes its Ready declaration to its authority as a start after a stop does.
         let (held_tx, held_again) = tokio::sync::oneshot::channel();
         let me = self.clone();

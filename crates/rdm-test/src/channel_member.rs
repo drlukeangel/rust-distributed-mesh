@@ -110,7 +110,7 @@ impl Member {
         rdm_core::EndpointId(self.endpoint_id().to_string())
     }
 
-    /// Its gossip protocol: RDM's own transport cells subscribe to a channel's raw topic on it.
+    /// Its gossip protocol: RDM's own transport cells subscribe to a channel's iroh-gossip `TopicId` directly on it.
     pub fn gossip(&self) -> &iroh_gossip::net::Gossip {
         &self.gossip
     }

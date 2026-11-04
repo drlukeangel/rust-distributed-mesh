@@ -688,7 +688,7 @@ pub struct TerminalReceipt {
     pub verdict: Option<String>,
     /// The data dir the birth ran over, as the delete resolved its record: a replacement's create of
     /// the member's successor takes it over whole. `None` when the record names none. Positional on the Build
-    /// topic's wire, after `verdict`.
+    /// channel's wire, after `verdict`.
     #[serde(default)]
     pub data_dir: Option<String>,
 }

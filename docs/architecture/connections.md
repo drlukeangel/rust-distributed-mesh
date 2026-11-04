@@ -62,7 +62,7 @@ Two planes, two words (R-CR5):
   application originates them (a gateway opening its path to a broker); in RDM standalone the
   testkit's originate service (op `0x73`) does.
 - **The control plane is gossip and the node's control-plane Node RPC pool, and neither is a connection.** Gossip neighbours are
-  the overlay links the gossip framework keeps per topic and repairs itself; the node's control-plane
+  the overlay links the gossip framework keeps per channel and repairs itself; the node's control-plane
   Node RPC pool is the runtime's cache of dials to exact births. Nothing writes them to this log, nothing addresses them
   by id, and deleting connections never touches them: a node whose every connection is deleted is
   still heard on gossip and still answers calls. Only the node's own stop step cuts its control

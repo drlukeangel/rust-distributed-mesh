@@ -1,5 +1,5 @@
 //! The generic RPC proof node and its launch contract. An `rpc_node` binds exactly the endpoint node-admin assigned,
-//! serves Node RPC, joins the fabric's topology topic and
+//! serves Node RPC, joins its mesh's topology channel and
 //! publishes its digest. It carries no product semantics.
 //!
 //! # Where it sits

@@ -429,7 +429,7 @@ impl SectionRunService {
     }
 
     /// The path name this admin holds now (`builds.held_name()` when joined to the fabric Build
-    /// topic, else the name its executor resolves from the topology view, or `self.me`).
+    /// channel, else the name its executor resolves from the topology view, or `self.me`).
     pub async fn held_name(&self) -> PathName {
         if let Some(held) = self.builds.held_name() {
             return held;

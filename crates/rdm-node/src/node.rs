@@ -1038,7 +1038,7 @@ impl crate::node_self::Session for NodeSession {
 impl NodeSession {
     /// This node's channel entry inside `node.mesh.join`, for its start and its standalone join
     /// alike: the row's name and config the join answer handed are held before the node re-enters its
-    /// topic or says anything (a node renamed while stopped publishes its row's name, R-JN1), and only
+    /// channel or says anything (a node renamed while stopped publishes its row's name, R-JN1), and only
     /// then are its connections recorded (`rows`), under the handed name.
     async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: Option<crate::connections_writer::RowsHeld>) -> TopologyView {
         step.record("mesh_id", tracing::field::display(&self.mesh_id));

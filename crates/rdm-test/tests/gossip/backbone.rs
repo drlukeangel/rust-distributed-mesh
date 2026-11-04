@@ -4,7 +4,7 @@
 //! backbone; only a mesh's admin primary publishes its mesh's members there,
 //! and only a receiving peer mesh's primary forwards them onto its own mesh
 //! channel; the fabric primary alone publishes the fabric's status. Ordinary
-//! nodes therefore hold every mesh's nodes without a fabric-wide topic.
+//! nodes therefore hold every mesh's nodes without a fabric-wide channel.
 //!
 //! Cells (s9 acceptance 1-5), from public surfaces and span evidence only:
 //! 1. ordinary nodes subscribe to their own mesh channel only, never to the

@@ -89,8 +89,8 @@ impl Observer {
         let arrivals = Arc::new(tokio::sync::Notify::new());
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         let mut mesh_sender = None;
-        for (channel, topic) in [("backbone", backbone_channel(fabric)), ("mesh1", mesh_channel(fabric, mesh_id))] {
-            let (sender, mut receiver) = gossip.subscribe(topic, peers.clone()).await.unwrap().split();
+        for (channel, channel_id) in [("backbone", backbone_channel(fabric)), ("mesh1", mesh_channel(fabric, mesh_id))] {
+            let (sender, mut receiver) = gossip.subscribe(channel_id, peers.clone()).await.unwrap().split();
             if channel == "mesh1" {
                 mesh_sender = Some(sender.clone());
             }

@@ -106,7 +106,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let left = call(&admin, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
         assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentStopped { .. }), "a stopped node answers CurrentStopped");
-        assert_eq!(running.topology_view.neighbours(), 0, "the node left its gossip topic");
+        assert_eq!(running.topology_view.neighbours(), 0, "the node left its gossip channel");
         // Stopping a stopped node is done: the same receipt again.
         assert_eq!(call(&admin, &target, &stop).await, left);
 
@@ -145,7 +145,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         // The admin holds the started birth again from the digests the node publishes once it is back
-        // on its topic (its Pending, then its beats), delivered by gossip; the node's own probe
+        // on its channel (its Pending, then its beats), delivered by gossip; the node's own probe
         // answer does not order them, and the join's digest is the birth's held one, not newer than
         // what the admin holds. The cell awaits that fact, inside the same deadline.
         let mut digests = digest_view.digest_changes();

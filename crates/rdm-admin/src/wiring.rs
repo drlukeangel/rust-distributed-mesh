@@ -25,7 +25,7 @@ pub(crate) type Wrap<T> = Box<dyn FnOnce(Arc<T>) -> Arc<T> + Send>;
 
 /// Whether an executable that IS a node-admin withholds one of its own leave announcements. The
 /// leave asks it before each publish on each channel (`"mesh"` or `"backbone"`); a `true` answer
-/// skips that one publish call and nothing else: the frame, the topic and the delivery path are
+/// skips that one publish call and nothing else: the frame, the channel and the delivery path are
 /// untouched. The product passes none, so every announcement is published.
 pub trait LeaveSeam: Send + Sync {
     /// Whether the leave withholds announcement `announcement` of `node` on `channel`.
@@ -36,7 +36,7 @@ pub trait LeaveSeam: Send + Sync {
 /// announcements from a channel (R-NS2: "Final mesh topologies and leadership announcements are best-effort
 /// dissemination. A stop does not wait for their delivery"): its backbone asks it before each send of
 /// an announcement `rdm_transport::topology::Withhold` names, on each channel (`"backbone"` or
-/// `"mesh"`); a `true` answer skips that one send and nothing else: the frame, the topic and the
+/// `"mesh"`); a `true` answer skips that one send and nothing else: the frame, the channel and the
 /// delivery path are untouched. The product passes none, so every announcement is sent.
 pub trait AnnouncementSeam: Send + Sync {
     /// Whether `node` withholds `announcement` from `channel`.

@@ -4,7 +4,7 @@
 use bytes::Bytes;
 
 /// iroh-gossip's frame limit (`DEFAULT_MAX_MESSAGE_SIZE`): a frame of this many bytes or more is
-/// refused at write, which closes the connection, and with it every topic sharing that connection.
+/// refused at write, which closes the connection, and with it every channel sharing that connection.
 pub const GOSSIP_FRAME_LIMIT: usize = 4096;
 
 /// The largest message payload. The frame is the payload plus the message envelope (two enum

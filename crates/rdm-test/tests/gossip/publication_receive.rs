@@ -35,10 +35,10 @@ fn story(story: Story) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
+        let mut subscription = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
         let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
-        let (sender, _rx) = topic.split();
+        tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
+        let (sender, _rx) = subscription.split();
 
 
         let mut role = None;

@@ -333,7 +333,7 @@ pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState,
 /// Never Ready while a Build's facts are missing: an admin that holds no current Build (R-BI3: no
 /// Build in its builds store is in progress or completed) names itself blocked. Only Day 0 accepts
 /// the first Build itself; every other admin fetches the Build facts from an existing authority
-/// (its entry pull, or the fabric control topic).
+/// (its entry pull, or the fabric control channel).
 ///
 /// Ready also needs the facts of the Build the entry named, the answering admin's current Build: it
 /// (`floor`) must be readable from this admin's own log. An admin that was not served an entry (Day 0) owes no floor. The

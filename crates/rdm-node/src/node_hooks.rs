@@ -58,7 +58,7 @@ impl Birth {
 }
 
 /// The node-admin that answered this node's `JoinNode` (node-mesh-join.md's accepting primary), which
-/// the hook reads its kind topics from (`fabric-node-hooks.md` "What the context carries"). A start
+/// the hook reads its kind channels from (`fabric-node-hooks.md` "What the context carries"). A start
 /// after a stop reached it back over the call that commanded the start, holding no record of it
 /// (`lifecycles/node-start.md` step 2): it is known by the node ID its join answer gave and the
 /// endpoint it answered on, and the hook calls it through `target`.
@@ -138,7 +138,7 @@ pub struct NodeReadyCtx {
     pub accepting_primary: AcceptingPrimarySource,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
-    /// The topology/gossip handle: the app subscribes its kind topics before it takes its
+    /// The topology/gossip handle: the app subscribes its kind channels before it takes its
     /// snapshot, so what changes during the pull arrives by gossip.
     pub topology_view: TopologyView,
     /// Cancelled when the node is stopped or deleted: the hook and any pull it has in flight end.

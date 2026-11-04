@@ -55,10 +55,10 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let addr=iroh::EndpointAddr::new(server_ep.id()).with_ip_addr(server_addr);
         learn_addresses(&receiver_ep,&[addr.clone()]).unwrap();
         learn_addresses(&server_ep,&[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap())]).unwrap();
-        let mut topic=server_gossip.subscribe(mesh_channel(&fabric,&mesh),vec![]).await.unwrap();
+        let mut subscription = server_gossip.subscribe(mesh_channel(&fabric,&mesh),vec![]).await.unwrap();
         let receiver=TopologyView::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,receiver_id.as_str(),rdm_transport::clock::os_clock(),vec![addr]).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5),topic.joined()).await.unwrap().unwrap();
-        let (sender,_rx)=topic.split();
+        tokio::time::timeout(Duration::from_secs(5),subscription.joined()).await.unwrap().unwrap();
+        let (sender,_rx)= subscription.split();
         let (restarted,started,deleted,rpc_primary)=(birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 2),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 3),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", 4));
         let (stop,delete)=(operation(&started,"stop"),operation(&deleted,"delete"));
         // The version the read serves carries the `node` type primary record its publisher put in it:

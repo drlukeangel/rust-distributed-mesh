@@ -9,7 +9,7 @@
 //!   peer mesh's primary forwards those onto its own mesh channel; the fabric
 //!   primary alone publishes the fabric's status, which peer primaries forward;
 //! - so every node holds every mesh's nodes without a fabric-wide topology
-//!   topic. A member the publisher stops forwarding goes silent everywhere.
+//!   channel. A member the publisher stops forwarding goes silent everywhere.
 //!
 //! Every member heard is registered with the endpoint at its gossip address
 //! (its one endpoint), so HyParView reaches a peer it learned by id.
@@ -80,7 +80,7 @@ type LocationMark = (rdm_core::IncarnationId, u64, Option<rdm_core::IncarnationI
 pub type LocationMarks = Mutex<HashMap<iroh::PublicKey, LocationMark>>;
 
 /// The peer-location view of one endpoint: the ONE address view its address lookup reads. Every
-/// channel and topic the endpoint joins installs where a key is through it, and only a birth's
+/// channel the endpoint joins installs where a key is through it, and only a birth's
 /// ordered digest changes a key's address (gossip.md, contact fields: "Contact changes continue
 /// through the birth's ordered digest updates"). A move deletes every other direct path the
 /// endpoint holds to the key (R-I1, `Endpoint::replace_direct_addrs`). An address from anything
@@ -1437,10 +1437,10 @@ pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::Endpoint
     live.iter().copied().filter(|id| joined.insert(*id)).collect()
 }
 
-/// One joined gossip topic. iroh-gossip closes a subscriber that falls behind
+/// One joined gossip channel. iroh-gossip closes a subscriber that falls behind
 /// (`Lagged`) and expects it to be re-opened; a subscription can also end.
 /// Either way it is re-subscribed through its seeds and every peer it was
-/// asked to join, so it never silently stops hearing the topic.
+/// asked to join, so it never silently stops hearing the channel.
 ///
 /// The topology view through iroh-gossip's own API (`gossip.md` §6): a peer that
 /// leaves the live list it is asked to join and returns is joined again, and
@@ -1450,20 +1450,20 @@ pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::Endpoint
 /// otherwise never dialed again. Nothing is sent.
 #[derive(Clone)]
 struct Channel {
-    /// The channel's label (`mesh:<name>`, `backbone`) and topic, for the dial spans.
+    /// The channel's label (`mesh:<name>`, `backbone`) and id, for the dial spans.
     label: String,
-    topic: TopicId,
-    /// The topic's sender; `None` while the channel is stopped (the topic is left).
+    channel_id: TopicId,
+    /// The channel's sender; `None` while the channel is stopped (the channel is left).
     sender: Arc<tokio::sync::RwLock<Option<GossipSender>>>,
-    /// `true` while the channel is stopped: the topic is left and nothing is sent or heard on it.
+    /// `true` while the channel is stopped: the channel is left and nothing is sent or heard on it.
     stopped: Arc<tokio::sync::watch::Sender<bool>>,
-    /// Counts the times the receive task has finished leaving the topic for a stop.
+    /// Counts the times the receive task has finished leaving the channel for a stop.
     left: Arc<tokio::sync::watch::Sender<u64>>,
     /// Every peer this channel was seeded with or asked to join.
     peers: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     /// The peers asked while they stayed on the live list.
     joined: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
-    /// The endpoint's peer-location view: shared by every channel and topic of the endpoint.
+    /// The endpoint's peer-location view: shared by every channel of the endpoint.
     location_view: LocationView,
     endpoint: Endpoint,
     /// The active gossip neighbours on this channel (NeighborUp minus NeighborDown).
@@ -1533,7 +1533,7 @@ impl Channel {
     async fn join(
         gossip: &Gossip,
         endpoint: &Endpoint,
-        topic: TopicId,
+        channel_id: TopicId,
         fabric: &str,
         node: &str,
         channel: &str,
@@ -1550,13 +1550,13 @@ impl Channel {
             location_view.fill(s);
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
-        crate::gossip::dial_span("topology.subscribe", &format!("{}@{}", location_view.observer_name(), endpoint.id().fmt_short()), channel, &topic, &peers.iter().copied().collect::<Vec<_>>());
-        let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
+        crate::gossip::dial_span("topology.subscribe", &format!("{}@{}", location_view.observer_name(), endpoint.id().fmt_short()), channel, &channel_id, &peers.iter().copied().collect::<Vec<_>>());
+        let sub = gossip.subscribe(channel_id, peers.iter().copied().collect()).await?;
         tracing::info_span!("rdm.mesh.topology.update.via-subscribe", node = %location_view.observer_name(), channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { label: channel.to_string(), topic, sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), stopped: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, location_view, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default(), author, clock };
+        let me = Self { label: channel.to_string(), channel_id, sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), stopped: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, location_view, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default(), author, clock };
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
@@ -1680,19 +1680,19 @@ impl Channel {
                 };
                 neighbors.lock().unwrap().clear();
                 if reason == "stopped" {
-                    // The topic is left: the sender and the receiver are both dropped, so this node
+                    // The channel is left: the sender and the receiver are both dropped, so this node
                     // is no neighbour of anyone on it. It joins again only when the channel is started.
                     *shared.write().await = None;
                     drop(receiver.take());
                     left.send_modify(|n| *n += 1);
                     tracing::info_span!("rdm.mesh.connection.delete.via-channel-stopped", node = %location_view.observer_name(), channel = %channel)
-                        .in_scope(|| tracing::info!("the topic is left: the channel is stopped"));
+                        .in_scope(|| tracing::info!("the channel is stopped: it is left"));
                     let _ = stopped_rx.wait_for(|p| !*p).await;
                 }
-                // Back on its topic, a node dials the members of its mesh it holds (gossip.md §6's
+                // Back on its channel, a node dials the members of its mesh it holds (gossip.md §6's
                 // held members, their addresses known), with the peers it was seeded or repaired
                 // through: a node-admin's seed is the admin that launched it, which for a mesh's first
-                // admin is the fabric-primary, on the backbone and not on this topic (Q88, Luke
+                // admin is the fabric-primary, on the backbone and not on this channel (Q88, Luke
                 // 2026-10-20: a node-admin on a mesh with another node-admin is never without a
                 // neighbour on its mesh channel).
                 for t in held_members().targets {
@@ -1702,8 +1702,8 @@ impl Channel {
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
                 let span = tracing::info_span!("rdm.mesh.topology.update.via-resubscribe", node = %location_view.observer_name(), fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
                 // A refused subscribe means the gossip actor itself has stopped.
-                crate::gossip::dial_span("topology.reopen", &location_view.observer_name(), &channel, &topic, &peers);
-                let reopened = match gossip.subscribe(topic, peers).await {
+                crate::gossip::dial_span("topology.reopen", &location_view.observer_name(), &channel, &channel_id, &peers);
+                let reopened = match gossip.subscribe(channel_id, peers).await {
                     Ok(t) => t,
                     Err(e) => {
                         span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; the channel ends"));
@@ -1728,7 +1728,7 @@ impl Channel {
     }
 
     async fn broadcast(&self, f: &Frame) -> Result<()> {
-        let sender = self.sender.read().await.clone().ok_or_else(|| anyhow::anyhow!("the channel is stopped: its topic is left, nothing is sent"))?;
+        let sender = self.sender.read().await.clone().ok_or_else(|| anyhow::anyhow!("the channel is stopped: it is left, nothing is sent"))?;
         let f = self.authored(f)?;
         let bytes = f.encode();
         anyhow::ensure!(bytes.len() <= MAX_FRAME, "complete gossip message {} exceeds MAX_FRAME {}", bytes.len(), MAX_FRAME);
@@ -1737,8 +1737,8 @@ impl Channel {
         Ok(())
     }
 
-    /// Leave the topic: the sender and the receiver are dropped, so this node is a neighbour of no
-    /// one on it, and nothing is sent or heard until [`Self::start`]. Resolves once the topic is
+    /// Leave the channel: the sender and the receiver are dropped, so this node is a neighbour of no
+    /// one on it, and nothing is sent or heard until [`Self::start`]. Resolves once the channel is
     /// left. Stopping a stopped channel is a no-op.
     async fn stop(&self) {
         if *self.stopped.borrow() {
@@ -1750,7 +1750,7 @@ impl Channel {
         let _ = left.changed().await;
     }
 
-    /// Join the topic again through the peers this channel knows.
+    /// Join the channel again through the peers this channel knows.
     async fn start(&self) {
         let mut ready = self.sender.read().await.is_some();
         self.stopped.send_replace(false);
@@ -1776,7 +1776,7 @@ impl Channel {
         let fresh = rejoin(&self.joined, &live);
         if !fresh.is_empty() {
             let Some(sender) = self.sender.read().await.clone() else { return Ok(0) };
-            crate::gossip::dial_span(caller, &format!("{}@{}", self.location_view.observer_name(), self.endpoint.id().fmt_short()), &self.label, &self.topic, &fresh);
+            crate::gossip::dial_span(caller, &format!("{}@{}", self.location_view.observer_name(), self.endpoint.id().fmt_short()), &self.label, &self.channel_id, &fresh);
             sender.join_peers(fresh.clone()).await?;
         }
         Ok(fresh.len())
@@ -1820,7 +1820,7 @@ impl Channel {
                     let sender = me.sender.read().await.clone();
                     let joined = match sender {
                         Some(sender) => {
-                            crate::gossip::dial_span("topology.repair", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.topic, &[t.addr.id]);
+                            crate::gossip::dial_span("topology.repair", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.channel_id, &[t.addr.id]);
                             sender.join_peers(vec![t.addr.id]).await.is_ok()
                         }
                         None => false,
@@ -1861,7 +1861,7 @@ impl Channel {
                 let sender = me.sender.read().await.clone();
                 let joined = match sender {
                     Some(sender) => {
-                        crate::gossip::dial_span("topology.refeed", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.topic, &peers);
+                        crate::gossip::dial_span("topology.refeed", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.channel_id, &peers);
                         sender.join_peers(peers.clone()).await.is_ok()
                     }
                     None => continue,
@@ -2753,7 +2753,7 @@ impl TopologyView {
         self.mesh.endpoint.clone()
     }
 
-    /// The endpoint's peer-location view: every other topic this process joins on the endpoint
+    /// The endpoint's peer-location view: every other channel this process joins on the endpoint
     /// installs its peers' addresses through it.
     pub fn location_view(&self) -> LocationView {
         self.mesh.location_view.clone()
@@ -3168,20 +3168,20 @@ impl TopologyView {
         self.mesh.broadcast(f).await
     }
 
-    /// Leave this mesh's gossip topic: this node is a neighbour of no one on it and sends and hears
-    /// nothing there until [`TopologyView::start`]. Resolves once the topic is left.
+    /// Leave this mesh's gossip channel: this node is a neighbour of no one on it and sends and hears
+    /// nothing there until [`TopologyView::start`]. Resolves once the channel is left.
     pub async fn stop(&self) {
         self.apps.suspend().await;
         self.mesh.stop().await;
     }
 
-    /// Join this mesh's gossip topic again through the peers it knows. Resolves once the topic is
+    /// Join this mesh's gossip channel again through the peers it knows. Resolves once the channel is
     /// re-subscribed.
     pub async fn start(&self) {
         self.mesh.start().await;
-        // Back on the topic, this node heard nothing while it was off it: every member's silence is
+        // Back on the channel, this node heard nothing while it was off it: every member's silence is
         // measured from now, never from before the stop (node-recovery.md step 1: the window already
-        // running is the durable silence rows', which the tick reads). On the topic again it hears its
+        // running is the durable silence rows', which the tick reads). On the channel again it hears its
         // members at once: the reopen dialled them (Q88).
         self.digest_view.restart_silence();
         if let Err(error) = self.apps.resume().await {
@@ -3567,7 +3567,7 @@ pub struct Backbone {
 /// Test seam (R-NS2: "Final mesh topologies and leadership announcements are best-effort dissemination"):
 /// whether an announcement is withheld from a channel, asked with the announcement's name and the
 /// channel (`"backbone"` or `"mesh"`). A `true` answer skips that one send and nothing else: the
-/// frame, the topic and the delivery path are untouched. It models the announcement lost on its way
+/// frame, the channel and the delivery path are untouched. It models the announcement lost on its way
 /// out, as a stop's transport cut loses what gossip has not yet pushed. The announcements asked:
 /// - `stopping-aggregate`: the mesh topology a node-admin that publishes its mesh's topology sends
 ///   once more before its stop's transport cut, itself stopping (node-stop.md step 4);
@@ -3637,13 +3637,13 @@ impl Backbone {
         withheld
     }
 
-    /// Leave the backbone topic: this admin is a neighbour of no one on it and sends and hears
-    /// nothing there until [`Backbone::start`]. Resolves once the topic is left.
+    /// Leave the backbone channel: this admin is a neighbour of no one on it and sends and hears
+    /// nothing there until [`Backbone::start`]. Resolves once the channel is left.
     pub async fn stop(&self) {
         self.channel.stop().await;
     }
 
-    /// Join the backbone topic again through the peers it knows.
+    /// Join the backbone channel again through the peers it knows.
     pub async fn start(&self) {
         self.channel.start().await;
     }
@@ -5765,7 +5765,7 @@ impl DigestView {
         ds
     }
 
-    /// The silence clock of every member held, restarted at `now`: a node back on its topic after a
+    /// The silence clock of every member held, restarted at `now`: a node back on its channel after a
     /// stop heard nothing while it was off it, so no member's silence is measured from before.
     pub fn restart_silence(&self) {
         let now = Instant::now();

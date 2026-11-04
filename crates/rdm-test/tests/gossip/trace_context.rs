@@ -21,10 +21,10 @@ fn run(malformed: bool) {
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(send_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
+        let mut subscription = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
         let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![addr]).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
-        let (sender, _rx) = topic.split();
+        tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
+        let (sender, _rx) = subscription.split();
         let author = crate::gossip_author(&fabric);
         let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
         let (event, parent) = {

@@ -119,7 +119,7 @@ Every term below links to the architecture pages that define it.
 - **gossip** ([Gossip](architecture/gossip.md)): The `iroh-gossip` dissemination plane over which
   nodes publish current birth digests, lifecycle events, and primary projections. Gossip carries
   current topology facts and recovery evidence, never imperative control commands.
-- **mesh channel** ([Gossip](architecture/gossip.md)): The gossip topic joined by every node of a
+- **mesh channel** ([Gossip](architecture/gossip.md)): The gossip channel joined by every node of a
   single mesh (`mesh-v1:<fabric_id>:<mesh_id>`), carrying that mesh's node digests and events.
 - **backbone** ([Gossip](architecture/gossip.md)): The fabric-wide gossip channel joined by
   `node-admin` nodes (`backbone-v1:<fabric_id>`), carrying mesh summaries and cross-mesh topology

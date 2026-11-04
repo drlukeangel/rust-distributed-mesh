@@ -377,7 +377,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        // The authority: a Day-0 node-admin whose current Build reads as none and whose Build-topic
+        // The authority: a Day-0 node-admin whose current Build reads as none and whose Build-channel
         // catch-up is withheld while `held` is set.
         let held = Arc::new(AtomicBool::new(false));
         let wrap = {

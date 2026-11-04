@@ -58,12 +58,12 @@ pub fn staleness_floor() -> Duration {
 }
 
 /// The mesh channel's gossip interval, `RDM_GOSSIP_INTERVAL_MS` (default 2 s; never slower,
-/// gossip.md §3.2): how often a node publishes its digest. Each gossip topic has its own interval.
+/// gossip.md §3.2): how often a node publishes its digest. Each gossip channel has its own interval.
 pub fn gossip_interval() -> Duration {
     cadences().gossip_interval
 }
 
-/// The backbone topic's gossip interval, `RDM_BACKBONE_INTERVAL_MS` (default 5 s, gossip.md §3.2;
+/// The backbone channel's gossip interval, `RDM_BACKBONE_INTERVAL_MS` (default 5 s, gossip.md §3.2;
 /// Q267): how often a mesh's primary publishes its mesh on the backbone.
 pub fn backbone_gossip_interval() -> Duration {
     cadences().backbone_gossip_interval

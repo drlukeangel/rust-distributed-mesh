@@ -56,7 +56,7 @@ next to the hook it governs; nothing for it goes on node.create or the type decl
 
 [Node start](lifecycles/node-start.md#end-to-end-sequence) step 3 calls the hook before the node
 reaches Ready: after the join supplies the cert and rafka-time and the mesh channel is joined;
-topology is installed only after the hook returns `Ok`. The hook subscribes the app's kind topics
+topology is installed only after the hook returns `Ok`. The hook subscribes the app's kind channels
 through that channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so
 does a node its mesh-primary held `PendingReconnect` when it is heard again: commanded back through
 node.mesh.join, it answers the tickle `Current { pending }` while its start runs (`Pending` while its
@@ -70,12 +70,12 @@ supplied by its spec.
 - `start_kind`: FirstStart for create, AfterStop for a process rejoining, after a stop or when it
   is heard again after its mesh-primary held it `PendingReconnect`;
 - whether the spec supplies an inherited data dir; start_kind alone does not decide it;
-- the node-admin that answered the node's JoinNode, which it reads its kind topics from. It is
+- the node-admin that answered the node's JoinNode, which it reads its kind channels from. It is
   `None`, with the reason, for the Day-0 root and for a fabric-primary recovered from its durable
   map. Those nodes have no node-admin to pull from and complete the hook from local state
   ([gossip.md §9](gossip.md#9-joinnode-op-0x1d--bootstrap-hydration));
 - the Node RPC client the app uses for its own calls;
-- the topology view handle, so the app subscribes its gossip kind topics before it takes a
+- the topology view handle, so the app subscribes its gossip kind channels before it takes a
   snapshot;
 - the member cert issued at JoinNode ([fabric certs](fabric-certs.md));
 - the [rafka-time](#rafka-time) handle;
@@ -84,7 +84,7 @@ supplied by its spec.
 ### What Rafka does inside it
 
 1. Read the member cert from the context. RDM issued it at JoinNode with the `CertSigner` Rafka instantiated it with ([fabric certs](fabric-certs.md)).
-2. Subscribe the entity-framework kind topics the node projects.
+2. Subscribe the entity-framework kind channels the node projects.
 3. Read them from the node-admin that answered its JoinNode with [node.topology.get](lifecycles/node-topology-get.md)
    ([the pull at entry](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)).
 4. Apply the answer through the same receive path as live gossip, with each kind's snapshot

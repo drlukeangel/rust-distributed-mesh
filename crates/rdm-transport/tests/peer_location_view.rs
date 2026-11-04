@@ -68,8 +68,8 @@ async fn node_with(key: iroh::SecretKey, held: Option<HandOver>) -> Node {
 }
 
 /// The peer admin's first birth: it holds every gossip connection the admin dials to it and hands
-/// each to the cell. It joins no gossip topic, so its own gossip would only drop what the admin sends
-/// (iroh-gossip `proto/state.rs` `State::handle` passes a message only to a topic it joined).
+/// each to the cell. It joins no gossip channel, so its own gossip would only drop what the admin sends
+/// (iroh-gossip `proto/state.rs` `State::handle` passes a message only to a channel it joined).
 async fn first_birth_at(key: iroh::SecretKey, dialed: HandOver) -> (iroh::Endpoint, Router) {
     let ep = bind(key, &[iroh_gossip::ALPN]).await;
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, dialed).spawn();
