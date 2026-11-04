@@ -15,7 +15,7 @@ mod tests {
         Fabric, FabricId, IncarnationId, Node, NodeId, NodeStatus, PathName, ProviderKind,
         ScopeStatus,
     };
-    use crate::storage::RuntimeRow;
+
     use crate::topology::Topology;
     use std::collections::HashSet;
     use std::time::Duration;
@@ -86,37 +86,13 @@ mod tests {
         let durable_deleted_id = NodeId::mint();
         let durable_rows = vec![
             // Path not in view, planned, not deleted -> included as PendingReconnect
-            RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
-                node_id: durable_unheard_id.clone(),
-                path: "mesh1.node".into(), name: "3".into(),
-                incarnation_id: durable_unheard_inc.clone(),
-                runtime: rt_fact(4100, 10),
-                data_dir: None,
-            },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4100, 10), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node".into(), "3".into()).unwrap(), "node", durable_unheard_id.clone(), durable_unheard_inc.clone(), rdm_core::model::NodeStatus::Ready) },
             // Path already in view (`mesh1.node.2`) -> skipped
-            RuntimeRow { r#type: "node".into(), mesh: "mesh1".to_owned(),
-                node_id: ready_member.node_id.clone(),
-                path: ready_member.path.clone(), name: ready_member.name.clone(),
-                incarnation_id: ready_member.incarnation_id.clone().unwrap(),
-                runtime: rt_fact(4101, 11),
-                data_dir: None,
-            },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4101, 11), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(ready_member.path.clone(), ready_member.name.clone()).unwrap(), "node", ready_member.node_id.clone(), ready_member.incarnation_id.clone().unwrap(), rdm_core::model::NodeStatus::Ready) },
             // Deleted birth -> skipped
-            RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
-                node_id: durable_deleted_id.clone(),
-                path: "mesh1.node".into(), name: "4".into(),
-                incarnation_id: IncarnationId::mint(),
-                runtime: rt_fact(4102, 12),
-                data_dir: None,
-            },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4102, 12), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node".into(), "4".into()).unwrap(), "node", durable_deleted_id.clone(), IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) },
             // Unplanned path -> skipped
-            RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
-                node_id: NodeId::mint(),
-                path: "mesh1.node".into(), name: "99".into(),
-                incarnation_id: IncarnationId::mint(),
-                runtime: rt_fact(4103, 13),
-                data_dir: None,
-            },
+            rdm_node::nodes_storage::NodeRecord { runtime: rt_fact(4103, 13), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node".into(), "99".into()).unwrap(), "node", NodeId::mint(), IncarnationId::mint(), rdm_core::model::NodeStatus::Ready) },
         ];
 
         let planned = |p: &PathName| *p != rdm_core::PathName::new("mesh1.node", "99").unwrap();

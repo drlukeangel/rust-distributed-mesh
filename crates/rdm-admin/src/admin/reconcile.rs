@@ -403,7 +403,7 @@ mod tests {
     use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
     use crate::fabric_storage::{FabricIdentity, MemoryFabricStorage};
     use crate::fetch_build::NodeAdminNotReady;
-    use crate::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
+    use crate::storage::{MemoryNodesStorage, NodesStorage};
     use crate::wire::{BuildFloor, JoinAnswer, JoinControl};
     use rdm_core::handover::HandoverBirth;
     use rdm_core::status::MeshState;

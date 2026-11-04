@@ -461,14 +461,14 @@ mod tests {
         let nodes = crate::storage::MemoryNodesStorage::default();
         let empty = rdm_transport::topology::DigestView::default();
         let none = birth_runtime(&empty, Some(&nodes), &node).await.unwrap_err();
-        assert!(none.contains("no digest of this exact birth") && none.contains("no runtime row"), "{none}");
-        nodes.put_runtime(&crate::storage::RuntimeRow { r#type: node.r#type.clone(), mesh: node.mesh.clone(), node_id: node.node_id.clone(), path: node.path.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
+        assert!(none.contains("no digest of this exact birth") && none.contains("no node record"), "{none}");
+        nodes.put_node(&{ let mut r = rdm_node::nodes_storage::NodeRecord { runtime: fact(2), ..rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(node.path.clone(), node.name.clone()).unwrap(), &node.r#type.clone().to_string(), node.node_id.clone(), inc.clone(), rdm_core::model::NodeStatus::Ready) }; r.storage.data_dir = Some("/data/from-the-row".into()); r }).await.unwrap();
         let from_row = BirthRuntime { fact: fact(2), data_dir: Some("/data/from-the-row".into()), incarnation: inc.clone() };
-        assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the durable row");
+        assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the node record");
         for (held_digest, why) in [(digest(&node, IncarnationId::mint(), Some(fact(3))), "a digest of another birth"), (digest(&node, inc.clone(), None), "a digest with no runtime fact")] {
             let digest_view = rdm_transport::topology::DigestView::default();
             assert!(digest_view.record(held_digest));
-            assert_eq!(birth_runtime(&digest_view, Some(&nodes), &node).await, Ok(from_row.clone()), "{why}: the durable row");
+            assert_eq!(birth_runtime(&digest_view, Some(&nodes), &node).await, Ok(from_row.clone()), "{why}: the node record");
         }
         let digest_view = rdm_transport::topology::DigestView::default();
         assert!(digest_view.record(digest(&node, inc.clone(), Some(fact(1)))));

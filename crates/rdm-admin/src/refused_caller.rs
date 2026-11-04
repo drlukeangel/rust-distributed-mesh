@@ -398,7 +398,7 @@ mod tests {
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
             let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
+            r.incarnation = n.incarnation_id.clone().unwrap();
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
@@ -458,7 +458,7 @@ mod tests {
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&recreated, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
             let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
+            r.incarnation = n.incarnation_id.clone().unwrap();
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
@@ -563,7 +563,7 @@ mod tests {
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
             let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
+            r.incarnation = n.incarnation_id.clone().unwrap();
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
@@ -679,7 +679,7 @@ mod tests {
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
             let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), n.status);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
+            r.incarnation = n.incarnation_id.clone().unwrap();
             rows.put_node(&r).await.unwrap();
         }
         // The fabric-primary: its `StatusService` answers fabric.atlas.get from its atlas, which holds the caller's
@@ -777,7 +777,7 @@ mod tests {
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
             let mut r = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
+            r.incarnation = n.incarnation_id.clone().unwrap();
             rows.put_node(&r).await.unwrap();
         }
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, None).await;

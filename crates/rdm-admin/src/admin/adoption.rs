@@ -340,7 +340,6 @@ mod tests {
     use crate::build::BuildId;
     use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
     use crate::fabric_storage::{FabricIdentity, FabricRecord, FabricStorage, MemoryFabricStorage};
-    use crate::node_rows::{WriteRecord as _, WrittenRows};
     use crate::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage as _, NodeRecord};
     use std::path::PathBuf;
 
@@ -431,12 +430,10 @@ mod tests {
 
             let lost_id = NodeId::mint();
             let lost_inc = IncarnationId::mint();
-            let mut row = rdm_node::nodes_storage::fixture_record(&path.clone(), "node-admin", lost_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-            row.mesh_id = Some(mesh_id.clone());
-            let b = row.birth_mut(&lost_inc, &path);
-            b.is_primary = Some(1);
-            b.is_fabric_primary = Some(1);
-            nodes_store.write_record(&row).await.unwrap();
+            let mut row = rdm_node::nodes_storage::fixture_record(&path, "node-admin", lost_id.clone(), lost_inc.clone(), NodeStatus::Ready);
+            row.is_primary = Some(1);
+            row.is_fabric_primary = Some(1);
+            crate::storage::NodesStorage::put_node(&nodes_store, &row).await.unwrap();
 
             let build_id = BuildId::mint();
             crate::build_state::accept(
@@ -496,10 +493,9 @@ mod tests {
                 .await
                 .expect("no admin answering passes check");
             assert_eq!(finding, Finding::Exited { code: Some(0) });
-            let written = WrittenRows::default();
-            release_name(&launched, &me_1, &nodes_store, &written).await.expect("release_name marks the lost birth Deleted and claims its path and name for me_1");
-            let lost_row = crate::storage::NodesStorage::node(&nodes_store, &lost_id).await.unwrap().expect("the lost birth's record");
-            assert_eq!(lost_row.status, crate::model::NodeStatus::Deleted, "the lost birth's record is deleted");
+            release_name(&launched.lost, &me_1, &nodes_store).await.expect("release_name marks the lost birth Deleted, freeing its path and name for me_1");
+            let lost_row = crate::storage::NodesStorage::node(&nodes_store, &lost_id).await.unwrap().expect("the lost birth's record").record;
+            assert_eq!(lost_row.state, crate::model::NodeStatus::Deleted, "the lost birth's record is deleted");
             let unchanged = builds_store.read_build(&build_id).await.unwrap();
             assert_eq!(unchanged, before, "nothing is written on a Build");
         });

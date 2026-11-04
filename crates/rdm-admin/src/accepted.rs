@@ -874,8 +874,7 @@ mod tests {
         fp.is_fabric_primary = true;
         let view = observed(vec![fp, n(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", R, false), n(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", R, true), n(PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node", R, false)], &["mesh2", "mesh3"]);
         let mesh1_row = crate::storage::MeshRecord { state: rdm_core::status::MeshState::Deleted, ..crate::storage::MeshRecord::new(id("mesh1"), "mesh1") };
-        let mut record = rdm_node::nodes_storage::fixture_record(&primary.location(), "node-admin", primary.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Deleted);
-        record.births.push(crate::storage::BirthFacts::new(primary.incarnation_id.clone().unwrap(), primary.location()));
+        let record = rdm_node::nodes_storage::fixture_record(&primary.location(), "node-admin", primary.node_id.clone(), primary.incarnation_id.clone().unwrap(), NodeStatus::Deleted);
         let gone = with_node_rows(&with_mesh_rows(&view, &[mesh1_row]), &[record]);
         let gid = |m: &str| gone.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();
         let gshutdown = |m: &str| BuildOperation::ShutdownMesh { mesh: m.into(), mesh_id: gid(m) };

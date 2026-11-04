@@ -891,7 +891,8 @@ mod tests {
         let incarnation = me.incarnation_id.clone().unwrap();
         let store = Arc::new(crate::storage::MemoryNodesStorage::default());
         let mut held = rdm_node::nodes_storage::fixture_record(&me.location(), "node-admin", me.node_id.clone(), rdm_core::IncarnationId::mint(), me.status);
-        held.birth_mut(&incarnation, &me.location()).cert = Some(CertDates { issued_at: 1, expires_at: 9_000_000, issuer_expires_at: 9_000_000, renew_at: 500_000 });
+        held.incarnation = incarnation.clone();
+        held.cert = Some(CertDates { issued_at: 1, expires_at: 9_000_000, issuer_expires_at: 9_000_000, renew_at: 500_000 });
         store.put_node(&held).await.unwrap();
         let installs = Arc::new(Mutex::new(0usize));
         let counted = installs.clone();
@@ -1004,16 +1005,12 @@ mod tests {
         })
         .await;
         let mut node_row = rdm_node::nodes_storage::fixture_record(&me.location(), "node-admin", me.node_id.clone(), rdm_core::IncarnationId::mint(), me.status);
-        node_row.birth_mut(&incarnation, &me.location()).cert = Some(CertDates { issued_at: 1_000, expires_at: 13_000, issuer_expires_at: 40_000, renew_at: 9_000 });
-        r.caches.nodes.update(&*nodes_store, &me.node_id, Some(node_row), |_| {}).await.unwrap();
+        node_row.incarnation = incarnation.clone();
+        node_row.cert = Some(CertDates { issued_at: 1_000, expires_at: 13_000, issuer_expires_at: 40_000, renew_at: 9_000 });
+        nodes_store.put_node(&node_row).await.unwrap();
         assert!(!every_cert_under_new_ca(&r, &view).await, "birth's cert still chains to an issuer older than the receipt");
-        r.caches
-            .nodes
-            .update(&*nodes_store, &me.node_id, None, |rec| {
-                rec.birth_mut(&incarnation, &me.location()).cert.as_mut().unwrap().issuer_expires_at = 50_000;
-            })
-            .await
-            .unwrap();
+        // The birth's next renewal, under the new issuer: the renewer holds the dates it issued.
+        r.issued.lock().unwrap().insert((me.node_id.clone(), incarnation.clone()), CertDates { issuer_expires_at: 50_000, ..node_row.cert.clone().unwrap() });
         assert!(every_cert_under_new_ca(&r, &view).await, "every live birth's cert chains to the new CA");
 
         // A successor whose held CA expires before the CA row's `expires_at` (`behind-ca-row`) renews immediately even before `renew_at`.
@@ -1047,7 +1044,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:54
     /// "An admin that refuses the material by name (another mesh, a CA no root in its set verifies, an issuing cert the CA does not verify) ends the workflow `Failed { step: node.issuer.update:<path and name>, reason }`; the next tick runs it again from the rows. A successor fabric-primary reads the node-admin rows and continues the schedule from them."
     #[tokio::test]
-    async fn renew_issuers_mints_at_renew_point_and_installs_in_process_for_own_mesh_primary_and_writes_signing_cert_row() {
+    async fn renew_issuers_mints_at_renew_point_and_installs_in_process_for_own_mesh_primary() {
         use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
         use crate::span_capture::Capture;
 
@@ -1073,7 +1070,8 @@ mod tests {
         let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
         let mut held = rdm_node::nodes_storage::fixture_record(&me.location(), "node-admin", me.node_id.clone(), rdm_core::IncarnationId::mint(), me.status);
         let old_signing = SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 };
-        held.birth_mut(&incarnation, &me.location()).signing_cert = Some(old_signing.clone());
+        held.incarnation = incarnation.clone();
+        held.signing_cert = Some(old_signing.clone());
         nodes_store.put_node(&held).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
@@ -1095,8 +1093,6 @@ mod tests {
         let installed_spans = capture.named("rdm.node_admin.issuer.update.via-installed");
         assert_eq!(installed_spans.len(), 1);
         assert_eq!((installed_spans[0].attributes.get("node_path").map(String::as_str), installed_spans[0].attributes.get("node_name").map(String::as_str)), (Some("mesh1.node-admin"), Some("1")));
-        let written = nodes_store.node(&me.node_id).await.unwrap().and_then(|row| row.birth(&incarnation).and_then(|b| b.signing_cert.clone())).expect("signing_cert written on record");
-        assert!(written.expires_at > old_signing.expires_at);
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:21
@@ -1129,7 +1125,8 @@ mod tests {
         };
         let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
         let mut held = rdm_node::nodes_storage::fixture_record(&me.location(), "node-admin", me.node_id.clone(), rdm_core::IncarnationId::mint(), me.status);
-        held.birth_mut(&incarnation, &me.location()).signing_cert = Some(SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 });
+        held.incarnation = incarnation.clone();
+        held.signing_cert = Some(SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 });
         nodes_store.put_node(&held).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));

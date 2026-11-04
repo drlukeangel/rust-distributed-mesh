@@ -20,10 +20,10 @@ mod tests {
         EndpointId, Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId,
         NodeStatus, PathName, ProviderKind, ScopeStatus,
     };
-    use crate::node_rows::{RowFor, NodeRows};
+    use crate::node_rows::NodeRows;
     use crate::status_rpc::{Declared, StatusService};
     use crate::storage::{
-        Allocation, MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage, NodesStorage,
+        MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage, NodesStorage,
     };
     use crate::topology::Topology;
     use iroh::protocol::Router;
@@ -394,48 +394,21 @@ mod tests {
             nodes_store.clone(),
         );
         let m2_admin_id = view_with_m2_primary.nodes.last().unwrap().node_id.clone();
-        let m2_admin_alloc = Allocation { predecessor: None,
-            build_id: Some(opened.build_id.clone()),
-            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())),
-            incarnation: IncarnationId::mint(),
-            deployment_id: crate::model::DeploymentId::mint(),
-        };
         fp_rows
-            .create_row(
-                &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin",
-                &m2_admin_id,
-                &m2_admin_alloc.operation,
-                Some(&m2_admin_alloc),
-                None,
-                RowFor::Create,
-            )
+            .check_create(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &m2_admin_id, None, None)
             .await
-            .expect("fabric-primary writes mesh2.node-admin.1's node row");
+            .expect("the fabric-primary's create of mesh2.node-admin.1 passes its check");
         let m2_primary_rows = NodeRows::new(
             rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(),
             m2_admin_id,
             Arc::new(tokio::sync::RwLock::new(view_with_m2_primary)),
             nodes_store.clone(),
         );
-        let m2_rpc_id = NodeId::mint();
-        let m2_rpc_alloc = Allocation { predecessor: None,
-            build_id: Some(opened.build_id.clone()),
-            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())),
-            incarnation: IncarnationId::mint(),
-            deployment_id: crate::model::DeploymentId::mint(),
-        };
         m2_primary_rows
-            .create_row(
-                &rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node",
-                &m2_rpc_id,
-                &m2_rpc_alloc.operation,
-                Some(&m2_rpc_alloc),
-                None,
-                RowFor::Create,
-            )
+            .check_create(&rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", &NodeId::mint(), None, None)
             .await
-            .expect("mesh2.node-admin.1 as mesh-primary writes mesh2.node.1's node row");
-        assert_eq!(nodes_store.nodes("mesh2").await.unwrap().len(), 2);
+            .expect("mesh2.node-admin.1, as mesh-primary, passes the check of mesh2.node.1's create");
+        assert!(nodes_store.nodes("mesh2").await.unwrap().is_empty(), "a create writes no record: each node writes its own at its start (Q356)");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-create.md:23 "Mesh states | pending, set by the node-admin that launched the mesh's first admin, one ApplyMeshState(Pending) after the launched birth answers Ping; ready, set by the fabric-primary on its mesh-primary's report that every planned birth is ready (States)"

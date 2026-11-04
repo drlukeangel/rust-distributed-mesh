@@ -221,10 +221,9 @@ mod tests {
         });
 
         let storage = MemoryNodesStorage::default();
-        let written = Arc::new(crate::node_rows::WrittenRows::default());
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[9u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let configs = NodeConfigs::new(client, written.clone());
+        let configs = NodeConfigs::new(client);
 
         let set = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
 
@@ -258,9 +257,10 @@ mod tests {
         let snapshot = view.read().await.clone();
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         configs.uses_records(records.clone(), || "memory".into(), channels.clone());
-        configs.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default() }).await.unwrap();
+        configs.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("tags-own")).unwrap(), (None, None)).await.unwrap();
+        let own = || async { records.node(&admin1.node_id).await.unwrap().unwrap().record };
 
-        // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.
+        // 3. Create {"gold", "ssd"} persists both labels on the node's own record.
         assert_eq!(
             tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &create_req).await,
             StatusReply::TagsCreated {
@@ -299,14 +299,14 @@ mod tests {
                 not_carried: set(&["missing"]),
             }
         );
-        assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
+        assert_eq!(own().await.tags, set(&["ssd"]));
 
         let too_many = StatusRequest::CreateTags {
             node_id: admin1.node_id.clone(), incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: (0..32).map(|i| format!("tag-{i}")).collect(),
         };
         assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
-        assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
+        assert_eq!(own().await.tags, set(&["ssd"]));
         let stale = StatusRequest::CreateTags { node_id: admin1.node_id.clone(), incarnation: IncarnationId::mint(), labels: set(&["stale"]) };
         assert!(matches!(tags(&admin1.location(), &admin1.node_id, &view, &storage, Some(&configs), SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
 
@@ -324,11 +324,9 @@ mod tests {
                 not_carried: BTreeSet::new(),
             }
         );
-        assert!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags.is_empty());
-        let retained = records.properties(&admin1.node_id).await.unwrap().unwrap();
-        assert_eq!(retained.config, [("preserved".into(), "value".into())].into());
-        assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
-        assert!(written.row_of(&admin1.node_id).is_none());
+        assert!(own().await.tags.is_empty());
+        assert_eq!(own().await.config, [("preserved".into(), "value".into())].into());
+        assert!(storage.node(&admin1.node_id).await.unwrap().is_none(), "the node writes its own record: nothing on the store the mesh-primary was handed");
         ep.close().await;
     }
 }

@@ -796,7 +796,6 @@ mod tests {
             let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, 1_000_000);
             let issuer = Arc::new(crate::certs::CertIssuer::with_root(root, ca, None, time.clone()));
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-            let written = Arc::new(crate::node_rows::WrittenRows::default());
             let installed_addrs: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
             let installed_clone = installed_addrs.clone();
 
@@ -832,7 +831,7 @@ mod tests {
                 pending: Arc::new(|_, _| Box::pin(async {})),
                 primary: Arc::new(|| Some(NodeId::parse("0123456789ab").unwrap())),
                 issuer,
-                nodes: Some((storage.clone(), written)),
+                nodes: Some(storage.clone()),
                 atlas: None,
             };
 
@@ -906,6 +905,8 @@ mod tests {
                     assert_eq!(decoded.served_by, NodeId::parse("0123456789ac").unwrap());
                     assert_eq!(decoded.control.name, Some(dep.location()));
                     assert!(!decoded.control.member_cert.is_empty(), "member cert issued on join");
+                    assert!(decoded.control.member_cert_dates.is_some(), "the cert's dates go beside it in the answer: the node writes them on its own record (Q356)");
+                    assert!(decoded.control.signing_cert_dates.is_some(), "an admin's signing dates follow its explicit kind, even when its name looks like another kind and mesh");
                 }
                 other => panic!("expected Joined, got {other:?}"),
             }
@@ -914,16 +915,7 @@ mod tests {
                 vec![good_digest.node.transport_addr]
             );
             assert!(wait_rx.borrow().is_some(), "WaitForBind / WaitForMeshJoin released");
-            let stored_row = storage
-                .node(&dep.node_id)
-                .await
-                .unwrap()
-                .expect("cert row written on NodesStorage");
-            assert!(
-                stored_row.birth(&dep.incarnation).and_then(|b| b.cert.as_ref()).is_some(),
-                "birth cert dates written on NodeRecord"
-            );
-            assert!(stored_row.birth(&dep.incarnation).and_then(|b| b.signing_cert.as_ref()).is_some(), "an admin's signing dates follow its explicit kind, even when its name looks like another kind and mesh");
+            assert!(storage.node(&dep.node_id).await.unwrap().is_none(), "the mesh-primary writes no record of the joining node: the node writes its own");
         });
 
         let spans = capture.spans().expect("captured spans");

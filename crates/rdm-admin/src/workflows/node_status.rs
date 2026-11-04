@@ -13,6 +13,7 @@ mod tests {
     use super::*;
     use crate::fabric_storage::{FabricIdentity, FabricRecord};
     use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus, PathName};
+    use crate::status_rpc::Declaration;
     use crate::storage::MeshRecord;
     use rdm_core::MemberStatus;
     use rdm_core::status::{DeclaredOperation, MeshState, NodeState};

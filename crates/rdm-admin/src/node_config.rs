@@ -764,7 +764,7 @@ mod tests {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let configs = NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
+        let configs = NodeConfigs::new(client);
         let records = Arc::new(MemoryNodesStorage::default());
         let storage = MemoryNodesStorage::default();
         let req = |value: &str| StatusRequest::UpdateNodeConfig {
@@ -773,22 +773,21 @@ mod tests {
         assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
         assert!(storage.record_at(&admin.location()).await.unwrap().is_none());
         configs.uses_records(records.clone(), || "memory".into(), channels.clone());
-        configs.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into() }).await.unwrap();
+        configs.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("config-own")).unwrap(), (None, None)).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
         assert!(matches!(configs.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
-        let caller = records.properties(&admin.node_id).await.unwrap().unwrap();
+        let own = || async { records.node(&admin.node_id).await.unwrap().unwrap().record };
+        let caller = own().await;
         assert_eq!(caller.config, [("source".into(), "caller".into())].into());
         assert_eq!(caller.tags, ["kept".into()].into());
-        assert!(storage.record_at(&admin.location()).await.unwrap().is_none(), "primaries copy no properties into combined rows");
+        assert!(storage.record_at(&admin.location()).await.unwrap().is_none(), "the node writes its own record: nothing is written on the store the mesh-primary was handed");
         let entry = EntryProperties { config: [("source".into(), "build".into())].into(), tags: ["build".into()].into() };
         assert!(matches!(configs.own_entry(&admin, entry.clone()).await.unwrap().unwrap(), StatusReply::Applied));
-        assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().tags, ["build".into()].into());
+        assert_eq!(own().await.tags, ["build".into()].into());
         configs.own_config(&admin, [("source".into(), "later".into())].into()).await.unwrap().unwrap();
-        assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "later".into())].into(), "the later local map stands");
+        assert_eq!(own().await.config, [("source".into(), "later".into())].into(), "the later local map stands");
         configs.own_entry(&admin, entry).await.unwrap().unwrap();
-        assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
-        let absent = configs.update_with(&admin.location(), &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StoragePersistence::Ephemeral)).await;
-        assert!(matches!(absent, StatusReply::NodeRecordRefused { .. }), "missing lifecycle metadata cannot report success: {absent:?}");
+        assert_eq!(own().await.config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
         let mut stale = req("stale");
         if let StatusRequest::UpdateNodeConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }
         assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));

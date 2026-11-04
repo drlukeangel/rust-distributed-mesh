@@ -1183,35 +1183,6 @@ mod tests {
         }
     }
 
-    /// CONTRACT (lifecycles/mesh-delete.md step 1: the fabric-primary "captures the exact roster once";
-    /// lifecycles/node-create.md step 1: the row writer claims the name before the deployment is recorded
-    /// and launched; build.md §1: an operation admitted before fabric.delete's acceptance finishes or
-    /// fails within its bound and its launch evidence is retained): a roster captured from a mesh's node
-    /// rows while a create holds its claim (the claim row, its birth allocated and no birth fact written
-    /// yet) holds that create's birth, by the incarnation its claim allocated, beside every member's
-    /// newest birth. What must NOT happen: the claimed birth left out, so its launched runtime is no
-    /// birth of the delete and is never deleted.
-    #[test]
-    fn a_roster_captured_from_the_node_rows_holds_the_birth_a_create_in_flight_wrote() {
-        use crate::storage::{Allocation, BirthFacts, NodeRecord};
-        let mesh_id = MeshId::mint();
-        let joined = |name: crate::model::PathName, mesh: &str, r#type: &str| {
-            let mut row = rdm_node::nodes_storage::fixture_record(&name.clone(), r#type, NodeId::mint(), rdm_core::IncarnationId::mint(), crate::model::NodeStatus::Ready);
-            row.mesh_id = Some(mesh_id.clone());
-            row.births.push(BirthFacts::new(crate::model::IncarnationId::mint(), name));
-            row
-        };
-        let (admin, rpc) = (joined(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), joined(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
-        let claimed_inc = crate::model::IncarnationId::mint();
-        let mut claim = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", NodeId::mint(), rdm_core::IncarnationId::mint(), crate::model::NodeStatus::Pending);
-        claim.allocated = Some(Allocation { predecessor: None, build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
-        let roster = stored_roster(&[admin.clone(), rpc.clone(), claim.clone()], "mesh1", &mesh_id, &[]);
-        let of = |r: &NodeRecord, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
-        let mut want = vec![of(&admin, &admin.births[0].incarnation_id), of(&rpc, &rpc.births[0].incarnation_id), of(&claim, &claimed_inc)];
-        want.sort();
-        assert_eq!(roster, want, "the create in flight's claimed birth is a birth of the roster");
-    }
-
     /// CONTRACT: the handoff of a running leave goes to the admin that sent `delete-mesh` last: a
     /// successor fabric-primary sending the same workflow again while the member workflows run
     /// takes the handoff over, and a repeated `delete-mesh` after the manifest is recorded resends
