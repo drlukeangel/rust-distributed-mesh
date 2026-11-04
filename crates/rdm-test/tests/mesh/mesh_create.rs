@@ -210,7 +210,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // row again accepted; R13: the fabric-primary writes as the acting primary of a mesh with no
     // primary; the mesh's row is its create's first durable write. mesh1's row is written by its Day-0
     // primary. mesh2's is written at CreateMesh by the fabric-primary that creates mesh2's first admin,
-    // before that admin's node row is written; mesh2's own primary writing it again finds its row. No
+    // before that admin writes its own record (Q356); mesh2's own primary writing it again finds its row. No
     // write is refused across creation and a write again.
     let mesh_writes = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
     let written = |mesh: &str, id: &str| {
@@ -224,17 +224,19 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(m1_write["attributes"]["node"], day0_admin["node_id"], "mesh1's row is written by its Day-0 primary: {m1_write}");
     let m2_write = written("mesh2", &mesh2_id);
     assert_eq!(s(&m2_write["attributes"]["node"]), creator, "mesh2's row is written by the fabric-primary that creates its first admin, the acting primary of a mesh with none: {m2_write}");
-    let admin_row = named(&spans, "rdm.node_admin.node.create.via-node-row")
+    // A create writes no record: mesh2.node-admin.1 writes its own at its start (Q356).
+    let admin_row = named(&spans, "rdm.node.record.update.via-properties")
         .into_iter()
-        .find(|c| c["attributes"]["subject_path"] == "mesh2.node-admin" && c["attributes"]["subject_name"] == "1" && c["attributes"]["moment"] == "create")
-        .unwrap_or_else(|| panic!("mesh2.node-admin.1's row is written"));
+        .filter(|c| c["attributes"]["path"] == "mesh2.node-admin" && c["attributes"]["name"] == "1")
+        .min_by_key(|c| c["start_unix_nano"].as_u64())
+        .unwrap_or_else(|| panic!("mesh2.node-admin.1 writes its own record"));
     assert!(
         m2_write["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(),
-        "mesh2's row is its first durable write: it ends before mesh2.node-admin.1's row is written: {m2_write} {admin_row}"
+        "mesh2's row is its first durable write: it ends before mesh2.node-admin.1 writes its own record: {m2_write} {admin_row}"
     );
     let rewrites: Vec<&&Value> = mesh_writes.iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && nodes.iter().any(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin" && n["node_id"] == c["attributes"]["node"])).collect();
     assert!(!rewrites.is_empty() && rewrites.iter().all(|c| s(&c["attributes"]["mesh_id"]) == mesh2_id && c["attributes"]["outcome"] == "row-held-by-mesh"), "mesh2's own primary writes its row again and finds the row the fabric-primary wrote: {rewrites:?}");
-    eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before node.create.via-node-row subject=mesh2.node-admin.1", s(&m2_write["trace_id"]));
+    eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before mesh2.node-admin.1's own node.record.update.via-properties", s(&m2_write["trace_id"]));
     assert!(mesh_writes.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's write is refused: {mesh_writes:?}");
     // node-identity-and-state.md §2.7: "The fabric-primary writes the fabric's row at Day 0, idempotent
     // for the same FabricId", its first write of the fabric; a later fabric-primary's write of the same
