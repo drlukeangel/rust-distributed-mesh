@@ -44,7 +44,7 @@ Fabric.id
     -> Mesh.fabric
 
 Mesh.id
-    -> Node.mesh_id
+    -> the node's path, first location `M`
 ```
 
 A node's logical id and its transport `endpoint_id` are different identities, and `endpoint_id` never names a Fabric ([node-identity-and-state.md §2](node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids), [§2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it)).
@@ -56,7 +56,7 @@ Day 0 establishes the Fabric's identity before its Meshes', and a Mesh's before 
 ```text
 mint/hold Fabric F
     -> mint/hold Mesh M with Mesh.fabric = F
-        -> mint/hold Nodes with Node.mesh_id = M
+        -> mint/hold Nodes with the node's path, first location `M`
 ```
 
 The one node id minted before its Mesh's is the bootstrap admin's own: the bootstrap's first step mints it, after the Fabric's id and before anything else of its boot, so its telemetry carries it from its first span (Q208).

@@ -6,15 +6,14 @@ Two things are called storage, and neither is the other:
 
 | | what it holds | whose property | the question it answers |
 |---|---|---|---|
-| **`storage_persistence`** | a node's own data dir: its keys and secrets, and whatever the application keeps there, a broker's or gateway's WAL, a node-admin's themes and images | the node's, on its create spec and its row | does this node's own storage survive its births, and what becomes of it once the node is gone |
-| **`topology_storage_provider`** | RDM's five record stores: fabric, meshes, nodes, connections, builds | the fabric's, on the Fabric row; the node's row carries the provider the node writes | which backend RDM's records are written to |
+| **`storage_persistence`** | a node's own data dir: its keys and secrets, and whatever the application keeps there, a broker's or gateway's WAL, a node-admin's themes and images | the node's, on its create spec and its record's `storage` | does this node's own storage survive its births, and what becomes of it once the node is gone |
+| **`topology_storage_provider`** | RDM's five record stores: fabric, meshes, nodes, connections, builds | the fabric's, on the Fabric record | which backend RDM's records are written to |
 
-## 1. `storage_persistence`: a node's own storage
+## 1. `storage`: a node's own storage
 
 A node's own storage is its data dir (`RDM_DATA_DIR`): `node-key`, `ca-secret`, `fabric-ca`,
 `declared-secrets`, its own row, and the application's data. RDM reads and writes its own files
-there and never reads the application's. `storage_persistence` is a typed property of the node's
-create spec, carried on the accepted Build's `NodeSpec` and the node's row, and is three states:
+there and never reads the application's. `storage { persistence, data_dir }` is a field of the node record (Q364): `data_dir` is the node's `RDM_DATA_DIR`, set by its launch, never by a Build; `persistence` is set by the node's create spec, carried on the accepted Build's `NodeSpec`, and is three states:
 
 | `storage_persistence` | across the node's births (stop, start, re-creation at the same `path` and `name`) | once the node is gone |
 |---|---|---|
@@ -144,7 +143,7 @@ A caller reads the fabric's with `fabric.get` and each node's with
   truth ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)).
 - The application's data plane, a broker's WAL or a gateway's, is the application's: it lives under
   the node's `storage_persistence` and RDM never reads it.
-- A node's `data_dir` field on its row names where its own storage is; it is a fact about the node,
+- A node's `storage.data_dir` on its record names where its own storage is; it is a fact about the node,
   not a provider.
 
 ## Environment

@@ -28,8 +28,7 @@ removal is separate work.
    receipts.
 2. Terminate and inspect the exact runtime through provider control. Match its immutable
    runtime identity; a recycled pid or a reusable container name is not the runtime.
-3. The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh)
-   writes the node's row with status deleted; the record and its config stay. Release node.id
+3. The node's mesh-primary writes the node's record with state deleted; the record and its config stay. Release node.id
    and the name. Retain the data dir, node-identity.json and endpoint key.
 4. The surviving executor emits node.deleted on the caller stream from the provider's
    `Exited` and writes the delete's `rdm.build.step` event (inside a repair, the node record). The exited node cannot publish

@@ -354,7 +354,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.cert.renew](lifecycles/node-cert-renew.md) | The mesh-primary, as issuer, to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.issuer.update](lifecycles/node-issuer-update.md) | The fabric-primary to one node-admin, exact birth, the mesh-primary directly and any other admin as a forwarded call through the mesh-primary ([Forward 0x1A](#forward-op-0x1a-core)): [Status 0x1B](#status-op-0x1b-rdm) `UpdateIssuer { node_id, incarnation, key, cert }`, answered `IssuerUpdated`; refused by name for another mesh or another birth | node.issuer.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) | The fabric-primary to one node, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoots { node_id, incarnation, roots, phase }`, answered `RootsUpdated`; a set that drops a root the node still admits a chain under is refused `root-still-chained` | node.roots.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| node.cert.get | A field of a node's row (node.get): `NodeView.cert { issued_at, expires_at, issuer_expires_at }` on the `Nodes` reply, from the birth's cert row ([fabric-certs.md](fabric-certs.md#tracking)) | read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
+| node.cert.get | A field of a node's row (node.get): `NodeView.cert { issued_at, expires_at, issuer_expires_at, renew_at }` on the `Nodes` reply, from the birth's cert row ([fabric-certs.md](fabric-certs.md#tracking)) | read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.connection.create](lifecycles/node-connections-admit.md) | The acceptor's verification of the dialer's member cert on the first bi-stream of an inbound connection of a registered product ALPN; RDM framing, not a Node RPC op | `admitted` or `refused { reason }`, a connection fact ([connections.md](connections.md#12-connection-state)) | — (typed connection fact; no Node RPC) |
 | mesh.get | mesh.get answers every mesh the answering admin holds that matches every pair (id, name, status, primary_admin), by name, [Read 0x23](#read-op-0x23-rdm) `Get { entity: Meshes, filter }`, streamed in `Meshes` frames, the empty list when none matches; a mesh's nodes are node.get [mesh: name]; a mesh's tags are its own property, mesh.tag.get / mesh.tag.create { label \| [labels] } / mesh.tag.delete { All \| [labels] }, the same shape and label grammar as node.tag; dedicated request mapping for mesh.tag is open | read result | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | A single call to the fabric-primary with a new root secret, the trust anchor: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoot { secret }`, answered `RootUpdated { phase }`; starts the root rotation's phases; refused `rotation-in-progress` or `root-already-trusted` by name; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | fabric.root.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -383,18 +383,23 @@ request-commit certainty boundary is
 Every field named here is a property a node.get pair may match, by this name (`node.id` as `id`);
 config entries as `config.<key>`.
 
-Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` when not directly reachable), is admitted at any time (Q166, Q171), and runs through that writer's defined storage operation.
+Each command goes to the node's mesh-primary.
 
 | property | set by | changed by | precondition | completion |
 |---|---|---|---|---|
-| `node.id`, `incarnation`, `endpoint`, `transport_addr`, the runtime handle | RDM at birth | nothing | — | — |
-| `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
-| `path`, `mesh`, `type` | the create spec | path, mesh and type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
+| `node_id`, `incarnation`, `endpoint_id`, `transport_addr` | RDM at birth | nothing | — | — |
+| `state` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
+| `path`, `type` | the create spec; the mesh is the path's first location | path, mesh and type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node holds no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1); a live node rejoins its mesh under the new name | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the create) | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build sets config and tags only on a node it creates, through ApplyNodeProperties, and never writes a node it does not create (build.md §1, Q236 amended by Q342) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
-| `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
-| `is_fabric_primary` | the election's result, recorded by the node-admin on its own row | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
+| `is_primary` | the election's result, recorded by the node itself on its own record | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
+| `is_fabric_primary` | the election's result, recorded by the node itself on its own record | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
+| `runtime` | the node at its start, from its launch | nothing | — | — |
+| `cert` | the node, when it installs a member cert (its join answer, a `RenewCert`) | `node.cert.renew` | — | `node.cert.renewed` |
+| `signing_cert` | a node-admin, when it installs its issuing cert | `node.issuer.update` | — | `node.issuer.updated` |
+| `storage` | `persistence`: the create spec; `data_dir`: the launch (`RDM_DATA_DIR`) | nothing | — | — |
+| `executable` | the create spec's binding | nothing | — | — |
 | connections | — (data plane, never a property) | `node.connection.delete { All \| [ids] }` | — | `node.connection.deleted` |
 
 `node.get` answers the whole node. Nothing above is PATCH: a rename replaces the name, a tag command adds or removes whole labels through the node's property writer, a config update replaces the whole map, and each runs once through the one writer.
@@ -403,7 +408,7 @@ Status moves only through [node status](lifecycles/node-status.md), never a put.
 
 node.config is an application property bag, separate from tags, join cert/time and topology.
 Config is a map of name to value; duplicate keys take the last value, including `admin_api_base`.
-The node persists it in its own part of its record. Neither primary holds a copy in its atlas and the
+The node persists it in its record. Neither primary holds a copy in its atlas and the
 map is never carried in the digest. RDM stores application values without interpreting them.
 The initial entry is retained with the row and applied by the node; recovery inherits acknowledged
 properties, a new node takes its Create's, and a retained own record
@@ -413,7 +418,7 @@ A node record and its completion replies have no record revision (Q323). The nod
 serializes local config, caller config, tags and Build entry effects through its property writer.
 A Build's config and tags are one durable put. The exact target and the workflow's completion are its step events.
 `NodeConfigUpdated` is not an upward delivery route. The existing election `Primary.revision`
-is independent of the node's record, both its parts, and remains part of the election result.
+is independent of the node's record, and remains part of the election result.
 
 ### Open typed object questions
 

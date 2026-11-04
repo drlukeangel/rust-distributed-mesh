@@ -106,10 +106,8 @@ side of its validity.
 
 ## Tracking
 
-The node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `issuer_expires_at`, `renew_at`) on the node's record when the birth
-holds the cert: a member's at its join's admission and on its renewal's `CertRenewed`, the mesh-primary's own when it installs the cert the fabric-primary
-issued. The written expiry is the receipt, and the dates are the birth's renewal state.
-`node.get` surfaces them as `cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary reads its nodes' records and continues the
+Each node writes its cert dates (`issued_at`, `expires_at`, `issuer_expires_at`, `renew_at`) on its own record when it installs the cert (Q356): the dates its issuer computed, carried beside the cert in its join answer and in each `RenewCert`. The dates are the birth's renewal state.
+`node.get` surfaces them as `cert { issued_at, expires_at, issuer_expires_at, renew_at }`. A successor mesh-primary reads its nodes' records and continues the
 schedule from them; nothing about renewal lives only in memory. Every cert row is in the
 fabric-level projection: `fabric.get` shows the next expiry across the fabric, and a mesh whose renewals
 stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) is surfaced on `fabric.get` as `renewals: stalled`. There is no revocation: expiry is the revocation, which is why the

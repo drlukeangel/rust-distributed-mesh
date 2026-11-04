@@ -176,7 +176,7 @@ NodeConnection {
 Exact Rust representation may differ, but the semantic fields and ownership above are fixed.
 
 `source_incarnation_id`, `destination_incarnation_id`, and `carrier_incarnation_id` use
-`Node.incarnation_id`, the process-birth identity landed by #2696. No second process-incarnation
+the node record's `incarnation`, the process-birth identity landed by #2696. No second process-incarnation
 identity is invented.
 
 Adding `kind`, `Failed`, carrier fields, incarnation fields, or otherwise changing the
@@ -506,7 +506,7 @@ While a Proxy is held, an open uses it (§5, §7 step 6). The source returns to 
 
 ### 9.3 One dial
 
-1. Verify the destination's `Node.incarnation_id` is the one the dial names.
+1. Verify the destination's the node record's `incarnation` is the one the dial names.
 2. Verify no Direct Connected already holds for it.
 3. Dial on `Send`: a dial that sent nothing is made again within its attempts.
 4. A dial whose attempts are spent writes one `Direct Failed` row, from its last attempt, with the

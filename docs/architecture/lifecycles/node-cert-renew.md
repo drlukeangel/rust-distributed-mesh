@@ -15,9 +15,9 @@ no gossip frame is published. A renewal is invisible to every other node.
 | Caller | The birth's issuer: its mesh-primary for a member, the fabric-primary for a mesh-primary; the fabric-primary renews its own cert in-process with its mesh's issuing key, with no call (`via-renewal`, outcome `installed`) |
 | Target | One node, by exact `(node.id, incarnation)`; a cert naming another birth is refused by name |
 | When | Once the held cert has lived `RDM_CERT_RENEW_AT` (default two thirds) of its TTL, plus a jitter of up to 5 % of the TTL, read from the birth's cert row ([tracking](../fabric-certs.md#tracking)) |
-| Request | `RenewCert { node_id, incarnation, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`) |
+| Request | `RenewCert { node_id, incarnation, cert, cert_dates }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`); `cert_dates` the cert's dates as the issuer computed them |
 | Reply | `CertRenewed { node_id, incarnation, expires_at }`, the receipt: the node holds and presents the new cert. A node that cannot decode the cert answers a named refusal and keeps the one it holds |
-| Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |
+| Row | The node writes the cert's dates, `cert_dates`, on its own record when it installs the cert (Q356), then answers `CertRenewed`. A renewal not answered writes nothing, and the record's `renew_at`, already passed, renews it on the next tick |
 | Overlap | The old cert stays valid until its own expiry; a dial in flight during the install is admitted on either |
 | Never | A connection closed, a status set, a frame published by the renewal. A spent renewal call marks the birth as any spent call does (step 3). A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connection.create](node-connections-admit.md)) and its existing connections stay |
 | Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |
@@ -51,7 +51,7 @@ sequenceDiagram
     participant N as Node (exact birth)
     Note over A: 1. tick: a cert row past renew_at
     Note over A: 2. sign a fresh cert
-    A->>N: 3. RenewCert { node_id, incarnation, cert }
+    A->>N: 3. RenewCert { node_id, incarnation, cert, cert_dates }
     Note over N: 4. install; presented on every new connection
     N-->>A: CertRenewed { expires_at }
     Note over A: 5. write the expiry the node answered; nothing else moves

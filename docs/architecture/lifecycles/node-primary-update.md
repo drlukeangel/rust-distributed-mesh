@@ -11,9 +11,7 @@ mesh's other node types. No node commands its own primary. A stop, delete or
 
 Who is primary is the [election](../fabric-node-lifecycle-elections.md)'s result, computed by every
 node-admin from the facts it holds. Becoming primary and recording it are separate: the successor
-installs itself from the election and the mesh-primary announces the change; the mesh-primary, as the
-one writer of its mesh's rows ([node-identity-and-state.md §2.7](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)),
-records it as `is_primary` on the node's row, and as `is_fabric_primary` on a node-admin's own row for the
+installs itself from the election and the mesh-primary announces the change; the successor records it on its own record, as `is_primary`, and as `is_fabric_primary` for the
 fabric-primary. **The write records the role; it does not grant it.** The mesh-primary and the
 fabric-primary move together and are never separated. A fabric-primary unheard past the staleness floor
 is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path and name (Q122). Under
@@ -26,10 +24,10 @@ primary row, no move log, nothing to fold. The atlas of the node-admin that sent
 | Field | Contract |
 |---|---|
 | Commander | Above the primary: the fabric-primary for a mesh-primary, the mesh-primary for every other node type of its mesh. The mesh-primary owns its nodes always: a command the fabric-primary originates for one of them reaches it as a forwarded command through the mesh-primary, never directly |
-| Writer | The mesh-primary records the change on the node's row: for the `node-admin` type that is the successor, NA2, which is the mesh's writer from the moment it is mesh-primary and records its own row (Q107 (1)); for every other type the mesh-primary records the node's row. A broker-primary writes nothing |
+| Writer | The successor records the change on its own record, for every type (Q356); the departing primary clears its own |
 | The primary | Makes the `node.primary.update` call on its successor's exact birth |
-| Roles | For the `node-admin` type the primary is the mesh-primary and the commander is the fabric-primary; the successor writes. For any other type the mesh-primary is commander and writer, and the primary only makes the call |
-| The record | `is_primary` (and `is_fabric_primary`) at the next revision on the successor's row, written by the mesh-primary after the successor installed itself. The record follows the role; it never makes it. There is no path back |
+| Roles | For the `node-admin` type the primary is the mesh-primary, and the fabric-primary sends the update; the successor writes its own record. For any other type the primary only makes the call |
+| The record | `is_primary` (and `is_fabric_primary`) at the next revision on the successor's row, written by the successor after it installed itself. The record follows the role; it never makes it. There is no path back |
 | Both primaries | When the mesh-primary is also the fabric-primary and the successor is in the same mesh, the successor becomes both and records both on its own row |
 | Precondition | None on the fabric's state (Q171) |
 | Completion | The primary answers its commander `node.primary.updating` (its acknowledgement, Started) once it admitted the command, then `node.primary.updated { node_id }` (its completion, Terminal), `node_id` the new primary; `node.fabric-primary.updating` and `node.fabric-primary.updated { node_id }` for the fabric-primary. The successor answers the primary's call `node.primary.updated { node_id }` |
@@ -59,12 +57,10 @@ and recording it are separate for every type.
    announcement and the only one ([gossip.md §3.1](../gossip.md#31-frame-catalog)). A non-admin primary
    then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
    moment.
-5. The mesh-primary records the change it hears: `is_primary` (and `is_fabric_primary`) at the next
-   revision on the successor's row, and its next `MeshTopology` projection carries it, its normal publication.
-   For the `node-admin` type that is NA2 recording its own row; for every other type the mesh-primary
-   records the successor's row from the successor's digest, the way it records every member fact it
-   hears. The write records the role; it does not grant it. No frame of its own announces a primary
-   change.
+5. The successor records the change on its own record: `is_primary` (and `is_fabric_primary`) at the
+   next revision, and its mesh-primary's next `MeshTopology` projection carries it, its normal
+   publication. The write records the role; it does not grant it. No frame of its own announces a
+   primary change.
 6. The commander continues on the primary's `node.primary.updated { node_id }`, never on gossip: step 5 is the recording of a change that has already happened, and the commander waits for neither the digest nor the record. The fabric-primary and the mesh-primary each record the answer in their atlas, for the update it sent or the answer streamed back to it (Q355). The action's next command goes to the old primary's mesh-primary as it stands now: for the `node-admin` type, the new mesh-primary `node_id` names, which runs the old primary's connections delete, stop or delete as for any node of its mesh; for any other type, the mesh-primary, which runs it itself.
 
 ## Failure contract
@@ -138,8 +134,7 @@ and recording it are separate for every type.
 ## The fabric-primary: node.fabric-primary.update
 
 The fabric-primary is its own property, projected as `is_fabric_primary` (never a settable field: a
-published bit is a projection of the election's result, recorded on the node-admin's own row by itself
-as its mesh's writer), with its own op,
+published bit is a projection of the election's result, recorded on the node-admin's own record by itself), with its own op,
 `node.fabric-primary.update`. It runs the same sequence through the same primitive and completes as
 `node.fabric-primary.updated` (never `node.primary.updated`, which is the mesh-primary's), the
 fabric-primary (a mesh-primary by definition) as caller, its commander being the workflow that stops,
@@ -169,8 +164,8 @@ search above is for the commanded transfer only.
 
 **The record.** A successor in the same mesh (search step 1) becomes mesh-primary and fabric-primary
 at the same boundary and records both on its own row. A successor in another mesh (search step 2)
-becomes fabric-primary and records `is_fabric_primary` on its own row, as its mesh's writer; the
-departing fabric-primary records its own row with it cleared, and under mesh.delete stays mesh-primary
+becomes fabric-primary and records `is_fabric_primary` on its own row; the
+departing fabric-primary records its own record with it cleared, and under mesh.delete stays mesh-primary
 until its own node.delete. The fabric row (`fabric/`) is the fabric's identity and never changes for
 this. No other stored record exists; every reader computes the election from the facts it holds and folds
 nothing, and the atlas of the node-admin that sent the update records its answer (Q355), until a later record of that role replaces it.

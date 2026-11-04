@@ -12,12 +12,12 @@ own primitive. A node's other properties have their own commands ([node properti
 
 | Field | Contract |
 |---|---|
-| Caller / executor | Caller to the node's mesh-primary, the only writer of its mesh's rows (Forward `0x1A` when not directly reachable). Before a mesh has a primary, the fabric-primary acts as its writer |
+| Caller / executor | Caller to the node's mesh-primary, the node's mesh-primary (Forward `0x1A` when not directly reachable). Before a mesh has a primary, the fabric-primary acts as its writer |
 | Entry | The exact `(node.id, incarnation)` and unchanged registered path and new name as separate fields. A different path is refused; mesh, type and tags do not change |
 | Precondition | The node holds no connection: it is stopped, or this mesh-primary holds the birth's `node.connection.deleted` of an `All` ([node.connection.delete](node-connections-delete.md)) that left zero connections held. A live node holding a connection is refused. No new connection is admitted from the row write until the node rejoins its mesh, retries after an interruption included |
 | Validation | The exact birth matches the held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status, held_connections }`; the path/name pair is valid and the name has no dot, else `RejectedName { reason }`. The supplied path must equal the registered immutable path; a different path is refused by name |
-| Check and move | The mesh-primary checks the destination pair against the records it holds; held by another node it refuses `NameHeld { by: node.id }` and nothing is written. Then one write of the node's record at its node.id (Q323) carrying the destination pair and `renamed_from: <old name>`: the name move is that one write. A retry, or a successor writer resuming the command, reads the record: one that already carries the destination pair is the move done, and it continues to the apply |
-| Order | Row first, node second, then the live node's rejoin |
+| Check and move | The mesh-primary checks the destination pair against the node records; held by another node it refuses `NameHeld { by: node.id }` and nothing is written. Then the node writes its own record at its node.id with the destination name (Q356): the name move is that one write |
+| Order | Check first, the node's write second, then the live node's rejoin |
 | Rejoin | A live node, once it holds the new name, is commanded [node.mesh.join](node-mesh-join.md) by its mesh-primary and rejoins its mesh under the new name. A stopped node rejoins at its [node.start](node-start.md) |
 | Completion | [By case](#completion-by-case) |
 | Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds resends `ApplyNodeName`, and for a live node its rejoin, and completes as the first command does. A repeat with a different name is a new rename |
@@ -26,16 +26,10 @@ own primitive. A node's other properties have their own commands ([node properti
 ## Numbered end-to-end sequence
 
 1. The caller sends `node.name.update` to the node's mesh-primary; an admin that is not the fabric-primary carries it to the fabric-primary (Forward `0x1A` when not directly reachable) and carries the answer back. The fabric-primary sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable) and returns its completion without installing a copied node row.
-2. The mesh-primary validates from the record it holds: exact birth, its own writer role, the
-   precondition from the node's status and its `node.connection.deleted` receipt, the name grammar.
-3. The mesh-primary checks the destination pair against its records; a pair held by another node
-   refuses `NameHeld { by }` with nothing written.
-4. The mesh-primary writes the row with the new name and `renamed_from`. This one write is the
-   durable name move.
-5. The node is sent `ApplyNodeName`. It holds the new name and publishes it. It answers `Applied`,
-   `AlreadyApplied` for a name it already holds, or `BusyHoldingConnections { connections }` naming
-   each connection it still holds; `Busy` after the row is the interrupted case under
-   [Failure and receipts](#failure-and-receipts).
+2. The mesh-primary validates from its view and the node's record: exact birth, that it is the node's mesh-primary, the precondition from the node's `state` and its `node.connection.deleted` receipt, the name grammar.
+3. The mesh-primary checks the destination pair against the node records; a pair held by another node refuses `NameHeld { by }` with nothing written.
+4. The node is sent `ApplyNodeName`. It writes its own record at its node.id with the new name (Q356), the one durable name move, and only once that write is acked does it hold the new name and publish it.
+5. It answers `Applied`, `AlreadyApplied` for a name it already holds, or `BusyHoldingConnections { connections }` naming each connection it still holds, with nothing written; a write the store refuses is answered `NodeRecordRefused`. `Busy` is the interrupted case under [Failure and receipts](#failure-and-receipts).
 6. A live node rejoins its mesh under the new name: the mesh-primary commands its
    [node.mesh.join](node-mesh-join.md), the node reports under the new name and joins its mesh again,
    and answers `MeshJoined` once it is back on its mesh. A stopped node rejoins at its start.
@@ -61,8 +55,8 @@ row's name. A node never renames itself.
 
 ```text
 node.name.update
-  → validate → check the new pair against the records → put the node's record at its node.id with the new pair (renamed_from)
-  → ApplyNodeName (the node, holding no connection)
+  → validate → check the new pair against the node records
+  → ApplyNodeName (the node, holding no connection, writes its record with the new name, then publishes it)
   → node.mesh.join (a live node: it rejoins its mesh under the new name)
   ← node.name.updated
 ```
@@ -75,8 +69,9 @@ sequenceDiagram
     participant M as Mesh-primary
     participant N as Node
     C->>M: node.name.update (exact birth, name)
-    Note over M: validate from held record, check the pair, put row (renamed_from)
+    Note over M: validate, check the pair against the node records
     M->>N: ApplyNodeName (no connection held)
+    Note over N: write its record with the new name, then publish
     N-->>M: Applied (name held and published)
     M->>N: JoinMesh (a live node)
     N->>M: JoinNode under the new name

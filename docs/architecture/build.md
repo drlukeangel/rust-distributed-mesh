@@ -408,14 +408,15 @@ builds.jsonl, events.jsonl}`. Copy every boundary, current values and history, i
 order. Every line of every boundary is a CloudEvents 1.0 event ([storage.md §2](storage.md#2-topology_storage_provider-where-rdms-records-go)); a copy appends each line as written, its `id` kept, so a resumed copy appends none twice.
 
 The fabric-primary writes the Fabric record, each Build once, and the Build-level events. Each
-mesh-primary writes the step events of its mesh (the fabric-primary those of the steps it runs in process), its Mesh record and the status and role flags in its members' node records (Q323).
-Each node writes its own config, tags, bound addresses and declarations through its property
-writer, and its connection facts through the connection writer. The launching admin records the
-birth's runtime and immutable launch snapshot. A node has one record, keyed by its node.id,
-append-only, its latest line current; it has no revision or tenure counter (Q323).
+mesh-primary writes the step events of its mesh (the fabric-primary those of the steps it runs in
+process) and its Mesh record. Each node writes every field of its own node record through its
+property writer (Q356), and its connection facts through the connection writer; its mesh-primary, or
+the fabric-primary for a mesh with none, writes a node's record only for a node that is lost, killed
+or deleted. A node has one record, keyed by its node.id, append-only, its latest line current; it has
+no revision or tenure counter (Q323).
 
-While the fabric-primary is unavailable, the fabric-recovery executor writes only the node-record
-status its operations require for a mesh with no active mesh-primary, and no Build record. That
+While the fabric-primary is unavailable, the fabric-recovery executor writes only the node records
+its operations require, of lost, killed or deleted nodes, for a mesh with no active mesh-primary, and no Build record. That
 exception grants no primary role (Q122).
 
 The Build store retains each Build at its build_id; the events store each event at its event.id.

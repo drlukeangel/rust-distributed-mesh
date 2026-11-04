@@ -5,10 +5,10 @@ Every node has one record, keyed by its node id. It is append-only, and its late
 [i150](../../plans/i150-node-writes-lifecyle-updates.md), and the design is the
 [node-record proposal](../../plans/proposal/node-record.md).
 
-**Who writes what.** A node writes its own properties: config, tags, bound addresses and
-declarations. Its mesh-primary writes its status and its role flags (`is_primary`,
-`is_fabric_primary`). No writer is part of the record's key, and the record carries no writer field
-and no revision. A node that has not written yet has no properties yet.
+**Who writes what.** A node writes every field of its own record itself (Q356): its identity, state,
+addresses, runtime, role flags, cert dates, storage, executable, config and tags. Its mesh-primary
+writes a node's record only for a node that is lost, killed or deleted. No writer is part of the
+record's key; the line's `source` names its writer, and the record has no revision. A node that has not written yet has no properties yet.
 
 **How a node is found.** A path and a name are two separate values, and neither encodes the node's
 type. A `(path, name)` lookup resolves the pair to a node id from the node records, and the reader
@@ -24,7 +24,7 @@ property of a node it does not create: an existing node's config and tags change
 ([build.md](../../architecture/build.md), Q236, Q342). A recovered node takes its deleted
 predecessor's config and tags ([node recovery](../../architecture/lifecycles/node-recovery.md)).
 
-**Primaries.** The mesh-primary records the role flags of the election's result. There is no
+**Primaries.** Each node records its own role flags of the election's result. There is no
 takeover step.
 
 **Storage.** `NodesStorage` keeps every node's record.

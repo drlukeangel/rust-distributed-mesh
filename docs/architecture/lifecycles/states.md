@@ -23,15 +23,15 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 
 | state | set by | from |
 |---|---|---|
-| node starting | the node's mesh-primary | a stopped node's `CommandAccepted` admission frame on the `StartNode` command stream (0x22); a create's launch, where no process can acknowledge |
-| node pending | the node's mesh-primary | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
-| node ready | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
-| node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connection.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
-| node connections-deleted | the node's mesh-primary | the node's node.connection.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
-| node leaving | the node's mesh-primary | the acknowledgement of node.mesh.leave, `Leaving` on node.stop's stream |
-| node left | the node's mesh-primary | node.mesh.leave's completion, `StopMeshLeft` on node.stop's stream |
-| node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
-| node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
+| node starting | the node, on its own record | a stopped node's `CommandAccepted` admission frame on the `StartNode` command stream (0x22); a create's launch, where no process can acknowledge |
+| node pending | the node, on its own record | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
+| node ready | the node, on its own record | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
+| node connections-deleting | the node, on its own record | the node's `ConnectionsDeleting` report on the command stream of `node.connection.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
+| node connections-deleted | the node, on its own record | the node's node.connection.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
+| node leaving | the node, on its own record | the acknowledgement of node.mesh.leave, `Leaving` on node.stop's stream |
+| node left | the node, on its own record | node.mesh.leave's completion, `StopMeshLeft` on node.stop's stream |
+| node stopping | the node, on its own record | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
+| node stopped | the node, on its own record | the matching stopped frame on the stop call's stream |
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's admission at its mesh-primary, published as NodeDeleting |
 | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step event |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |
@@ -40,7 +40,7 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete step events; never an op |
 | fabric ready | the fabric-primary | every mesh the accepted Build names ready; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
-start and stop are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, connections-deleted, left), and each is the row's one status, never a second field. delete is the mesh-primary's workflow: no delete command reaches the node; the mesh-primary writes deleting from the delete's admission, composes the node's stop, whose frames move the row as above, terminates the exact runtime and writes deleted from the receipt. A query answers the state the row last took from the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the row nowhere. Where no node can report, the mesh-primary writes the state itself: a create's starting from the launch, and an exited node's deleting and deleted from the admission and the step's outcome.
+start and stop are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, connections-deleted, left), and each is the row's one status, never a second field. delete is the mesh-primary's workflow: no delete command reaches the node; the mesh-primary writes deleting from the delete's admission, composes the node's stop, whose frames move the row as above, terminates the exact runtime and writes deleted from the receipt. A query answers the state the record last took. Where no node can write, the mesh-primary writes the state itself: an exited, lost or deleted node's deleting and deleted.
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the

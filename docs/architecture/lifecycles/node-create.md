@@ -36,10 +36,9 @@ topology, never by looking whether a channel exists and then creating it.
 
 1. Record the exact deployment, prepare its identity/data dir and launch its executable.
    The executor never picks, reserves or predicts a transport port. Before this step the
-   node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh)
-   writes the node's row with its path, name and allocated node ID. The row retains the
-   exact entry-owned launch snapshot; the node writes
-   its own properties before readiness. A new node uses its entry, true recovery the
+   mesh-primary checks the path and name against its view and the creates it has in flight. The
+   launch carries the exact entry-owned launch snapshot; the node writes its own record at its
+   start, before readiness. A new node uses its entry, true recovery the
    predecessor's acknowledged properties. No raw last-written-path lookup supplies a birth;
    `NameHeld { by: node.id }` refuses a held name and nothing is launched.
 2. The process loads `endpoint_id` and binds port 0. In the exact-address configuration,
