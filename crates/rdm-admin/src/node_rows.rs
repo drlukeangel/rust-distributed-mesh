@@ -248,7 +248,7 @@ impl NodeRows {
             async {
                 let mesh = rdm_core::path::mesh_of(&name.path);
                 let me = self.writer_in(&*self.view.read().await, name, &mesh, node_id, acting)?;
-                write_deleted(&*self.storage, name, node_id).await.map(|_| ()).map_err(|e| match e {
+                write_deleted(&*self.storage, name, node_id).await.map(|row| row.is_some()).map_err(|e| match e {
                     DeletedRefused::NameHeld(held) => RowRefused::NameHeld(held),
                     DeletedRefused::Unwritten(why) => RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: nodes.storage refused the Deleted record of path {name_path:?}, name {name_name:?} ({node_id}): {why}", me_path = &me.path, me_name = &me.name, name_path = &name.path, name_name = &name.name)),
                 })
@@ -257,11 +257,13 @@ impl NodeRows {
         )
         .await;
         match &r {
-            Ok(()) => span.record("outcome", "row-deleted"),
+            Ok(true) => span.record("outcome", "row-deleted"),
+            // The node wrote no record (Q356): none holds its node.id or name, and nothing is written.
+            Ok(false) => span.record("outcome", "no-record"),
             Err(e) => span.record("outcome", e.outcome()).record("detail", e.to_string().as_str()),
         };
         span.in_scope(|| tracing::info!("node.delete: the Deleted record decided; the record stays and the name is released"));
-        r
+        r.map(|_| ())
     }
 }
 
@@ -337,21 +339,24 @@ impl std::fmt::Display for DeletedRefused {
 
 /// The `Deleted` record of `node_id` at `name` (node-delete.md step 3): the node's latest line, its
 /// fields kept, with state `Deleted`, written whole: the `Deleted` record frees the pair. Another node's
-/// live record at `name` refuses it by name and nothing is written; a node that never wrote its record
-/// has none to delete.
-pub async fn write_deleted(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<NodeRecord, DeletedRefused> {
+/// live record at `name` refuses it by name and nothing is written. A node that never wrote its record
+/// (a launch killed before its join answered, Q356) has none to delete: nothing is written, no record
+/// holds its node.id or name, and the delete goes on (`None`), as [`NodeRows::deleting`] leaves it
+/// unchanged.
+pub async fn write_deleted(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<Option<NodeRecord>, DeletedRefused> {
     let unwritten = |e: crate::storage_error::StorageError| DeletedRefused::Unwritten(e.to_string());
     if let Some(by) = record_at(storage, name).await.map_err(unwritten)?.filter(|by| by.node_id != *node_id) {
         return Err(DeletedRefused::NameHeld(NameHeld { path: name.path.clone(), name: name.name.clone(), by: by.node_id }));
     }
-    let held = storage.node(node_id).await.map_err(unwritten)?.map(|l| l.record);
-    let mut row = held.ok_or_else(|| DeletedRefused::Unwritten(format!("path {name_path:?}, name {name_name:?} ({node_id}): the node wrote no record to delete", name_path = &name.path, name_name = &name.name)))?;
+    let Some(mut row) = storage.node(node_id).await.map_err(unwritten)?.map(|l| l.record) else {
+        return Ok(None);
+    };
     if row.state == NodeStatus::Deleted {
-        return Ok(row);
+        return Ok(Some(row));
     }
     row.state = NodeStatus::Deleted;
     storage.put_node(&row).await.map_err(unwritten)?;
-    Ok(row)
+    Ok(Some(row))
 }
 
 /// The record of the exact birth `(node_id, incarnation)`: the node's latest record when it is of that

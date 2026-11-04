@@ -127,8 +127,8 @@ fn a_deleted_node_leaves_a_deleted_record_with_its_fields() {
 /// with no mesh-primary, writes a node's record only when the node cannot"): an admin that is not the
 /// node's mesh-primary (the fabric-primary of a mesh that has a primary, or another node-admin) writes
 /// no record of the node: its delete is refused `NotMeshPrimary` and the node's record stands as the
-/// node wrote it. A node that never wrote its record has none to delete. Must NOT happen: another
-/// admin writing a node's record.
+/// node wrote it. A node that never wrote its record has none to delete: nothing is written and its
+/// delete goes on. Must NOT happen: another admin writing a node's record.
 #[test]
 fn only_the_mesh_primary_writes_the_record_of_a_deleted_node() {
     let cap = capture();
@@ -140,8 +140,9 @@ fn only_the_mesh_primary_writes_the_record_of_a_deleted_node() {
         let refused = fp.deleted(&victim, &delete).await;
         assert!(matches!(refused, Err(RowRefused::NotMeshPrimary(_))), "the fabric-primary of a mesh that has a primary writes none of its records: {refused:?}");
         let (mp, _) = admin(&storage, "2");
-        let unwritten = mp.deleted(&victim, &delete).await;
-        assert!(matches!(unwritten, Err(RowRefused::Unwritten(ref why)) if why.contains("wrote no record")), "a node that never wrote its record has none to delete: {unwritten:?}");
+        let none = mp.deleted(&victim, &delete).await;
+        assert!(none.is_ok(), "a node that never wrote its record has none to delete, and its delete goes on: {none:?}");
+        assert!(storage.node(&victim.node_id).await.unwrap().is_none(), "nothing is written for a node that never wrote its record");
         storage.put_node(&own_record(&victim)).await.unwrap();
         assert!(matches!(fp.deleted(&victim, &delete).await, Err(RowRefused::NotMeshPrimary(_))));
         assert_eq!(storage.node(&victim.node_id).await.unwrap().map(|l| l.record.state), Some(NodeStatus::Ready), "the node's record stands as the node wrote it");

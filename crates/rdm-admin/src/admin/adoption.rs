@@ -262,13 +262,15 @@ pub async fn release_name(lost: &crate::storage::OwnRow, me_id: &NodeId, nodes: 
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let r = tracing::Instrument::instrument(crate::node_rows::write_deleted(nodes, &name, &lost.node_id), span.clone()).await.map(|_| ()).map_err(|e| format!("node_id={me_id} releases path={} name={} of lost node_id={}: {e}", lost.path, lost.name, lost.node_id));
+    let r = tracing::Instrument::instrument(crate::node_rows::write_deleted(nodes, &name, &lost.node_id), span.clone()).await.map(|row| row.is_some()).map_err(|e| format!("node_id={me_id} releases path={} name={} of lost node_id={}: {e}", lost.path, lost.name, lost.node_id));
     match &r {
-        Ok(()) => span.record("outcome", "row-deleted"),
+        Ok(true) => span.record("outcome", "row-deleted"),
+        // The lost node wrote no record (Q356): none holds its node.id or name, and nothing is written.
+        Ok(false) => span.record("outcome", "no-record"),
         Err(e) => span.record("outcome", "refused").record("detail", e.as_str()),
     };
     span.in_scope(|| tracing::info!("node.delete: the lost birth's Deleted record decided; the record stays and the name is released"));
-    r
+    r.map(|_| ())
 }
 
 /// [`Answers`] over this process's Node RPC client: node investigation of the lost birth direct (no view

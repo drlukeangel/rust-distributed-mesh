@@ -1071,10 +1071,11 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
         attr(recreated, "node_id") == old_id && attr(recreated, "node_path") == role().path && attr(recreated, "node_name") == role().name && recreated["attributes"]["change_id"].is_null(),
         "mesh2's mesh-primary's node recovery of the refusing birth re-creates it at its (path, name), never a step of the change: {recreated}"
     );
-    // The re-created birth writes its own record (Q356) on the new provider, which node.get reads
-    // (the file store root holds the records written before the move only).
-    let reread = estate.node_view(&role()).await;
-    assert_eq!(reread.node_id.to_string(), new_id, "the re-created birth's own record answers node.get at its (path, name): {reread:?}");
+    // The re-created birth writes its own record (Q356) on the new provider: its first line in
+    // `test-target`'s nodes store is its own (the file store root holds the lines written before the move).
+    let nodes_file = target_root.join(rdm_admin::store_root::NODES_FILE);
+    let first = rdm_admin::store_log::read_file(&nodes_file).unwrap_or_default().into_iter().find(|l| l.kind() == rdm_node::nodes_storage::RECORD_KIND && l.subject() == new_id).expect("the re-created birth's record on the new provider");
+    assert_eq!(first.attributes.source_node_id().unwrap_or_default().to_string(), new_id, "the re-created birth writes its own record (Q356) on {TOPOLOGY_STORAGE_TARGET}");
     let new_moved = named(&spans, MOVE).into_iter().find(|sp| attr(sp, "node_id") == new_id && attr(sp, "change_id") == change_id && sp["attributes"]["outcome"] == "moved").unwrap_or_else(|| panic!("the re-created birth {new_id} answered its move under Build {change_id}"));
     assert!(new_moved["end_unix_nano"].as_u64().unwrap_or(u64::MAX) <= unblocked["end_unix_nano"].as_u64().unwrap_or(0), "the re-created birth moved before its mesh-primary replied unblocked: {new_moved} {unblocked}");
     estate.record_trace_url(&s(&blocked["trace_id"]));

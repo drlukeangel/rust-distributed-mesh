@@ -1935,7 +1935,8 @@ impl Run {
             // A node.id no birth holds, as the path is one no node holds: only the fabric-primary decides it.
             let _ = &path;
             let v = ask(&f.estate, &location(&a), BuildChange::Delete { meshes: vec![], node_ids: vec![rdm_core::NodeId::mint()] }).await;
-            answers.push(json!({"admin": a["name"], "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
+            // The admin's location, path and name (Q366: a `name` alone is not one admin).
+            answers.push(json!({"admin": location(&a), "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
         }
         let t1 = now_ns();
         let writers: Vec<&Value> = answers.iter().filter(|a| a["reply"] != "not-fabric-primary").collect();
