@@ -66,6 +66,8 @@ pub enum RuntimeLocator {
     /// A pid and the kernel's start time of that process (clock ticks since
     /// boot): together they never name a later process.
     /// A host process.
+    ///
+    /// Position 0 on the wire.
     Process {
         /// The process id.
         pid: u32,
@@ -74,6 +76,8 @@ pub enum RuntimeLocator {
     },
     /// The immutable container id (64 lowercase hex).
     /// A container.
+    ///
+    /// Position 1 on the wire.
     Container {
         /// The container id.
         id: String,

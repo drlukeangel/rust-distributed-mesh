@@ -1194,13 +1194,22 @@ pub(crate) fn build_span(build_id: Option<&BuildId>) -> String {
     build_id.map(|b| b.log().to_string()).unwrap_or_default()
 }
 
-/// The deployment id of the launch the create `operation` makes: a function of the operation, as the
-/// node id it names is, so a re-run of the same create names the same launch to its provider's find
-/// (a launch that never joined has no record to name it, Q356); a recovery's re-create is a new
-/// operation, with a new id.
-pub(crate) fn deployment_of(operation: &rdm_core::OperationId) -> DeploymentId {
-    let h = operation.to_string().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
-    DeploymentId::parse(&rdm_core::ids::encode_crockford60(h)).expect("a crockford60 encoding is a canonical id")
+/// The identity of the birth the create `req` makes: its node id the request's, and its incarnation
+/// and deployment id functions of the create's operation, so a re-run of the same create computes the
+/// same identity and its provider's find names the same launch (a launch that never joined has no
+/// record to read it from, Q356); a recovery's re-create is a new operation, with a new incarnation
+/// and deployment id.
+fn identity_of(req: &CreateRequest) -> Identity {
+    let of = |what: &str| {
+        let h = format!("{what}\u{1f}{}", req.operation).bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+        rdm_core::ids::encode_crockford60(h)
+    };
+    Identity {
+        node_id: req.node_id.clone(),
+        incarnation: IncarnationId::parse(&of("incarnation")).expect("a crockford60 encoding is a canonical id"),
+        supersedes: None,
+        deployment_id: DeploymentId::parse(&of("deployment")).expect("a crockford60 encoding is a canonical id"),
+    }
 }
 
 /// One run of one structured operation: create at a location or delete by node ID.
@@ -1567,7 +1576,22 @@ impl DeploymentPipeline<'_> {
             return;
         }
         let Some(rows) = self.sink.node_rows() else { return };
-        let Ok(Some(row)) = rows.storage().node(&req.node_id).await.map(|l| l.map(|l| l.record)) else { return };
+        let row = match rows.storage().node(&req.node_id).await.map(|l| l.map(|l| l.record)) {
+            Ok(Some(row)) => row,
+            // A birth that has not written its record (it never joined, Q356): its identity is the
+            // create operation's ([`identity_of`]) and its endpoint the key in its data dir.
+            Ok(None) => {
+                run.given(CreateStep::AllocateIdentity.name(), &identity_of(req));
+                if run.is_done(CreateStep::PrepareStorage.name()) {
+                    let dir = req.data_dir.clone().unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
+                    if let Ok(key) = crate::blocking::blocking_io(move || endpoint_id(&dir)).await {
+                        run.given(CreateStep::PrepareStorage.name(), &key);
+                    }
+                }
+                return;
+            }
+            Err(_) => return,
+        };
         let incarnation = row.incarnation.clone();
         let data_dir = row.storage.data_dir.as_deref().map(PathBuf::from).or_else(|| req.data_dir.clone()).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
         let fact = Some(row.runtime.clone());
@@ -1623,11 +1647,18 @@ impl DeploymentPipeline<'_> {
         let recorded_by_another = |run: &Run<'_>, step: CreateStep| run.owner.get(step.name()).is_some_and(|o| o.as_ref() != Some(&executor));
         self.give_create_values(run, req).await;
         // A launch whose runtime no node record names (its birth never joined, so it wrote none, Q356)
-        // is decided afresh: its runtime, which the provider finds by the launch's deployment id (a
-        // function of this create's operation, [`deployment_of`]), is terminated first, in DeployRuntime.
-        let over_unjoined = run.done.get(CreateStep::DeployRuntime.name()).is_some_and(|v| v.as_ref().is_none_or(serde_json::Value::is_null));
-        if over_unjoined {
+        // runs again from DeployRuntime, whose find adopts the runtime by the launch's deployment id (a
+        // function of this create's operation, [`identity_of`]). One another executor launched is
+        // decided afresh: its runtime, seeded with that executor, is stopped first, in DeployRuntime.
+        let unjoined = run.done.get(CreateStep::DeployRuntime.name()).is_some_and(|v| v.as_ref().is_none_or(serde_json::Value::is_null));
+        let lost_launch = unjoined && recorded_by_another(run, CreateStep::DeployRuntime);
+        let lost_owner = run.owner.get(CreateStep::DeployRuntime.name()).cloned().flatten();
+        if lost_launch {
             run.done.clear();
+        } else if unjoined {
+            for step in CreateStep::ORDER.iter().skip_while(|s| **s != CreateStep::DeployRuntime) {
+                run.done.remove(step.name());
+            }
         }
         if let Some(Some(h)) = run.done.get(CreateStep::DeployRuntime.name()) {
             let earlier = serde_json::from_value::<DeploymentHandle>(h.clone()).ok();
@@ -1655,12 +1686,9 @@ impl DeploymentPipeline<'_> {
             }
         }
         let rows = self.sink.node_rows();
-        // A run holding no AllocateIdentity receipt of this operation mints the birth's incarnation; its
-        // deployment id is the operation's ([`deployment_of`]), as its node id is.
+        // The birth's identity is its create operation's ([`identity_of`]), as its node id is.
         let id: Identity = self
-            .step(run, CreateStep::AllocateIdentity.name(), async {
-                Ok(Identity { node_id: req.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: deployment_of(&req.operation) })
-            })
+            .step(run, CreateStep::AllocateIdentity.name(), async { Ok(identity_of(req)) })
             .await?;
         // The birth's address, bound for its deployment: the birth a run continues binds the address it
         // holds, and a new birth at a name a predecessor still holds is given its own. The node binds
@@ -1780,20 +1808,13 @@ impl DeploymentPipeline<'_> {
                 // name, its outcome unknown.
                 let deadline = super::deadline::Deadline::step();
                 if let Some(h) = self.provider.find(&spec, deadline).await.map_err(StepFailure::from)?.running() {
-                    if !over_unjoined {
+                    if !lost_launch {
                         tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                         return Ok(h);
                     }
-                    // An earlier run's launch that never joined: its birth is decided afresh, so its
-                    // runtime is terminated by name before the fresh launch, never left running beside it.
-                    use tracing::Instrument;
-                    let span = tracing::info_span!("rdm.node_admin.deployment.delete.via-unjoined-launch", node_path = %req.path, node_name = %req.name, build_id = %build_span(req.build_id.as_ref()), deployment_id = %h.deployment_id, outcome = tracing::field::Empty);
-                    self.provider.terminate(&h, TerminationMode::Graceful { grace: self.timeouts.stop_grace }, super::deadline::Deadline::stop(self.timeouts.stop_grace))
-                        .instrument(span.clone())
-                        .await
-                        .map_err(|e| { span.record("outcome", "failed"); StepFailure::from(format!("path {:?}, name {:?}: an earlier run's launch never joined and its runtime could not be terminated; nothing is launched: {e}", &req.path, &req.name)) })?;
-                    span.record("outcome", "terminated");
-                    span.in_scope(|| tracing::info!("an earlier run's launch that never joined is terminated before the fresh launch"));
+                    // Launched by another executor and never joined: stopped, then launched afresh
+                    // under this executor's endpoint.
+                    self.stop_lost_launch(req, &h, lost_owner.as_ref()).await.map_err(|e| StepFailure::from(e.reason))?;
                 }
                 if let Some(before) = before_launch {
                     before.await;

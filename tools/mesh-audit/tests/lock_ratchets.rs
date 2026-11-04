@@ -426,13 +426,13 @@ fn one_rename_write_path_reads_only_non_test_code() {
 }
 
 #[test]
-fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_call_site() {
+fn one_rename_write_path_fails_a_name_release_or_a_lost_own_record_name_write() {
     let t = Planted::of_tree();
     t.write("crates/rdm-admin/src/planted.rs", "async fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) { let _ = s.release_node_name(n, by).await; }\n");
     let v = only(check(t.root()), Ratchet::OneRenameWritePath);
     assert!(matches!(&v[0], Violation::Token { file, token, .. } if file.ends_with("planted.rs") && token == ".release_node_name("));
     let d = Planted::of_tree();
-    d.edit("crates/rdm-admin/src/node_rows.rs", "pub async fn move_row(storage: &dyn NodesStorage,", "pub async fn rename(storage: &dyn NodesStorage,");
+    d.edit("crates/rdm-node/src/node.rs", "record.path = to.path; record.name = to.name;", "record.path = to.path;");
     only(check(d.root()), Ratchet::OneRenameWritePath);
 }
 

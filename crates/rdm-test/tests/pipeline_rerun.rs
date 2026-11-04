@@ -291,7 +291,8 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         crate::common::until_bound(&nodes, &node_id).await;
 
         // The admin process restarts: nothing of the admitted birth is in memory; its durable rows stand.
-        let restarted = Joins::over(admin.nodes_storage.clone());
+        // Its store root, where the birth wrote its own record, is what the restarted admin reads.
+        let restarted = Joins::over(nodes.clone());
         let no_gossip = NoGossip { live: &admin.observer };
         let second = Killable { inner: process.clone(), kill_at: None, reached, spawned: Mutex::new(vec![]) };
         let pipeline = DeploymentPipeline {
@@ -313,7 +314,7 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         // The durable report: the birth's own record, which the node wrote at its start (Q356): the runtime
         // made available to it and its data dir.
         let incarnation = created.node.incarnation_id.clone().expect("the created node carries its incarnation");
-        let row = rdm_admin::node_rows::birth_record(&*admin.nodes_storage, &created.node.node_id, &incarnation).await.unwrap().expect("the node wrote its own record at its start");
+        let row = rdm_admin::node_rows::birth_record(&*nodes, &created.node.node_id, &incarnation).await.unwrap().expect("the node wrote its own record at its start");
         assert_eq!(Some(row.runtime), created.handle.fact(), "the record carries the runtime the report carried");
         assert_eq!(row.storage.data_dir, created.node.data_dir, "the record carries the data dir the report carried");
 

@@ -169,6 +169,8 @@ pub const TRANSPORT_TAG_TOKENS: &[&str] = &[
 /// The runtime sources where a descriptive annotation is never read to decide.
 /// The one writer of a node row's move (`move_row`).
 pub const NODE_ROWS: &str = "crates/rdm-admin/src/node_rows.rs";
+/// The node runtime: where a node writes its own record under a told name (`ApplyNodeName`, Q356).
+pub const NODE_RUNTIME: &str = "crates/rdm-node/src/node.rs";
 /// The nodes store: the claim and the release are defined and implemented here.
 pub const NODES_STORAGE: &str = "crates/rdm-admin/src/storage.rs";
 /// The admin's replaceable topology storage handle (i149 e2): it forwards every NodesStorage call to the current provider.
@@ -774,15 +776,15 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, WIRE_CELLS, &["fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneRenameWritePath => {
-            // A node row moves through one writer (R13: node.update is one write path):
-            // `node_rows::move_row` claims the new name and releases the old claim. Nothing else
-            // releases a node name claim, and no second rename call site stands beside it.
+            // A node's name moves through one write (R13: node.update is one write path): the node
+            // writes its own record with the told name (`ApplyNodeName`, Q356). Nothing releases a
+            // node name claim, and no rename call site stands in the node records writer.
             // The storage layers that only forward the NodesStorage trait (its own module and the
             // replaceable handle, i149 e2) are no call site of their own.
             let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| !rel(root, f).ends_with(NODE_ROWS) && !rel(root, f).ends_with(NODES_STORAGE) && !rel(root, f).ends_with(STORAGE_HANDLE)).collect();
             scan_non_test_tokens(root, &files, &[".release_node_name("], ratchet, &mut out);
             scan_tokens(root, &files_in(root, &[NODE_ROWS]), &["pub async fn rename(", "fn rename_steps("], ratchet, &mut out);
-            require(root, NODE_ROWS, &["pub async fn move_row(storage: &dyn NodesStorage,"], ratchet, &mut out);
+            require(root, NODE_RUNTIME, &["record.path = to.path; record.name = to.name;"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
             // Echo (0x11) is reserved forever and peer-tickle (0x19) is a product's transitional
