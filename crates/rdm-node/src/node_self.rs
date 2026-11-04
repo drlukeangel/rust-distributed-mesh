@@ -1102,6 +1102,10 @@ impl NodeSelf {
                     commander = %named(commander.as_ref()), state = "Stopped", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
                 let (receipt, _) = self.stop_steps(StopBy::Command { commander: commander.as_ref(), spare, op: &op, progress: progress.clone() }).instrument(span.clone()).await;
+                // Its Stopped on its own record before node.stopped answers (node-stop.md "Completion":
+                // the matching node.stopped and the stop recorded on the node record; Q356). The owed
+                // declaration then finds it written.
+                self.write_state(crate::model::NodeStatus::Stopped).await;
                 span.record("receipt", receipt.name());
                 *self.cycle.lock().unwrap() = Cycle::Stopped(receipt.clone());
                 let _ = tx.send(Some(receipt.clone()));
