@@ -389,7 +389,7 @@ impl BuildCarrier {
     /// async fn delete_fabric(admin_stdout_line: &str) -> Result<Followed, String> {
     ///     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
     ///     let peers = Peers::at(&birth).await?;
-    ///     let carrier: BuildCarrier = peers.carrier_at(birth.name);
+    ///     let carrier: BuildCarrier = peers.carrier_at(birth.location());
     ///     let stream = carrier.create(Change::DeleteFabric).await.map_err(|e| e.to_string())?;
     ///     carrier.follow(stream).await.map_err(|e| e.to_string())
     /// }

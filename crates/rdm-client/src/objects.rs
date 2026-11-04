@@ -163,7 +163,7 @@ impl Nodes {
     /// async fn ready_brokers(admin_stdout_line: &str) -> Result<Vec<NodeView>, String> {
     ///     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
     ///     let peers = Peers::at(&birth).await?;
-    ///     let nodes = Nodes::new(peers.carrier_at(birth.name));
+    ///     let nodes = Nodes::new(peers.carrier_at(birth.location()));
     ///     nodes.get(&Filter::new().eq("type", ["broker"]).eq("state", ["ready"])).await.map_err(|e| e.to_string())
     /// }
     /// ```
