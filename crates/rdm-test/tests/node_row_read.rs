@@ -3,7 +3,7 @@
 //! start, join or create (Q227).
 
 use crate::common::{admin_side, TEST_MESH_ID};
-use rdm_admin::storage::{NodeRow, NodesStorage as _};
+use rdm_admin::storage::{NodeRecord, NodesStorage as _};
 use rdm_core::launch::Launch;
 use rdm_core::model::NodeStatus;
 use rdm_core::runtime::RuntimeFact;
@@ -75,7 +75,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let root = rdm_node::store_root::StoreRoot::open(&dir, &fabric).unwrap();
         let writer = rdm_admin::storage::FileNodesStorage::open(&dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.expect("the mesh-primary's nodes storage opens");
         let broker: PathName = rdm_core::PathName::new("mesh1.broker", "1").unwrap();
-        let mut row = NodeRow::new(broker.clone(), "mesh1", "broker", NodeId::mint(), NodeStatus::Ready);
+        let mut row = NodeRecord::new(broker.clone(), "mesh1", "broker", NodeId::mint(), NodeStatus::Ready);
         // A (path, name) resolves to the live record standing there (node-identity-and-state.md §2).
         writer.put_node(&row).await.expect("broker1's row is written");
         let written = nodes_folds(&seen).len();
@@ -93,7 +93,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
 
         let by_name = gw1.node_row(broker.clone()).await.expect("gw1 reads broker1's row by name").expect("broker1's row stands");
         assert_eq!(by_name, row, "the whole row, as last written");
-        assert_eq!(by_name.status, NodeStatus::Leaving, "the row as last written");
+        assert_eq!(by_name.state, NodeStatus::Leaving, "the row as last written");
         let by_id = gw1.node_row(row.node_id.clone()).await.expect("gw1 reads broker1's row by id").expect("broker1's row stands");
         assert_eq!(by_id, row, "by id, the same row");
         let none = gw1.node_row(rdm_core::PathName::new("mesh1.broker", "9").unwrap()).await.expect("a read of a name no row was written at");

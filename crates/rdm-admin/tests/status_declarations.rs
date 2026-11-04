@@ -77,31 +77,16 @@ struct Rows {
 
 #[async_trait::async_trait]
 impl NodesStorage for Rows {
-    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_runtime(row).await
-    }
-    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.runtimes().await
-    }
-    async fn runtime(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.runtime(node_id, incarnation).await
-    }
-    async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+    async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<crate::storage::NodeLine>, rdm_admin::storage_error::StorageError> {
         self.inner.node(node_id).await
     }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+    async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
         self.inner.nodes(mesh).await
     }
-    async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_properties(record).await
-    }
-    async fn properties(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, rdm_admin::storage_error::StorageError> {
-        self.inner.properties(node_id).await
-    }
-    async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+    async fn put_node(&self, row: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node(row).await
     }
-    async fn records_at(&self, name: &rdm_admin::model::PathName) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+    async fn records_at(&self, name: &rdm_admin::model::PathName) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
         self.inner.records_at(name).await
     }
 }
@@ -212,7 +197,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
     };
     // Every birth's lifecycle record is claimed, as its create or join claims it before a command reaches it.
     for b in std::iter::once(&admin).chain(others.values()) {
-        let row = rdm_admin::storage::NodeRow::new(b.node.location(), b.node.mesh.clone(), &b.node.r#type, b.node.node_id.clone(), b.node.status);
+        let row = rdm_admin::storage::NodeRecord::new(b.node.location(), b.node.mesh.clone(), &b.node.r#type, b.node.node_id.clone(), b.node.status);
         rdm_admin::node_rows::write_record(&*nodes, &row).await.unwrap().unwrap();
     }
     let records = node_records();
@@ -544,12 +529,12 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
 /// the config of `ApplyNodeConfig` (`Applied`), the labels of `CreateTags` or `DeleteTags` (their
 /// reply); `None` for any other request.
 async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter, req: &StatusRequest) -> Option<StatusReply> {
-    use rdm_node::node_records::{NodeProperties, RecordBirth, TagChange};
+    use rdm_node::node_records::{NodeRecord, RecordBirth, TagChange};
     let (node_id, incarnation) = match req {
         StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
     };
-    let initial = NodeProperties {
+    let initial = NodeRecord {
         birth: RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
         config: Default::default(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: Vec::new(),
     };
@@ -760,32 +745,17 @@ type Answer<T> = Result<T, rdm_node::storage_error::StorageError>;
 
 #[async_trait::async_trait]
 impl rdm_admin::storage::NodesStorage for RefusingRecords {
-    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Answer<()> {
-        self.0.put_runtime(row).await
-    }
-    async fn runtimes(&self) -> Answer<Vec<rdm_admin::storage::RuntimeRow>> {
-        self.0.runtimes().await
-    }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Answer<Option<rdm_admin::storage::RuntimeRow>> {
-        self.0.runtime(node_id, incarnation).await
-    }
-    async fn node(&self, node_id: &NodeId) -> Answer<Option<rdm_admin::storage::NodeRow>> {
+    async fn node(&self, node_id: &NodeId) -> Answer<Option<rdm_admin::storage::NodeRecord>> {
         self.0.node(node_id).await
     }
-    async fn nodes(&self, mesh: &str) -> Answer<Vec<rdm_admin::storage::NodeRow>> {
+    async fn nodes(&self, mesh: &str) -> Answer<Vec<rdm_admin::storage::NodeRecord>> {
         self.0.nodes(mesh).await
     }
-    async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Answer<()> {
+    async fn put_node(&self, row: &rdm_admin::storage::NodeRecord) -> Answer<()> {
         self.0.put_node(row).await
     }
-    async fn records_at(&self, name: &PathName) -> Answer<Vec<rdm_admin::storage::NodeRow>> {
+    async fn records_at(&self, name: &PathName) -> Answer<Vec<rdm_admin::storage::NodeRecord>> {
         self.0.records_at(name).await
-    }
-    async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_node::storage_error::StorageError> {
-        Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes/properties/{}", record.birth.node_id), reason: "disk refused the write".into() })
-    }
-    async fn properties(&self, node: &NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, rdm_node::storage_error::StorageError> {
-        self.0.properties(node).await
     }
 }
 
@@ -1507,7 +1477,7 @@ const NAME_SPAN: &str = "rdm.node_admin.name.update.via-writer";
 async fn own_tags(b: &Birth, tags: &[&str]) {
     use rdm_admin::storage::NodesStorage as _;
     node_records()
-        .put_properties(&rdm_node::node_records::NodeProperties {
+        .put_properties(&rdm_node::nodes_storage::NodeRecord {
             birth: rdm_node::node_records::RecordBirth { node_id: b.node.node_id.clone(), incarnation_id: b.node.incarnation_id.clone().unwrap() },
             config: Default::default(), tags: labels(tags), endpoint_id: None, transport_addr: None, listeners: Vec::new(),
         })
@@ -1522,7 +1492,7 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.stopped, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRow { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+    let row = rdm_admin::storage::NodeRecord { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
 }
 
@@ -1542,7 +1512,7 @@ async fn hold_connections_deleted(rig: &Rig, b: &Birth) {
 async fn deleted_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_connections_deleted(rig, b).await;
     own_tags(b, tags).await;
-    let row = rdm_admin::storage::NodeRow { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+    let row = rdm_admin::storage::NodeRecord { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
     let node = serve_node(b).await;
     node_configs(rig, &node).await;
@@ -1702,7 +1672,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         hold_connections_deleted(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-        rig.nodes.write_record(&rdm_admin::storage::NodeRow { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+        rig.nodes.write_record(&rdm_admin::storage::NodeRecord { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { path: taken.path.clone(), name: taken.name.clone(), by: holder.clone() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -2020,7 +1990,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 
         hold_connections_deleted(&rig, rpc2).await;
         own_tags(rpc2, &["red"]).await;
-        let row = rdm_admin::storage::NodeRow { r#type: rpc2.node.r#type.clone(), mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: rpc2.node.path.clone(), name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: rpc2.node.r#type.clone(), mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: rpc2.node.path.clone(), name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         rig.nodes.write_record(&row).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });

@@ -359,7 +359,7 @@ pub fn stepping(fabric: &FabricId, mesh: &str) -> rdm_admin::build_run::FramedBu
 }
 
 /// `nodes.storage` on the fabric's store root `template` names, as `admin` opens it: where a birth
-/// launched from `template` writes its own part of its record (`NodeProperties`) at its join.
+/// launched from `template` writes its own part of its record (`NodeRecord`) at its join.
 pub async fn store_root_nodes(admin: &AdminSide, template: &LaunchTemplate) -> Arc<dyn rdm_admin::storage::NodesStorage> {
     let scope = rdm_admin::storage_backend::StorageScope {
         data_dir: template.data_root.join("admin"),
@@ -374,7 +374,7 @@ pub async fn store_root_nodes(admin: &AdminSide, template: &LaunchTemplate) -> A
 }
 
 /// Await the birth `node_id`'s own part of its record on `nodes`, written as it bound at its join
-/// (`NodeProperties` with its transport address): the durable source a rerun reads WaitForBind's value
+/// (`NodeRecord` with its transport address): the durable source a rerun reads WaitForBind's value
 /// from (D67). Panics past 10 s.
 pub async fn until_bound(nodes: &Arc<dyn rdm_admin::storage::NodesStorage>, node_id: &NodeId) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);

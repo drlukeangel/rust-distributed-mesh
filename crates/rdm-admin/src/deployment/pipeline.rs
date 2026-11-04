@@ -806,7 +806,7 @@ pub struct LaunchTemplate {
     /// The executable every launch runs.
     pub executable: PathBuf,
     /// The binding `executable` is the file of, as the create launching from this template runs it:
-    /// its create records it on the node's row ([`crate::storage::NodeRow::executable`]).
+    /// its create records it on the node's row ([`crate::storage::NodeRecord::executable`]).
     /// `None` for a template no create launches from.
     pub binding: Option<rdm_core::binding::Binding>,
     /// Members to join gossip through: `(public key, address)`.
@@ -862,6 +862,15 @@ impl LaunchTemplate {
 
 }
 
+/// Whose launch snapshot a create's node starts from ([`DeploymentPipeline::initial_properties`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchOf {
+    /// A `node.create`: its create spec's tags and config (Q166, Q305).
+    Create,
+    /// Node recovery's create (node-recovery.md step 4): its predecessor's record's.
+    Recovery,
+}
+
 /// A request to create one node.
 #[derive(Debug, Clone)]
 pub struct CreateRequest {
@@ -889,9 +898,10 @@ pub struct CreateRequest {
     /// create, over the exited birth's data dir): taken over whole, a new endpoint key written there
     /// (Q358). `None`: a fresh data dir.
     pub data_dir: Option<PathBuf>,
-    /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
-    /// starts: its durable map of the births a predecessor heard.
-    pub held_runtimes: Vec<crate::storage::RuntimeRow>,
+    /// The node records this admin holds, handed to a node-admin's own nodes.storage before it starts
+    /// (a provider whose records are not on the shared store root): its durable map of the births a
+    /// predecessor heard.
+    pub held_runtimes: Vec<crate::storage::NodeRecord>,
     /// The path's entry in the accepted Build the fabric-primary put on the create
     /// ([`crate::build::EntrySpec`]): a plain create's row takes its tags and config at its first write.
     pub entry: Option<crate::build::EntrySpec>,
@@ -1433,6 +1443,34 @@ impl DeploymentPipeline<'_> {
         r.map_err(|f| PipelineError { step, reason: f.reason, code: f.code })
     }
 
+    /// The launch snapshot of `req` (`RDM_NODE_PROPERTIES`; the node writes it on its own record, its
+    /// first line, Q356): a create's from its entry and its create spec, the path's entry the
+    /// fabric-primary put on the create (Q166, Q305) and the accepted Build's `NodeSpec` for its storage
+    /// persistence, the executable this admin launches; a recovery's from its predecessor's record, read
+    /// at the predecessor's node id (a runtime point read, Q237 A), refused by name when it holds none.
+    async fn initial_properties(&self, req: &CreateRequest, of: LaunchOf, rows: Option<&crate::node_rows::NodeRows>) -> Result<rdm_core::launch::InitialProperties, PipelineError> {
+        let refused = |reason: String| PipelineError { step: CreateStep::PrepareStorage.name(), reason, code: rdm_core::outcome::Code::FailedPrecondition };
+        match (of, rows, &req.predecessor) {
+            (LaunchOf::Recovery, Some(rows), Some(predecessor)) => {
+                let record = rows.storage().node(&predecessor.node_id).await.map_err(|e| refused(format!("path {:?}, name {:?}: the record of the predecessor {} could not be read for the launch snapshot; nothing is launched: {e}", &req.path, &req.name, predecessor.node_id)))?;
+                let record = record.map(|l| l.record).ok_or_else(|| refused(format!("path {:?}, name {:?}: the predecessor {} wrote no record to take the launch snapshot from; nothing is launched", &req.path, &req.name, predecessor.node_id)))?;
+                Ok(rdm_core::launch::InitialProperties { config: record.config, tags: record.tags, executable: record.executable.or_else(|| self.template.binding.clone()), persistence: record.storage.persistence })
+            }
+            _ => {
+                // A create of no Build (a node recovery's, Q342) reads no Build.
+                let persistence = match &req.build_id {
+                    Some(build_id) => {
+                        let held = self.builds.read_build(build_id).await.map_err(|e| refused(format!("path {:?}, name {:?}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", &req.path, &req.name, build_id)))?;
+                        held.topology.node_spec(&req.location()).map(|s| s.storage_persistence)
+                    }
+                    None => None,
+                };
+                let (config, tags) = req.entry.as_ref().map(|e| (e.config.clone(), e.tags.clone())).unwrap_or_default();
+                Ok(rdm_core::launch::InitialProperties { config, tags, executable: self.template.binding.clone(), persistence })
+            }
+        }
+    }
+
     /// Create `req.node` through every step.
     pub async fn create(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
         self.create_with(req, None, None).await
@@ -1442,28 +1480,27 @@ impl DeploymentPipeline<'_> {
     /// its mesh and before it is asked to be Ready, and `before_launch` awaited right before the new
     /// runtime is launched ([`BeforeLaunch`]).
     pub(crate) async fn create_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        let row_for = if req.data_dir.is_some() { crate::node_rows::RowFor::Recovery } else { crate::node_rows::RowFor::Create };
-        self.create_with_row_for(req, row_for, pre_node_ready, before_launch).await
+        self.create_with_launch_of(req, if req.data_dir.is_some() { LaunchOf::Recovery } else { LaunchOf::Create }, pre_node_ready, before_launch).await
     }
 
-    /// `create_with` for a recovery (`RowFor::Recovery` even when `req.data_dir` is `None`: a newly
+    /// `create_with` for a recovery (`LaunchOf::Recovery` even when `req.data_dir` is `None`: a newly
     /// allocated data dir).
     pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        self.create_with_row_for(req, crate::node_rows::RowFor::Recovery, pre_node_ready, before_launch).await
+        self.create_with_launch_of(req, LaunchOf::Recovery, pre_node_ready, before_launch).await
     }
 
-    pub(crate) fn create_with_row_for<'a>(&'a self, req: &'a CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
+    pub(crate) fn create_with_launch_of<'a>(&'a self, req: &'a CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", req.build_id.as_ref(), &req.location());
         // Boxed where it is made: the create's steps are one large state machine, and every caller (a
         // step, a recovery, a drive) holds only the box on its worker's stack.
-        Box::pin(self.create_steps(req, row_for, pre_node_ready, before_launch).instrument(span))
+        Box::pin(self.create_steps(req, of, pre_node_ready, before_launch).instrument(span))
     }
 
-    async fn create_steps(&self, req: &CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    async fn create_steps(&self, req: &CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let location = req.location();
         let mut run = self.begin(req.build_id.as_ref(), &location, req.operation.clone()).await?;
-        let mut created = self.create_to_ready(&mut run, req, row_for, pre_node_ready, before_launch).await?;
+        let mut created = self.create_to_ready(&mut run, req, of, pre_node_ready, before_launch).await?;
         created.node.status = NodeStatus::Ready;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
@@ -1477,50 +1514,27 @@ impl DeploymentPipeline<'_> {
     /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
     /// whole (node-recovery.md sequence step 4). `before_launch`: awaited right before the new runtime
     /// is launched, and only when it is ([`BeforeLaunch`]).
-    fn create_to_ready<'a>(&'a self, run: &'a mut Run<'_>, req: &'a CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
+    fn create_to_ready<'a>(&'a self, run: &'a mut Run<'_>, req: &'a CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
         // Boxed where it is made, as `step`.
-        Box::pin(self.create_to_ready_body(run, req, row_for, pre_node_ready, before_launch))
+        Box::pin(self.create_to_ready_written_body(run, req, of, pre_node_ready, before_launch))
     }
 
-    async fn create_to_ready_body(&self, run: &mut Run<'_>, req: &CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        // The birth this create wrote a row for: a step after that write that fails withdraws it, so the
-        // next run's fresh birth is not refused by this one's row (lifecycles/node-create.md step 1).
-        let mut written: Option<NodeId> = None;
-        let operation = run.operation.clone();
-        let r = self.create_to_ready_written(run, req, row_for, pre_node_ready, before_launch, &mut written).await;
-        if let (Err(e), Some(node_id), Some(rows)) = (&r, &written, self.sink.node_rows()) {
-            // Under a fabric.delete that interrupts this Build, the row is the launch evidence the
-            // delete retains (build.md §1, Q179): the teardown's roster, read from the node rows, holds
-            // the birth, and its node.delete ends the runtime this create launched.
-            if let Some(delete) = self.interrupting_delete(req.build_id.as_ref()).await {
-                tracing::info_span!("rdm.node_admin.node.update.via-row-kept", node_path = %req.path, node_name = %req.name, subject_id = %node_id, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, delete_build_id = %delete.log(), failed_step = e.step, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the create failed under a fabric.delete: its row stays for the teardown, which deletes the birth it launched"));
-                return r;
-            }
-            rows.withdraw(&req.location(), node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
-        }
-        r
-    }
-
-    /// The fabric.delete accepted after the Build `build_id` that interrupts it (build.md §1), when one does.
-    async fn interrupting_delete(&self, build_id: Option<&crate::build::BuildId>) -> Option<crate::build::BuildId> {
-        let build = self.builds.read_build(build_id?).await.ok()?;
-        crate::build_state::interrupted_by(self.builds, &build).await.ok().flatten().map(|d| d.build_id)
-    }
-
-    /// An earlier run's birth that is decided afresh lets go of the row its create wrote.
-    async fn withdraw_earlier(&self, run: &Run<'_>, req: &CreateRequest, why: &str) {
-        let Some(rows) = self.sink.node_rows() else { return };
-        if run.is_done(CreateStep::AllocateIdentity.name()) {
-            rows.withdraw(&req.location(), &req.node_id, &run.operation, why).await;
-        }
-    }
-
-    /// Whether the node record of `node`'s exact birth holds `state` declared (the birth's own word,
-    /// applied by its authority): what a completed step that made the birth declare it hands on (D67).
+    /// Whether the node record of `node`'s exact birth holds `state` or a state after it (the node
+    /// writes its own state, Q356; a runtime point read, Q237 A): what a completed step that made the
+    /// birth declare it hands on (D67).
     async fn declared(&self, node: &Node, state: rdm_core::status::NodeState) -> bool {
         let (Some(rows), Some(incarnation)) = (self.sink.node_rows(), node.incarnation_id.as_ref()) else { return false };
-        rows.written().birth_facts(&**rows.storage(), &node.node_id, incarnation).await.ok().flatten().is_some_and(|f| f.declared.contains(&state))
+        let Ok(Some(record)) = crate::node_rows::birth_record(&**rows.storage(), &node.node_id, incarnation).await else { return false };
+        let reached = |s: NodeStatus| match s {
+            NodeStatus::Starting | NodeStatus::Withdrawn => 0,
+            NodeStatus::Pending => 1,
+            _ => 2,
+        };
+        let wanted = match state {
+            rdm_core::status::NodeState::Pending => 1,
+            _ => 2,
+        };
+        reached(record.state) >= wanted
     }
 
     /// The values the create's completed steps hand on, read from what is durable (D67), whoever wrote
@@ -1533,32 +1547,22 @@ impl DeploymentPipeline<'_> {
     ///   record (`runtime.json`, written by MakeRuntimeFactAvailableToBirth) names the deployment the
     ///   allocation minted;
     /// - WaitForBind: the transport address and listeners the birth bound, as it wrote them on its own
-    ///   part of its record at its join (`NodeProperties`);
+    ///   part of its record at its join (`NodeRecord`);
     /// - PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata: the runtime with its data dir.
     ///
-    /// A value with no durable source is not given, and its step fails by name ([`Self::step`]); a
-    /// launch no durable row names is decided by the row the create wrote ([`Self::row_allocation`]).
+    /// A value with no durable source is not given, and its step fails by name ([`Self::step`]). The
+    /// node's record is read at its node id (a runtime point read by this running admin, Q237 A; the node
+    /// itself reads nothing, Q227): the record the node wrote at its start (Q356).
     async fn give_create_values(&self, run: &mut Run<'_>, req: &CreateRequest) {
         if !run.is_done(CreateStep::AllocateIdentity.name()) {
             return;
         }
         let Some(rows) = self.sink.node_rows() else { return };
-        let Ok(Some(row)) = rows.written().known_row(&**rows.storage(), &req.node_id).await else { return };
-        let allocated = row.allocated.as_ref().filter(|a| a.operation == run.operation && a.build_id.as_ref() == req.build_id.as_ref());
-        let Some(incarnation) = allocated.map(|a| a.incarnation.clone()).or_else(|| row.newest_birth().map(|b| b.incarnation_id.clone())) else { return };
-        let minted = row.allocated.as_ref().filter(|a| a.incarnation == incarnation).map(|a| a.deployment_id.clone());
-        let runtime_row = self.joins.durable_report(&req.node_id, &incarnation).await.ok().flatten();
-        let data_dir = runtime_row.as_ref().and_then(|r| r.data_dir.as_deref()).map(PathBuf::from).or_else(|| req.data_dir.clone()).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
-        let fact = match (runtime_row, &minted) {
-            (Some(r), _) => Some(r.runtime),
-            (None, Some(minted)) => {
-                let dir = data_dir.clone();
-                let record = crate::blocking::blocking_io(move || RuntimeFact::read_record(&dir)).await.and_then(Result::ok);
-                record.filter(|f| f.deployment_id == minted.as_str())
-            }
-            (None, None) => None,
-        };
-        let Some(deployment_id) = minted.or_else(|| fact.as_ref().and_then(|f| DeploymentId::parse(&f.deployment_id).ok())) else { return };
+        let Ok(Some(row)) = rows.storage().node(&req.node_id).await.map(|l| l.map(|l| l.record)) else { return };
+        let incarnation = row.incarnation.clone();
+        let data_dir = row.storage.data_dir.as_deref().map(PathBuf::from).or_else(|| req.data_dir.clone()).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
+        let fact = Some(row.runtime.clone());
+        let Some(deployment_id) = fact.as_ref().and_then(|f| DeploymentId::parse(&f.deployment_id).ok()) else { return };
         run.given(CreateStep::AllocateIdentity.name(), &Identity { node_id: req.node_id.clone(), incarnation: incarnation.clone(), supersedes: None, deployment_id });
         if run.is_done(CreateStep::PrepareStorage.name()) {
             let dir = data_dir.clone();
@@ -1573,10 +1577,7 @@ impl DeploymentPipeline<'_> {
             run.given(step.name(), &RuntimeEvidence::of(&fact));
         }
         if run.is_done(CreateStep::WaitForBind.name()) {
-            let bound = rows.storage().properties(&req.node_id).await.ok().flatten().filter(|p| p.birth.node_id == req.node_id && p.birth.incarnation_id == incarnation);
-            if let Some(transport) = bound.as_ref().and_then(|p| p.transport_addr) {
-                run.given(CreateStep::WaitForBind.name(), &Bound { transport, listeners: bound.map(|p| p.listeners).unwrap_or_default() });
-            }
+            run.given(CreateStep::WaitForBind.name(), &Bound { transport: row.transport_addr, listeners: row.listeners.clone() });
         }
         run.given(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), &RuntimeEvidence { data_dir: Some(data_dir.display().to_string()), ..RuntimeEvidence::of(&fact) });
     }
@@ -1603,95 +1604,7 @@ impl DeploymentPipeline<'_> {
             .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the earlier run's runtime was launched by another executor and never joined; stopping it failed: {e}", &req.path, &req.name) , code: rdm_core::outcome::Code::FailedPrecondition })
     }
 
-    /// The identity an earlier run of this operation wrote `req.node`'s row with, for a run that holds
-    /// none of that run's receipts: its executor was lost, and with it the only journal its receipts
-    /// had reached (build.md §5.2). The row names the identity and the operation of the Build
-    /// that allocated it ([`crate::storage::NodeRow::allocated`]). Only a birth that was never launched
-    /// is continued; lifecycles/node-create.md requires exact provider proof of a runtime's state even
-    /// for a deployment that never joined:
-    /// - the provider proves that exact deployment was never launched ([`Found::NeverLaunched`]): this
-    ///   run continues the birth under the same identity (its row is that birth's,
-    ///   `RowCreated::HeldByNode`);
-    /// - the provider proves it was launched and has exited ([`Found::Exited`]), as the receipt arm's
-    ///   "the earlier run's runtime is gone": its row is withdrawn (that birth's key only) and
-    ///   the birth is decided afresh (`None`);
-    /// - one runs and the birth has not joined membership: the lost executor launched it, and the
-    ///   lost-executor rule ([`Self::stop_lost_launch`]) stops it through its exact handle, its row
-    ///   is withdrawn and the birth decided afresh (`None`);
-    /// - one runs and the birth has joined membership: refused by name, nothing stopped, withdrawn or
-    ///   minted, since this run holds none of that create's receipts past its row.
-    /// No such row: `None`, and the identity is minted. One `via-row-allocation` span.
-    async fn row_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows) -> Result<Option<Identity>, PipelineError> {
-        use tracing::Instrument;
-        let step = CreateStep::AllocateIdentity.name();
-        let (written, read) = rows.allocation_at(&req.location(), req.build_id.as_ref(), &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
-        let Some((node_id, a)) = written else { return Ok(None) };
-        let identity = Identity { node_id, incarnation: a.incarnation, supersedes: None, deployment_id: a.deployment_id };
-        let data_dir = req.data_dir.clone().unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &identity.node_id));
-        // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
-        // its identity is decided.
-        let spec = ResolvedNodeLaunch { mesh: req.mesh.clone().to_owned(), r#type: req.r#type.clone(), secrets: Default::default(), withhold: Vec::new(), path: req.path.clone(), name: req.name.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
-        let span = tracing::info_span!(
-            "rdm.node_admin.node.resolve.via-row-allocation",
-            node_path = %req.path, node_name = %req.name,
-            build_id = %build_span(req.build_id.as_ref()),
-            operation = %run.operation.action, operation_subject = ?run.operation.subject,
-            node_id = %identity.node_id,
-            incarnation_id = %identity.incarnation.as_str(),
-            deployment_id = %identity.deployment_id,
-            executor = %self.template.executor(),
-            read_status = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            detail = tracing::field::Empty,
-        );
-        // What the read returned at the name: the row's status.
-        if let Some(r) = &read {
-            span.record("read_status", format!("{:?}", r.status).as_str());
-        }
-        match self.provider.find(&spec, super::deadline::Deadline::step()).instrument(span.clone()).await {
-            Ok(Found::Exited(_)) => {
-                span.record("outcome", "launched-exited");
-                span.in_scope(|| tracing::info!("the row names a birth this operation allocated whose deployment the provider proves was launched and has exited: the birth is decided afresh"));
-                rows.withdraw(&req.location(), &identity.node_id, &run.operation, "the birth its row names was launched by a lost executor and has exited: a fresh birth is created at the name").await;
-                Ok(None)
-            }
-            Ok(Found::NeverLaunched) => {
-                span.record("outcome", "never-launched");
-                span.in_scope(|| tracing::info!("the row names a birth this operation allocated whose deployment the provider proves was never launched: this run continues it"));
-                Ok(Some(identity))
-            }
-            Ok(Found::Running(_)) if self.observer.joined(&identity.node_id, &identity.incarnation).await.is_some() => {
-                let reason = format!(
-                    "path {:?}, name {:?}: the row of operation {:?} (Build {}) names the birth {} at deployment {}, whose runtime runs and has joined fabric membership; this run holds none of that create's receipts past its row, so the birth is neither stopped, withdrawn nor decided afresh",
-                    &req.path, &req.name, run.operation, build_log(req.build_id.as_ref()), identity.node_id, identity.deployment_id
-                );
-                span.record("outcome", "launched-and-joined").record("detail", reason.as_str());
-                Err(PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })
-            }
-            Ok(Found::Running(stranded)) => {
-                span.record("outcome", "launched-by-lost-executor");
-                span.in_scope(|| tracing::info!("the row names a birth this operation allocated whose runtime the lost executor launched: it is stopped and the birth decided afresh"));
-                self.stop_lost_launch(req, &stranded, None).instrument(span.clone()).await?;
-                rows.withdraw(&req.location(), &identity.node_id, &run.operation, "the birth its row names was launched by a lost executor and never joined this one: a fresh birth is created at the name").await;
-                Ok(None)
-            }
-            Err(e) => {
-                let reason = format!(
-                    "path {:?}, name {:?}: the row of operation {:?} (Build {}) names the birth {} at deployment {}, and the provider could not prove whether a runtime of that deployment exists, so the birth is neither continued nor decided afresh: {e}",
-                    &req.path, &req.name, run.operation, build_log(req.build_id.as_ref()), identity.node_id, identity.deployment_id
-                );
-                span.record("outcome", "unproven").record("detail", reason.as_str());
-                Err(PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })
-            }
-        }
-    }
-
-    fn create_to_ready_written<'a>(&'a self, run: &'a mut Run<'_>, req: &'a CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>, written: &'a mut Option<NodeId>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
-        // Boxed where it is made, as `step`.
-        Box::pin(self.create_to_ready_written_body(run, req, row_for, pre_node_ready, before_launch, written))
-    }
-
-    async fn create_to_ready_written_body(&self, run: &mut Run<'_>, req: &CreateRequest, row_for: crate::node_rows::RowFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, written: &mut Option<NodeId>) -> Result<Created, PipelineError> {
+    async fn create_to_ready_written_body(&self, run: &mut Run<'_>, req: &CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let (run_build, run_operation) = (req.build_id.as_ref(), run.operation.clone());
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1700,8 +1613,7 @@ impl DeploymentPipeline<'_> {
         let executor = self.template.executor_birth();
         let recorded_by_another = |run: &Run<'_>, step: CreateStep| run.owner.get(step.name()).is_some_and(|o| o.as_ref() != Some(&executor));
         self.give_create_values(run, req).await;
-        // A launch whose runtime no durable row names (its birth never joined) is decided by the row
-        // the create wrote ([`Self::row_allocation`]): continued, stopped, or refused.
+        // A launch whose runtime no node record names (its birth never wrote one) is decided afresh.
         if run.done.get(CreateStep::DeployRuntime.name()).is_some_and(|v| v.as_ref().is_none_or(serde_json::Value::is_null)) {
             run.done.clear();
         }
@@ -1718,7 +1630,6 @@ impl DeploymentPipeline<'_> {
             };
             if !alive {
                 tracing::info!(node_path = %req.path, node_name = %req.name, "the earlier run's runtime is gone: a fresh birth");
-                self.withdraw_earlier(run, req, "the earlier run's runtime is gone: a fresh birth is created at the name").await;
                 run.done.clear();
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
                 // Launched by an executor that is not this one and never joined: its only seed is
@@ -1728,21 +1639,14 @@ impl DeploymentPipeline<'_> {
                 let stranded = earlier.expect("alive implies a decoded handle");
                 let recorded = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.as_ref());
                 self.stop_lost_launch(req, &stranded, recorded).await?;
-                self.withdraw_earlier(run, req, "the earlier run's runtime was launched by another executor and never joined: a fresh birth is created at the name").await;
                 run.done.clear();
             }
         }
         let rows = self.sink.node_rows();
-        // A run holding no AllocateIdentity receipt of this operation continues the birth an earlier
-        // run wrote the name's row for, when that row names one ([`Self::row_allocation`]); any
-        // other run mints.
-        let written_before = match &rows {
-            Some(rows) if !run.is_done(CreateStep::AllocateIdentity.name()) => self.row_allocation(run, req, rows).await?,
-            _ => None,
-        };
+        // A run holding no AllocateIdentity receipt of this operation mints the birth.
         let id: Identity = self
             .step(run, CreateStep::AllocateIdentity.name(), async {
-                Ok(written_before.unwrap_or_else(|| Identity { node_id: req.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }))
+                Ok(Identity { node_id: req.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() })
             })
             .await?;
         // The birth's address, bound for its deployment: the birth a run continues binds the address it
@@ -1761,7 +1665,6 @@ impl DeploymentPipeline<'_> {
             Some(d) => d,
             None => super::node_data_dir(&self.template.data_root, &id.node_id),
         };
-        let writing = &mut *written;
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
             let step_span = tracing::Span::current();
             let mut done_awaits: Vec<&'static str> = Vec::with_capacity(3);
@@ -1769,52 +1672,17 @@ impl DeploymentPipeline<'_> {
             // (`RDM_INHERITED_DATA_DIR`): RDM never looks at what the directory holds (Q359).
             step_span.record("data_dir", data_dir.display().to_string().as_str());
             step_span.record("inherited", inherits);
-            // The birth's first row, by the writer of the mesh's rows (lifecycles/node-create.md step 1):
-            // before anything is prepared or launched for the birth (refused, nothing is), and after
-            // the AllocateIdentity receipt names its node id, so an executor lost at any point leaves
-            // only a row that receipt names: a rerun reuses the identity and its row stands
-            // (`RowCreated::HeldByNode`), or decides afresh and withdraws it (`withdraw_earlier`).
+            // The mesh-primary checks the path and name against its view and the creates it has in flight
+            // (lifecycles/node-create.md step 1; never a store read, Q227): before anything is prepared or
+            // launched for the birth (refused, nothing is). Nothing is written: the node writes its own
+            // record at its start (Q356).
             if let Some(rows) = &rows {
-                // The identity is written into the row with it, so it is durable wherever the
-                // row is (`NodeRow::allocated`): a later run of this operation that never heard
-                // this one's receipts continues the same birth rather than being refused by it.
-                let allocated = crate::storage::Allocation { predecessor: req.predecessor.clone(), build_id: req.build_id.clone(), operation: run_operation.clone(), incarnation: id.incarnation.clone(), deployment_id: id.deployment_id.clone() };
-                // A create over an exited birth's data dir (or fresh dir on lost-data-dir recovery)
-                // is node recovery's (node-recovery.md step 4), whose row inherits the Deleted
-                // row's tags with its config.
-                let of = row_for;
-                // A plain create's row carries the tag labels and the config its create spec names, from the
-                // path's entry the fabric-primary put on the create (Q166; proposal
-                // executable-bindings-at-create.md rule 1; this admin reads no Build record, Q227), so its
-                // first join hands it that
-                // config; a recovery's and a successor's carry their seed's.
-                // Whatever the create, its storage and placement are the create spec's (build-deployment.md §3:
-                // a successor's storage follows its create spec's), written onto the row (build.md §1), read
-                // from the Build this admin holds.
-                step_span.record("awaiting", "entry-spec");
-                // A create of no Build (a node recovery's, Q342) reads no Build: its storage is the
-                // node record's, which its claim inherits.
-                let storage_persistence = match &req.build_id {
-                    Some(build_id) => {
-                        let held = self.builds.read_build(build_id).await.map_err(|e| format!("path {:?}, name {:?}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", &req.path, &req.name, build_id))?;
-                        held.topology.node_spec(&req.location()).map(|s| s.storage_persistence)
-                    }
-                    None => None,
-                };
-                done_awaits.push("entry-spec");
-
-                // A Build's create takes its entry's config and tags, never a seed's (Q305).
-                let (tags, config) = match (of, &req.entry) {
-                    (crate::node_rows::RowFor::Create, Some(e)) => (e.tags.clone(), e.config.clone()),
-                    _ => Default::default(),
-                };
-                step_span.record("awaiting", "create-row");
-                rows.create_row_with_spec(&req.location(), &req.mesh, &req.r#type, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, storage_persistence, of)
+                step_span.record("awaiting", "name-check");
+                rows.check_create(&req.location(), &req.mesh, &req.r#type, &id.node_id, req.predecessor.as_ref().map(|p| &p.node_id), self.joins.creating_at(&req.location()))
                     .await
-                    .map_err(|e| format!("path {:?}, name {:?}: the birth {}'s record was refused at the name; nothing is launched: {e}", &req.path, &req.name, id.node_id))?;
-                done_awaits.push("create-row");
+                    .map_err(|e| format!("path {:?}, name {:?}: the birth {} was refused at the name; nothing is launched: {e}", &req.path, &req.name, id.node_id))?;
+                done_awaits.push("name-check");
                 step_span.record("awaited", done_awaits.join(",").as_str());
-                *writing = Some(id.node_id.clone());
             }
             // The node's endpoint is its own: over its predecessor's data dir a new key is minted and
             // written there, never the predecessor's read (Q358); a newly allocated one is minted its
@@ -1835,22 +1703,10 @@ impl DeploymentPipeline<'_> {
             Ok(key)
         })
         .await?;
-        // A PrepareStorage an earlier run of this operation receipted wrote the row: a failure from
-        // here withdraws it as well.
-        *written = Some(id.node_id.clone());
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
-        // Resolve the exact row just prepared, including recovery's inherited properties.
-        // A path lookup here could select an unrelated later birth.
-        let initial_properties = if let Some(rows) = &rows {
-            let row = rows.written().known_row(&**rows.storage(), &id.node_id).await
-                .map_err(|reason| PipelineError { step: CreateStep::PrepareStorage.name(), reason, code: rdm_core::outcome::Code::FailedPrecondition })?
-                .ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact row {} has no initial properties; nothing is launched", &req.path, &req.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?;
-            row.initial_properties.ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact row {} has no launch snapshot", &req.path, &req.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?
-        } else {
-            req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone() }).unwrap_or_default()
-        };
+        let initial_properties = self.initial_properties(req, of, rows.as_deref()).await?;
         let launch = Launch {
             initial_properties,
             // The provider the launching admin writes (storage.md §2 "every launch"): the one its own
@@ -2062,10 +1918,10 @@ impl DeploymentPipeline<'_> {
             loop {
                 let held = admitted.borrow().clone().map(|r| r.digest).filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation).map(|d| Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() });
                 // Held by no process any more (this admin restarted after the join was admitted): the
-                // admitted birth's runtime row, kept durable at admission (`Joins::keep_admitted`).
+                // record the birth wrote itself at its start (Q356; `Joins::durable_report`).
                 let reported = match held {
                     Some(p) => Some(p),
-                    None => self.joins.durable_report(&id.node_id, &id.incarnation).await.map_err(|e| StepFailure::from(format!("path {:?}, name {:?}: {e}", &req.path, &req.name)))?.map(|row| Publication { runtime: Some(row.runtime), data_dir: row.data_dir }),
+                    None => self.joins.durable_report(&id.node_id, &id.incarnation).await.map_err(|e| StepFailure::from(format!("path {:?}, name {:?}: {e}", &req.path, &req.name)))?.map(|row| Publication { runtime: Some(row.runtime), data_dir: row.storage.data_dir }),
                 };
                 if let Some(reported) = reported {
                     if reported == published {
@@ -2527,7 +2383,7 @@ impl DeploymentPipeline<'_> {
     /// other refusal fails the step by name.
     async fn deleting_row(&self, record: &Node, op: LifecycleOp, for_writer: bool) -> Result<LifecycleOp, String> {
         if let Some(rows) = self.sink.node_rows() {
-            match rows.status(record, &op.incarnation, crate::model::NodeStatus::Deleting).await {
+            match rows.deleting(record).await {
                 Ok(()) => {}
                 Err(crate::node_rows::RowRefused::NotMeshPrimary(_)) if for_writer => {}
                 Err(e) => return Err(format!("{}: the Deleting row of {} is not written: {e}", record.node_id, record.node_id)),

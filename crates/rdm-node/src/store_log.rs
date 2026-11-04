@@ -89,6 +89,11 @@ pub fn rfc3339(ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64).unwrap_or_default().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// A line's `time` (RFC 3339 in UTC) as rafka-time milliseconds; `None` for a value that does not parse.
+pub fn rfc3339_ms(time: &str) -> Option<u64> {
+    chrono::DateTime::parse_from_rfc3339(time).ok().and_then(|t| u64::try_from(t.timestamp_millis()).ok())
+}
+
 /// The process writing through a store: its exact birth, every line's `source`, and its rafka-time,
 /// every line's `time`.
 #[derive(Debug, Clone)]

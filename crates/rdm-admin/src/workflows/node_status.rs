@@ -14,7 +14,7 @@ mod tests {
     use crate::fabric_storage::{FabricIdentity, FabricRecord};
     use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus, PathName};
     use crate::status_rpc::{Declaration, OperationEffect};
-    use crate::storage::{BirthFacts, MeshRecord, NodeOperation, NodeRow};
+    use crate::storage::{BirthFacts, MeshRecord, NodeOperation, NodeRecord};
     use rdm_core::MemberStatus;
     use rdm_core::status::{DeclaredOperation, MeshState, NodeState};
     use std::time::{Duration, Instant};
@@ -36,7 +36,7 @@ mod tests {
         let older_inc = IncarnationId::mint();
         let current_inc = IncarnationId::mint();
 
-        let mut row = NodeRow::new(path.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Starting);
+        let mut row = NodeRecord::new(path.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Starting);
         let mut older_birth = BirthFacts::new(older_inc.clone(), path.clone());
         older_birth.declared.insert(NodeState::Pending);
         let mut current_birth = BirthFacts::new(current_inc.clone(), path.clone());

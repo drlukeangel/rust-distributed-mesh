@@ -10,7 +10,7 @@ use rdm_admin::model::{
     PathName, ProviderKind, ScopeStatus,
 };
 use rdm_admin::status_rpc::{Declared, StatusService};
-use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, NodeRow, NodesStorage};
+use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, NodeRecord, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
@@ -136,18 +136,18 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         let deleted_inc = IncarnationId::mint();
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
-        let mut admin_row = NodeRow::new(admin_name.clone(), "mesh1", "node-admin", admin_id.clone(), NodeStatus::Ready);
+        let mut admin_row = NodeRecord::new(admin_name.clone(), "mesh1", "node-admin", admin_id.clone(), NodeStatus::Ready);
         admin_row
             .birth_mut(&admin_inc, &admin_name)
             .declared
             .insert(rdm_core::status::NodeState::Ready);
-        let mut rpc_row = NodeRow::new(rpc_name.clone(), "mesh1", "node", rpc_id.clone(), NodeStatus::Ready);
+        let mut rpc_row = NodeRecord::new(rpc_name.clone(), "mesh1", "node", rpc_id.clone(), NodeStatus::Ready);
         rpc_row
             .birth_mut(&rpc_inc, &rpc_name)
             .declared
             .insert(rdm_core::status::NodeState::Ready);
         let mut deleted_row =
-            NodeRow::new(deleted_name.clone(), "mesh1", "node", deleted_id.clone(), NodeStatus::Deleted);
+            NodeRecord::new(deleted_name.clone(), "mesh1", "node", deleted_id.clone(), NodeStatus::Deleted);
         deleted_row.birth_mut(&deleted_inc, &deleted_name);
         nodes_storage.put_node(&admin_row).await.unwrap();
         nodes_storage.put_node(&rpc_row).await.unwrap();

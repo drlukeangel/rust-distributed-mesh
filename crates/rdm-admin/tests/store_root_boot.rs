@@ -317,7 +317,7 @@ impl Prepared {
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             rdm_admin::storage::write_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), state: rdm_core::status::MeshState::Pending }).await.unwrap().expect("mesh1's name is free");
             let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
-            let own = rdm_admin::storage::NodeRecord { mesh: "mesh1".into(),
+            let own = rdm_admin::storage::OwnRow { mesh: "mesh1".into(),
                 node_id: node_id.clone(),
                 fabric_id: fabric_id.clone(),
                 path: "mesh1.node-admin".into(), name: "1".into(),
@@ -345,7 +345,7 @@ impl Prepared {
                 .unwrap();
             // The birth's row at its path.name, as its mesh's writer left it: the name is held by this node.id.
             let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.location());
-            let row = rdm_admin::storage::NodeRow { r#type: "node-admin".into(), mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
+            let row = rdm_admin::storage::NodeRecord { r#type: "node-admin".into(), mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 path: own.path.clone(), name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
@@ -361,7 +361,7 @@ impl Prepared {
             nodes.write_record(&row).await.unwrap();
             // The birth's own part of its record, its address included, as its own writer put it (Q333).
             use rdm_admin::storage::NodesStorage as _;
-            nodes.put_properties(&rdm_node::node_records::NodeProperties {
+            nodes.put_properties(&rdm_node::nodes_storage::NodeRecord {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
                 config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
@@ -373,12 +373,12 @@ impl Prepared {
                 let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
                 let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), location.clone());
                 // Its address is the node's own part of its record (Q333).
-                nodes.put_properties(&rdm_node::node_records::NodeProperties {
+                nodes.put_properties(&rdm_node::nodes_storage::NodeRecord {
                     birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation },
                     config: Default::default(), tags: Default::default(),
                     endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(),
                 }).await.unwrap();
-                let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), initial_properties: None, topology_storage_provider: None, writer: None,
+                let row = rdm_admin::storage::NodeRecord { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), initial_properties: None, topology_storage_provider: None, writer: None,
                     path: location.path.clone(), name: location.name.clone(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,
@@ -431,7 +431,7 @@ impl Prepared {
 
     /// Read through the storage adapters once the admin has ended: the row at mesh1.node-admin.1 and the
     /// node.ids whose live records' newest births carry an address, every mesh's.
-    fn rows_after(&self) -> (Option<rdm_admin::storage::NodeRow>, Vec<String>) {
+    fn rows_after(&self) -> (Option<rdm_admin::storage::NodeRecord>, Vec<String>) {
         use rdm_admin::storage::NodesStorage as _;
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
@@ -878,7 +878,7 @@ impl Prepared {
     }
 
     /// The row at mesh1.node-admin.1 and the row of `node_id`, read through the storage adapters.
-    fn row_and_node(&self, node_id: &str) -> (Option<rdm_admin::storage::NodeRow>, Option<rdm_admin::storage::NodeRow>) {
+    fn row_and_node(&self, node_id: &str) -> (Option<rdm_admin::storage::NodeRecord>, Option<rdm_admin::storage::NodeRecord>) {
         use rdm_admin::storage::NodesStorage as _;
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();

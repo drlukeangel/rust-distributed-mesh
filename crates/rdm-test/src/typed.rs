@@ -149,7 +149,7 @@ impl Estate {
     fn note(&self, peers: &Peers, views: &[NodeView]) {
         peers.learn_known(views);
         let mut births = self.births.lock().unwrap();
-        for n in views.iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
+        for n in views.iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && !matches!(n.state, NodeStatus::Dead | NodeStatus::Deleted)) {
             if let Some(birth) = birth_of_view(n) {
                 births.insert(n.location(), birth);
             }
@@ -502,7 +502,7 @@ impl Estate {
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<PathName>) -> Vec<NodeView> {
         let all = self.node_views().await;
         let have: std::collections::BTreeSet<PathName> = all.iter().map(|n| n.location()).collect();
-        assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::Ready), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{:?}={:?}", n.location(), n.status)).collect::<Vec<_>>());
+        assert!(&have == names && all.iter().all(|n| n.state == NodeStatus::Ready), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{:?}={:?}", n.location(), n.state)).collect::<Vec<_>>());
         all
     }
 
@@ -513,7 +513,7 @@ impl Estate {
     pub async fn settles_to_named(&self, names: &std::collections::BTreeSet<PathName>, within: std::time::Duration) -> Vec<NodeView> {
         self.until_view(&format!("the view holds exactly {names:?}, every node ready"), within, |views| {
             let have: std::collections::BTreeSet<PathName> = views.iter().map(|n| n.location()).collect();
-            (&have == names && views.iter().all(|n| n.status == NodeStatus::Ready)).then(|| views.to_vec())
+            (&have == names && views.iter().all(|n| n.state == NodeStatus::Ready)).then(|| views.to_vec())
         })
         .await
     }
@@ -533,12 +533,12 @@ impl Estate {
             meshes.iter().flat_map(|(m, a, r)| [((m.to_string(), "node-admin".to_string()), *a as usize), ((m.to_string(), "node".to_string()), *r as usize)]).filter(|(_, n)| *n > 0).collect();
         let named: std::collections::BTreeSet<&str> = meshes.iter().map(|(m, _, _)| *m).collect();
         self.until_view(&format!("the view settles on {want:?}, every node ready"), within, |views| {
-            let views: Vec<NodeView> = views.iter().filter(|n| named.contains(n.mesh.as_str())).cloned().collect();
+            let views: Vec<NodeView> = views.iter().filter(|n| named.contains(n.mesh().as_str())).cloned().collect();
             let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
             for n in &views {
-                *have.entry((n.mesh.clone(), n.r#type.clone())).or_default() += 1;
+                *have.entry((n.mesh().clone(), n.r#type.clone())).or_default() += 1;
             }
-            (have == want && views.iter().all(|n| n.status == NodeStatus::Ready)).then_some(views)
+            (have == want && views.iter().all(|n| n.state == NodeStatus::Ready)).then_some(views)
         })
         .await
     }
@@ -550,9 +550,9 @@ impl Estate {
         self.until_view(&format!("the view settles on {want:?}, every node ready"), within, |views| {
             let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
             for n in views {
-                *have.entry((n.mesh.clone(), n.r#type.clone())).or_default() += 1;
+                *have.entry((n.mesh().clone(), n.r#type.clone())).or_default() += 1;
             }
-            (have == want && views.iter().all(|n| n.status == NodeStatus::Ready)).then(|| views.to_vec())
+            (have == want && views.iter().all(|n| n.state == NodeStatus::Ready)).then(|| views.to_vec())
         })
         .await
     }
@@ -563,8 +563,8 @@ impl Estate {
     /// it will call. The witness reports it (`node.topology.get`) and a witness that never does is named.
     pub async fn witness_holds_birth(&self, witness: &PathName, node: &PathName) {
         let (witness_view, birth) = (self.node_view(witness).await, self.node_view(node).await);
-        let incarnation = birth.incarnation_id.clone().unwrap_or_else(|| panic!("{node:?} has no birth to hold: {birth:?}"));
-        self.peers().await.fact(&witness_view, &birth.mesh, &format!("{witness:?} holds incarnation {incarnation:?} of {node:?}"), |v| v.birth(&birth.node_id).is_some_and(|d| d.node.incarnation == incarnation)).await;
+        let incarnation = birth.incarnation.clone().unwrap_or_else(|| panic!("{node:?} has no birth to hold: {birth:?}"));
+        self.peers().await.fact(&witness_view, &birth.mesh(), &format!("{witness:?} holds incarnation {incarnation:?} of {node:?}"), |v| v.birth(&birth.node_id).is_some_and(|d| d.node.incarnation == incarnation)).await;
     }
 
     /// Wait until the node `witness` retains the departure of `node_id` in its held view of `mesh`
@@ -588,7 +588,7 @@ impl Estate {
                     if let Some(v) = check(&views) {
                         return v;
                     }
-                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.location(), n.status, n.node_id)).collect::<Vec<_>>())
+                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.location(), n.state, n.node_id)).collect::<Vec<_>>())
                 }
                 Err(e) => {
                     self.rehandover().await;
@@ -611,7 +611,7 @@ impl Estate {
                     if let Some(v) = check(&views) {
                         return v;
                     }
-                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.location(), n.status, n.node_id)).collect::<Vec<_>>())
+                    format!("{:?}", views.iter().map(|n| format!("{:?}={:?}/{}", n.location(), n.state, n.node_id)).collect::<Vec<_>>())
                 }
                 None => format!("{admin:?} did not answer mesh.nodes.get for {}", self.fabric_id),
             };
@@ -633,7 +633,7 @@ impl Estate {
                     if let Some(v) = check(view.as_ref()) {
                         return v;
                     }
-                    format!("{:?}", view.map(|n| format!("{:?}/{}", n.status, n.node_id)))
+                    format!("{:?}", view.map(|n| format!("{:?}/{}", n.state, n.node_id)))
                 }
                 Err(e) => {
                     self.rehandover().await;
@@ -685,10 +685,10 @@ impl Estate {
     pub async fn advertised_data_dir(&self, node: &PathName) -> Option<String> {
         let entry = self.entry().await;
         let mut admins = vec![entry.clone()];
-        admins.extend(self.node_views().await.into_iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.status == NodeStatus::Ready && n.location() != entry).map(|n| n.location()));
+        admins.extend(self.node_views().await.into_iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.state == NodeStatus::Ready && n.location() != entry).map(|n| n.location()));
         for admin in admins {
             let Some(views) = self.node_views_at(&admin).await else { continue };
-            if let Some(dir) = views.into_iter().find(|n| &n.location() == node).and_then(|n| n.data_dir) {
+            if let Some(dir) = views.into_iter().find(|n| &n.location() == node).and_then(|n| n.storage.data_dir) {
                 return Some(dir);
             }
         }
@@ -945,7 +945,7 @@ impl Estate {
         loop {
             let fp = self.fabric_view().await.fabric_primary;
             let held = match &fp {
-                Some(fp) => Nodes::new(self.peers().await.carrier_for(fp.clone())).get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.is_ok_and(|views| views.iter().any(|n| &n.location() == node && n.stopped)),
+                Some(fp) => Nodes::new(self.peers().await.carrier_for(fp.clone())).get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.is_ok_and(|views| views.iter().any(|n| &n.location() == node && n.state == rdm_client::NodeStatus::Stopped)),
                 None => false,
             };
             if held {

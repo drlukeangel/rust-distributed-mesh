@@ -105,7 +105,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let builds = estate.build_ids().await;
     estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     let after = estate
-        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
+        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
@@ -115,7 +115,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     estate.stop_then_start(&rdm_core::PathName::new("mesh2.node", "2").unwrap()).await;
     assert_eq!(estate.build_ids().await, builds, "a restart writes no Build (Q342)");
     let third = estate
-        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
+        .until_node(&rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2.node.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
@@ -127,7 +127,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .until_view_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 holds the restarted mesh2.node.2 ready, same node and incarnation", Duration::from_secs(30), |views| {
             views
                 .iter()
-                .find(|n| n.node_id.as_str() == before["node_id"].as_str().unwrap() && n.status == NodeStatus::Ready)
+                .find(|n| n.node_id.as_str() == before["node_id"].as_str().unwrap() && n.state == NodeStatus::Ready)
                 .map(json_of)
                 .filter(|n| n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"])
         })
@@ -152,8 +152,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     build(&estate, &shape(&["mesh1"], 2)).await;
     let last = estate
         .until_view("mesh2's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
-            let mesh2: Vec<PathName> = views.iter().filter(|n| n.mesh == "mesh2").map(|n| n.location()).collect();
-            let alive = views.iter().any(|n| n.mesh == "mesh2" && n.status == NodeStatus::Ready);
+            let mesh2: Vec<PathName> = views.iter().filter(|n| n.mesh() == "mesh2").map(|n| n.location()).collect();
+            let alive = views.iter().any(|n| n.mesh() == "mesh2" && n.state == NodeStatus::Ready);
             (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
         })
         .await;

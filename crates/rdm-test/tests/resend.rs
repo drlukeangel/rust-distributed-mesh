@@ -87,7 +87,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     let node = views.iter().filter(|n| n.r#type == "node" && !n.is_primary && !n.is_fabric_primary).min_by_key(|n| n.name.clone()).cloned().expect("an rpc member of mesh1 that holds no role");
     let path: PathName = node.location();
     let node_id = node.node_id.to_string();
-    let incarnation = node.incarnation_id.clone().expect("the member's birth");
+    let incarnation = node.incarnation.clone().expect("the member's birth");
     let primary_id = primary.node_id.to_string();
 
     // The hang: the birth neither gossips nor answers from here, and its runtime still runs.
@@ -121,7 +121,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
             .cloned()
     })
     .await;
-    let after = estate.until_node(&path, &format!("{path:?} re-created, ready, as a new node.id"), FLOOR * 3, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != node.node_id).cloned()).await;
+    let after = estate.until_node(&path, &format!("{path:?} re-created, ready, as a new node.id"), FLOOR * 3, |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id != node.node_id).cloned()).await;
     hung.release();
     estate.stop().await;
 
@@ -142,7 +142,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     // Told from the call's stored end (the client's `tell_call_end`, inside the call's span): it
     // starts after the call and before the call's span closes.
     assert!(at(&notice) >= at(&call) && at(&notice) <= end(&call), "on_call_failed is told at the call's end, under its span: call {}..{}, notice {}", at(&call), end(&call), at(&notice));
-    assert_eq!((attr(&notice, "node_id"), attr(&notice, "incarnation_id")), (primary_id.clone(), primary.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()), "the sender is the mesh-primary's birth: {notice}");
+    assert_eq!((attr(&notice, "node_id"), attr(&notice, "incarnation_id")), (primary_id.clone(), primary.incarnation.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()), "the sender is the mesh-primary's birth: {notice}");
     assert_eq!((attr(&notice, "receiver_path"), attr(&notice, "receiver_name")), (path.path.to_string(), path.name.to_string()), "the receiver is the hung birth at its (path, name): {notice}");
     assert_eq!(attr(&notice, "outcome"), outcome, "the reason is the call's stored end: {notice} vs {call}");
     assert!(attr(&notice, "reason").starts_with(&outcome), "the reason carries the call's end and its reason: {notice}");

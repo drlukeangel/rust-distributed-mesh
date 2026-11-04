@@ -17,9 +17,6 @@ pub struct NodeConfigs {
     own_channels: std::sync::OnceLock<rdm_transport::topology::TopologyView>,
     client: Arc<NodeRpcClient>,
     one_at_a_time: tokio::sync::Mutex<()>,
-    /// The record this admin's writer of its mesh's rows holds (`crate::node_rows::WrittenRows`):
-    /// each row `NodeConfigs` puts is held there, so the node's next row carries the config put.
-    written: Arc<crate::node_rows::WrittenRows>,
     /// The tick of this admin's installed view ([`Self::watch_views`]).
     views: std::sync::OnceLock<tokio::sync::watch::Receiver<u64>>,
 }
@@ -109,10 +106,9 @@ pub(crate) enum Owed {
 pub type NodeConfigsSlot = Arc<std::sync::OnceLock<Arc<NodeConfigs>>>;
 
 impl NodeConfigs {
-    /// The `NodeConfigs` over `client`; `written` is the record the writer of this admin's mesh rows holds
-    /// (`NodeRows::with_written`).
-    pub fn new(client: Arc<NodeRpcClient>, written: Arc<crate::node_rows::WrittenRows>) -> Self {
-        Self { own_channels: Default::default(), records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default() }
+    /// The `NodeConfigs` over `client`.
+    pub fn new(client: Arc<NodeRpcClient>) -> Self {
+        Self { own_channels: Default::default(), records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), views: Default::default() }
     }
 
     /// Bind the configured provider's nodes store, where each node's record is, both its parts (Q333);
@@ -136,33 +132,85 @@ impl NodeConfigs {
         self.own_properties.get()
     }
 
-    fn own_snapshot(&self, subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<rdm_node::node_records::NodeProperties> {
-        let channels = self.own_channels.get()?;
-        let row = channels.own_row();
-        Some(rdm_node::node_records::NodeProperties {
-            birth: rdm_node::node_records::RecordBirth { node_id: subject.node_id.clone(), incarnation_id: subject.incarnation_id.clone()? },
-            config, tags: row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(),
-            endpoint_id: subject.endpoint_id.clone(), transport_addr: subject.transport_addr, listeners: subject.listeners.clone(),
-        })
+    /// The record this admin's own commands hand its writer: the record its start wrote, with `config`.
+    fn own_snapshot(&self, _subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<rdm_node::nodes_storage::NodeRecord> {
+        self.own_properties.get()?.start_record(config)
     }
 
-    /// Persist this admin's actual binding before it may become Ready. Retained properties
-    /// take precedence for the same node ID; only the bound metadata is refreshed.
-    pub async fn bound_own(&self, subject: &crate::model::Node, properties: rdm_core::launch::InitialProperties) -> Result<(), String> {
-        // The retained config and tags: this admin's own row from its hydration sync (Q234) when it
-        // read the admin's own part, else `properties`, the launch snapshot. Nothing is read from the
-        // store at this start (Q227).
+    /// Write this admin's own record at its start (Q356), before it may become Ready: `subject` its
+    /// identity, bound addresses and data dir, `runtime` the runtime it runs in, `cert` the dates of the
+    /// member cert and signing cert it holds, state `starting`. Its config and tags are its own row's
+    /// from its hydration sync (Q234) when it read one, else `properties`, the launch's; its storage
+    /// persistence and executable `properties`'. Nothing is read from the store at this start (Q227).
+    pub async fn bound_own(&self, subject: &crate::model::Node, properties: rdm_core::launch::InitialProperties, runtime: rdm_core::RuntimeFact, cert: (Option<rdm_core::certs::CertDates>, Option<rdm_core::certs::SigningCertDates>)) -> Result<(), String> {
         let (config, tags) = match self.own_channels.get() {
             Some(channels) => rdm_node::node::retained_properties(channels, &subject.node_id, &properties),
-            None => (properties.config, properties.tags),
+            None => (properties.config.clone(), properties.tags.clone()),
         };
-        let mut initial = self.own_snapshot(subject, config)
-            .ok_or_else(|| format!("{}: own property writer is not bound", subject.node_id))?;
-        initial.tags = tags;
-        let channels = self.own_channels.get().expect("own snapshot requires channels").clone();
+        let (Some(incarnation), Some(endpoint_id), Some(transport_addr)) = (subject.incarnation_id.clone(), subject.endpoint_id.clone(), subject.transport_addr) else {
+            return Err(format!("{}: its own record needs its incarnation, endpoint and transport address", subject.node_id));
+        };
+        let initial = rdm_node::nodes_storage::NodeRecord {
+            node_id: subject.node_id.clone(), path: subject.path.clone(), name: subject.name.clone(), r#type: subject.r#type.clone(),
+            incarnation, state: crate::model::NodeStatus::Starting, endpoint_id, transport_addr, listeners: subject.listeners.clone(), runtime,
+            is_primary: None, is_fabric_primary: None, cert: cert.0, signing_cert: cert.1,
+            storage: rdm_core::meta::Storage { persistence: properties.persistence, data_dir: subject.data_dir.clone() },
+            executable: properties.executable.clone(), config, tags,
+        };
+        let channels = self.own_channels.get().ok_or_else(|| format!("{}: own property writer is not bound", subject.node_id))?.clone();
         self.own_properties.get().expect("production own writer is bound").bound(initial,
             move |record| { channels.set_config(record.config.clone()); channels.set_tags(record.tags.clone()); })
             .await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// Write `change` on this admin's own record (Q356), through its own property writer. Nothing is
+    /// written before its start's record.
+    pub async fn own_update(&self, change: impl FnOnce(&mut rdm_node::nodes_storage::NodeRecord) + Send + 'static) -> Result<(), String> {
+        let (Some(channels), Some(writer)) = (self.own_channels.get(), self.own_properties.get()) else {
+            return Err("its own property writer is not bound".into());
+        };
+        let initial = writer.start_record(channels.config().unwrap_or_default()).ok_or("its start has not written its record yet")?;
+        writer.update(initial, change, |_| {}).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// Write `to` as this admin's own state on its own record (Q356; [`rdm_node::nodes_storage::NodeRecord::set_state`]),
+    /// before it publishes or declares it. A state its record holds already, or one its order refuses,
+    /// writes nothing.
+    pub async fn own_state(&self, to: crate::model::NodeStatus) -> Result<(), String> {
+        let (Some(channels), Some(writer)) = (self.own_channels.get(), self.own_properties.get()) else {
+            return Err("its own property writer is not bound".into());
+        };
+        let initial = writer.start_record(channels.config().unwrap_or_default()).ok_or("its start has not written its record yet")?;
+        writer.state(initial, to).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// This admin's own property writer, once its start bound it: what its `NodeSelf` writes each state
+    /// of a stop and a start through (Q356).
+    pub fn own_writer(&self) -> Option<rdm_node::node_records::NodePropertyWriter> {
+        self.own_properties.get().cloned()
+    }
+
+    /// Write `to` as this admin's own path and name on its own record (Q356), before it publishes the
+    /// name (record first, mesh second).
+    pub async fn own_name(&self, to: &crate::model::PathName) -> Result<(), String> {
+        let to = to.clone();
+        self.own_update(move |record| { record.path = to.path; record.name = to.name; }).await
+    }
+
+    /// Record this admin's own roles on its own record (Q356; node-primary-update.md step 5): the
+    /// roles `primaries` names its birth `birth` in `mesh` ([`rdm_node::node_records::write_own_roles`]),
+    /// written at each change of the view, from its start's record on, until the view is dropped.
+    pub async fn record_own_roles(&self, primaries: rdm_transport::topology::PrimaryView, birth: crate::storage::BirthRef, mesh: String) {
+        let (Some(channels), Some(writer)) = (self.own_channels.get().cloned(), self.own_properties.get().cloned()) else { return };
+        let mut changed = primaries.subscribe();
+        let mut written = (None, None);
+        loop {
+            changed.borrow_and_update();
+            rdm_node::node_records::write_own_roles(&writer, &primaries, &birth, &mesh, "node-admin", channels.config().unwrap_or_default(), &mut written).await;
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// An admin writes its own map locally through the same writer as downward commands.
@@ -172,7 +220,7 @@ impl NodeConfigs {
         let channels = self.own_channels.get()?.clone();
         Some(writer.update(initial, move |record| record.config = config,
             move |record| channels.set_config(record.config.clone())).await.map(|written| StatusReply::ConfigUpdated {
-                node_id: written.record.birth.node_id, incarnation: written.record.birth.incarnation_id,
+                node_id: written.record.node_id, incarnation: written.record.incarnation,
                 config: written.record.config,
             }))
     }
@@ -194,9 +242,10 @@ impl NodeConfigs {
             move |record| channels.set_tags(record.tags.clone())).await)
     }
 
-    /// Carry a Build's entry from its mesh-primary to the pinned node, then finish the
-    /// lifecycle metadata owed by that entry.
-    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage_persistence: rdm_core::meta::StoragePersistence) -> Result<(), String> {
+    /// Carry a Build's entry from its mesh-primary to the pinned node, which writes it on its own record
+    /// (Q356); its storage persistence is on that record from its launch.
+    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties) -> Result<(), String> {
+        let _ = me;
         let subject = view.own(&birth.node_id).ok_or_else(|| format!("{me_id}: property target {} is not held", birth.node_id))?;
         if !birth.is(subject) {
             return Err(format!("{me_id}: property target {} has a different incarnation", birth.node_id));
@@ -214,9 +263,7 @@ impl NodeConfigs {
         if !matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
             return Err(format!("{me_id}: property target {} answered {}", birth.node_id, reply.name()));
         }
-        self.written.update(storage, &birth.node_id, None, |row| {
-            row.storage_persistence = Some(storage_persistence);
-        }).await?.ok_or_else(|| format!("{me_id}: lifecycle record of {} is absent after property apply", birth.node_id))
+        Ok(())
     }
 
     /// The client these `NodeConfigs` tell births through: the mesh-primary's node.name.update tells a birth its
@@ -228,12 +275,6 @@ impl NodeConfigs {
     /// [`Self::client`], shared: for a call made after the caller's turn ends.
     pub fn client_arc(&self) -> Arc<NodeRpcClient> {
         self.client.clone()
-    }
-
-    /// The record this admin's writer of its mesh's rows holds: node.name.update puts its rows through it
-    /// as these `NodeConfigs` do, so each row carries every field the writer knows.
-    pub fn written(&self) -> &Arc<crate::node_rows::WrittenRows> {
-        &self.written
     }
 
     /// The turn of one change to a node record at this mesh-primary (node-config-update.md:
@@ -597,13 +638,6 @@ impl NodeConfigs {
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
     /// reply bound; the span carries it whole (`answered`, `detail`), so nothing of it is lost.
     pub async fn update(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
-        self.update_with(me, me_id, view, storage, req, None).await
-    }
-
-    /// [`Self::update`] of a Build's create spec (build.md §1, "The Build applies the diff"): the same
-    /// put, the spec's `storage` and `placement` (`onto_row`) written onto the row in the same write as
-    /// the map, effective at the node's next birth.
-    pub async fn update_with(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest, onto_row: Option<rdm_core::meta::StoragePersistence>) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-config",
@@ -621,14 +655,14 @@ impl NodeConfigs {
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let reply = tracing::Instrument::instrument(self.put(me, me_id, view, storage, node_id, incarnation, config, onto_row, &span), span.clone()).await;
+        let reply = tracing::Instrument::instrument(self.put(me, me_id, view, storage, node_id, incarnation, config, &span), span.clone()).await;
         span.record("outcome", reply.name());
         span.in_scope(|| tracing::info!("node.config.update decided"));
         reply
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, onto_row: Option<rdm_core::meta::StoragePersistence>, span: &tracing::Span) -> StatusReply {
+    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
         // mesh-primary moved to a name node.name.update gave it is still that birth (never found by path and name, its shape
         // included: `Topology::own`). A subject this receiver does not hold is the receiver's own fact
@@ -682,15 +716,6 @@ impl NodeConfigs {
             if let Some(answered) = answered {
                 span.record("answered", answered).record("detail", detail.as_str());
                 return rdm_core::reply::status::bounded_config_not_applied(subject.node_id.as_str(), answered, &detail);
-            }
-            if let Some(storage_persistence) = onto_row {
-                match self.written.update(storage, node_id, None, |row| {
-                    row.storage_persistence = Some(storage_persistence);
-                }).await {
-                    Ok(Some(_)) => {},
-                    Ok(None) => return rdm_core::reply::status::bounded_node_row_refused(&subject.node_id.to_string(), "lifecycle record is absent after property apply"),
-                    Err(error) => return rdm_core::reply::status::bounded_node_row_refused(&subject.node_id.to_string(), &error),
-                }
             }
             return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
         }

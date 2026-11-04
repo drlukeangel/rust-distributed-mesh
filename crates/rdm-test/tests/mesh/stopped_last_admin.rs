@@ -84,7 +84,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     estate.resize_shape("fabric1", &both).await;
     let before = estate.settled_views(&both).await;
     let mut pids: Vec<(NodeId, u64)> = Vec::new();
-    for n in before.iter().filter(|n| n.mesh == "mesh1") {
+    for n in before.iter().filter(|n| n.mesh() == "mesh1") {
         let name = &n.location();
         let pid = match estate.bootstrap_pid() {
             Some(p) if *name == PathName::new("mesh1.node-admin", "1").unwrap() => u64::from(p),
@@ -96,19 +96,19 @@ async fn delete_mesh1(test: &str) -> Deleted {
     // ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
-    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.status == NodeStatus::Ready).map(|n| n.location()).expect("a ready mesh2 admin");
+    let mesh2_admin = before.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.state == NodeStatus::Ready).map(|n| n.location()).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let b = estate.resize_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
     let left: Vec<NodeView> = estate
         .until_view("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
-            let mesh1: Vec<&NodeView> = views.iter().filter(|n| n.mesh == "mesh1").collect();
-            (mesh1.len() == 1 && mesh1[0].status == NodeStatus::Ready).then(|| vec![mesh1[0].clone()])
+            let mesh1: Vec<&NodeView> = views.iter().filter(|n| n.mesh() == "mesh1").collect();
+            (mesh1.len() == 1 && mesh1[0].state == NodeStatus::Ready).then(|| vec![mesh1[0].clone()])
         })
         .await;
     let last = left[0].location();
     let last_id = left[0].node_id.clone();
-    let last_incarnation = left[0].incarnation_id.clone().expect("the ready last admin has an incarnation");
+    let last_incarnation = left[0].incarnation.clone().expect("the ready last admin has an incarnation");
     estate.enter_fabric_primary().await;
     let mut delete = estate.delete_node(&last).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last:?} was refused: {e}"));
     let c = Estate::complete(&mut delete).await.expect("the call opened a Build").build_id.to_string();

@@ -51,7 +51,7 @@ async fn born(test: &str) -> Estate {
 
 /// `mesh2`'s primary node-admin in the view now.
 async fn mesh2_primary(estate: &Estate) -> NodeView {
-    estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2's primary")
+    estate.node_views().await.into_iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2's primary")
 }
 
 /// The frames of `stream` up to and including the first `Pending` frame of `operation`; a terminal
@@ -105,7 +105,7 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
 
     // mesh2's other node-admin takes the mesh's primary role.
     let new = estate
-        .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.status == NodeStatus::Ready && n.node_id != old.node_id).cloned())
+        .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != old.node_id).cloned())
         .await;
     rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "pass").unwrap();
     let resubmitted_ns = now_ns();
@@ -188,8 +188,8 @@ async fn a_failed_step_ends_its_section_and_the_build_ends_incomplete() {
     let after: Vec<_> = p.steps.iter().skip_while(|st| !(st.mesh == "mesh2" && matches!(st.outcome, StepOutcome::Failed { .. }))).skip(1).filter(|st| st.mesh == "mesh2").collect();
     assert!(after.is_empty(), "no step of mesh2's section ran after the failed one: {after:?}");
     assert!(p.operation_completed(&rdm_core::OperationId::node("node.create", &crate::build_log::created_id(&estate, &b, &good_at).await)), "mesh1's create finished: {:?}", p.steps);
-    let view = estate.until_node(&good_at, "mesh1's new node ready", SETTLE, |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
-    assert_eq!(view.mesh, "mesh1", "mesh1's node serves: what ran stands");
+    let view = estate.until_node(&good_at, "mesh1's new node ready", SETTLE, |v| v.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
+    assert_eq!(view.mesh(), "mesh1", "mesh1's node serves: what ran stands");
 
     estate.stop().await;
     let spans = estate.spans();

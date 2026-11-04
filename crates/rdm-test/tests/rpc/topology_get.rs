@@ -110,11 +110,11 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let (mesh1, mesh1_pub, mesh1_v, _) = snapshot_of(&frames, "mesh1");
     let (mesh2, mesh2_pub, mesh2_v, _) = snapshot_of(&frames, "mesh2");
     let members = |mesh: &str| {
-        let mut ids: Vec<_> = nodes.iter().filter(|n| n.mesh == mesh).map(|n| n.node_id.to_string()).collect();
+        let mut ids: Vec<_> = nodes.iter().filter(|n| n.mesh() == mesh).map(|n| n.node_id.to_string()).collect();
         ids.sort();
         ids
     };
-    let primary = |mesh: &str| nodes.iter().find(|n| n.mesh == mesh && n.r#type == "node-admin" && n.is_primary).expect("mesh primary").node_id.to_string();
+    let primary = |mesh: &str| nodes.iter().find(|n| n.mesh() == mesh && n.r#type == "node-admin" && n.is_primary).expect("mesh primary").node_id.to_string();
     assert_eq!(mesh1, members("mesh1"), "its own mesh includes this member");
     assert_eq!(mesh2, members("mesh2"));
     assert_eq!(mesh1_pub, primary("mesh1"));

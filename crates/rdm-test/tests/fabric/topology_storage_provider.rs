@@ -75,7 +75,7 @@ async fn two_mesh_estate(test: &str, env: &[(&str, &str)]) -> (Estate, Vec<NodeV
 
 /// Each node's birth: `(path, name)` → (node id, incarnation).
 fn births(views: &[NodeView]) -> BTreeMap<PathName, (String, Option<String>)> {
-    views.iter().map(|v| (v.location(), (v.node_id.to_string(), v.incarnation_id.as_ref().map(|i| i.as_str().to_string())))).collect()
+    views.iter().map(|v| (v.location(), (v.node_id.to_string(), v.incarnation.as_ref().map(|i| i.as_str().to_string())))).collect()
 }
 
 /// The file provider's fabric root of `estate`, and the testkit target's root of the same fabric.
@@ -354,7 +354,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let subject = views.iter().find(|v| v.location() == role()).cloned().expect("mesh2.node.1");
     let fabric_primary = views.iter().find(|v| v.is_fabric_primary).cloned().expect("the fabric-primary");
     let told: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation_id.clone().expect("a live birth") };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation.clone().expect("a live birth") };
     let carrier = estate.carrier().await;
     let (rpc, options) = (rdm_client::NodeRpc::new(carrier.client()), rdm_transport::CallOptions::default());
     let update = rpc.config_update(&fabric_primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &options);
@@ -370,7 +370,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     estate.artifact("views.json", &json!(Estate::values(&after)));
     nodes_write(&after, TOPOLOGY_STORAGE_TARGET);
     assert_eq!(births(&after), before, "every node is the same birth: none restarted or replaced");
-    assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
+    assert!(after.iter().all(|v| v.state == NodeStatus::Ready), "every node is ready: {after:?}");
     let path: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
     // The update and the Build's own config of the node are a serial order of the two
     // (node-config-update.md): whichever was written last on its own property record is the config
@@ -553,7 +553,7 @@ fn foreign_line(target: &Path) {
     std::fs::write(target.join(rdm_admin::store_root::LAYOUT), format!("{}\n", rdm_admin::store_root::LAYOUT_VALUE)).unwrap();
     let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), &rdm_core::IncarnationId::parse("zzzzzzzzzzz2").unwrap(), &rdm_transport::clock::RafkaTime::unadopted());
     // A whole node record (`node-record/4`), as a writer of that store writes one.
-    let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new(rdm_core::PathName::new("mesh9.node", "1").unwrap(), "mesh9", "node", rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
+    let record = serde_json::to_vec(&rdm_admin::storage::NodeRecord::new(rdm_core::PathName::new("mesh9.node", "1").unwrap(), "mesh9", "node", rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
     let line = rdm_admin::store_log::encode_line(&rdm_admin::store_log::Attributes::of(&writer, "node-record", "node-record/4", "zzzzzzzzzzz1"), &record);
     use std::io::Write;
     std::fs::OpenOptions::new().create(true).append(true).open(target.join(rdm_admin::store_root::NODES_FILE)).unwrap().write_all(&line).unwrap();
@@ -592,7 +592,7 @@ async fn role_node_restart(test: &str, ends: Ends) {
     hold.release("switch").await;
     let done = ended(&estate, &run).await;
     estate.artifact("ended.json", &done);
-    let restarted = estate.until_node(&role(), "the role node re-created at its (path, name)", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
+    let restarted = estate.until_node(&role(), "the role node re-created at its (path, name)", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.state == NodeStatus::Ready).cloned()).await;
     let new_id = restarted.node_id.to_string();
     assert_ne!(estate.data_dir(&role()).await, data_dir, "the re-created node is on a new data dir: a `node`'s storage is ephemeral (Q359)");
     let (chosen, other, previous): (&str, &Path, &[&str]) = match ends {
@@ -991,7 +991,7 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     hold.release("switch").await;
     let done = ended(&estate, &run).await;
     estate.artifact("ended.json", &done);
-    let renewed = estate.until_node(&role(), "the role node re-created at its (path, name)", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
+    let renewed = estate.until_node(&role(), "the role node re-created at its (path, name)", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.state == NodeStatus::Ready).cloned()).await;
     let new_id = renewed.node_id.to_string();
     assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
@@ -1070,7 +1070,7 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
     // At the Build's completion, with no wait: the path holds the re-created birth.
     let at_completion = estate.node_view(&role()).await;
     assert_ne!(at_completion.node_id.to_string(), old_id, "mesh2's mesh-primary replied unblocked only once the refusing birth was re-created: {at_completion:?}");
-    let renewed = estate.until_node(&role(), "the role node re-created at its (path, name), ready", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
+    let renewed = estate.until_node(&role(), "the role node re-created at its (path, name), ready", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.state == NodeStatus::Ready).cloned()).await;
     let new_id = renewed.node_id.to_string();
     assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
@@ -1220,7 +1220,7 @@ async fn node_gets(estate: &Estate, views: &[NodeView]) -> BTreeMap<PathName, (S
         let mut got = nodes.get(&rdm_client::Filter::new().eq("id", [v.node_id.to_string()])).await.unwrap_or_else(|e| panic!("node.get [id: {}] ({:?}) is answered: {e}", v.node_id, v.name));
         assert_eq!(got.len(), 1, "node.get [id: {}] ({:?}) answers the one node: {got:?}", v.node_id, v.name);
         let got = got.remove(0);
-        out.insert(got.location(), (got.node_id.to_string(), got.incarnation_id.as_ref().map(|i| i.as_str().to_string()), got.status));
+        out.insert(got.location(), (got.node_id.to_string(), got.incarnation.as_ref().map(|i| i.as_str().to_string()), got.state));
     }
     out
 }
@@ -1396,7 +1396,7 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
     fabric_names(&estate.fabric_view().await, FILE, &[FILE, TOPOLOGY_STORAGE_TARGET]);
     let after = estate.node_views().await;
     assert_eq!(births(&after), before, "every node is the same birth through both changes");
-    assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
+    assert!(after.iter().all(|v| v.state == NodeStatus::Ready), "every node is ready: {after:?}");
     nodes_write(&after, FILE);
     // The fabric serves on `file`: a Build that omits the provider creates a node, written there alone.
     estate.resize(&grown()).await;

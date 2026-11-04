@@ -193,7 +193,8 @@ impl IssuingMaterial {
     }
 }
 
-/// Properties handed to a new node. Its durable node record takes precedence on a subsequent start.
+/// What the create sets on a new node, handed to it at launch: the node writes them on its record's
+/// first line (Q356). Its durable node record takes precedence on a subsequent start.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InitialProperties {
@@ -201,6 +202,13 @@ pub struct InitialProperties {
     pub config: BTreeMap<String, String>,
     /// The complete tag set supplied with that map.
     pub tags: std::collections::BTreeSet<String>,
+    /// The executable binding the create launches (the record's `executable`); `None` when the create
+    /// named none.
+    #[serde(default)]
+    pub executable: Option<crate::binding::Binding>,
+    /// The create's storage persistence (the record's `storage.persistence`).
+    #[serde(default)]
+    pub persistence: Option<crate::meta::StoragePersistence>,
 }
 
 /// Everything a node needs to come up as the exact node node-admin allocated.
@@ -525,6 +533,8 @@ mod tests {
         let initial = InitialProperties {
             config: [("listener.data".into(), "a,b=c\nwith spaces".into()), ("empty".into(), "".into())].into(),
             tags: ["zone-a".into(), "v1.2~rc".into()].into(),
+            executable: None,
+            persistence: Some(crate::meta::StoragePersistence::Ephemeral),
         };
         env.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&initial).unwrap());
         let launch = Launch::from_env(|k| env.get(k).cloned()).unwrap();

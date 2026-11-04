@@ -65,7 +65,7 @@ async fn a_mesh_primarys_spent_call_marks_the_birth_and_its_tick_investigates_it
     let hung = rt.hang().expect("the hang is acknowledged by the OS");
     // The caller's node.config.update at the mesh-primary: its own ApplyNodeConfig to the hung birth.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("the node's birth") };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: node.incarnation.clone().expect("the node's birth") };
     let carrier = estate.carrier().await;
     let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &opts).await;

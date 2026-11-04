@@ -71,7 +71,7 @@ fn now_nano() -> u64 {
 
 fn same_birth(span: &Value, node: &NodeView) -> bool {
     span["attributes"]["node_id"] == node.node_id.as_str()
-        && span["attributes"]["incarnation_id"] == node.incarnation_id.as_ref().expect("ready birth").as_str()
+        && span["attributes"]["incarnation_id"] == node.incarnation.as_ref().expect("ready birth").as_str()
 }
 
 fn same_location(span: &Value, node: &NodeView) -> bool {
@@ -81,17 +81,17 @@ fn same_location(span: &Value, node: &NodeView) -> bool {
 /// Hold `node`'s exact runtime past the floor, then release it; the instant of the release.
 async fn hold_past_the_floor_then_release(estate: &Estate, node: &NodeView, floor: Duration) -> u64 {
     let before = estate.node_view_by_id(&node.node_id).await;
-    assert_eq!(before.status, NodeStatus::Ready, "{node:?} is ready before the hold: {before:?}");
+    assert_eq!(before.state, NodeStatus::Ready, "{node:?} is ready before the hold: {before:?}");
     let rt = ExactRuntime::published(Path::new(&estate.data_dir(&node.location()).await)).expect("the node's published runtime");
     let hung = rt.hang().expect("the hang is acknowledged by the OS");
     estate
         .until_node(&node.location(), &format!("{node:?} is marked unheard in the view"), floor * 3 + Duration::from_secs(30), |n| {
-            n.filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).cloned()
+            n.filter(|n| matches!(n.state, NodeStatus::PendingReconnect | NodeStatus::Dead)).cloned()
         })
         .await;
     tokio::time::sleep(floor).await;
     let during = estate.node_view_by_id(&node.node_id).await;
-    assert_eq!((&during.node_id, &during.incarnation_id), (&before.node_id, &before.incarnation_id), "{node:?} is the same birth while held: silence is not death");
+    assert_eq!((&during.node_id, &during.incarnation), (&before.node_id, &before.incarnation), "{node:?} is the same birth while held: silence is not death");
     let release_at = now_nano();
     hung.release();
     // The released birth's first digest still says Ready (its own stale state): the re-entry
@@ -103,10 +103,10 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &NodeView, floo
     .await;
     let back = estate
         .until_node(&node.location(), &format!("{node:?} is ready again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
-            n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned()
+            n.filter(|n| n.state == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation == before.incarnation).cloned()
         })
         .await;
-    assert_eq!(back.incarnation_id, before.incarnation_id, "{node:?} came back as itself");
+    assert_eq!(back.incarnation, before.incarnation, "{node:?} came back as itself");
     release_at
 }
 
@@ -210,7 +210,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
                 })
                 .collect();
             assert!(back.is_empty(), "{node:?}: a late copy of an older digest never takes back what a peer holds: {back:?}");
-            let subject = format!("{rpc_node_id}/{}", rpc.incarnation_id.as_ref().unwrap());
+            let subject = format!("{rpc_node_id}/{}", rpc.incarnation.as_ref().unwrap());
             let refused: Vec<(String, u64, u64)> = named(&spans, "rdm.mesh.topology.reject.via-stale")
                 .into_iter()
                 .filter(|sp| s(&sp["attributes"]["frame"]) == "digest" && s(&sp["attributes"]["subject"]) == subject)
@@ -224,7 +224,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
         assert!(!certs.is_empty(), "{node:?}: the accepting primary issues a fresh member cert at the heard-again join");
         // Must NOT: a terminate, a new birth, a create.
-        let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["attributes"]["node_id"] == node.node_id.as_str() && sp["attributes"]["incarnation"] == node.incarnation_id.as_ref().unwrap().as_str() && s(&sp["attributes"]["outcome"]) == "unreached").count();
+        let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["attributes"]["node_id"] == node.node_id.as_str() && sp["attributes"]["incarnation"] == node.incarnation.as_ref().unwrap().as_str() && s(&sp["attributes"]["outcome"]) == "unreached").count();
         assert_eq!(terminated, 0, "{node:?}: a held runtime is never terminated");
         let created: Vec<_> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| same_location(sp, node) && at(sp) >= since).collect();
         assert!(created.is_empty(), "{node:?}: no new birth at the path: {created:?}");
@@ -276,9 +276,9 @@ async fn a_birth_stopped_and_started_by_builds_and_held_later_is_still_commanded
     let before = estate.node_view_by_id(&node.node_id).await;
     estate.stop_then_start(&node.location()).await;
     let restarted = estate
-        .until_node(&node.location(), &format!("{node:?} is ready again after its stop and start"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned())
+        .until_node(&node.location(), &format!("{node:?} is ready again after its stop and start"), Duration::from_secs(120), |n| n.filter(|n| n.state == NodeStatus::Ready).cloned())
         .await;
-    assert_eq!((&restarted.node_id, &restarted.incarnation_id), (&before.node_id, &before.incarnation_id), "a stop then a start keep the node.id and the incarnation");
+    assert_eq!((&restarted.node_id, &restarted.incarnation), (&before.node_id, &before.incarnation), "a stop then a start keep the node.id and the incarnation");
     tokio::time::sleep(floor).await;
     let released_at = hold_past_the_floor_then_release(&estate, node, floor).await;
     estate.stop().await;
@@ -339,7 +339,7 @@ async fn a_node_being_created_is_not_commanded_back_while_its_first_start_runs()
         rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
     };
     let (_, ()) = tokio::join!(estate.resize_shape("fabric1", &[("mesh1", 2, 3)]), hold);
-    let node = &estate.until_node(&location, &format!("{location:?} is ready"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+    let node = &estate.until_node(&location, &format!("{location:?} is ready"), Duration::from_secs(120), |n| n.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
     estate.stop().await;
     let spans = estate.spans();
     let first_ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| same_birth(sp, node)).map(at).min().unwrap_or_else(|| panic!("{node:?}: its first start reached node.started (via-ready)"));

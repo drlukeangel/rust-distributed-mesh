@@ -106,10 +106,10 @@ impl rdm_admin::storage_backend::StorageBackend for RefusesItsLines {
     fn qualify(&self, provider: rdm_admin::model::ProviderKind) -> Result<(), String> {
         self.0.qualify(provider)
     }
-    async fn own_row(&self, data_dir: &std::path::Path, writer: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_node::storage_error::StorageError> {
+    async fn own_row(&self, data_dir: &std::path::Path, writer: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::storage::OwnRow>, rdm_node::storage_error::StorageError> {
         self.0.own_row(data_dir, writer).await
     }
-    async fn put_own_row(&self, data_dir: &std::path::Path, writer: &rdm_admin::model::IncarnationId, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_node::storage_error::StorageError> {
+    async fn put_own_row(&self, data_dir: &std::path::Path, writer: &rdm_admin::model::IncarnationId, record: &rdm_admin::storage::OwnRow) -> Result<(), rdm_node::storage_error::StorageError> {
         self.0.put_own_row(data_dir, writer, record).await
     }
     async fn open(&self, scope: &rdm_admin::storage_backend::StorageScope) -> Result<rdm_admin::storage_backend::StorageBoundaries, String> {

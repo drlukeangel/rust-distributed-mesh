@@ -201,7 +201,7 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Node
     // anything is read from it.
     estate
         .until_view_at(admin, &format!("{admin:?} no longer hears {gone_id}"), rdm_transport::topology::staleness_floor() + Duration::from_secs(30), |views| {
-            (!views.iter().any(|n| n.node_id.to_string() == gone_id && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect))).then_some(())
+            (!views.iter().any(|n| n.node_id.to_string() == gone_id && !matches!(n.state, NodeStatus::Dead | NodeStatus::PendingReconnect))).then_some(())
         })
         .await;
     (name, id)
@@ -291,7 +291,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     // count, then for the roles.
     estate
         .until_view_at(&admin1, "drift recovery restores three live nodes", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
-            (views.iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node" && n.status == NodeStatus::Ready).count() == 3).then_some(())
+            (views.iter().filter(|n| n.mesh() == "mesh1" && n.r#type == "node" && n.state == NodeStatus::Ready).count() == 3).then_some(())
         })
         .await;
     let nodes = settle(&estate, &admin1, "the node type is back at its desired count").await;
@@ -475,7 +475,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some(boot_id.as_str()), "the fabric-primary role stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     estate
         .until_view_at(&admin1, "drift recovery restores two live mesh2 admins", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
-            (views.iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.status == NodeStatus::Ready).count() == 2).then_some(())
+            (views.iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.state == NodeStatus::Ready).count() == 2).then_some(())
         })
         .await;
     settle(&estate, &admin1, "mesh2's killed admin is back").await;

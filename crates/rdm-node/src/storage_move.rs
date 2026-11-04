@@ -143,12 +143,15 @@ impl StorageMoves {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_records::{NodeProperties, NodePropertyWriter, RecordBirth};
-    use crate::nodes_storage::{MemoryNodesStorage, NodesStorage};
+    use crate::node_records::NodePropertyWriter;
+    use crate::nodes_storage::{MemoryNodesStorage, NodeRecord, NodesStorage};
     use rdm_core::IncarnationId;
 
-    fn properties() -> NodeProperties {
-        NodeProperties { birth: RecordBirth { node_id: NodeId::mint(), incarnation_id: IncarnationId::mint() }, config: [("source".into(), "initial".into())].into(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: vec![], }
+    /// A node's record at its start, its config `source = initial`.
+    fn properties() -> NodeRecord {
+        let mut record = crate::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", NodeId::mint(), IncarnationId::mint(), crate::model::NodeStatus::Starting);
+        record.config = [("source".into(), "initial".into())].into();
+        record
     }
 
     // @feature: node-records
@@ -159,7 +162,7 @@ mod tests {
         let writer = NodePropertyWriter::new(store.clone(), || "memory".into());
         let initial = properties();
         writer.bound(initial.clone(), |_| {}).await.unwrap();
-        let moves = StorageMoves::new(initial.birth.node_id.clone(), Arc::new(|| "file".into()), Arc::new(|_| Box::pin(async { panic!("same-provider rollback must not open another provider") }))).with_properties(writer.clone());
+        let moves = StorageMoves::new(initial.node_id.clone(), Arc::new(|| "file".into()), Arc::new(|_| Box::pin(async { panic!("same-provider rollback must not open another provider") }))).with_properties(writer.clone());
         let (a, b) = (ChangeId::mint(), ChangeId::mint());
         let adopted = ChangeId::mint();
         assert_eq!(moves.serve(&adopted, "file").await, NodeCommandReply::StorageStepped { provider: "file".into() }, "a fresh birth already on the decided provider completes without an old-provider freeze");
@@ -169,7 +172,7 @@ mod tests {
         let (w, seed) = (writer.clone(), initial.clone());
         let mut queued = Box::pin(w.update(seed, |r| r.config = [("source".into(), "queued".into())].into(), |_| {}));
         assert!(futures_util::poll!(&mut queued).is_pending());
-        assert_eq!(store.properties(&initial.birth.node_id).await.unwrap(), Some(initial.clone()));
+        assert_eq!(store.node(&initial.node_id).await.unwrap().map(|l| l.record), Some(initial.clone()));
         assert_eq!(moves.serve(&a, "file").await, NodeCommandReply::StorageStepped { provider: "file".into() });
         queued.await.unwrap();
         assert!(matches!(moves.block(&a).await, NodeCommandReply::RejectedStaleChange { .. }), "a delayed block cannot refreeze a completed change");
@@ -195,7 +198,7 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         let current = Arc::new(std::sync::Mutex::new("file".to_string()));
         let (provider, changed, e, r) = (current.clone(), current.clone(), entered.clone(), release.clone());
-        let moves = StorageMoves::new(initial.birth.node_id.clone(), Arc::new(move || provider.lock().unwrap().clone()), Arc::new(move |next| {
+        let moves = StorageMoves::new(initial.node_id.clone(), Arc::new(move || provider.lock().unwrap().clone()), Arc::new(move |next| {
             let (changed, entered, release) = (changed.clone(), e.clone(), r.clone());
             Box::pin(async move { *changed.lock().unwrap() = next; entered.notify_one(); release.notified().await; Ok(()) })
         })).with_properties(writer.clone());

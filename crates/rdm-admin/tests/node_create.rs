@@ -276,7 +276,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let held_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let held_id = NodeId::mint();
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
-        let mut held_row = rdm_admin::storage::NodeRow::new(held_path.clone(), "mesh1", "node", held_id.clone(), NodeStatus::Ready);
+        let mut held_row = rdm_admin::storage::NodeRecord::new(held_path.clone(), "mesh1", "node", held_id.clone(), NodeStatus::Ready);
         held_row.birth_mut(&IncarnationId::mint(), &held_path);
         store.write_record(&held_row).await.unwrap();
 
@@ -690,7 +690,7 @@ impl DeploymentProvider for StepFaultProvider {
             if let Some(report) = report {
                 self.joins.report(&report);
                 let d = &report.digest;
-                let bound = rdm_node::node_records::NodeProperties {
+                let bound = rdm_node::nodes_storage::NodeRecord {
                     birth: rdm_node::node_records::RecordBirth { node_id: d.node.node_id.clone(), incarnation_id: d.node.incarnation.clone() },
                     config: Default::default(),
                     tags: Default::default(),

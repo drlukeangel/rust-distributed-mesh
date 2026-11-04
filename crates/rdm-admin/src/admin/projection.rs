@@ -294,9 +294,9 @@ pub(crate) fn publishes(digest_view: &DigestView, records: &Records, node_id: &N
 /// index entry that cannot be read is one span on every projection that reads it, until it can be read.
 pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> (RowName, bool) {
     match store.node(node_id).await {
-        Ok(Some(row)) => {
-            let released = crate::node_rows::released_its_name(&row);
-            (RowName::At(row.location()), released)
+        Ok(Some(line)) => {
+            let released = crate::node_rows::released_its_name(&line.record);
+            (RowName::At(line.record.location()), released)
         }
         // The node holds no row: no rename moved it, and the name it published stands.
         Ok(None) => (RowName::At(published.clone()), false),
@@ -645,8 +645,7 @@ impl ViewWake {
             .routing_watch()
             .watching("records", records.subscribe_inputs())
             .watching("primaries", digest_view.primaries.subscribe())
-            .watching("declared", declared)
-            .watching("rows", records.caches.nodes.subscribe_names());
+            .watching("declared", declared);
         Self { inputs }
     }
 
@@ -676,7 +675,7 @@ pub(crate) async fn view_rebuild_due(wake: &mut ViewWake, gate: &crate::stop_gat
 mod tests {
     use super::*;
     use crate::fabric_builds::PrimaryRecord;
-    use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
+    use crate::storage::{MemoryNodesStorage, NodeRecord, NodesStorage};
     use rdm_core::{Primary, PrimaryRole};
 
     // @feature: node-records
@@ -793,7 +792,7 @@ mod tests {
         assert!(matches!(r_none, RowName::At(ref p) if p == &rpc_path));
         assert!(!rel_none);
 
-        store.put_node(&NodeRow::new(rpc_path.clone(), "mesh1", "node", old_id.clone(), NodeStatus::Deleted)).await.unwrap();
+        store.put_node(&NodeRecord::new(rpc_path.clone(), "mesh1", "node", old_id.clone(), NodeStatus::Deleted)).await.unwrap();
         let (r_del, rel_del) = row_name(&me_name, &store, &old_id, &old_inc, &rpc_path).await;
         assert!(matches!(r_del, RowName::At(ref p) if p == &rpc_path));
         assert!(rel_del);

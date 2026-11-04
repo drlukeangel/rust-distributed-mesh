@@ -11,7 +11,7 @@
 use rdm_admin::admin::{start_on, AdminConfig, Running};
 use rdm_admin::join::Deployed;
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
-use rdm_admin::storage::{NameHeld, NodeRow, NodesStorage, RuntimeRow};
+use rdm_admin::storage::{NameHeld, NodeRecord, NodesStorage, RuntimeRow};
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope, TopologyStorageProviders};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::launch::{Launch, Launcher};
@@ -56,32 +56,16 @@ struct Recorded {
 
 #[async_trait::async_trait]
 impl NodesStorage for Recorded {
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.inner.put_runtime(row).await
-    }
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        self.reads.push();
-        self.inner.runtimes().await
-    }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        self.inner.runtime(node_id, incarnation).await
-    }
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<crate::storage::NodeLine>, StorageError> {
         self.inner.node(node_id).await
     }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, StorageError> {
         self.inner.nodes(mesh).await
     }
-    async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), StorageError> {
-        self.inner.put_properties(record).await
-    }
-    async fn properties(&self, node_id: &NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, StorageError> {
-        self.inner.properties(node_id).await
-    }
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
+    async fn put_node(&self, row: &NodeRecord) -> Result<(), StorageError> {
         self.inner.put_node(row).await
     }
-    async fn records_at(&self, name: &rdm_core::PathName) -> Result<Vec<rdm_admin::storage::NodeRow>, StorageError> {
+    async fn records_at(&self, name: &rdm_core::PathName) -> Result<Vec<rdm_admin::storage::NodeRecord>, StorageError> {
         self.inner.records_at(name).await
     }
 }
@@ -98,10 +82,10 @@ impl StorageBackend for Recording {
     fn qualify(&self, provider: rdm_admin::model::ProviderKind) -> Result<(), String> {
         self.inner.qualify(provider)
     }
-    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<rdm_admin::storage::NodeRecord>, StorageError> {
+    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<rdm_admin::storage::OwnRow>, StorageError> {
         self.inner.own_row(data_dir, writer).await
     }
-    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &rdm_admin::storage::NodeRecord) -> Result<(), StorageError> {
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &rdm_admin::storage::OwnRow) -> Result<(), StorageError> {
         self.inner.put_own_row(data_dir, writer, record).await
     }
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {

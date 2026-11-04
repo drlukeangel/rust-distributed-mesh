@@ -89,7 +89,7 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
     let first = view(&estate, &node()).await;
     let exact = format!("exact:{}", s(&first["node_id"]));
-    let first_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let first_dir = estate.node_view(&node()).await.storage.data_dir.expect("the launching admin advertises the node's data dir");
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "before-restart"]);
     landed_on(&put, &first, "put");
     let before = estate.probe(&["get", "--target", &exact, "--key", "41"]);
@@ -105,7 +105,7 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     assert_eq!(restarted["status"], "ready", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is node.stop then node.start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
-    let restarted_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let restarted_dir = estate.node_view(&node()).await.storage.data_dir.expect("the launching admin advertises the node's data dir");
     assert_eq!(restarted_dir, first_dir, "a restart keeps the node's data dir");
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
     landed_on(&kept, &restarted, "get");
@@ -177,7 +177,7 @@ async fn testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_foll
     let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
     let first = view(&estate, &node()).await;
     let exact_old = format!("exact:{}", s(&first["node_id"]));
-    let first_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let first_dir = estate.node_view(&node()).await.storage.data_dir.expect("the launching admin advertises the node's data dir");
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "old-birth"]);
     landed_on(&put, &first, "put");
     let build_id = build.to_string();
@@ -190,7 +190,7 @@ async fn testkit_store_replacement_starts_on_a_new_data_dir_exact_old_never_foll
             (n["status"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
         })
         .await;
-    let replacement_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let replacement_dir = estate.node_view(&node()).await.storage.data_dir.expect("the launching admin advertises the node's data dir");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_ne!(replacement_dir, first_dir, "node recovery creates the new node on a new data dir: a `node`'s storage is ephemeral (Q359)");

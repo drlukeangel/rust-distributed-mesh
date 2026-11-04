@@ -113,121 +113,89 @@ pub enum ProviderKind {
     Container,
 }
 
-/// One node as the answering node-admin's view holds it (`node.get`).
+/// One node as `node.get` answers it: the node record's fields under its names (Q366), each from the
+/// node's record at its node id, and the live stats its latest digest carried (`load`, `gossip`),
+/// which are the view's and never stored. A node's mesh is the first location of its `path`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeView {
-    /// The node's path.
+    /// The node's minted id.
+    pub node_id: NodeId,
+    /// The node's path; its first location is its mesh.
     pub path: String,
     /// The name, beside its path.
     pub name: String,
     /// The node's type.
     pub r#type: String,
-    /// The name of the mesh the node belongs to.
-    pub mesh: String,
-    /// The node's minted id.
-    pub node_id: NodeId,
-    /// The node's fabric endpoint id, once known.
-    pub endpoint_id: Option<String>,
-    /// The incarnation of the node's current birth, once launched.
-    pub incarnation_id: Option<IncarnationId>,
-    /// The deployment that runs the node, once created.
-    pub deployment_id: Option<String>,
-    /// The provider that runs the node.
-    pub provider: Option<ProviderKind>,
-    /// The node's data directory.
-    pub data_dir: Option<String>,
+    /// The node's incarnation, once launched.
+    pub incarnation: Option<IncarnationId>,
     /// The node's lifecycle state.
-    pub status: NodeStatus,
-    /// Whether the node holds its mesh's primary role.
-    pub is_primary: bool,
-    /// Whether the node holds the fabric-primary role.
-    pub is_fabric_primary: bool,
-    /// The control API base the node advertises, for a node-admin.
-    pub admin_api_base: Option<String>,
+    pub state: NodeStatus,
+    /// The node's fabric endpoint id, once bound.
+    pub endpoint_id: Option<String>,
     /// The address the node's mesh transport is bound to.
     pub transport_addr: Option<std::net::SocketAddr>,
     /// The named listeners the node serves, each with its bound address.
-    #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The lifecycle state the birth declared to its authority, once applied.
-    #[serde(default)]
-    pub declared: Option<String>,
-    /// A stopped node with a live process, `leaving`, waiting for a start or a delete.
-    #[serde(default)]
-    pub stopped: bool,
+    /// The runtime the node runs in, once launched.
+    pub runtime: Option<crate::RuntimeFact>,
+    /// Whether the node is its type's primary in its mesh (a node-admin's: the mesh-primary).
+    pub is_primary: bool,
+    /// Whether the node is the fabric-primary.
+    pub is_fabric_primary: bool,
+    /// The node's member cert dates (fabric-certs.md §Tracking); `None` when it holds none.
+    pub cert: Option<crate::certs::CertDates>,
+    /// A node-admin's signing cert dates; `None` for every other node.
+    pub signing_cert: Option<crate::certs::SigningCertDates>,
+    /// The node's own storage (storage.md §1).
+    pub storage: crate::meta::Storage,
+    /// The executable the node runs; `None` when its create named none.
+    pub executable: Option<crate::binding::Binding>,
+    /// The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property
+    /// bag. RDM never reads it.
+    pub config: std::collections::BTreeMap<String, String>,
+    /// The node's tag labels (R-TG1).
+    pub tags: std::collections::BTreeSet<String>,
     /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
-    #[serde(default)]
     pub load: Option<NodeLoad>,
     /// The node's mesh-channel counts from its latest digest: heard, neighbours, frames.
-    #[serde(default)]
     pub gossip: Option<GossipStats>,
-    /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the
-    /// node's row at its `(path, name)`, never from its digest.
-    #[serde(default)]
-    pub tags: std::collections::BTreeSet<String>,
-    /// The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property
-    /// bag, a property of the node (node.get answers the whole node), as the node's digest carries
-    /// the live copy. RDM never reads it.
-    #[serde(default)]
-    pub config: std::collections::BTreeMap<String, String>,
-    /// The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None`
-    /// when no row names it (an admin configured with no certs issues none).
-    #[serde(default)]
-    pub cert: Option<NodeCertView>,
-    /// The executable this birth runs, as its node row records it (proposal
-    /// executable-bindings-at-create.md rule 7): read from the row, never from gossip; `None` for a row
-    /// that records none (written before the field).
-    #[serde(default)]
-    pub executable: Option<crate::binding::Binding>,
-    /// The node's `storage_persistence` (storage.md §1), as its row records it from its create spec:
-    /// what becomes of the node's own data dir across its births and once it is gone. `None` for a row
-    /// that records none.
-    #[serde(default)]
-    pub storage_persistence: Option<crate::meta::StoragePersistence>,
-    /// The `topology_storage_provider` the node writes (storage.md §2), as its row records it: the
-    /// fact, beside the fabric's intent on the Fabric row. `None` for a row that records none.
-    #[serde(default)]
-    pub topology_storage_provider: Option<String>,
-    /// Whether the node's own property record was read (query.md §1: "Properties are read separately at
-    /// the subject node ID. A missing current-writer record is unavailable"; Q318): a node with no
-    /// property record yet is listed with its lifecycle facts and `Unavailable`, its config and tags
-    /// empty, and no pair on them matches it. Appended last.
-    #[serde(default)]
-    pub properties: PropertyRecord,
 }
 
 impl NodeView {
+    /// The node `node_id` of `r#type` at `name` in `state`, every other field absent or empty: what an
+    /// answer fills field by field.
+    pub fn new(name: &crate::PathName, r#type: &str, node_id: NodeId, state: NodeStatus) -> Self {
+        Self {
+            node_id,
+            path: name.path.clone(),
+            name: name.name.clone(),
+            r#type: r#type.to_string(),
+            incarnation: None,
+            state,
+            endpoint_id: None,
+            transport_addr: None,
+            listeners: Vec::new(),
+            runtime: None,
+            is_primary: false,
+            is_fabric_primary: false,
+            cert: None,
+            signing_cert: None,
+            storage: Default::default(),
+            executable: None,
+            config: Default::default(),
+            tags: Default::default(),
+            load: None,
+            gossip: None,
+        }
+    }
+
     /// The `(path, name)` lookup index key of path and name.
     pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
-}
 
-/// Whether `node.get` read a node's own property record (Q318).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PropertyRecord {
-    /// The record was read: the node's config, tags, bound addresses and declarations are its own.
-    ///
-    /// Position 0 on the wire.
-    #[default]
-    Read,
-    /// The node holds no property record yet: its properties are unavailable, named.
-    ///
-    /// Position 1 on the wire.
-    Unavailable {
-        /// Why, naming the node.
-        reason: String,
-    },
-}
-
-/// A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,
-/// expires_at, issuer_expires_at }`), each rafka-time ms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeCertView {
-    /// When the cert the row names was issued.
-    pub issued_at: u64,
-    /// When it expires.
-    pub expires_at: u64,
-    /// When its issuing cert expires.
-    pub issuer_expires_at: u64,
+    /// The node's mesh: the first location of its path.
+    pub fn mesh(&self) -> String {
+        crate::path::mesh_of(&self.path)
+    }
 }
 
 /// A mesh whose member renewals stall (fabric-certs.md §Tracking: a row past `renew_at` by more than

@@ -8,40 +8,25 @@ pub use crate::node_config::{NodeConfigs, NodeConfigsSlot};
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::model::{IncarnationId, NodeId, PathName};
-    use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
+    use crate::storage::{MemoryNodesStorage, NodeRecord, NodesStorage};
 
     pub(crate) struct RefusingNodesStorage(pub(crate) MemoryNodesStorage);
 
     #[async_trait::async_trait]
     impl NodesStorage for RefusingNodesStorage {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.0.runtimes().await
-        }
-        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.0.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.0.properties(node_id).await
-        }
-        async fn put_node(&self, row: &NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io {
                 file: format!("nodes/records/{}", row.node_id),
                 reason: "simulated disk refusal".into(),
             })
         }
-        async fn records_at(&self, name: &PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.0.records_at(name).await
         }
     }

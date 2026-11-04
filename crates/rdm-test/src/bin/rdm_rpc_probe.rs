@@ -251,10 +251,10 @@ fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
             None => None,
             Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} (path {:?}, name {:?}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.path, n.name))?),
         };
-        match (endpoint_id, n.transport_addr, n.incarnation_id.clone()) {
-            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
+        match (endpoint_id, n.transport_addr, n.incarnation.clone()) {
+            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh().clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
             (endpoint_id, transport_addr, incarnation) => {
-                let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation_id")]
+                let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation")]
                     .into_iter()
                     .filter_map(|(is_absent, field)| is_absent.then_some(field))
                     .collect();
@@ -716,30 +716,28 @@ mod tests {
     use rdm_core::views::NodeStatus;
 
     /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`
-    /// are all given.
-    fn view(name: PathName, mesh: &str, r#type: &str, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
-        NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
-            r#type: r#type.to_string(),
-            mesh: mesh.to_owned(),
-            path: name.path.clone(), name: name.name.clone(),
+    /// are all given. Its mesh is its path's first location (Q366), which `_mesh` names.
+    fn view(name: PathName, _mesh: &str, r#type: &str, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
+        NodeView {
             node_id: NodeId::mint(),
+            path: name.path.clone(), name: name.name.clone(),
+            r#type: r#type.to_string(),
+            incarnation,
+            state: NodeStatus::Ready,
             endpoint_id: endpoint.map(str::to_string),
-            incarnation_id: incarnation,
-            deployment_id: None,
-            provider: None,
-            data_dir: None,
-            status: NodeStatus::Ready,
-            is_primary: false,
-            is_fabric_primary: false,
-            admin_api_base: None,
             transport_addr: addr.map(|a| a.parse().unwrap()),
             listeners: Vec::new(),
-            declared: None,
-            stopped: false,
+            runtime: None,
+            is_primary: false,
+            is_fabric_primary: false,
+            cert: None,
+            signing_cert: None,
+            storage: Default::default(),
+            executable: None,
+            config: Default::default(),
+            tags: Default::default(),
             load: None,
             gossip: None,
-            tags: Default::default(),
-            config: Default::default(),
         }
     }
 

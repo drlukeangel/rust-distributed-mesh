@@ -471,7 +471,7 @@ impl Run {
 
     async fn node_faults(&self, mesh: &str) -> FaultClient {
         let nodes = self.estate.node_views().await;
-        let primary = nodes.iter().find(|n| n.r#type == "node-admin" && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
+        let primary = nodes.iter().find(|n| n.r#type == "node-admin" && n.mesh() == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
         self.faults_of(&primary.location()).await
     }
 
@@ -521,7 +521,7 @@ impl Run {
 
     /// `node` once the admin the estate asks lists it ready.
     async fn node_ready(&self, node: &PathName) -> Value {
-        let ready = self.estate.until_node(node, &format!("{node:?} ready"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+        let ready = self.estate.until_node(node, &format!("{node:?} ready"), Duration::from_secs(60), |v| v.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
         serde_json::to_value(ready).expect("a view serializes")
     }
 
@@ -536,7 +536,7 @@ impl Run {
         let mut stream = self.spawn(r#type).await;
         self.complete(&mut stream).await;
         self.estate
-            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.location()) && n.status == NodeStatus::Ready).map(|n| n.location()))
+            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.location()) && n.state == NodeStatus::Ready).map(|n| n.location()))
             .await
     }
 
@@ -861,7 +861,7 @@ async fn silent_case(run: &Run) {
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
 
     // The topology consequence: the view stops calling it ready, within the staleness window.
-    let silent_view = run.estate.until_node(&name, &format!("{name:?} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::Ready).cloned()).await;
+    let silent_view = run.estate.until_node(&name, &format!("{name:?} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.state != NodeStatus::Ready).cloned()).await;
     let silent_view = serde_json::to_value(silent_view).expect("a view serializes");
 
     // The hold ends inside the silent window: past the second unreached tickle ladder node investigation
@@ -895,7 +895,7 @@ async fn silent_case(run: &Run) {
     // Recovery: the same birth is ready again and serves the value stored before the freeze.
     let back = run
         .estate
-        .until_node(&name, &format!("{name:?} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.status == NodeStatus::Ready).cloned())
+        .until_node(&name, &format!("{name:?} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.state == NodeStatus::Ready).cloned())
         .await;
     let back = serde_json::to_value(back).expect("a view serializes");
     let kept = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);

@@ -141,7 +141,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                 Box::pin(async {
                     Ok(rdm_admin::wire::JoinAnswer {
                         served_by: NodeId::parse("0123456789ab").unwrap(),
-                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
+                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
                         statuses: vec![],
                     })
                 })
@@ -208,14 +208,14 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
 
 /// The records of an admin, the writer of `row`'s mesh, holding `row` (Q234: a joiner's row is read from
 /// them, never the store), over a nodes store of its own.
-fn writer_holding(row: rdm_admin::storage::NodeRow) -> Option<(Arc<dyn rdm_admin::storage::NodesStorage>, Arc<rdm_admin::node_rows::WrittenRows>)> {
+fn writer_holding(row: rdm_admin::storage::NodeRecord) -> Option<(Arc<dyn rdm_admin::storage::NodesStorage>, Arc<rdm_admin::node_rows::WrittenRows>)> {
     let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
     written.hold(&row);
     Some((Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), written))
 }
 
 /// The `JoinService` of an admin whose node row at `mesh1.node.1` is `row`, its installs logged in `log`.
-fn service_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row: rdm_admin::storage::NodeRow) -> JoinService {
+fn service_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row: rdm_admin::storage::NodeRecord) -> JoinService {
     JoinService {
         nodes: writer_holding(row),
         me_path: "mesh1.node-admin".into(), me_name: "1".into(),
@@ -224,7 +224,7 @@ fn service_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, r
             Box::pin(async {
                 Ok(rdm_admin::wire::JoinAnswer {
                     served_by: NodeId::parse("0123456789ab").unwrap(),
-                    control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
+                    control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
                     statuses: vec![],
                 })
             })
@@ -258,7 +258,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name() {
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let service = service_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
@@ -294,7 +294,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let service = service_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
@@ -346,7 +346,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRow { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
+        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
             path: dep.path.clone(), name: dep.name.clone(),
             node_id: predecessor.clone(),
             status: rdm_admin::model::NodeStatus::Deleted, allocated: None,
@@ -366,7 +366,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
                 Box::pin(async {
                     Ok(rdm_admin::wire::JoinAnswer {
                         served_by: NodeId::parse("0123456789ab").unwrap(),
-                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
+                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
                         statuses: vec![],
                     })
                 })
@@ -417,7 +417,7 @@ fn a_first_start_whose_row_its_own_create_wrote_is_installed_once() {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<String>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRow { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let mut service = service_over(joins.clone(), Arc::default(), row);
         service.install = Arc::new(move |d| log.lock().unwrap().push(d.node.node_id.to_string()));
         let _reported = joins.expect(dep.clone());
@@ -450,7 +450,7 @@ fn the_join_service_records_every_accepted_join_reports_pending_before_it_answer
     cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let mut service = service_over(joins.clone(), installed.clone(), row);
         let order: Arc<Mutex<Vec<String>>> = Arc::default();
         service.pending = {
@@ -505,7 +505,7 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { r#type: "gateway".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: "gateway".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let service = service_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let digest = digest_of(&dep, "127.0.0.1:34580");
@@ -564,7 +564,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         std::fs::create_dir_all(&store).unwrap();
         let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted());
         let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_root::StoreRoot::at(&store), "mesh1", &writer).await.unwrap());
-        let row = rdm_admin::storage::NodeRow { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
         written.put(&*storage, &row).await.unwrap();
         let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");

@@ -105,7 +105,7 @@ pub trait Gate: Send + Sync {
         Ok(Vec::new())
     }
     /// The node records of `ids` on the store (the births a fabric.delete's begun node.deletes act on).
-    async fn node_rows(&self, _ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRow>, String> {
+    async fn node_rows(&self, _ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRecord>, String> {
         Ok(Vec::new())
     }
     /// Whether the fabric holds ready.
@@ -239,7 +239,7 @@ pub struct Drive {
     callers: Mutex<Vec<iroh::PublicKey>>,
     mesh_rows: Mutex<Option<Vec<crate::storage::MeshRecord>>>,
     /// A fabric.delete's begun node.deletes' node records, for each birth the view no longer holds.
-    node_rows: Mutex<Vec<crate::storage::NodeRow>>,
+    node_rows: Mutex<Vec<crate::storage::NodeRecord>>,
     created: Mutex<std::collections::BTreeSet<PathName>>,
     /// Whether this drive has passed on any frame of the Build: a drive that has not (a fabric-primary
     /// that took the role mid-Build, or after it ended) replays the steps whose event ended `complete`.

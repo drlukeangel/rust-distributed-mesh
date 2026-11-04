@@ -506,17 +506,16 @@ pub fn with_mesh_rows(observed: &Topology, rows: &[crate::storage::MeshRecord]) 
 /// whatever the view still holds (fabric-delete.md "Failure"), and the birth a deleted mesh's final
 /// primary's delete acts on is read from its node record, which is durable (D67), once the view has
 /// let it go.
-pub fn with_node_rows(observed: &Topology, rows: &[crate::storage::NodeRow]) -> Topology {
+pub fn with_node_rows(observed: &Topology, rows: &[crate::storage::NodeRecord]) -> Topology {
     let mut t = observed.clone();
     for r in rows {
         if t.nodes.iter().any(|n| n.node_id == r.node_id) {
             continue;
         }
-        let Some(birth) = r.newest_birth() else { continue };
-        let mut n = crate::model::Node::allocated(r.location(), r.mesh.clone(), &r.r#type);
+        let mut n = crate::model::Node::allocated(r.location(), r.mesh(), &r.r#type);
         n.node_id = r.node_id.clone();
-        n.incarnation_id = Some(birth.incarnation_id.clone());
-        n.status = r.status;
+        n.incarnation_id = Some(r.incarnation.clone());
+        n.status = r.state;
         t.nodes.push(n);
     }
     t
@@ -875,7 +874,7 @@ mod tests {
         fp.is_fabric_primary = true;
         let view = observed(vec![fp, n(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", R, false), n(PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", R, true), n(PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node", R, false)], &["mesh2", "mesh3"]);
         let mesh1_row = crate::storage::MeshRecord { state: rdm_core::status::MeshState::Deleted, ..crate::storage::MeshRecord::new(id("mesh1"), "mesh1") };
-        let mut record = crate::storage::NodeRow::new(primary.location(), "mesh1", "node-admin", primary.node_id.clone(), NodeStatus::Deleted);
+        let mut record = crate::storage::NodeRecord::new(primary.location(), "mesh1", "node-admin", primary.node_id.clone(), NodeStatus::Deleted);
         record.births.push(crate::storage::BirthFacts::new(primary.incarnation_id.clone().unwrap(), primary.location()));
         let gone = with_node_rows(&with_mesh_rows(&view, &[mesh1_row]), &[record]);
         let gid = |m: &str| gone.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();

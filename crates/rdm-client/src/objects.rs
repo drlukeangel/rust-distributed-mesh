@@ -164,7 +164,7 @@ impl Nodes {
     ///     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
     ///     let peers = Peers::at(&birth).await?;
     ///     let nodes = Nodes::new(peers.carrier_at(birth.name));
-    ///     nodes.get(&Filter::new().eq("type", ["broker"]).eq("status", ["ready"])).await.map_err(|e| e.to_string())
+    ///     nodes.get(&Filter::new().eq("type", ["broker"]).eq("state", ["ready"])).await.map_err(|e| e.to_string())
     /// }
     /// ```
     pub async fn get(&self, filter: &Filter) -> Result<Vec<NodeView>, CallEnd> {
@@ -330,11 +330,11 @@ impl Nodes {
         let Some(view) = found.into_iter().next() else {
             return Err(CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("node.get names no node at path {:?}, name {:?}", node.path, node.name) });
         };
-        let Some(incarnation) = view.incarnation_id.clone() else {
+        let Some(incarnation) = view.incarnation.clone() else {
             return Err(CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("node {} at path {:?}, name {:?} has no known birth", view.node_id, node.path, node.name) });
         };
         let mesh_primary = rdm_core::is_node_admin(&view.r#type) && view.is_primary;
-        let above = if mesh_primary { Filter::new().eq("is_fabric_primary", ["true"]) } else { Filter::new().eq("mesh", [view.mesh.as_str()]).eq("type", [rdm_core::meta::NODE_ADMIN]).eq("is_primary", ["true"]) };
+        let above = if mesh_primary { Filter::new().eq("is_fabric_primary", ["true"]) } else { Filter::new().eq("mesh", [view.mesh().as_str()]).eq("type", [rdm_core::meta::NODE_ADMIN]).eq("is_primary", ["true"]) };
         let primary = self.get(&above).await?.into_iter().next().map(|p| p.node_id).ok_or_else(|| CallEnd::Rejected {
             reason: "no-primary".into(),
             detail: format!("node.get names no {} above node {} at path {:?}, name {:?}", if mesh_primary { "fabric-primary" } else { "mesh-primary" }, view.node_id, node.path, node.name),

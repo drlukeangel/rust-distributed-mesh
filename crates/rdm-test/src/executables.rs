@@ -115,17 +115,17 @@ impl Current {
     /// The executable the row at `path` records, a live birth's first.
     fn row_executable(&self, path: &PathName) -> Option<Binding> {
         let at = || self.rows.iter().filter(|n| &n.location() == path);
-        at().find(|n| !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).and_then(|n| n.executable.clone())
+        at().find(|n| !matches!(n.state, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).and_then(|n| n.executable.clone())
     }
 
     /// The live birth's row at `path`, if one stands.
     fn live_row(&self, path: &PathName) -> Option<&NodeView> {
-        self.rows.iter().find(|n| &n.location() == path && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead))
+        self.rows.iter().find(|n| &n.location() == path && !matches!(n.state, NodeStatus::Deleted | NodeStatus::Dead))
     }
 
     /// The ordinal of `kind`'s primary in `mesh`, as the rows say.
     fn primary_path(&self, mesh: &str, r#type: &str) -> Option<PathName> {
-        self.rows.iter().find(|n| n.mesh == mesh && n.r#type == r#type && n.is_primary && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).map(|n| n.location())
+        self.rows.iter().find(|n| n.mesh() == mesh && n.r#type == r#type && n.is_primary && !matches!(n.state, NodeStatus::Deleted | NodeStatus::Dead)).map(|n| n.location())
     }
 
     /// The executable a path the request creates runs: `executables`' for its type.

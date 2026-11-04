@@ -124,7 +124,7 @@ impl NodeObserver for LiveMesh {
                 republish: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), rejoin: Default::default(), loads: None,
                 digest_view: Some(self.topology_view.digest_view.clone()), unreachable: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
-            assert!(service.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default()))).is_ok());
+            assert!(service.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone())))).is_ok());
             if cmd == rdm_admin::node_commands::NodeCommand::DeleteConnections {
                 let Some(incarnation) = node.incarnation_id.clone() else {
                     return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.node_id), code: rdm_core::outcome::Code::FailedPrecondition };
@@ -252,9 +252,6 @@ pub struct AdminSide {
     /// sent it: the admin side answers each `ConfigUpdated` for the birth it names, as the fabric-primary
     /// answers once the command completed.
     pub config_updates: Arc<std::sync::Mutex<Vec<(iroh::PublicKey, rdm_core::status::StatusRequest)>>>,
-    /// The node rows this admin side holds as its mesh's writer (Q234): its `JoinService` reconciles a
-    /// joiner's `(path, name)` to the row there, as a mesh-primary does.
-    rows: Arc<rdm_admin::node_rows::WrittenRows>,
     /// The digest this admin side publishes as itself, on the topology cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rdm_core::digest::MeshDigest>>,
     /// Over the data root where every launch from this admin side's template keeps its births'
@@ -329,10 +326,10 @@ impl AdminSide {
         });
     }
 
-    /// The writer of this admin side's mesh's node rows, as its mesh's primary and the fabric-primary
-    /// (Q234): what a node-admin's executor writes a create's rows through, over `storage` (the
-    /// fabric's store root, where a birth writes its own part of its record) and the record this admin
-    /// side's `JoinService` reads.
+    /// The writer of the records of this admin side's mesh's lost, killed and deleted nodes, as its
+    /// mesh's primary and the fabric-primary: what a node-admin's executor checks a create's name and
+    /// writes a delete's record through, over `storage` (the fabric's store root, where each birth
+    /// writes its own record, Q356).
     pub fn node_rows_on(&self, storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> Arc<rdm_admin::node_rows::NodeRows> {
         let me = rdm_core::PathName::new(&self.launcher.path, &self.launcher.name).expect("the launcher's path and name");
         let mut admin = Node::allocated(me.clone(), &self.launcher.mesh, "node-admin");
@@ -346,12 +343,13 @@ impl AdminSide {
             meshes: vec![rdm_admin::model::Mesh { id: Some(MeshId::parse(TEST_MESH_ID).unwrap()), name: self.launcher.mesh.clone(), status: rdm_admin::model::ScopeStatus::Ready }],
             nodes: vec![admin],
         };
-        Arc::new(rdm_admin::node_rows::NodeRows::new(me, self.launcher.node_id.clone(), Arc::new(tokio::sync::RwLock::new(view)), storage).with_written(self.rows.clone()))
+        Arc::new(rdm_admin::node_rows::NodeRows::new(me, self.launcher.node_id.clone(), Arc::new(tokio::sync::RwLock::new(view)), storage))
     }
 
-    /// Hold `row` as the node row at its `path.name`, a blind put of its own key.
-    pub fn put_row(&self, row: rdm_admin::storage::NodeRow) {
-        self.rows.hold(&row);
+    /// Put `record` whole at its node id in this admin side's nodes store, as its node writes its own
+    /// record (Q356): the record this admin side's `JoinService` reads at a join.
+    pub async fn put_record(&self, record: rdm_admin::storage::NodeRecord) {
+        self.nodes_storage.put_node(&record).await.expect("the memory nodes store takes the record");
     }
 
     /// The digest this admin side holds of itself.
@@ -470,11 +468,10 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // deployed it, which verifies it against the deployment and answers what it hears.
     let nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let joins = Arc::new(rdm_admin::join::Joins::over(nodes_storage.clone()));
-    let rows: Arc<rdm_admin::node_rows::WrittenRows> = Arc::default();
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let join_service = {
         let learner = topology_view.clone();
-        Arc::new(rdm_admin::join::JoinService { nodes: Some((nodes_storage.clone(), rows.clone())), seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
+        Arc::new(rdm_admin::join::JoinService { nodes: Some(nodes_storage.clone()),
             me_path: name.path.clone(), me_name: name.name.clone(),
             joins: joins.clone(),
             answer: Arc::new({
@@ -484,7 +481,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                 Box::pin(async move {
                     Ok(rdm_admin::wire::JoinAnswer {
                         served_by,
-                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), name: None },
+                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
                         statuses: vec![],
                     })
                 })
@@ -657,7 +654,6 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         nodes_storage,
         launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: name.path.clone(), name: name.name.clone(), node_id: admin_node_id, incarnation: admin_incarnation },
         config_updates,
-        rows,
         digest: digest_cell,
         reap: ReapOnDrop(std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()))),
         _publications: publications,

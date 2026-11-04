@@ -2,7 +2,7 @@
 
 use rdm_client::{NodeStatus, NodeView};
 use rdm_core::{NodeId, PathName};
-use rdm_node::nodes_storage::{NodeRow, NodeRowsStorage as _};
+use rdm_node::nodes_storage::{NodeRecord, NodeRowsStorage as _};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -140,7 +140,7 @@ async fn own_properties_survive_node_restart() {
             estate.node_views().await.into_iter().find(|n| {
                 n.location() == rdm_core::PathName::new("mesh1.node", "2").unwrap()
                     && n.node_id != before.node_id
-                    && n.status == rdm_client::NodeStatus::Ready
+                    && n.state == rdm_client::NodeStatus::Ready
             })
         },
     )
@@ -159,7 +159,7 @@ async fn own_properties_survive_node_restart() {
         .rev()
         .find(|line| line.kind() == "node-properties" && line.subject() == before.node_id.as_str())
         .expect("the original node's acknowledged record survives its process exit");
-    let record: rdm_node::node_records::NodeProperties = own.decode(&records).unwrap();
+    let record: rdm_node::nodes_storage::NodeRecord = own.decode(&records).unwrap();
     assert_eq!(
         record.config, expected,
         "the log contains the entire acknowledged map"
@@ -215,7 +215,7 @@ async fn by_id(estate: &Estate, id: &NodeId) -> Vec<NodeView> {
 
 /// The exact birth of `v`, as a caller names it.
 fn birth_of(v: &NodeView) -> rdm_client::ExactBirth {
-    rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(v.node_id.clone()), node_id: v.node_id.clone(), incarnation: v.incarnation_id.clone().expect("a launched birth names its incarnation") }
+    rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(v.node_id.clone()), node_id: v.node_id.clone(), incarnation: v.incarnation.clone().expect("a launched birth names its incarnation") }
 }
 
 async fn fabric_primary(estate: &Estate) -> NodeId {
@@ -245,21 +245,21 @@ fn own_update(estate: &Estate, v: &NodeView, value: &str) {
 
 /// `node`'s record: its latest line at its node id in the nodes store (query.md §1, Q323), read as the
 /// store answers it.
-async fn latest(estate: &Estate, node: &NodeId) -> Option<NodeRow> {
+async fn latest(estate: &Estate, node: &NodeId) -> Option<NodeRecord> {
     let rows = rdm_node::nodes_storage::FileNodeRows::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root())).await.expect("the fabric's nodes store opens");
     rows.node(node).await.unwrap_or_else(|e| panic!("the record of {node} is read: {e}"))
 }
 
-fn status_of(r: &NodeRow) -> String {
-    serde_json::to_value(r.status).unwrap().as_str().unwrap_or_default().to_string()
+fn status_of(r: &NodeRecord) -> String {
+    serde_json::to_value(r.state).unwrap().as_str().unwrap_or_default().to_string()
 }
 
 /// `r`'s fields as these cells compare them: the record's own fields, and its newest birth's
 /// incarnation and lifecycle facts its mesh-primary writes (never the birth's addresses).
-fn fields(r: &NodeRow) -> Value {
+fn fields(r: &NodeRecord) -> Value {
     let b = r.newest_birth();
     json!({
-        "node_id": r.node_id, "name": r.name, "type": r.r#type, "mesh": r.mesh, "mesh_id": r.mesh_id, "status": r.status,
+        "node_id": r.node_id, "name": r.name, "type": r.r#type, "mesh": r.mesh(), "mesh_id": r.mesh_id, "status": r.state,
         "incarnation_id": b.map(|b| &b.incarnation_id), "declared": b.map(|b| &b.declared), "operations": b.map(|b| &b.operations),
         "silence": b.and_then(|b| b.silence),
         "cert": b.and_then(|b| b.cert.as_ref()), "signing_cert": b.and_then(|b| b.signing_cert.as_ref()),
@@ -334,7 +334,7 @@ async fn a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_k
     let pid = estate.pid_of(&subject).await;
     let nodes = estate.nodes_obj().await;
     Estate::workflow(&format!("node.connection.delete {{ All }} of {subject:?}"), nodes.delete_connections(&subject, &rdm_core::status::ConnectionScope::All).await).await;
-    let mesh_primary = estate.node_views().await.into_iter().find(|n| n.mesh == before.mesh && n.is_primary && rdm_core::is_node_admin(&n.r#type)).expect("the view names mesh1's primary").node_id;
+    let mesh_primary = estate.node_views().await.into_iter().find(|n| n.mesh() == before.mesh() && n.is_primary && rdm_core::is_node_admin(&n.r#type)).expect("the view names mesh1's primary").node_id;
     let renamed_at = now_ns();
     let reply = nodes.name_update(&birth_of(&before), &mesh_primary, &rdm_transport::RouteChoice::Direct, &moved).await.unwrap_or_else(|e| panic!("node.name.update of {subject:?}: {e:?}"));
     assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "a node with no connection is renamed on its mesh: {reply:?}");
@@ -342,7 +342,7 @@ async fn a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_k
     let at_moved = at_pair(&estate, &moved).await;
     assert_eq!(at_moved.len(), 1, "node.get [path, name] names one node at the moved pair: {at_moved:#?}");
     let renamed = at_moved[0].clone();
-    assert_eq!((&renamed.node_id, &renamed.incarnation_id, renamed.r#type.clone(), &renamed.mesh), (&before.node_id, &before.incarnation_id, before.r#type.clone(), &before.mesh), "the rename keeps the node's identity");
+    assert_eq!((&renamed.node_id, &renamed.incarnation, renamed.r#type.clone(), &renamed.mesh()), (&before.node_id, &before.incarnation, before.r#type.clone(), &before.mesh()), "the rename keeps the node's identity");
     assert!(!renamed.stopped, "the renamed node is live: {renamed:?}");
     assert!(at_pair(&estate, &subject).await.is_empty(), "nothing is listed at the old pair");
     let named_by_id: Vec<PathName> = by_id(&estate, &before.node_id).await.into_iter().map(|n| n.location()).collect();
@@ -350,11 +350,11 @@ async fn a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_k
     let record = latest(&estate, &before.node_id).await.expect("the renamed node's record");
     assert_eq!(
         (&record.node_id, record.newest_birth().map(|b| &b.incarnation_id), &record.location()),
-        (&before.node_id, before.incarnation_id.as_ref(), &moved),
+        (&before.node_id, before.incarnation.as_ref(), &moved),
         "the renamed node's record keeps its identity and names the moved pair: {record:?}"
     );
     // Back on its mesh: ready again at the moved pair, the same process.
-    let back = estate.until_node(&moved, "the renamed node is ready on its mesh at the moved pair", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id).cloned()).await;
+    let back = estate.until_node(&moved, "the renamed node is ready on its mesh at the moved pair", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id == before.node_id).cloned()).await;
     assert_eq!(estate.pid_of(&moved).await, pid, "the renamed node is the same process");
     estate.artifact("name-update-rejoin.json", &json!({"before": before, "renamed": renamed, "back": back, "record": record}));
     estate.stop().await;
@@ -392,15 +392,15 @@ async fn a_deleted_birth_is_read_by_its_id() {
     let subject = pair("mesh1.node", "2");
     let before = estate.node_view(&subject).await;
     Estate::workflow(&format!("the Delete of {subject:?}"), estate.delete_node(&subject).await).await;
-    Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh, &before.r#type).await).await;
-    let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
+    Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh(), &before.r#type).await).await;
+    let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let record = latest(&estate, &before.node_id).await.expect("the deleted node's record");
     assert_eq!(status_of(&record), "deleted", "the deleted node's latest line is Deleted: {record:?}");
     let read_at = now_ns();
     let listed = by_id(&estate, &before.node_id).await;
     assert_eq!(
-        listed.iter().map(|n| (n.node_id.clone(), n.incarnation_id.clone(), n.status)).collect::<Vec<_>>(),
-        vec![(before.node_id.clone(), before.incarnation_id.clone(), NodeStatus::Deleted)],
+        listed.iter().map(|n| (n.node_id.clone(), n.incarnation.clone(), n.state)).collect::<Vec<_>>(),
+        vec![(before.node_id.clone(), before.incarnation.clone(), NodeStatus::Deleted)],
         "node.get by the deleted node's id answers its latest line, Deleted: {listed:#?}"
     );
     assert!(listed.iter().all(|n| n.node_id != successor.node_id), "the read by the deleted node's id is not redirected to the pair's claimant");
@@ -430,7 +430,7 @@ async fn all_node_fields_survive_node_restart() {
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "all-fields"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
     // The subject holds no role: a primary's stop hands its role over first (node-stop.md "Primary"),
     // so its `is_primary` is not a field a stop and start keeps.
-    let first = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).expect("a node of mesh1 that holds no role");
+    let first = estate.node_views().await.into_iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node" && !n.is_primary).expect("a node of mesh1 that holds no role");
     let subject = first.location();
     own_update(&estate, &first, "listener.data=127.0.0.1:45005");
     let labels: BTreeSet<String> = ["rabbit".to_string()].into();
@@ -438,13 +438,13 @@ async fn all_node_fields_survive_node_restart() {
     assert_eq!(tagged.name(), "tags-created", "{tagged:?}");
     let own: BTreeMap<String, String> = [("listener.data".into(), "127.0.0.1:45005".into())].into();
     let before = estate.until_node(&subject, "the node lists its own config and its tag", Duration::from_secs(30), |n| n.filter(|n| n.config == own && n.tags == labels).cloned()).await;
-    let properties = estate.node_properties(&before.node_id).expect("the node's own property record");
+    let properties = estate.record(&before.node_id).expect("the node's own property record");
     let lifecycle = fields(&latest(&estate, &before.node_id).await.expect("the node's record"));
 
     // 1. The same birth: stopped, then started.
     estate.stop_then_start(&subject).await;
     let started = estate
-        .until_node(&subject, "the same birth is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned())
+        .until_node(&subject, "the same birth is ready again", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation == before.incarnation).cloned())
         .await;
     // fabric-certs.md "Every JoinNode issues a fresh member cert": the start's join (node-start.md step
     // 2) issues the same birth a new cert under the same issuer; every other listed field stands.
@@ -452,7 +452,7 @@ async fn all_node_fields_survive_node_restart() {
     assert!(changed.is_empty(), "every listed field survives the stop and start: {changed:#?}");
     let (was, now) = (before.cert.expect("the birth's member cert"), started.cert.expect("the started birth's member cert"));
     assert!(now.issued_at >= was.issued_at && now.issuer_expires_at == was.issuer_expires_at, "the start's join issues a fresh member cert under the same issuer: {was:?} -> {now:?}");
-    assert_eq!(estate.node_properties(&before.node_id).expect("the property record"), properties, "the whole property record survives the stop and start");
+    assert_eq!(estate.record(&before.node_id).expect("the property record"), properties, "the whole property record survives the stop and start");
     let restarted = fields(&latest(&estate, &before.node_id).await.expect("the record after the start"));
     let changed = differing_except(&lifecycle, &restarted, &["operations", "declared", "cert"]);
     assert!(changed.is_empty(), "the record differs only by the stop and start it records and the fresh member cert: {changed:#?}");
@@ -474,13 +474,13 @@ async fn all_node_fields_survive_node_restart() {
     // 2. Forced exit: recovered at the pair as a new node, with a new endpoint (Q358), on a new data dir
     //    (a `node`'s storage is ephemeral, Q359).
     estate.kill_node(&subject).await;
-    let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
+    let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let changed = differing(&before, &recovered, &["name", "type", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "properties"]);
     assert!(changed.is_empty(), "the recovered node lists every retained field: {changed:#?}");
     assert!(recovered.endpoint_id.is_some() && recovered.endpoint_id != before.endpoint_id, "a new endpoint_id (Q358): {recovered:?}");
-    assert!(recovered.data_dir.is_some() && recovered.data_dir != before.data_dir, "a new data dir: the node's storage is ephemeral (Q359): {recovered:?}");
+    assert!(recovered.storage.data_dir.is_some() && recovered.storage.data_dir != before.storage.data_dir, "a new data dir: the node's storage is ephemeral (Q359): {recovered:?}");
     assert!(recovered.transport_addr.is_some(), "the recovered node lists the address it bound: {recovered:?}");
-    let recovered_properties = wait_for("the recovered node's own property record", Duration::from_secs(30), || async { estate.node_properties(&recovered.node_id) }).await;
+    let recovered_properties = wait_for("the recovered node's own property record", Duration::from_secs(30), || async { estate.record(&recovered.node_id) }).await;
     assert_eq!((&recovered_properties.config, &recovered_properties.tags), (&properties.config, &properties.tags), "the recovered node's own record holds the config and tags");
     let recovered_record = latest(&estate, &recovered.node_id).await.expect("the recovered node's record");
     let recovered_lifecycle = fields(&recovered_record);
@@ -508,14 +508,14 @@ async fn takeover_survives_mesh_primary_restart() {
     let test = "takeover_survives_mesh_primary_restart";
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "takeover"), "fabric1", "mesh1").await, &[("mesh1", 1, 0), ("mesh2", 3, 1)]).await;
     let views = estate.node_views().await;
-    let a = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");
-    let member = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().expect("mesh2's node");
+    let a = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");
+    let member = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node").cloned().expect("mesh2's node");
     let mut recorded: BTreeMap<NodeId, Value> = BTreeMap::new();
-    for n in views.iter().filter(|n| n.mesh == "mesh2") {
+    for n in views.iter().filter(|n| n.mesh() == "mesh2") {
         recorded.insert(n.node_id.clone(), fields(&latest(&estate, &n.node_id).await.unwrap_or_else(|| panic!("{:?}'s record under A", n.name))));
     }
     estate.kill_node(&a.location()).await;
-    let other_primary = |not: Vec<NodeId>| move |views: &[NodeView]| views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.status == NodeStatus::Ready && !not.contains(&n.node_id)).cloned();
+    let other_primary = |not: Vec<NodeId>| move |views: &[NodeView]| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && !not.contains(&n.node_id)).cloned();
     let b = estate.until_view("another admin of mesh2 takes its primary role", Duration::from_secs(120), other_primary(vec![a.node_id.clone()])).await;
     estate.kill_node(&b.location()).await;
     let c = estate.until_view("a third admin takes mesh2's primary role", Duration::from_secs(180), other_primary(vec![a.node_id.clone(), b.node_id.clone()])).await;
@@ -532,7 +532,7 @@ async fn takeover_survives_mesh_primary_restart() {
         assert!(changed.is_empty(), "{id}'s record keeps every field it held under A: {changed:#?}");
     }
     let listed = estate.node_view(&member.location()).await;
-    assert_eq!((&listed.node_id, &listed.incarnation_id, listed.status), (&member.node_id, &member.incarnation_id, NodeStatus::Ready), "node.get lists the member ready as the same birth");
+    assert_eq!((&listed.node_id, &listed.incarnation, listed.state), (&member.node_id, &member.incarnation, NodeStatus::Ready), "node.get lists the member ready as the same birth");
     estate.artifact("takeover.json", &json!({"a": a, "b": b, "c": c, "recorded": recorded, "member_now": member_now}));
     estate.stop().await;
     let spans = estate.spans();
@@ -574,10 +574,10 @@ async fn a_start_preserves_a_newer_owed_update() {
     assert_eq!(reply.name(), "config-updated", "update B is acknowledged during the start: {reply:?}");
     faults.release("ready-held").await;
     starting.await.expect("the start completes");
-    let after = estate.until_node(&subject, "the node is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
-    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth starts");
+    let after = estate.until_node(&subject, "the node is ready again", Duration::from_secs(60), |n| n.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
+    assert_eq!((&after.node_id, &after.incarnation), (&before.node_id, &before.incarnation), "the same birth starts");
     assert_eq!(after.config, b, "the start's Ready keeps the newer acknowledged update");
-    assert_eq!(estate.node_properties(&before.node_id).expect("the node's own record").config, b, "the durable record holds update B");
+    assert_eq!(estate.record(&before.node_id).expect("the node's own record").config, b, "the durable record holds update B");
     estate.artifact("owed-update.json", &json!({"before": before, "after": after}));
     estate.stop().await;
     let spans = estate.spans();
@@ -602,8 +602,8 @@ async fn current_node_reads_survive_fabric_primary_restart() {
     let subject = pair("mesh2.node", "2");
     let before = estate.node_view(&subject).await;
     Estate::workflow(&format!("the Delete of {subject:?}"), estate.delete_node(&subject).await).await;
-    Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh, &before.r#type).await).await;
-    let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
+    Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh(), &before.r#type).await).await;
+    let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let build = estate.accepted_build_id().await;
     let starts = estate.starts_of_build(&build).await;
     let admins: Vec<String> = estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();

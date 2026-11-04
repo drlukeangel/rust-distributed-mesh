@@ -268,7 +268,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
         let settle = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < settle {
             view = match estate.try_node_views().await {
-                Ok(views) => views.iter().map(|n| (n.mesh.clone(), format!("{:?}={:?}", n.name, n.status))).collect(),
+                Ok(views) => views.iter().map(|n| (n.mesh().clone(), format!("{:?}={:?}", n.name, n.state))).collect(),
                 Err(e) => vec![(String::new(), format!("the read ended: {e}"))],
             };
             mesh2_gone = matches!(rdm_test::typed::one_mesh(&estate.meshes_obj().await, "mesh2").await, Ok(None));

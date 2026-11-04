@@ -13,7 +13,7 @@ use crate::events_storage::EventsStorage;
 use crate::primary_update::FinishWrites;
 use crate::fabric_storage::FabricStorage;
 use crate::model::{FabricId, IncarnationId, NodeId, PathName, ProviderKind};
-use crate::storage::{ConnectionsStorage, MeshStorage, NodeRecord, NodesStorage};
+use crate::storage::{ConnectionsStorage, MeshStorage, OwnRow, NodesStorage};
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -90,12 +90,12 @@ pub trait StorageBackend: Send + Sync {
     fn qualify(&self, provider: ProviderKind) -> Result<(), String>;
     /// The admin's own row as its data dir holds it, read before any boundary opens: an inherited
     /// row names the Fabric and the mesh the boundaries open on (R-FI1). `None` for a new admin.
-    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError>;
+    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<OwnRow>, StorageError>;
     /// Keep `record` as the admin's own row in its data dir, where [`Self::own_row`] reads it: the own
     /// seed, written by the process born as `writer` once its birth and its Mesh are decided, so a
     /// restart on this data dir is the same logical node in the same Fabric and Mesh (R-FI1). Its
     /// address and primaries are on its node's record, written by its mesh-primary.
-    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &OwnRow) -> Result<(), StorageError>;
     /// Opens the six boundaries of `scope`.
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String>;
     /// Delete the topology storage of the Fabric `fabric_id`: its six stores and the admin's own row in
@@ -140,11 +140,11 @@ impl StorageBackend for FileBackend {
         crate::store_root::qualify(provider)
     }
 
-    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<OwnRow>, StorageError> {
         crate::storage::own_in(data_dir, writer).await
     }
 
-    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &OwnRow) -> Result<(), StorageError> {
         crate::storage::put_own_in(data_dir, writer, record).await
     }
 
@@ -179,8 +179,8 @@ impl StorageBackend for FileBackend {
         let writes_to = "store-root".to_string();
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
-        let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
-        // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
+        let nodes = Arc::new(crate::storage::FileNodesStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
+        // Every node's record, its runtime included, is a line of the root's nodes.jsonl.
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
         let events = Arc::new(crate::events_storage::FileEventsStorage::open(&root).await.map_err(storage_err)?);
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.log_writer(), events.clone()).await.map_err(|e| e.to_string())?);
@@ -314,7 +314,7 @@ pub struct TopologyStorageHandle {
     provider_written: std::sync::Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>>,
     /// The admin's own row in its data dir, as it last wrote it ([`Self::put_own_row`]): a move writes
     /// it again naming the provider it moves onto.
-    own_row: std::sync::Mutex<Option<NodeRecord>>,
+    own_row: std::sync::Mutex<Option<OwnRow>>,
 }
 
 impl TopologyStorageHandle {
@@ -405,7 +405,7 @@ impl TopologyStorageHandle {
     /// Keep `record` as the admin's own row in its data dir, naming the provider it writes now (storage.md
     /// §2: a start with no launcher opens "its own row in its data dir"'s provider), through the
     /// provider it writes; each later move writes it again naming the provider it moves onto.
-    pub async fn put_own_row(&self, mut record: NodeRecord) -> Result<(), StorageError> {
+    pub async fn put_own_row(&self, mut record: OwnRow) -> Result<(), StorageError> {
         let _one = self.replacing.lock().await;
         let provider = self.provider();
         record.topology_storage_provider = Some(provider.clone());
@@ -559,39 +559,19 @@ macro_rules! nodes_through {
     ($ty:ty, $nodes:ident) => {
         #[async_trait]
         impl NodesStorage for $ty {
-            async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), StorageError> {
-                let w = self.0.current.write();
-                $nodes(&w.boundaries)?.put_runtime(row).await
-            }
-            async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, StorageError> {
-                let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.runtimes().await
-            }
-            async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, StorageError> {
-                let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.runtime(node_id, incarnation).await
-            }
-            async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, StorageError> {
+            async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, StorageError> {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.node(node_id).await
             }
-            async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, StorageError> {
+            async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, StorageError> {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.nodes(mesh).await
             }
-            async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), StorageError> {
+            async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), StorageError> {
                 let w = self.0.current.write();
                 $nodes(&w.boundaries)?.put_node(row).await
             }
-            async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), StorageError> {
-                let w = self.0.current.write();
-                $nodes(&w.boundaries)?.put_properties(record).await
-            }
-            async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, StorageError> {
-                let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.properties(node_id).await
-            }
-            async fn records_at(&self, name: &PathName) -> Result<Vec<crate::storage::NodeRow>, StorageError> {
+            async fn records_at(&self, name: &PathName) -> Result<Vec<crate::storage::NodeRecord>, StorageError> {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.records_at(name).await
             }
@@ -758,12 +738,12 @@ impl StorageBackend for MemoryBackend {
     }
 
     /// A memory admin's data dir holds no row: every start is a new admin's.
-    async fn own_row(&self, _data_dir: &Path, _writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+    async fn own_row(&self, _data_dir: &Path, _writer: &IncarnationId) -> Result<Option<OwnRow>, StorageError> {
         Ok(None)
     }
 
     /// A memory admin's data dir keeps no row: its next start is a new admin's.
-    async fn put_own_row(&self, _data_dir: &Path, _writer: &IncarnationId, _record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_own_row(&self, _data_dir: &Path, _writer: &IncarnationId, _record: &OwnRow) -> Result<(), StorageError> {
         Ok(())
     }
 
@@ -889,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_uses_the_replaced_provider_for_every_storage_call() {
         use crate::fabric_storage::{FabricIdentity, FabricRecord};
-        use crate::storage::{MeshRecord, NodeRow, RuntimeRow};
+        use crate::storage::{MeshRecord, NodeRecord, RuntimeRow};
         let (old, new) = (crate::test_support::tempdir("handle-old"), crate::test_support::tempdir("handle-new"));
         let providers = TopologyStorageProviders::new().register("file", Arc::new(FileBackend::at(&old))).register("file-new", Arc::new(FileBackend::at(&new)));
         let scope = scope_in(crate::test_support::tempdir("handle-data"));
@@ -912,7 +892,7 @@ mod tests {
         fabric.put_fabric(&FabricRecord::new(identity.clone())).await.unwrap();
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
-        let row = NodeRow::new(rdm_core::PathName::new("meshafter.node", "7").unwrap(), "meshafter", "node", NodeId::mint(), crate::model::NodeStatus::Ready);
+        let row = NodeRecord::new(rdm_core::PathName::new("meshafter.node", "7").unwrap(), "meshafter", "node", NodeId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
         let runtime = RuntimeRow { r#type: "node".into(), mesh: "meshafter".into(), node_id: NodeId::mint(), path: "meshafter.node".into(), name: "8".into(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
         nodes.put_runtime(&runtime).await.unwrap();
@@ -991,10 +971,10 @@ mod tests {
         fn qualify(&self, provider: ProviderKind) -> Result<(), String> {
             self.file.qualify(provider)
         }
-        async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+        async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<OwnRow>, StorageError> {
             self.file.own_row(data_dir, writer).await
         }
-        async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+        async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &OwnRow) -> Result<(), StorageError> {
             self.file.put_own_row(data_dir, writer, record).await
         }
         async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
@@ -1071,7 +1051,7 @@ mod tests {
     /// none: its next start is a new admin's. Must NOT happen: the own row kept anywhere but the data dir.
     #[tokio::test]
     async fn the_own_row_is_the_admins_own_seed_in_its_data_dir() {
-        let own = crate::storage::NodeRecord { mesh: "mesh1".into(),
+        let own = crate::storage::OwnRow { mesh: "mesh1".into(),
             node_id: NodeId::mint(),
             fabric_id: FabricId::mint(),
             path: "mesh1.node-admin".into(), name: "1".into(),

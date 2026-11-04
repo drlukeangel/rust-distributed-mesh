@@ -20,7 +20,7 @@
 //! protocol and answers every stream a node opens to it (`echo <admin's node id>: <bytes>`), as the role nodes do.
 use async_trait::async_trait;
 use rdm_admin::model::{IncarnationId, ProviderKind};
-use rdm_admin::storage::NodeRecord;
+use rdm_admin::storage::OwnRow;
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope};
 use rdm_admin::storage_error::StorageError;
 use rdm_admin::wiring::{BuildEndedCtx, BuildEndedNotice, BuildStartedCtx, BuildStartedNotice, FabricHooks, FabricReadyCtx, FabricReadyNotice, MeshReadyCtx, MeshReadyNotice, NodeInvestigatedCtx, NodeInvestigatedNext, NodeInvestigatedNotice, Wiring};
@@ -42,11 +42,11 @@ impl StorageBackend for ConsumerBackend {
         self.0.qualify(provider)
     }
 
-    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+    async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<OwnRow>, StorageError> {
         self.0.own_row(data_dir, writer).await
     }
 
-    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &OwnRow) -> Result<(), StorageError> {
         self.0.put_own_row(data_dir, writer, record).await
     }
 
@@ -69,7 +69,7 @@ async fn wait_started(own: &Own) -> Option<Arc<Started>> {
 
 /// The ready gateways of the admin's mesh, node id and incarnation, in the topology's order.
 fn ready_gateways(started: &Started) -> Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> {
-    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["gateway"]).eq("status", ["ready"]);
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["gateway"]).eq("state", ["ready"]);
     started.view.nodes_get(&filter).unwrap_or_default().into_iter().map(|d| (d.node.node_id, d.node.incarnation)).collect()
 }
 
@@ -109,7 +109,7 @@ async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String)
 /// Open a data connection to each Ready broker of the admin's mesh and write one stream; each broker's
 /// answer is a log line. A broker that cannot be reached is named.
 async fn talk_to_brokers(started: &Started) {
-    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["broker"]).eq("status", ["ready"]);
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("type", ["broker"]).eq("state", ["ready"]);
     for broker in started.view.nodes_get(&filter).unwrap_or_default() {
         let to = rdm_transport::connections::Birth { mesh: broker.node.mesh.clone(), r#type: broker.node.r#type.clone(), path: broker.node.path.clone(), name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
         let answered = async {

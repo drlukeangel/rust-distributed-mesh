@@ -119,7 +119,7 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
     estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
-    let node_id = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").expect("mesh2 node").node_id.clone();
+    let node_id = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node").expect("mesh2 node").node_id.clone();
     let target = format!("exact:{node_id}");
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let out = estate.probe(&["own-config", "--target", &target, "--value", "listener.data=127.0.0.1:45005"]);
@@ -161,7 +161,7 @@ async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     let config: BTreeMap<String, String> = [("listener.data".to_string(), "127.0.0.1:45007".to_string())].into();
     // node.config.update of its own exact birth, sent to it as the fabric-primary, which sends it down
     // to the node's mesh-primary, itself (node-config-update.md "A caller's update").
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(before.node_id.clone()), node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().expect("the fabric-primary names its incarnation") };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(before.node_id.clone()), node_id: before.node_id.clone(), incarnation: before.incarnation.clone().expect("the fabric-primary names its incarnation") };
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&before.node_id, &rdm_transport::RouteChoice::Direct, &birth, config.clone(), &rdm_transport::CallOptions::default()).await;
     assert!(matches!(reply, Ok(StatusReply::ConfigUpdated { ref config, .. }) if config.get("listener.data").map(String::as_str) == Some("127.0.0.1:45007")), "the lone fabric-primary updates its own config: {reply:?}");
@@ -178,7 +178,7 @@ async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     assert_eq!(restarted, fp, "the start on the data dir is at its own row's (path, name)");
     estate.enter(&restarted).await;
     let after = rdm_test::estate::wait_for("the restarted fabric-primary is ready at its (path, name)", Duration::from_secs(120), || async {
-        estate.node_views().await.into_iter().find(|n| n.location() == fp && n.node_id != before.node_id && n.status == rdm_client::NodeStatus::Ready)
+        estate.node_views().await.into_iter().find(|n| n.location() == fp && n.node_id != before.node_id && n.state == rdm_client::NodeStatus::Ready)
     })
     .await;
     estate.artifact("lone-fabric-primary-restart.json", &serde_json::json!({"before": before, "config": config, "after": after}));

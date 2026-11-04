@@ -41,6 +41,12 @@ pub struct JoinControl {
     /// bytes RDM never parses (`fabric-certs.md`). Empty when the authority is configured with no
     /// certs.
     pub member_cert: Vec<u8>,
+    /// The dates of [`Self::member_cert`] as its issuer computed them (fabric-certs.md §Tracking): what
+    /// the node writes as `cert` on its own record when it installs the cert (Q356). `None` with no cert.
+    pub member_cert_dates: Option<rdm_core::certs::CertDates>,
+    /// A node-admin's signing cert dates, when the answering admin minted the signing key the joiner was
+    /// launched with: what it writes as `signing_cert` on its own record (Q356). `None` otherwise.
+    pub signing_cert_dates: Option<rdm_core::certs::SigningCertDates>,
     /// The row's name for this birth, the name it was admitted under: the node installs it before
     /// it publishes anything or declares readiness (R-JN1, node-start.md step 2). Filled by the
     /// `JoinService` for the accepted birth; a node refuses an answer without it.
@@ -73,6 +79,8 @@ struct WireControl {
     build: Option<WireBuildFloor>,
     rafka_time_ms: u64,
     member_cert: Vec<u8>,
+    member_cert_dates: Option<rdm_core::certs::CertDates>,
+    signing_cert_dates: Option<rdm_core::certs::SigningCertDates>,
     name: Option<PathName>,
     cert_policy: Option<rdm_core::certs::CertPolicy>,
 }
@@ -93,6 +101,8 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone() }),
             rafka_time_ms: c.rafka_time_ms,
             member_cert: c.member_cert.clone(),
+            member_cert_dates: c.member_cert_dates.clone(),
+            signing_cert_dates: c.signing_cert_dates.clone(),
             name: c.name.clone(),
             cert_policy: c.cert_policy,
         },
@@ -112,6 +122,8 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id }),
             rafka_time_ms: w.control.rafka_time_ms,
             member_cert: w.control.member_cert,
+            member_cert_dates: w.control.member_cert_dates,
+            signing_cert_dates: w.control.signing_cert_dates,
             name: w.control.name,
         },
         statuses: w.statuses,

@@ -107,7 +107,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
                 let row_ready = match running.control.node_rows.get() {
                     Some(nodes) => {
                         let reader = rdm_admin::current_record::CurrentRecords { nodes: &**nodes };
-                        reader.row(&me.node.node_id).await.ok().flatten().is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready)
+                        reader.row(&me.node.node_id).await.ok().flatten().is_some_and(|r| r.state == rdm_admin::model::NodeStatus::Ready)
                     }
                     _ => false,
                 };
@@ -137,20 +137,20 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let held = view.births().find(|n| n.node_id == me.node.node_id).cloned().expect("the admin's view holds the admin");
         assert_eq!(node_ids(&every_node), vec![held.node_id.clone()], "the fabric topology is mesh1's one node: {every_node:#?}");
         let got = &every_node[0];
-        assert_eq!((got.name.clone(), got.r#type.as_str(), got.mesh.as_str(), got.node_id.clone()), (held.name.clone(), "node-admin", "mesh1", me.node.node_id.clone()));
-        assert_eq!((got.incarnation_id.clone(), got.endpoint_id.clone(), got.transport_addr), (Some(me.node.incarnation.clone()), Some(me.node.endpoint_id.0.clone()), Some(me.node.transport_addr)));
-        assert_eq!((got.status, got.is_primary, got.is_fabric_primary), (NodeStatus::Ready, true, true), "{got:#?}");
+        assert_eq!((got.name.clone(), got.r#type.as_str(), got.mesh().as_str(), got.node_id.clone()), (held.name.clone(), "node-admin", "mesh1", me.node.node_id.clone()));
+        assert_eq!((got.incarnation.clone(), got.endpoint_id.clone(), got.transport_addr), (Some(me.node.incarnation.clone()), Some(me.node.endpoint_id.0.clone()), Some(me.node.transport_addr)));
+        assert_eq!((got.state, got.is_primary, got.is_fabric_primary), (NodeStatus::Ready, true, true), "{got:#?}");
         let (load, gossip) = loads.get(me.node.node_id.as_str()).cloned().unwrap_or((None, None));
         assert_eq!((got.load.is_some(), got.gossip.is_some()), (load.is_some(), gossip.is_some()), "the load and gossip stats are what the admin's view carries: {got:#?}");
         // [id: x]: one node or none; never NOT_FOUND.
         let by_id = nodes_get(Filter::new().eq("id", [me.node.node_id.to_string()])).await;
-        assert_eq!(by_id.iter().map(|n| (n.name.clone(), n.node_id.clone(), n.incarnation_id.clone())).collect::<Vec<_>>(), vec![(held.name.clone(), me.node.node_id.clone(), Some(me.node.incarnation.clone()))], "[id] is the one node: {by_id:#?}");
+        assert_eq!(by_id.iter().map(|n| (n.name.clone(), n.node_id.clone(), n.incarnation.clone())).collect::<Vec<_>>(), vec![(held.name.clone(), me.node.node_id.clone(), Some(me.node.incarnation.clone()))], "[id] is the one node: {by_id:#?}");
         assert!(nodes_get(Filter::new().eq("id", [NodeId::mint().to_string()])).await.is_empty(), "an id the admin does not hold is the empty list");
         // AND across pairs; a mesh the admin does not hold is the empty list.
         assert_eq!(node_ids(&nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("type", ["node-admin"])).await), vec![me.node.node_id.clone()], "[mesh: mesh1] [type: node-admin]");
         assert!(nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("type", ["gateway"])).await.is_empty(), "[mesh: mesh1] [type: gateway]: mesh1 holds no gateway");
         assert!(nodes_get(Filter::new().eq("mesh", ["mesh9"])).await.is_empty(), "[mesh: mesh9]: a mesh the admin does not hold answers the empty list");
-        assert_eq!(node_ids(&nodes_get(Filter::new().eq("is_fabric_primary", ["true"]).eq("status", ["ready"])).await), vec![me.node.node_id.clone()], "a boolean and an enum by their page names");
+        assert_eq!(node_ids(&nodes_get(Filter::new().eq("is_fabric_primary", ["true"]).eq("state", ["ready"])).await), vec![me.node.node_id.clone()], "a boolean and an enum by their page names");
 
         // An unknown property is INVALID_ARGUMENT naming the pair, on the wire and through the object.
         let bad = Filter::new().eq("mesh", ["mesh1"]).eq("zone", ["eu-1"]);

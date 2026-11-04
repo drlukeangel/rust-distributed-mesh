@@ -148,7 +148,7 @@ impl RefusedCallers {
             },
             CallerDecision::ReAdmit { .. } => match self.heard_again.get() {
                 Some(heard_again) => {
-                    let mut caller = crate::model::Node::allocated(path.clone(), record.mesh, &record.r#type);
+                    let mut caller = crate::model::Node::allocated(path.clone(), record.mesh(), &record.r#type);
                     caller.node_id = node_id.clone();
                     caller.incarnation_id = Some(incarnation.clone());
                     caller.status = NodeStatus::Pending;
@@ -166,7 +166,7 @@ impl RefusedCallers {
     /// current Build's paths by mesh and the caller's record; `Err` with the decision's end when there is
     /// nothing to act on: the Build unread, the records unread, no record of the caller, or a mesh this
     /// admin is not primary for.
-    async fn own_decision(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> Result<(CallerDecision, PathName, BTreeMap<String, Vec<PathName>>, crate::storage::NodeRow), (CallerDecision, String)> {
+    async fn own_decision(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> Result<(CallerDecision, PathName, BTreeMap<String, Vec<PathName>>, crate::storage::NodeRecord), (CallerDecision, String)> {
         // The topology's need: the current Build's paths, by mesh.
         let planned: BTreeMap<String, Vec<PathName>> = match self.recovery.builds.current().await {
             Ok(Some(b)) => b.topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.iter().cloned().collect())).collect(),
@@ -264,7 +264,7 @@ mod tests {
     use super::*;
     use crate::model::{Node};
     use crate::topology::Topology;
-    use crate::storage::{NodeRow, NodesStorage as _};
+    use crate::storage::{NodeRecord, NodesStorage as _};
     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest};
 
     /// The fabric-primary `admin`'s atlas scoped to its mesh, deciding its refused callers over mesh1's `rows`
@@ -409,7 +409,7 @@ mod tests {
         // The node records: the admin's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -469,7 +469,7 @@ mod tests {
         // The node records: the admin's and the re-created birth's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&recreated, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -575,7 +575,7 @@ mod tests {
         // The node records: the admin's live, the caller's deleted, and no re-created birth yet.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
+            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -692,7 +692,7 @@ mod tests {
         // The node records of mesh2: the admin's and the caller's, both live.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
-            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }
@@ -790,7 +790,7 @@ mod tests {
         // Both records live: the caller's delete is not written.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
-            let mut r = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+            let mut r = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
             rows.put_node(&r).await.unwrap();
         }

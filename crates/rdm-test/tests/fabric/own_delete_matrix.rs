@@ -294,8 +294,8 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let (mut estate, views) = ready(test, &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.nodes_obj().await;
     let fp_refused = refused_by_name("node.delete of the fabric-primary, mesh1's only admin", "would-leave-mesh-without-admin", nodes.delete(vec![views.iter().find(|n| n.location() == path("mesh1.node-admin", "1")).expect("the fabric-primary's view").node_id.clone()]).await);
-    let primary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh2's primary");
-    let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh2's other admin");
+    let primary = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh2's primary");
+    let ordinary = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh2's other admin");
     let ordinary_id = views.iter().find(|n| n.location() == ordinary).unwrap().node_id.clone();
     let pid = pid_of(&estate, &ordinary).await;
     let (_, replies) = deleted_inside_the_bound(&mut estate, &ordinary, &ordinary_id, pid).await;
@@ -305,7 +305,7 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let mp_refused = refused_by_name("node.delete of mesh2's primary, its mesh's only admin", "would-leave-mesh-without-admin", estate.delete_node(&primary).await);
     assert!(mp_refused.contains("mesh2"), "the refusal names mesh2: {mp_refused}");
     for now in estate.mesh_node_views("mesh2").await.iter().filter(|n| n.r#type == "node-admin") {
-        assert!(now.location() == primary && now.is_primary && now.status == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
+        assert!(now.location() == primary && now.is_primary && now.state == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
     }
     estate.stop().await;
     estate.artifact("deletes.json", &json!({"fabric_primary_refused": fp_refused, "ordinary": replies, "mesh_primary_refused": mp_refused}));
@@ -338,7 +338,7 @@ async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::Work
 /// admins), then node.stop then node.start of the fabric-primary it handed over to.
 async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, u32, u32)]) {
     let (mut estate, views) = ready(test, shape).await;
-    let successor = views.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh1's second admin");
+    let successor = views.iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh1's second admin");
     let before = views.iter().find(|n| n.location() == path("mesh1.node-admin", "1")).cloned().unwrap();
     let pid = pid_of(&estate, &path("mesh1.node-admin", "1")).await;
     estate.enter(&successor).await;
@@ -353,12 +353,12 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
     assert_ne!(fp, before.node_id, "the stopped admin handed over first");
     estate.enter_by_id(&fp).await;
     let stopped_view = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == before.node_id).expect("node.get lists the stopped admin");
-    assert!(stopped_view.stopped && stopped_view.incarnation_id == before.incarnation_id, "the stopped fabric-primary is the same birth, stopped with its process live: {stopped_view:?}");
+    assert!(stopped_view.stopped && stopped_view.incarnation == before.incarnation, "the stopped fabric-primary is the same birth, stopped with its process live: {stopped_view:?}");
     assert!(running(pid), "a stop keeps the process: {pid} runs");
 
     let started = Estate::workflow("node.start of the former fabric-primary", estate.nodes_obj().await.start(&before.location()).await).await;
     let back = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == before.node_id).expect("node.get lists the started admin");
-    assert!(!back.stopped && back.node_id == before.node_id && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::Ready, "the same birth runs again: {back:?}");
+    assert!(!back.stopped && back.node_id == before.node_id && back.incarnation == before.incarnation && back.state == NodeStatus::Ready, "the same birth runs again: {back:?}");
     assert!(running(pid), "the start rejoined the same process {pid}");
 
     // node.stop then node.start of the fabric-primary it handed over to: it hands over first, and it is the
@@ -373,7 +373,7 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
     estate.enter_by_id(&now).await;
     Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&primary.location()).await).await;
     let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == fp).expect("node.get lists the started admin");
-    assert!(after.node_id == primary.node_id && after.incarnation_id == primary.incarnation_id && after.status == NodeStatus::Ready, "the stopped and started fabric-primary is the same node, running: {after:?}");
+    assert!(after.node_id == primary.node_id && after.incarnation == primary.incarnation && after.state == NodeStatus::Ready, "the stopped and started fabric-primary is the same node, running: {after:?}");
     estate.stop().await;
     let spans = estate.spans();
     let own: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| !attr(sp, "commanded_by").is_empty()).collect();

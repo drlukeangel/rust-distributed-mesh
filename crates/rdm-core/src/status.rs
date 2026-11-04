@@ -564,6 +564,9 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The member cert, as the join carries it (`rdm_core::certs::cert_to_bytes`).
         cert: Vec<u8>,
+        /// The cert's dates as its issuer computed them (fabric-certs.md §Tracking): what the birth
+        /// writes as `cert` on its own record when it installs the cert (Q356).
+        cert_dates: Option<crate::certs::CertDates>,
     },
     /// Downward (`node.issuer.update`; node-issuer-update.md): the fabric-primary installs its mesh's
     /// issuing material on one node-admin of that mesh, answered [`StatusReply::IssuerUpdated`], or
@@ -2518,7 +2521,7 @@ mod tests {
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
             StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None },
             StatusRequest::Reserved29 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
-            StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
+            StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3], cert_dates: None },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
             StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
@@ -2663,29 +2666,26 @@ mod tests {
     }
 
     fn node_view() -> crate::views::NodeView {
-        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
+        crate::views::NodeView {
+            node_id: NodeId::mint(),
             path: "mesh1.node".into(), name: "12".into(),
             r#type: "node".into(),
-            mesh: "mesh1".into(),
-            node_id: NodeId::mint(),
+            incarnation: Some(IncarnationId::mint()),
+            state: crate::views::NodeStatus::Ready,
             endpoint_id: Some("e".repeat(64)),
-            incarnation_id: Some(IncarnationId::mint()),
-            deployment_id: Some("d".repeat(32)),
-            provider: Some(crate::views::ProviderKind::Process),
-            data_dir: Some("/var/lib/rdm/fabric1/mesh1.node.12".into()),
-            status: crate::views::NodeStatus::Ready,
-            is_primary: false,
-            is_fabric_primary: false,
-            admin_api_base: None,
             transport_addr: Some("127.0.0.1:41235".parse().unwrap()),
             listeners: vec![("control".into(), "127.0.0.1:41236".parse().unwrap())],
-            declared: Some("Ready".into()),
-            stopped: false,
+            runtime: Some(crate::RuntimeFact { deployment_id: "d".repeat(32), provider: crate::runtime::RuntimeProvider::Process, control_domain: "process:host-a".into(), locator: crate::runtime::RuntimeLocator::Process { pid: 4242, start: 17 } }),
+            is_primary: false,
+            is_fabric_primary: false,
+            cert: None,
+            signing_cert: None,
+            storage: crate::meta::Storage { persistence: None, data_dir: Some("/var/lib/rdm/fabric1/mesh1.node.12".into()) },
+            executable: None,
+            config: [("tier".to_string(), "gold".to_string())].into(),
+            tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
             load: Some(crate::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
             gossip: Some(crate::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
-            tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
-            config: [("tier".to_string(), "gold".to_string())].into(),
-            properties: Default::default(),
         }
     }
 

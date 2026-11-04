@@ -23,7 +23,7 @@
 //! assert_eq!((name.path.as_str(), name.name.as_str()), ("mesh1.node", "2"));
 //!
 //! // `node.get` of mesh1's ready nodes: AND across pairs, any-of within a pair.
-//! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("type", ["node"]).eq("status", ["ready"]);
+//! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("type", ["node"]).eq("state", ["ready"]);
 //! assert_eq!(filter.refusal(Entity::Nodes), None);
 //! ```
 //!

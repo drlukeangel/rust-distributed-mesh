@@ -135,7 +135,7 @@ async fn a_member_lost_while_a_build_is_held_is_recovered_before_the_build_ends(
     let deadline = tokio::time::Instant::now() + due;
     loop {
         let views = estate.node_views().await;
-        if views.iter().any(|n| n.location() == node && n.node_id != lost.node_id && n.status == rdm_client::NodeStatus::Ready) {
+        if views.iter().any(|n| n.location() == node && n.node_id != lost.node_id && n.state == rdm_client::NodeStatus::Ready) {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline, "the lost member was not re-created ready within {due:?} while the Build was held: {views:?}");

@@ -18,7 +18,7 @@ use rdm_admin::model::{
 };
 use rdm_admin::node_commands::NodeCommand;
 use rdm_admin::node_rows::{RowFor, WriteRecord as _};
-use rdm_admin::storage::{MemoryNodesStorage, NodeRow, NodesStorage as _};
+use rdm_admin::storage::{MemoryNodesStorage, NodeRecord, NodesStorage as _};
 use rdm_admin::topology::Topology;
 use rdm_core::status::ConnectionsReceipt;
 use rdm_core::{LifecycleOp, RuntimeFact, RuntimeLocator};
@@ -317,7 +317,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = NodeRecord::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 
@@ -754,7 +754,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = NodeRecord::new(target_name.clone(), "mesh1", "node", target_id.clone(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 

@@ -464,7 +464,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // The renewal is compared against a settled member: its admin holds it ready (a member's
         // first ready declaration can reach the admin before the admin's own start ends, and is owed again),
         // and mesh1.node.2 holds its digest, which it takes eventually, as mesh1.node.1 took its own above.
-        let view_before = until("node.get of mesh1.node.1 holds it ready before the renewal", BOUND, async || node_get(&root, &a.digest.node.node_id).await.filter(|v| v.status == NodeStatus::Ready)).await;
+        let view_before = until("node.get of mesh1.node.1 holds it ready before the renewal", BOUND, async || node_get(&root, &a.digest.node.node_id).await.filter(|v| v.state == NodeStatus::Ready)).await;
         // The digest in the peer's view moves Pending to ready when the mesh-primary's projected
         // status reaches it (rdm.mesh.topology.update.via-projected-status), after the admin's row is written:
         // the renewal is compared against the peer's settled view of it, never its first digest.
@@ -485,8 +485,8 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         assert_eq!(held_after, held_before, "what the node holds is unchanged");
         let view_after = bounded("node.get of mesh1.node.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.node.1 in the view");
         assert_eq!(
-            (view_after.status, &view_after.incarnation_id, &view_after.name, &view_after.config, view_after.stopped),
-            (view_before.status, &view_before.incarnation_id, &view_before.name, &view_before.config, view_before.stopped),
+            (view_after.state, &view_after.incarnation, &view_after.name, &view_after.config, view_after.stopped),
+            (view_before.state, &view_before.incarnation, &view_before.name, &view_before.config, view_before.stopped),
             "no status set, nothing restarted"
         );
         let (digest_after, _) = b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).expect("mesh1.node.2 still holds mesh1.node.1's digest");
@@ -547,7 +547,7 @@ fn a_renewal_its_own_admin_blocks_is_spent_nowhere_marks_nothing_and_is_sent_aga
             !named(&spans, "rdm.node_admin.node.update.via-call-failed").iter().any(|f| f.get("node_id") == Some(&id)),
             "a call refused before any attempt is spent nowhere: nothing marks the birth"
         );
-        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
+        assert_eq!((view.state, view.incarnation.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
         let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.node.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");
 
@@ -581,7 +581,7 @@ fn a_cert_for_another_birth_is_refused_by_name() {
         let root = boot_root(&dir, &[]).await;
         let a = member(&root, &dir, "1").await;
         let b = member(&root, &dir, "2").await;
-        let to_a = |cert: Vec<u8>| StatusRequest::RenewCert { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone(), cert };
+        let to_a = |cert: Vec<u8>| StatusRequest::RenewCert { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone(), cert, cert_dates: None };
 
         match call(&root, &a, &to_a(b.member_cert.clone())).await {
             Ok(StatusReply::RejectedCert { reason }) => {
@@ -645,7 +645,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let member = estate.node_view(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
-    let incarnation = member.incarnation_id.clone().expect("the member's birth");
+    let incarnation = member.incarnation.clone().expect("the member's birth");
 
     estate.enter(&Estate::path("mesh1.node-admin", "2")).await;
     let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.node-admin", "1")).await.expect("node.stop of mesh1.node-admin.1 is accepted");
@@ -1008,7 +1008,7 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     estate.resize_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 0)]).await;
     let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh2.node-admin", "1"), Estate::path("mesh2.node-admin", "2")].into_iter().collect();
     let views = estate.settles_to_named(&names, Duration::from_secs(30)).await;
-    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2").collect();
+    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh() == "mesh2").collect();
     let primary = mesh2_admins.iter().find(|v| v.is_primary).cloned().expect("mesh2 holds a primary");
     let secondary = mesh2_admins.iter().find(|v| !v.is_primary).cloned().expect("mesh2 holds a secondary admin");
     let (primary_name, secondary_name) = (primary.location(), secondary.location());

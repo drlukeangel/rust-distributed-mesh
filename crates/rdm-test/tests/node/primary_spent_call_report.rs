@@ -65,8 +65,8 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = one(&views, "a fabric-primary", |n| n.is_fabric_primary);
-    let mp = one(&views, "mesh2's mesh-primary", |n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary);
-    let rpc = one(&views, "mesh2's node", |n| n.mesh == "mesh2" && n.r#type == "node");
+    let mp = one(&views, "mesh2's mesh-primary", |n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary);
+    let rpc = one(&views, "mesh2's node", |n| n.mesh() == "mesh2" && n.r#type == "node");
     let (fp_id, mp_id, rpc_id) = (fp.node_id.to_string(), mp.node_id.to_string(), rpc.node_id.to_string());
 
     // The hold: mesh2's mesh-primary neither gossips nor answers from here.

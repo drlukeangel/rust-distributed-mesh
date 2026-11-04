@@ -33,8 +33,10 @@ pub struct Adoptable {
     pub provider: ProviderKind,
     /// The mesh's row.
     pub mesh: crate::storage::MeshRecord,
-    /// The lost fabric-primary's birth at the launch's path and name, as its node row records it.
-    pub lost: crate::storage::NodeRecord,
+    /// The lost fabric-primary's birth at the launch's path and name, as its node record records it.
+    pub lost: crate::storage::OwnRow,
+    /// The lost fabric-primary's node record: the config and tags the launch's own record starts from.
+    pub record: crate::storage::NodeRecord,
     /// The fabric.delete in force: the launch, at the lost fabric-primary's path and name, continues it
     /// (Q370). `None` when no fabric.delete is in force.
     pub delete: Option<BuildProjection>,
@@ -117,11 +119,11 @@ pub async fn read(
         Some(m) => return Err(format!("{of}: mesh {} ({}) is deleted: a deleted mesh is never adopted", mesh_name, m.mesh_id)),
         None => return Err(format!("{of}: the store root {} holds no row of mesh {}", root.display(), mesh_name)),
     };
-    // The fabric-primary the node rows record (`is_fabric_primary` on a birth, the newest revision): the
-    // lost birth the launch is at the path and name of.
-    let rows = crate::storage::records(meshes, nodes, &mesh_name).await.map_err(|e| format!("{of}: nodes.storage could not read the node rows: {e}"))?;
-    let recorded = rows.iter().filter(|r| r.status != NodeStatus::Deleted).filter_map(|r| r.newest_birth().and_then(|b| b.is_fabric_primary.map(|rev| (rev, r, b)))).max_by_key(|(rev, _, _)| *rev);
-    let Some((_, row, birth)) = recorded else {
+    // The fabric-primary the node records record (`is_fabric_primary`, the newest revision): the lost
+    // node the launch is at the path and name of.
+    let rows = crate::storage::records(meshes, nodes, &mesh_name).await.map_err(|e| format!("{of}: nodes.storage could not read the node records: {e}"))?;
+    let recorded = rows.iter().filter(|r| r.state != NodeStatus::Deleted).filter_map(|r| r.is_fabric_primary.map(|rev| (rev, r))).max_by_key(|(rev, _)| *rev);
+    let Some((_, row)) = recorded else {
         return Err(format!("{of}: the node rows on the store root {} record no fabric-primary: an adoption launch is at the lost fabric-primary's (path, name)", root.display()));
     };
     // The launch is at the lost fabric-primary's path and name, under an in-force fabric.delete as without
@@ -129,31 +131,30 @@ pub async fn read(
     if row.location() != *name {
         return Err(format!("{of}: the node rows record fabric-primary node_id={} at path={} name={}; an adoption launch uses that location", row.node_id, row.path, row.name));
     }
-    // Its address is the node's own part of its record at that birth (Q333).
-    let own = nodes.properties(&row.node_id).await.map_err(|e| format!("{of}: nodes.storage could not read the own part of the record of {}: {e}", row.node_id))?;
-    let own = crate::current_record::of_birth(own.as_ref(), &row.node_id, &birth.incarnation_id);
-    let lost = crate::storage::NodeRecord {
-        mesh: row.mesh.clone(),
+    // Its address is its record's; its mesh's id the live Mesh record's of its mesh, by name.
+    let lost = crate::storage::OwnRow {
+        mesh: row.mesh(),
         node_id: row.node_id.clone(),
         fabric_id: fabric_id.clone(),
         path: row.path.clone(), name: row.name.clone(),
-        mesh_id: row.mesh_id.clone().unwrap_or_else(|| mesh.mesh_id.clone()),
-        incarnation_id: birth.incarnation_id.clone(),
-        endpoint_id: own.and_then(|o| o.endpoint_id.clone()).unwrap_or_else(|| EndpointId(String::new())),
-        transport_addr: own.and_then(|o| o.transport_addr).unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0))),
-        listeners: own.map(|o| o.listeners.clone()).unwrap_or_default(),
-        is_primary: birth.is_primary,
-        is_fabric_primary: birth.is_fabric_primary,
+        mesh_id: mesh.mesh_id.clone(),
+        incarnation_id: row.incarnation.clone(),
+        endpoint_id: row.endpoint_id.clone(),
+        transport_addr: row.transport_addr,
+        listeners: row.listeners.clone(),
+        is_primary: row.is_primary,
+        is_fabric_primary: row.is_fabric_primary,
         topology_storage_provider: None,
     };
-    Ok(Adoptable { fabric: record, provider, mesh, lost, delete })
+    let row = row.clone();
+    Ok(Adoptable { fabric: record, provider, mesh, lost, record: row, delete })
 }
 
 /// An adoption launch's start: the lost birth it recovers.
 #[derive(Debug, Clone)]
 pub struct AdoptionLaunch {
     /// The lost fabric-primary's birth.
-    pub lost: crate::storage::NodeRecord,
+    pub lost: crate::storage::OwnRow,
 }
 
 /// The start of the adoption launch: nothing is written. The adoption is fabric recovery, never a Build or
@@ -167,7 +168,7 @@ pub fn start(a: &Adoptable) -> AdoptionLaunch {
 #[async_trait::async_trait]
 pub trait Answers: Send + Sync {
     /// Node investigation of the exact lost birth `lost`: its verdict.
-    async fn investigate(&self, lost: &crate::storage::NodeRecord) -> Finding;
+    async fn investigate(&self, lost: &crate::storage::OwnRow) -> Finding;
     /// The node-admins of the fabric the store records, the lost birth among them, that answer a probe
     /// now, by path and name.
     async fn admins_answering(&self) -> Result<Vec<NodeId>, String>;
@@ -212,7 +213,7 @@ pub async fn check(c: &AdoptionLaunch, answers: &dyn Answers) -> Result<Finding,
 /// admin at the primary's name"; Q199): whether any node-admin the store records answers a probe now.
 /// `Some` refusal, `NameHeld` naming who answered, when one does: the fabric has a live admin, and the
 /// lost birth `lost`'s path and name is its fabric recovery's to re-create.
-pub async fn admin_answered(lost: &crate::storage::NodeRecord, answers: &dyn Answers) -> Option<Refused> {
+pub async fn admin_answered(lost: &crate::storage::OwnRow, answers: &dyn Answers) -> Option<Refused> {
     let answering = match answers.admins_answering().await {
         Ok(answering) => answering,
         Err(error) => return Some(Refused { reason: format!("the answering admins could not be determined: {error}"), answered: None }),
@@ -243,11 +244,12 @@ pub fn fail(c: &AdoptionLaunch, refused: &Refused) {
         .in_scope(|| tracing::info!("the adoption launch is refused by its checks: it writes nothing"));
 }
 
-/// The launch, `me_id`, releases the lost birth's name and takes it ([`crate::node_rows::take_inherited_name`]:
-/// the lost birth's row written `Deleted`, then this node's claim of the path and name), recorded on the
-/// node records, never on a Build.
-pub async fn release_name(c: &AdoptionLaunch, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
-    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.path, c.lost.name, c.lost.node_id))
+/// The launch, `me_id`, releases the name of `lost`, the lost birth: the lost node's record written
+/// `Deleted` ([`crate::node_rows::write_deleted`]; a lost node's record is written by the admin acting
+/// for it, Q356), recorded on the node records, never on a Build. The launch's own record, its first
+/// line at its start, then holds the path and name, as every node's does.
+pub async fn release_name(lost: &crate::storage::OwnRow, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage) -> Result<(), String> {
+    crate::node_rows::write_deleted(nodes, &lost.location(), &lost.node_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} releases path={} name={} of lost node_id={}: {e}", lost.path, lost.name, lost.node_id))
 }
 
 /// [`Answers`] over this process's Node RPC client: node investigation of the lost birth direct (no view
@@ -292,13 +294,13 @@ impl ProbeAnswers {
 
 #[async_trait::async_trait]
 impl Answers for ProbeAnswers {
-    async fn investigate(&self, lost: &crate::storage::NodeRecord) -> Finding {
+    async fn investigate(&self, lost: &crate::storage::OwnRow) -> Finding {
         let mut node = Node::allocated(lost.location(), lost.mesh.clone(), "node-admin");
         node.node_id = lost.node_id.clone();
         node.incarnation_id = Some(lost.incarnation_id.clone());
         let view = Topology { fabric: self.fabric.clone(), meshes: Vec::new(), nodes: Vec::new() };
         let inspect = async {
-            let row = self.nodes.runtime(&lost.node_id, &lost.incarnation_id).await.ok().flatten();
+            let row = crate::node_rows::birth_record(&*self.nodes, &lost.node_id, &lost.incarnation_id).await.ok().flatten();
             Finding::from(super::rows_writer::inspection_of(&*self.provider, &None, row.as_ref()).await)
         };
         if !self.resolve(&lost.node_id, &lost.location(), &lost.mesh, "node-admin", &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
@@ -313,24 +315,13 @@ impl Answers for ProbeAnswers {
             Err(e) => return Err(format!("the node rows could not be read: {e}")),
         };
         let calls = self.calls();
-        // Each admin's address is the node's own part of its record (Q333), one point read at its id.
-        let mut owns = std::collections::BTreeMap::new();
-        for r in rows.iter().filter(|r| rdm_core::is_node_admin(&r.r#type) && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)) {
-            match self.nodes.properties(&r.node_id).await {
-                Ok(Some(own)) => { owns.insert(r.node_id.clone(), own); }
-                Ok(None) => {}
-                Err(e) => return Err(format!("the own part of the record of {} could not be read: {e}", r.node_id)),
-            }
-        }
+        // Each admin's address is its record's.
         let probes = rows.iter().filter(|r| rdm_core::is_node_admin(&r.r#type) && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
-            let b = r.newest_birth()?;
-            let own = crate::current_record::of_birth(owns.get(&r.node_id), &r.node_id, &b.incarnation_id)?;
-            let (endpoint, addr) = (own.endpoint_id.clone()?, own.transport_addr?);
-            self.resolve(&r.node_id, &r.location(), &r.mesh, &r.r#type, &endpoint, addr, &b.incarnation_id).then(|| {
-                let mut node = Node::allocated(r.location(), r.mesh.clone(), &r.r#type);
+            self.resolve(&r.node_id, &r.location(), &r.mesh(), &r.r#type, &r.endpoint_id, r.transport_addr, &r.incarnation).then(|| {
+                let mut node = Node::allocated(r.location(), r.mesh(), &r.r#type);
                 node.node_id = r.node_id.clone();
-                node.incarnation_id = Some(b.incarnation_id.clone());
-                let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone() };
+                node.incarnation_id = Some(r.incarnation.clone());
+                let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: r.node_id.clone(), incarnation: r.incarnation.clone() };
                 let calls = &calls;
                 async move {
                     let end = crate::offline::TickleCalls::direct(calls, &node, &probe).await;
@@ -350,7 +341,7 @@ mod tests {
     use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
     use crate::fabric_storage::{FabricIdentity, FabricRecord, FabricStorage, MemoryFabricStorage};
     use crate::node_rows::{WriteRecord as _, WrittenRows};
-    use crate::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage as _, NodeRow};
+    use crate::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage as _, NodeRecord};
     use std::path::PathBuf;
 
     struct StubAnswers {
@@ -360,7 +351,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Answers for StubAnswers {
-        async fn investigate(&self, _lost: &crate::storage::NodeRecord) -> Finding {
+        async fn investigate(&self, _lost: &crate::storage::OwnRow) -> Finding {
             self.finding.clone()
         }
         async fn admins_answering(&self) -> Result<Vec<NodeId>, String> {
@@ -440,7 +431,7 @@ mod tests {
 
             let lost_id = NodeId::mint();
             let lost_inc = IncarnationId::mint();
-            let mut row = NodeRow::new(path.clone(), "mesh1", "node-admin", lost_id.clone(), NodeStatus::Ready);
+            let mut row = NodeRecord::new(path.clone(), "mesh1", "node-admin", lost_id.clone(), NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             let b = row.birth_mut(&lost_inc, &path);
             b.is_primary = Some(1);

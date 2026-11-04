@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
         node_id: member.node_id.clone(),
         incarnation: inc,
         cert: issue.bytes.clone(),
+        cert_dates: Some(rdm_core::certs::CertDates { issued_at: issue.issued_at, expires_at: issue.expires_at, issuer_expires_at: issue.issuer_expires_at, renew_at: issue.renew_at }),
     };
     let (out, _) = carrier
         .client()

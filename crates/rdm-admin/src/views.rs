@@ -67,33 +67,30 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
     }
 }
 
-/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
-/// and the tags and config its record carries (Q203: config is never gossiped).
+/// `n` as a `node.get` answer carries it before its record is read, with the load and gossip stats its
+/// latest digest carried and `tags` and `config` (Q203: config is never gossiped): the view's fields under
+/// the record's names; a record overlays every field it holds ([`record_view`]).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
-    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
+    NodeView {
+        node_id: n.node_id.clone(),
         path: n.path.clone(), name: n.name.clone(),
         r#type: n.r#type.clone(),
-        mesh: n.mesh.clone(),
-        node_id: n.node_id.clone(),
+        incarnation: n.incarnation_id.clone(),
+        state: node_status(n.status),
         endpoint_id: n.endpoint_id.as_ref().map(|e| e.0.clone()),
-        incarnation_id: n.incarnation_id.clone(),
-        deployment_id: n.deployment_id.as_ref().map(|d| d.to_string()),
-        provider: n.provider.map(provider),
-        data_dir: n.data_dir.clone(),
-        status: node_status(n.status),
-        is_primary: n.is_primary,
-        is_fabric_primary: n.is_fabric_primary,
-        admin_api_base: n.admin_api_base.clone(),
         transport_addr: n.transport_addr,
         listeners: n.listeners.clone(),
-        declared: n.declared.clone(),
-        stopped: n.stopped,
+        runtime: None,
+        is_primary: n.is_primary,
+        is_fabric_primary: n.is_fabric_primary,
+        cert: None,
+        signing_cert: None,
+        storage: rdm_core::meta::Storage { persistence: None, data_dir: n.data_dir.clone() },
+        executable: None,
+        config,
+        tags,
         load,
         gossip,
-        tags,
-        config,
-        // The fact the view folded for the silent birth (deployment-provider.md §2.5): node.get, the
-        // node.delete and the plan read one source.
     }
 }
 
@@ -101,20 +98,24 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
     MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
 }
 
-/// `n` with `load` and `gossip`, as its mesh-primary's part of its record, `row`, carries it (its
-/// executable, storage, placement and cert dates). Its config and tags are the node's own part of its
-/// record (Q333), taken by the answering read.
-fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRow>) -> NodeView {
+/// `n` with `load` and `gossip`, and every field its node record `row` holds (Q366), under the record's
+/// names; the view's own word stands for a field the record does not hold (a node with no record yet).
+/// `n`'s state and role flags are the view's as the atlas read them (Q197, Q355).
+fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRecord>) -> NodeView {
     let mut v = node_view(n, load, gossip, Default::default(), Default::default());
-    // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
-    v.executable = row.and_then(|r| r.executable.clone());
-    // Its storage_persistence and the topology_storage_provider it writes, as its row records them
-    // (storage.md §1, §2): two properties under two names.
-    v.storage_persistence = row.and_then(|r| r.storage_persistence);
-    v.topology_storage_provider = row.and_then(|r| r.topology_storage_provider.clone());
-    // fabric-certs.md §Tracking: `node.get` surfaces the birth's held cert as `cert { issued_at,
-    // expires_at, issuer_expires_at }`.
-    v.cert = n.incarnation_id.as_ref().and_then(|i| row?.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
+    if let Some(r) = row {
+        v.incarnation = Some(r.incarnation.clone());
+        v.endpoint_id = Some(r.endpoint_id.0.clone());
+        v.transport_addr = Some(r.transport_addr);
+        v.listeners = r.listeners.clone();
+        v.runtime = Some(r.runtime.clone());
+        v.cert = r.cert.clone();
+        v.signing_cert = r.signing_cert.clone();
+        v.storage = r.storage.clone();
+        v.executable = r.executable.clone();
+        v.config = r.config.clone();
+        v.tags = r.tags.clone();
+    }
     v
 }
 
@@ -160,7 +161,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 continue;
             }
             let Some(row) = c.row(id).await? else { continue };
-            out.push(row_view(view, atlas, &row, None));
+            out.push(row_view(view, atlas, &row));
         }
         // A (path, name) the filter names that no birth answered here stands at: the node the node
         // records' current-pair lookup names there, read at its record (query.md §1), never the gossip
@@ -173,45 +174,38 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             if out.iter().any(|v| v.node_id == row.node_id) {
                 continue;
             }
-            out.push(row_view(view, atlas, &row, None));
+            out.push(row_view(view, atlas, &row));
         }
     }
     out.sort_by(|a, b| a.location().cmp(&b.location()));
     Ok(out)
 }
 
-/// A node's own whole row as its mesh-primary holds it (Q234: every node property; the hydration sync's
-/// `OwnRow`): the birth `view` holds of `row`'s node, as `row` carries it and the ops left it
-/// (`atlas`), `is_primary` and `is_fabric_primary` as the primary updates' answers `atlas` holds set
-/// them ([`Atlas::primaries`], Q355), as [`nodes`] reads them; `own` the node's own part of its
-/// record (Q333); a birth `view` does not hold yet is answered from its record alone, its addresses from
-/// `own` at that birth. Never a store read.
-pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
+/// A node's own whole record as its mesh-primary answers it (Q234: every node property; the hydration
+/// sync's `OwnRow`): the birth `view` holds of `row`'s node, as `row`, the node's record, carries it and
+/// the ops left it (`atlas`), `is_primary` and `is_fabric_primary` as the primary updates' answers `atlas`
+/// holds set them ([`Atlas::primaries`], Q355), as [`nodes`] reads them; a birth `view` does not hold yet
+/// is answered from its record alone. No store read here: the caller read `row`.
+pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRecord) -> NodeView {
     let mut held = view.clone();
     atlas.primaries(&mut held);
-    row_view(&held, atlas, row, own)
+    row_view(&held, atlas, row)
 }
 
 /// [`own_row_view`] of `row` in `view`, its primaries already set from `atlas`.
-fn row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
+fn row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRecord) -> NodeView {
     if let Some(b) = view.births().find(|n| n.node_id == row.node_id) {
         let mut n = b.clone();
         if atlas.read(&mut n, Some(row)) {
             return record_view(&n, None, None, Some(row));
         }
     }
-    let mut n = Node::allocated(row.location(), row.mesh.clone(), &row.r#type);
+    let mut n = Node::allocated(row.location(), row.mesh(), &row.r#type);
     n.node_id = row.node_id.clone();
-    n.status = row.status;
+    n.status = row.state;
     n.provider = Some(view.fabric.provider);
-    if let Some(b) = row.newest_birth() {
-        n.incarnation_id = Some(b.incarnation_id.clone());
-        if let Some(own) = crate::current_record::of_birth(own, &row.node_id, &b.incarnation_id) {
-            n.endpoint_id = own.endpoint_id.clone();
-            n.transport_addr = own.transport_addr;
-            n.listeners = own.listeners.clone();
-        }
-    }
+    n.is_primary = row.is_primary.is_some();
+    n.is_fabric_primary = row.is_fabric_primary.is_some();
     record_view(&n, None, None, Some(row))
 }
 
@@ -253,30 +247,6 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             Ok(nodes) => nodes,
             Err(why) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: {why}", me.path, me.name)),
         };
-        if let Some(properties) = current.map(|c| c.nodes) {
-            // Resolve stable identity pairs first: an exact read must not touch another node's
-            // property record. Property-dependent pairs still match the complete current value.
-            let mut identity = filter.clone();
-            identity.pairs.retain(|(property, _)| matches!(property.trim_start_matches('!'), "id" | "incarnation" | "path" | "name" | "mesh" | "type"));
-            nodes.retain(|node| identity.matches(node));
-            for node in &mut nodes {
-                let read = tracing::info_span!("rdm.node.properties.read.via-node-get", node_id = %node.node_id, "otel.kind" = "internal");
-                match tracing::Instrument::instrument(properties.properties(&node.node_id), read).await {
-                    Ok(Some(own)) => {
-                        node.config = own.config;
-                        node.tags = own.tags;
-                        node.listeners = own.listeners;
-                        node.endpoint_id = own.endpoint_id.map(|id| id.to_string());
-                        node.transport_addr = own.transport_addr;
-                    }
-                    // A node whose current property record is absent is listed with its lifecycle facts, its
-                    // properties unavailable, named, never a lifecycle row's copy (node-config-update.md step 4;
-                    // Q318: per node, not per read; a pair on them matches it not).
-                    Ok(None) => node.properties = rdm_core::views::PropertyRecord::Unavailable { reason: format!("node {} has no property record: its properties are unavailable", node.node_id) },
-                    Err(error) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: node record {} could not be read: {error}", me.path, me.name, node.node_id)),
-                }
-            }
-        }
         nodes.retain(|n| filter.matches(n));
         let count = nodes.len();
         span.record("nodes", count as u64);
@@ -389,7 +359,7 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
 /// next expiry across the fabric and each mesh whose renewals stall at `now_ms`, this admin's
 /// rafka-time (fabric-certs.md §Tracking), and `record`, what the Fabric row adds (its
 /// topology_storage_provider and the providers it left, storage.md §2).
-pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&[crate::storage::NodeRow]>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter) -> StatusReply {
+pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&[crate::storage::NodeRecord]>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter) -> StatusReply {
     let (next_expiry, stalled) = records.map(|r| crate::cert_renewal::fabric_watch(view, r, now_ms)).unwrap_or_default();
     let mut f = fabric(view, build_id);
     f.next_expiry = next_expiry;
@@ -416,7 +386,7 @@ mod tests {
     use super::*;
     use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeStatus as ModelNodeStatus, PathName, ProviderKind as ModelProviderKind, ScopeStatus as ModelScopeStatus};
     use crate::span_capture::Capture;
-    use crate::storage::{BirthFacts, CertDates, NodeRow};
+    use crate::storage::{BirthFacts, CertDates, NodeRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
@@ -511,13 +481,13 @@ mod tests {
             let atlas = Atlas::default();
             // Each node's record is at its node id in the nodes store, written by mesh1's mesh-primary (query.md §1).
             let claims = crate::storage::MemoryNodesStorage::default();
-            let mut admin_row = NodeRow::new(me.clone(), "mesh1", "node-admin", admin_id.clone(), ModelNodeStatus::Ready);
+            let mut admin_row = NodeRecord::new(me.clone(), "mesh1", "node-admin", admin_id.clone(), ModelNodeStatus::Ready);
             admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
 
             // Each node's config and tags are its own part of its record (node-config-update.md step 4), in
             // the same nodes store (Q333).
             let properties = &claims;
-            let own = |node_id: &NodeId, incarnation: &IncarnationId, config: BTreeMap<String, String>, tags: BTreeSet<String>| rdm_node::node_records::NodeProperties {
+            let own = |node_id: &NodeId, incarnation: &IncarnationId, config: BTreeMap<String, String>, tags: BTreeSet<String>| rdm_node::nodes_storage::NodeRecord {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
                 config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(),
             };
@@ -525,7 +495,7 @@ mod tests {
             properties.put_properties(&own(&admin_id, &admin_inc, BTreeMap::new(), BTreeSet::new())).await.unwrap();
             properties.put_properties(&own(&rpc_succ_id, &rpc_succ_inc, BTreeMap::from([("region".to_string(), "eu-west".to_string())]), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
             properties.put_properties(&own(&rpc_pred_id, &rpc_pred_inc, BTreeMap::new(), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
-            let mut succ_row = NodeRow::new(rpc_path.clone(), "mesh1", "node", rpc_succ_id.clone(), ModelNodeStatus::Ready);
+            let mut succ_row = NodeRecord::new(rpc_path.clone(), "mesh1", "node", rpc_succ_id.clone(), ModelNodeStatus::Ready);
             let mut succ_birth = BirthFacts::new(rpc_succ_inc.clone(), rpc_path.clone());
             succ_birth.cert = Some(CertDates {
                 issued_at: 1_000,
@@ -536,7 +506,7 @@ mod tests {
             succ_row.births.push(succ_birth);
 
             // The earlier node's tags stay in its own record at its own id (node-records: a record is keyed by its node id).
-            let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", "node", rpc_pred_id.clone(), ModelNodeStatus::Ready);
+            let mut pred_row = NodeRecord::new(rpc_pred_path.clone(), "mesh1", "node", rpc_pred_id.clone(), ModelNodeStatus::Ready);
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
             for row in [&admin_row, &succ_row, &pred_row] {
                 crate::storage::NodesStorage::put_node(&claims, row).await.unwrap();
@@ -658,7 +628,7 @@ mod tests {
             let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
             let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
             let store = crate::storage::MemoryNodesStorage::default();
-            let mut row = NodeRow::new(at.clone(), "mesh2", "node-admin", node_id.clone(), ModelNodeStatus::Ready);
+            let mut row = NodeRecord::new(at.clone(), "mesh2", "node-admin", node_id.clone(), ModelNodeStatus::Ready);
             row.births.push(BirthFacts::new(incarnation.clone(), at.clone()));
             store.put_node(&row).await.unwrap();
             let (atlas, loads): (Atlas, Loads) = (Atlas::default(), Arc::new(BTreeMap::new));
@@ -668,7 +638,7 @@ mod tests {
             };
             match read(Filter::new().eq("path", [at.path.as_str()]).eq("name", [at.name.as_str()])).await {
                 StatusReply::Nodes { nodes } => {
-                    let answered: Vec<_> = nodes.iter().map(|n| (n.node_id.clone(), n.incarnation_id.clone(), n.status == rdm_core::views::NodeStatus::Ready)).collect();
+                    let answered: Vec<_> = nodes.iter().map(|n| (n.node_id.clone(), n.incarnation.clone(), n.state == rdm_core::views::NodeStatus::Ready)).collect();
                     assert_eq!(answered, vec![(node_id.clone(), Some(incarnation.clone()), true)], "the record standing at the pair is answered at its node ID, as its row last took it: {nodes:#?}");
                 }
                 other => panic!("expected StatusReply::Nodes, got {other:?}"),

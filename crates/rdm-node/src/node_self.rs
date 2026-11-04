@@ -320,6 +320,9 @@ pub struct NodeSelf {
     /// The process's storage change moves (storage.md §2 "Changing it"): filled once the process holds
     /// its storage handle.
     storage: Mutex<Option<Arc<crate::storage_move::StorageMoves>>>,
+    /// The process's writer of its own record (Q356): each state a command moves this birth to is
+    /// written there before the frame that reports it; filled once the process holds it.
+    records: Mutex<Option<crate::node_records::NodePropertyWriter>>,
 }
 
 impl NodeSelf {
@@ -345,7 +348,22 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
-        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None), records: Mutex::new(None) }
+    }
+
+    /// Hold `records`, this process's writer of its own record.
+    pub fn set_records(&self, records: crate::node_records::NodePropertyWriter) {
+        *self.records.lock().unwrap() = Some(records);
+    }
+
+    /// Write `to` as this birth's state on its own record (Q356), before the frame that reports it. A
+    /// process that holds no writer yet, or a write the store refuses, leaves the frame to go as it
+    /// is; the refusal is named on the writer's span.
+    async fn write_state(&self, to: crate::model::NodeStatus) {
+        let writer = self.records.lock().unwrap().clone();
+        let Some(writer) = writer else { return };
+        let Some(initial) = writer.start_record(self.topology_view.config().unwrap_or_default()) else { return };
+        let _ = writer.state(initial, to).await;
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -745,9 +763,16 @@ impl NodeSelf {
         let sink = std::sync::Arc::new(tokio::sync::Mutex::new(frames));
         let (node, node_id, incarnation) = (self.node_id.clone(), self.node_id.clone(), self.incarnation.clone());
         let commander_name = named(commander);
+        let all = matches!(scope, ConnectionScope::All);
+        let own = self.records.lock().unwrap().clone().and_then(|w| w.start_record(self.topology_view.config().unwrap_or_default()).map(|r| (w, r)));
         let report = {
             let sink = sink.clone();
+            let own = own.clone();
             move || async move {
+                // The node's own record first (Q356): connections-deleting before its report.
+                if let (true, Some((writer, initial))) = (all, own) {
+                    let _ = writer.state(initial, crate::model::NodeStatus::ConnectionsDeleting).await;
+                }
                 // The span opens before the report leaves, so it starts before whatever the report causes
                 // (an in-process recorder may take it before the send returns).
                 let span = tracing::info_span!("rdm.node_admin.connection.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = tracing::field::Empty, "otel.kind" = "internal");
@@ -777,6 +802,9 @@ impl NodeSelf {
         span.record("closed", d.closed.len()).record("not_open", d.not_open.len()).record("held", d.held.len());
         if let Some(r) = &d.receipt {
             span.record("receipt", r.name());
+        }
+        if matches!(d.receipt, Some(ConnectionsReceipt::Established { .. })) {
+            self.write_state(crate::model::NodeStatus::ConnectionsDeleted).await;
         }
         span.record("outcome", "connections-deleted");
         span.in_scope(|| tracing::info!("node.connection.delete decided at this birth"));
@@ -864,6 +892,7 @@ impl NodeSelf {
             }
         };
         if let Some(refusal) = refusal { return refusal; }
+        self.write_state(if stopping { crate::model::NodeStatus::Stopping } else { crate::model::NodeStatus::Starting }).await;
         if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
             return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.node_id));
         }
@@ -1153,6 +1182,9 @@ impl NodeSelf {
         closure.in_scope(|| tracing::info!("the stop's node.connection.delete All is complete"));
         drop(closure);
         let mut owed: Vec<(String, tokio::task::JoinHandle<()>)> = deleting.into_inner().unwrap().into_iter().collect();
+        if matches!(receipt, ConnectionsReceipt::Established { .. }) {
+            self.write_state(crate::model::NodeStatus::ConnectionsDeleted).await;
+        }
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
         }
@@ -1208,6 +1240,7 @@ impl NodeSelf {
         // its mesh-primary its owed declarations ride (Q206). Never its endpoint.
         // A command's stop streams its acknowledgement, `Leaving`, and its completion, `StopMeshLeft`
         // (Q205). A birth already left since it last started leaves nothing again and answers both.
+        self.write_state(crate::model::NodeStatus::Leaving).await;
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::Leaving { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await;
         }
@@ -1231,6 +1264,7 @@ impl NodeSelf {
                 left
             }
         };
+        self.write_state(crate::model::NodeStatus::Left).await;
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::StopMeshLeft { left }).await;
         }

@@ -542,22 +542,23 @@ pub(crate) fn write_launch_record(data_dir: &std::path::Path, file: &str, record
     crate::durable_file::write_file(data_dir, &tmp, &data_dir.join(file), record.to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
-/// The launch hand-off a launched node-admin starts holding its launcher's runtime rows from
-/// (`CreateRequest::held_runtimes`): written in its data dir beside the launch record, before it runs.
+/// The launch hand-off a launched node-admin starts holding its launcher's node records from
+/// (`CreateRequest::held_runtimes`), on a provider whose records are not the fabric's shared store
+/// root's: written in its data dir beside the launch record, before it runs.
 pub const HELD_RUNTIMES_FILE: &str = "held-runtimes.json";
 /// The format of the held-runtimes hand-off. Another format is refused by name.
-const HELD_RUNTIMES_FORMAT: &str = "held-runtimes/1";
+const HELD_RUNTIMES_FORMAT: &str = "held-runtimes/2";
 
-/// Hand the node-admin launched in `data_dir` the runtime rows `rows` its launcher holds: written
+/// Hand the node-admin launched in `data_dir` the node records `rows` its launcher holds: written
 /// whole and durable ([`HELD_RUNTIMES_FILE`]) before its executable runs, as the launch record is.
-pub(crate) async fn write_held_runtimes(data_dir: &std::path::Path, rows: &[crate::storage::RuntimeRow]) -> Result<(), String> {
+pub(crate) async fn write_held_runtimes(data_dir: &std::path::Path, rows: &[crate::storage::NodeRecord]) -> Result<(), String> {
     let (dir, record) = (data_dir.to_path_buf(), serde_json::json!({ "format": HELD_RUNTIMES_FORMAT, "rows": rows }));
     crate::blocking::blocking_io(move || write_launch_record(&dir, HELD_RUNTIMES_FILE, &record)).await
 }
 
-/// The runtime rows the launcher of the node-admin in `data_dir` handed it (`write_held_runtimes`):
+/// The node records the launcher of the node-admin in `data_dir` handed it (`write_held_runtimes`):
 /// none when it handed none. A hand-off this build cannot read is refused by name.
-pub async fn held_runtimes_in(data_dir: &std::path::Path) -> Result<Vec<crate::storage::RuntimeRow>, String> {
+pub async fn held_runtimes_in(data_dir: &std::path::Path) -> Result<Vec<crate::storage::NodeRecord>, String> {
     let path = data_dir.join(HELD_RUNTIMES_FILE);
     let read = path.clone();
     let bytes = match crate::blocking::blocking_io(move || std::fs::read(&read)).await {
@@ -574,7 +575,7 @@ pub async fn held_runtimes_in(data_dir: &std::path::Path) -> Result<Vec<crate::s
     if held.format != HELD_RUNTIMES_FORMAT {
         return Err(format!("{}: the held-runtimes hand-off is {:?}, and this build reads {HELD_RUNTIMES_FORMAT:?} only", path.display(), held.format));
     }
-    serde_json::from_value(held.rows).map_err(|e| format!("{}: the {HELD_RUNTIMES_FORMAT} rows are not runtime rows this build reads: {e}", path.display()))
+    serde_json::from_value(held.rows).map_err(|e| format!("{}: the {HELD_RUNTIMES_FORMAT} rows are not node records this build reads: {e}", path.display()))
 }
 
 /// The last `n` lines of `text`, joined with ` | `.

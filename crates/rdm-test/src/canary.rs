@@ -38,7 +38,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
     // 2. Select the `node` type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
-    let (node_type_primary, before) = estate.until_view("`node` type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.location(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
+    let (node_type_primary, before) = estate.until_view("`node` type primary", SETTLE, |v| v.iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node" && n.is_primary).map(|n| (n.location(), serde_json::to_value(n).unwrap()))).await; let node_name = &node_type_primary;
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);

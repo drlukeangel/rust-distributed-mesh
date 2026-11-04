@@ -145,8 +145,8 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     estate.kill_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
     estate
         .until_view("a new birth restores two ready nodes", rdm_transport::topology::staleness_floor() + Duration::from_secs(60), |views| {
-            let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.status == NodeStatus::Ready).collect();
-            (ready.len() == 2 && !ready.iter().any(|n| n.node_id == gone.node_id && n.incarnation_id == gone.incarnation_id)).then_some(())
+            let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.state == NodeStatus::Ready).collect();
+            (ready.len() == 2 && !ready.iter().any(|n| n.node_id == gone.node_id && n.incarnation == gone.incarnation)).then_some(())
         })
         .await;
     estate.stop().await;

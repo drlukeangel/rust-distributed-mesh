@@ -2,8 +2,8 @@
 //!
 //! A stopped node is garbage once it has been stopped longer than the fabric's
 //! `stopped_node_ttl` (`RDM_STOPPED_NODE_TTL`). The fabric-primary, the sole Build driver, sweeps
-//! every ttl: it ages each stopped birth from the current stopped period's own stop, recorded on the
-//! node record (`stopped_at_rafka_ms`, D50), skips a birth an open Build still references, and submits
+//! every ttl: it ages each stopped birth from the current stopped period's own stop, the `time` of the
+//! node record's latest line while its `state` is `stopped`, skips a birth an open Build still references, and submits
 //! one ordinary node.delete Build per sweep. The sweep deletes nothing itself; the delete's admission rechecks the stopped
 //! and open-Build facts, serialized with it.
 
@@ -143,7 +143,7 @@ pub struct Candidate {
     pub node_id: NodeId,
     /// The stopped birth.
     pub incarnation: IncarnationId,
-    /// When its current stopped period began (its node record's `stopped_at_rafka_ms`).
+    /// When its current stopped period began (the `time` of its node record's stopped line).
     pub stopped_at_ms: u64,
 }
 
@@ -199,16 +199,17 @@ impl crate::control_plane::ControlPlane {
         }
     }
 
-    /// The age of the birth `(node_id, incarnation)`'s current stopped period: the stop its node record
-    /// holds for it (`stopped_at_rafka_ms`, D50), never a Build receipt.
+    /// The age of the birth `(node_id, incarnation)`'s current stopped period (§6.9 "Age"): the `time` of
+    /// the node record's latest line while its `state` is `stopped`, never a Build receipt.
     async fn stop_age(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Age {
         let Some(rows) = self.node_rows.get() else { return Age::Unreadable("node records are not bound".into()) };
         match rows.node(node_id).await {
             Err(e) => Age::Unreadable(format!("the node record of {node_id} cannot be read: {e}")),
             Ok(None) => Age::NotRecorded(format!("no node record of {node_id}")),
-            Ok(Some(row)) => match row.births.iter().find(|b| b.incarnation_id == *incarnation).and_then(|b| b.stopped_at_rafka_ms) {
+            Ok(Some(line)) if line.record.incarnation != *incarnation || line.record.state != crate::model::NodeStatus::Stopped => Age::NotRecorded(format!("the node record of {node_id} holds no stop of incarnation {}", incarnation.as_str())),
+            Ok(Some(line)) => match line.time.as_deref().and_then(rdm_node::store_log::rfc3339_ms) {
                 Some(at) => Age::StoppedAt(at),
-                None => Age::NotRecorded(format!("the node record of {node_id} holds no stop of incarnation {}", incarnation.as_str())),
+                None => Age::NotRecorded(format!("the stop on the node record of {node_id} carries no time")),
             },
         }
     }

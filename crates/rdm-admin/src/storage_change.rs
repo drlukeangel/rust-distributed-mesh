@@ -878,17 +878,16 @@ impl StorageChanges {
         }
     }
 
-    /// This admin moved onto `provider`, its own row recording it.
+    /// This admin moved onto `provider` (the provider it writes is the Fabric record's, Q361).
     async fn move_own(&self, status_service: &StatusService, change_id: &ChangeId, provider: &str) -> Result<(), String> {
         let own = status_service.own.get().and_then(|own| own.storage_moves()).ok_or_else(|| "this admin holds no storage handle yet".to_string())?;
         if let Some(refused) = own.refusal(change_id, provider).await {
             return Err(format!("this admin's move onto {provider}: {}", refused.name()));
         }
         match own.serve(change_id, provider).await {
-            NodeCommandReply::StorageStepped { .. } => {}
-            other => return Err(format!("this admin's move onto {provider}: {}", other.name())),
+            NodeCommandReply::StorageStepped { .. } => Ok(()),
+            other => Err(format!("this admin's move onto {provider}: {}", other.name())),
         }
-        status_service.record_own_provider(provider).await.map_err(|e| format!("this admin's row: {e}"))
     }
 
     /// `fabric.delete` admitted while a storage change is in progress (storage.md §2: "it interrupts the

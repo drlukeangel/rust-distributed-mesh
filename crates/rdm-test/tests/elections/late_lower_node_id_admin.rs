@@ -122,11 +122,11 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // It stops and starts one of A's births and deletes the other.
     let (restarted, deleted) = (a_births[0].clone(), a_births[1].clone());
     estate.stop_then_start(&restarted.location()).await;
-    let after = estate.until_node(&restarted.location(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).cloned()).await;
-    assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "stop/start keeps ID and incarnation");
+    let after = estate.until_node(&restarted.location(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped).cloned()).await;
+    assert_eq!((&after.node_id, &after.incarnation), (&restarted.node_id, &restarted.incarnation), "stop/start keeps ID and incarnation");
     Estate::workflow(&format!("node.delete of {:?}", deleted.name), estate.delete_node(&deleted.location()).await).await;
     estate
-        .until_view("the deleted birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.node_id != deleted.node_id || n.incarnation_id != deleted.incarnation_id).then_some(()))
+        .until_view("the deleted birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.node_id != deleted.node_id || n.incarnation != deleted.incarnation).then_some(()))
         .await;
 
     estate.stop().await;

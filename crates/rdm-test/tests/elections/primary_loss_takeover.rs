@@ -169,8 +169,8 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     // fabric-primary executes and whose TerminateRuntime proves the exit (mesh-delete.md step 7).
     let last = estate
         .until_view("the lost mesh's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
-            let left: Vec<&NodeView> = views.iter().filter(|n| n.mesh == lost_mesh).collect();
-            (left.len() == 1 && left[0].status == NodeStatus::Ready).then(|| left[0].location())
+            let left: Vec<&NodeView> = views.iter().filter(|n| n.mesh() == lost_mesh).collect();
+            (left.len() == 1 && left[0].state == NodeStatus::Ready).then(|| left[0].location())
         })
         .await;
     let mut delete = estate.delete_node(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last:?} was refused: {e}"));

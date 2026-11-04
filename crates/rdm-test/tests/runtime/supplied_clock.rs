@@ -192,7 +192,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     // The adversary: the very birth, an OLDER sequence, a stamp a year ahead, saying Leaving.
     let held_before = estate.node_view(&target.location()).await;
-    assert_eq!(held_before.status, NodeStatus::Ready);
+    assert_eq!(held_before.state, NodeStatus::Ready);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
     // A heartbeat carries liveness and no status (gossip.md §3.1 Digest row): the forged one says the
@@ -206,8 +206,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
     let held_after = estate.node_view(&target.location()).await;
-    assert_eq!(held_after.status, NodeStatus::Ready, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
-    assert_eq!((&held_after.node_id, &held_after.incarnation_id), (&held_before.node_id, &held_before.incarnation_id), "the same birth");
+    assert_eq!(held_after.state, NodeStatus::Ready, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
+    assert_eq!((&held_after.node_id, &held_after.incarnation), (&held_before.node_id, &held_before.incarnation), "the same birth");
     let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(node_id).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();
     assert!(live_after.len() >= 8, "the node kept publishing live heartbeats for the whole window ({} heard)", live_after.len());
     assert!(live_after.iter().all(|h| h.1.digest_seq > last.digest_seq), "every live heartbeat after the forged one carries a higher sequence than the last one before it");
@@ -224,8 +224,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         "digest_seq_rises": seqs,
         "mesh_topology_publication_skews_ms": mesh_topology_published,
         "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "node_state": "Joining", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
-        "member_before": { "status": held_before.status, "incarnation_id": held_before.incarnation_id },
-        "member_after_9s": { "status": held_after.status, "incarnation_id": held_after.incarnation_id },
+        "member_before": { "status": held_before.state, "incarnation_id": held_before.incarnation },
+        "member_after_9s": { "status": held_after.state, "incarnation_id": held_after.incarnation },
         "live_heartbeats_after_forgery": live_after.len(),
         "live_first_seq_after_forgery": live_after.first().map(|h| h.1.digest_seq),
         "longest_gap_between_live_heartbeats_ms": silent_ms,

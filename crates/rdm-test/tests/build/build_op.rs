@@ -43,7 +43,7 @@ fn s(v: &Value) -> String {
 }
 
 fn birth_of(node: &rdm_client::NodeView) -> rdm_core::framing::Birth {
-    rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("launched node") }
+    rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation: node.incarnation.clone().expect("launched node") }
 }
 
 fn at_node(span: &Value, location: &PathName) -> bool {
@@ -80,8 +80,8 @@ impl Caller {
                 continue;
             }
             self.admins.lock().unwrap().insert(n.node_id.to_string(), n.clone());
-            let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) else { continue };
-            self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type, node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+            let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation.clone()) else { continue };
+            self.resolver.insert(ResolvedNode { mesh: n.mesh().clone(), r#type: n.r#type, node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
         }
     }
 
@@ -152,7 +152,7 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 /// The node of `mesh2` that holds no role: executed by `mesh2`'s own primary with no preceding
 /// role move.
 async fn secondary_node(estate: &Estate) -> PathName {
-    estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("a node of mesh2 holding no primary role")
+    estate.node_views().await.into_iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("a node of mesh2 holding no primary role")
 }
 
 /// CONTRACT (acceptance 1): `node.delete` over `0x20` is one call. The stream is `Started`, a frame
@@ -169,7 +169,7 @@ async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame
     let carrier = born(&estate, &caller, &SHAPE).await;
     let node = secondary_node(&estate).await;
     let views = estate.node_views().await;
-    let executor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary");
+    let executor = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2 primary");
     let fabric_primary = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
 
     let mut stream = caller.nodes(&carrier).delete(vec![estate.node_view(&node).await.node_id]).await.expect("the fabric-primary accepts the delete");
@@ -351,7 +351,7 @@ async fn a_section_run_to_a_node_that_is_not_the_meshs_primary_is_refused_by_nam
     assert_eq!(frames_of(&mut stream).await.last(), Some(&Frame::Complete));
 
     let views = estate.node_views().await;
-    let mesh2_primary = birth_of(views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2's primary"));
+    let mesh2_primary = birth_of(views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh2's primary"));
     let recipient = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
     let recipient_birth = birth_of(recipient);
     assert_ne!(mesh2_primary.node_id, recipient_birth.node_id, "the cell calls a node that is not mesh2's primary");
@@ -384,7 +384,7 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     let carrier = born(&estate, &caller, &SHAPE).await;
     let old_primary = estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).expect("fabric primary");
     let old_role = old_primary.node_id;
-    assert_eq!(old_primary.mesh, "mesh1", "mesh1 holds the fabric-primary role: {old_role}");
+    assert_eq!(old_primary.mesh(), "mesh1", "mesh1 holds the fabric-primary role: {old_role}");
 
     // The Build deletes mesh1; the role leaves with it, by a planned handover inside the Build.
     let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [("node-admin", 2), ("node", 2)])] };
@@ -401,7 +401,7 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
             None => panic!("the stream ended without a terminal frame"),
         }
     };
-    assert_eq!(caller.admins.lock().unwrap().get(new_role.as_str()).expect("new primary record").mesh, "mesh2", "the role moved to mesh2's primary: {new_role}");
+    assert_eq!(caller.admins.lock().unwrap().get(new_role.as_str()).expect("new primary record").mesh(), "mesh2", "the role moved to mesh2's primary: {new_role}");
     assert_ne!(new_role, old_role);
 
     // The caller re-submits the same Build at the role the frame names.
@@ -453,14 +453,14 @@ impl Caller {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         loop {
             if let Some(views) = rdm_test::typed::node_views_of(&self.peers, &asked, &self.fabric_id).await {
-                let restored = views.into_iter().find(|n| n.r#type == "node-admin" && n.is_fabric_primary && n.status == NodeStatus::Ready && n.node_id.to_string() != dead_id);
+                let restored = views.into_iter().find(|n| n.r#type == "node-admin" && n.is_fabric_primary && n.state == NodeStatus::Ready && n.node_id.to_string() != dead_id);
                 if let Some(n) = restored {
-                    if let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) {
+                    if let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation.clone()) {
                         if let Ok(old) = rdm_core::NodeId::parse(&dead_id) {
                             self.resolver.remove_gone(&old);
                             self.admins.lock().unwrap().remove(&dead_id);
                         }
-                        self.resolver.insert(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
+                        self.resolver.insert(ResolvedNode { mesh: n.mesh().clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
                         self.admins.lock().unwrap().insert(n.node_id.to_string(), n.clone());
                         // The restored node's own view names it fabric-primary once it installed the roles.
                         let node_id = n.node_id.to_string();
@@ -623,7 +623,7 @@ async fn a_created_node_whose_hook_spends_its_attempts_fails_its_step_and_the_bu
     tokio::time::sleep(Duration::from_secs(6)).await;
     assert_eq!(knob_attempts(&knob, &held, A), 3, "three attempts and no fourth");
     let view = estate.node_views().await.into_iter().find(|n| n.path == held.path && n.name == held.name).unwrap_or_else(|| panic!("{held:?} is still in the view"));
-    assert_eq!(view.status, NodeStatus::Pending, "the node stays Pending: {view:?}");
+    assert_eq!(view.state, NodeStatus::Pending, "the node stays Pending: {view:?}");
 
     estate.stop().await;
     let spans = estate.spans();

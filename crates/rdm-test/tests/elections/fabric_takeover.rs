@@ -167,7 +167,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
 async fn new_birth_within(estate: &Estate, node: &PathName, old: &str, within: Duration) -> Option<rdm_core::views::NodeView> {
     let until = std::time::Instant::now() + within;
     while std::time::Instant::now() < until {
-        let found = estate.node_views().await.into_iter().find(|n| n.location() == *node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::Ready);
+        let found = estate.node_views().await.into_iter().find(|n| n.location() == *node && n.node_id.to_string() != old && n.state == rdm_core::views::NodeStatus::Ready);
         if found.is_some() {
             return found;
         }
@@ -238,7 +238,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
         panic!("mesh1.node-admin.1 was not re-created by fabric recovery; name claims {claims:#?}; create steps {steps:#?}");
     };
     assert_ne!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "a newly minted endpoint key: {new:?}");
-    let new_dir = new.data_dir.clone().expect("the re-created admin's data dir");
+    let new_dir = new.storage.data_dir.clone().expect("the re-created admin's data dir");
     assert_ne!(std::path::Path::new(&new_dir), old_dir.as_path(), "a newly allocated data dir: {new:?}");
     assert_eq!(std::fs::read(old_dir.join("node-key")).ok(), Some(old_key), "the old birth's data dir is left as it was");
     assert_eq!(told.as_deref(), Some("0"), "the re-created admin was told inherited = false");
@@ -290,7 +290,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
         panic!("mesh1.node-admin.1 was not re-created; create steps {steps:#?}");
     };
     assert_ne!(new.endpoint_id.as_deref(), Some(old_endpoint.as_str()), "a new endpoint key, never the old birth's (Q358): {new:?}");
-    assert_eq!(new.data_dir.as_deref().map(std::path::PathBuf::from), Some(old_dir.clone()), "the old birth's data dir: {new:?}");
+    assert_eq!(new.storage.data_dir.as_deref().map(std::path::PathBuf::from), Some(old_dir.clone()), "the old birth's data dir: {new:?}");
     assert_eq!(told.as_deref(), Some("1"), "the re-created admin was told inherited = true");
     let read = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == old_id && s(&sp["attributes"]["caller"]) == "terminate").cloned().expect("the old birth's node.delete read its runtime at its TerminateRuntime");
     assert_eq!(s(&read["attributes"]["verdict"]), "exited", "{read}");

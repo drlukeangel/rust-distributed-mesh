@@ -16,6 +16,8 @@ fn answer() -> JoinAnswer {
             build: Some(BuildFloor { build_id: rdm_admin::build::BuildId::mint()}),
             rafka_time_ms: 1_700_000_000_123,
             member_cert: vec![0xca, 0xfe],
+            member_cert_dates: None,
+            signing_cert_dates: None,
             name: Some(rdm_core::PathName::new("mesh1.node", "1-old").unwrap()),
         },
         statuses: vec![],

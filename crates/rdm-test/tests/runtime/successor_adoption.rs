@@ -82,22 +82,22 @@ async fn a_successor_manages_births_it_never_launched() {
         })
         .await;
     for n in view.iter().filter(|n| n.r#type == "node") {
-        assert!(n.data_dir.as_deref().is_some_and(|d| !d.is_empty()), "the successor's view carries {:?}'s data dir: {n:?}", n.name);
+        assert!(n.storage.data_dir.as_deref().is_some_and(|d| !d.is_empty()), "the successor's view carries {:?}'s data dir: {n:?}", n.name);
     }
 
     // Restart one of A's births and delete another, through the successor.
     estate.stop_then_start(&restarted.location()).await;
     // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
     // bin, path/name and storage"): the node is ready again as the same birth.
-    let after = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
-    assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
+    let after = estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
+    assert_eq!((&after.node_id, &after.incarnation), (&restarted.node_id, &restarted.incarnation), "a restart keeps the node id and the birth");
     Estate::workflow("node.delete of mesh1.node.3", estate.delete_node(&deleted.location()).await).await;
     wait_for("mesh1.node.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
     // The admins that hold mesh1 now: the successor, and a node recovery's re-create of the killed
     // launcher, a new NodeId that may take the role back by NodeId order. The Delete of mesh1.node.3
     // states that node alone and re-creates nothing (build.md §1, Q342).
-    let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.r#type == "node-admin" && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
+    let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.r#type == "node-admin" && !matches!(n.state, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
     let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
     let spans = estate.spans();

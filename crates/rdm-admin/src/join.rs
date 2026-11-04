@@ -15,7 +15,7 @@
 //! is the birth's accepting primary and never answers `NotPrimary` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
-use crate::storage::{NodesStorage, RuntimeRow};
+use crate::storage::{NodeRecord, NodesStorage};
 use rdm_core::{MeshDigest, RuntimeFact};
 use crate::wire::JoinAnswer;
 use rdm_transport::ServerBuilder;
@@ -195,9 +195,9 @@ pub struct Joins {
     slots: Mutex<HashMap<NodeId, Slot>>,
     abandoned: Mutex<VecDeque<Abandoned>>,
     admitted: Mutex<VecDeque<Admitted>>,
-    /// This admin's nodes.storage, where an admitted birth's report is kept durable (its runtime
-    /// row) at admission; `None` for a service that keeps none (a cell's).
-    runtimes: Option<Arc<dyn NodesStorage>>,
+    /// This admin's nodes.storage, where an admitted birth's record is read back (the node wrote it
+    /// itself, Q356); `None` for a service that reads none (a cell's).
+    nodes: Option<Arc<dyn NodesStorage>>,
 }
 
 /// What a digest is to the births this admin deployed.
@@ -222,28 +222,24 @@ pub enum Standing {
 }
 
 impl Joins {
-    /// `Joins` over this admin's nodes.storage: the admitted birth's report is kept durable there at
-    /// admission (the birth's runtime row, node-create.md step 1), so a re-run after this process
-    /// restarted completes `WaitForMeshJoin` from it (node-create.md step 5), never from gossip.
-    pub fn over(runtimes: Arc<dyn NodesStorage>) -> Self {
-        Self { runtimes: Some(runtimes), ..Self::default() }
+    /// `Joins` over this admin's nodes.storage: the record a deployed birth wrote itself at its start
+    /// (its runtime and data dir, Q356) is read back there, so a re-run after this process restarted
+    /// completes `WaitForMeshJoin` from it (node-create.md step 5), never from gossip.
+    pub fn over(nodes: Arc<dyn NodesStorage>) -> Self {
+        Self { nodes: Some(nodes), ..Self::default() }
     }
 
-    /// Keep the admitted birth's validated report durable before it is released: a blind put of the
-    /// birth's runtime row (the exact node_id and incarnation, the runtime and data dir the report
-    /// carried). Nothing is kept by a service over no storage.
-    pub async fn keep_admitted(&self, d: &MeshDigest) -> Result<(), String> {
-        let Some(runtimes) = &self.runtimes else { return Ok(()) };
-        let runtime = d.node.runtime.clone().ok_or_else(|| format!("{}: the admitted report names no runtime", d.node.node_id))?;
-        let row = RuntimeRow { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
-        runtimes.put_runtime(&row).await.map_err(|e| format!("{}: the admitted report's runtime row could not be kept: {e}", d.node.node_id))
+    /// The record the exact birth wrote itself (a runtime point read, Q237 A), `None` where this admin
+    /// reads none or the birth wrote none.
+    pub async fn durable_report(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<NodeRecord>, String> {
+        let Some(nodes) = &self.nodes else { return Ok(None) };
+        crate::node_rows::birth_record(&**nodes, node_id, incarnation).await.map_err(|e| format!("the node record of {node_id} incarnation {}: {e}", incarnation.as_str()))
     }
 
-    /// The admitted birth's durable report: the runtime row of the exact birth, `None` where this admin
-    /// keeps none or no report of that birth was kept.
-    pub async fn durable_report(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, String> {
-        let Some(runtimes) = &self.runtimes else { return Ok(None) };
-        runtimes.runtime(node_id, incarnation).await.map_err(|e| format!("the runtime row of {node_id} incarnation {}: {e}", incarnation.as_str()))
+    /// The node another create under way at this admin deploys at `name` (a first start's deployment it
+    /// registered, `held: false`): a create in flight at the name.
+    pub fn creating_at(&self, name: &PathName) -> Option<NodeId> {
+        self.slots.lock().unwrap().values().find(|s| !s.deployed.held && s.deployed.path == name.path && s.deployed.name == name.name).map(|s| s.deployed.node_id.clone())
     }
 
     /// A create of `node_id` is under way at this admin: it holds the deployment the create registered
@@ -345,9 +341,6 @@ pub struct JoinService {
     /// Install the reported address for the key: the topology view's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
-    /// Seed the admitted birth's row before the join is answered, or hold the seed until this admin
-    /// writes its mesh's rows (the admin records' `seed_at_arrival_or_hold`).
-    pub seed_at_arrival: Arc<dyn Fn(MeshDigest) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
     /// Project the installed birth into the view this admin's status authority decides from, so the
     /// admitted birth is in that view when the join is answered: its first declaration finds its
     /// subject held.
@@ -363,12 +356,11 @@ pub struct JoinService {
     pub primary: Arc<dyn Fn() -> Option<NodeId> + Send + Sync>,
     /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
     pub issuer: Arc<crate::certs::CertIssuer>,
-    /// Where each admitted birth's cert dates are written on its node record before it is admitted
-    /// (fabric-certs.md §Tracking), and a node-admin birth's signing cert dates when this admin minted
-    /// the key it holds, through the records this admin holds, and the row a joiner's `(path, name)` is
-    /// reconciled to ([`crate::node_rows::WrittenRows::record_for_join`]); `None` for a service that keeps no
-    /// records (a testkit admin side): no row is held at any name.
-    pub nodes: Option<(Arc<dyn crate::storage::NodesStorage>, Arc<crate::node_rows::WrittenRows>)>,
+    /// The nodes store a joiner's record is point-read from at its admission (Q237 A: this admin is
+    /// running; the joiner reads nothing, Q227): a record `Deleted`, or another node's at the admitted
+    /// name, refuses the join by name. `None` for a service that reads no records (a testkit admin
+    /// side): no record is held at any name.
+    pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
     /// This admin's atlas: a refused joiner is decided through its refused callers (Q207). `None` for a
     /// service that keeps no records (a testkit admin side).
     pub atlas: Option<Arc<crate::atlas::Atlas>>,
@@ -423,18 +415,41 @@ impl JoinService {
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 { let at = name; d.node.path = at.path.clone(); d.node.name = at.name.clone(); }
                 span.record("admitted_path", d.node.path.as_str()).record("admitted_name", d.node.name.as_str());
-                // The join is reconciled to the row as this admin, its mesh's writer, holds it (Q234), never
-                // read from the store (Q227) or an atlas copy (query.md §1). The joiner is handed no config: its properties are its own record,
-                // initialized from its launch snapshot (node-config-update.md "Deferred application and
-                // startup"), never a copy a lifecycle row carries. Another node's row at a first start's
-                // name (a create that wrote no claim, a predecessor's row) refuses nothing; a held birth's
-                // join is reconciled to its row, and another node's row there is refused by name.
-                match self.nodes.as_ref().and_then(|(_, written)| written.record_for_join(&d.node.location(), &d.node.node_id)) {
+                // The join is reconciled to the node records as this admin, running, point-reads them
+                // (Q237 A): the joiner's own record at its node id, then the record at the admitted name;
+                // the joiner reads nothing (Q227). The joiner is handed no config: its properties are its
+                // own record, initialized from its launch snapshot (node-config-update.md "Deferred
+                // application and startup"). Another node's record at a first start's name (a
+                // predecessor's) refuses nothing; a held birth's join is reconciled to its record, and
+                // another node's live record there is refused by name.
+                let held_record = match &self.nodes {
+                    None => None,
+                    Some(storage) => {
+                        let own = match storage.node(&d.node.node_id).await {
+                            Ok(own) => own.map(|l| l.record),
+                            Err(e) => {
+                                span.record("outcome", "not-ready");
+                                return rdm_core::reply::join::not_ready(format!("join of node {}: its record could not be read: {e}", d.node.node_id));
+                            }
+                        };
+                        match own.filter(|r| r.state == crate::model::NodeStatus::Deleted) {
+                            Some(deleted) => Some(deleted),
+                            None => match crate::node_rows::record_at(&**storage, &d.node.location()).await {
+                                Ok(at) => at,
+                                Err(e) => {
+                                    span.record("outcome", "not-ready");
+                                    return rdm_core::reply::join::not_ready(format!("join of node {}: the record at its name could not be read: {e}", d.node.node_id));
+                                }
+                            },
+                        }
+                    }
+                };
+                match held_record {
                     None => {}
                     // The caller's own record deleted: a caller whose record is deleted is deleted, its
                     // runtime terminated, never re-admitted (node-investigation.md; Q217). Refused by name
                     // and decided as every refused caller is (Q207), never issued a cert or admitted.
-                    Some(row) if row.node_id == d.node.node_id && row.status == crate::model::NodeStatus::Deleted => {
+                    Some(row) if row.node_id == d.node.node_id && row.state == crate::model::NodeStatus::Deleted => {
                         span.record("outcome", "mismatch");
                         let m = Mismatch { field: "status", deployed: format!("node {} is deleted", row.node_id), reported: format!("node {} incarnation {} requests join", d.node.node_id, d.node.incarnation.as_str()) };
                         tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node_path = %d.node.path, node_name = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
@@ -474,41 +489,14 @@ impl JoinService {
                         return rdm_core::reply::join::cert_refused(error.as_str().to_string(), detail);
                     }
                 };
-                // The join admits the birth holding the cert: its dates, the receipt (Q141), are written
-                // on its node record before the birth is admitted, with a node-admin's signing cert dates
-                // beside them when this admin minted the key it was launched with, in the same write (the
-                // listeners the validated report carries, Q151, are the node's own part of its record,
-                // Q333). A write refused leaves nothing installed, and the join is retried.
-                if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty()) {
-                    let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
-                    let signing = (!issue.bytes.is_empty() && rdm_core::is_node_admin(&d.node.r#type)).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
-                    let base = crate::storage::NodeRow::new(birth.location(), birth.mesh.clone(), &d.node.r#type, birth.node_id.clone(), crate::model::NodeStatus::Pending);
-                    let put = written.update(&**storage, &birth.node_id, Some(base), |r| {
-                        let b = r.birth_mut(&birth.incarnation, &birth.location());
-                        if let Some(dates) = dates {
-                            b.cert = Some(dates);
-                        }
-                        if let Some(s) = signing {
-                            b.signing_cert = Some(s);
-                        }
-                    });
-                    if let Err(why) = put.await {
-                        span.record("outcome", "not-ready");
-                        return rdm_core::reply::join::not_ready(format!("node {}: {why}", birth.node_id));
-                    }
-                }
+                // The join admits the birth holding the cert: its dates, the receipt (Q141), go beside the
+                // cert in the answer, with a node-admin's signing cert dates when this admin minted the key
+                // it was launched with; the node writes them on its own record when it installs the cert
+                // (Q356).
+                let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
+                let signing = (!issue.bytes.is_empty() && rdm_core::is_node_admin(&d.node.r#type)).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
                 let cert = issue.bytes;
                 span.record("cert_len", cert.len() as u64);
-                if let Err(why) = (self.seed_at_arrival)(d.clone()).await {
-                    return rdm_core::reply::join::not_ready(format!("node {}: its row could not be seeded at its arrival: {why}", d.node.node_id));
-                }
-                // The validated report is kept durable before it is released (node-create.md step 5):
-                // a re-run of the create after this process restarted completes WaitForMeshJoin from
-                // it. A put refused installs nothing, and the join is retried.
-                if let Err(why) = self.joins.keep_admitted(&d).await {
-                    span.record("outcome", "not-ready");
-                    return rdm_core::reply::join::not_ready(format!("join of node {}: {why}", d.node.node_id));
-                }
                 (self.install)(&d);
                 (self.known)().await;
                 // A report its registration already heard is a retry of that join; any other accepted
@@ -518,7 +506,7 @@ impl JoinService {
                 self.joins.report(&JoinReport { digest: d.clone(), listeners });
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
-                self.joined(&d.node.location(), cert).await
+                self.joined(&d.node.location(), cert, dates, signing).await
             }
             Standing::Abandoned(a) => {
                 span.record("outcome", "deployment-abandoned");
@@ -536,10 +524,12 @@ impl JoinService {
         }
     }
 
-    async fn joined(&self, node: &PathName, member_cert: Vec<u8>) -> JoinReply {
+    async fn joined(&self, node: &PathName, member_cert: Vec<u8>, member_cert_dates: Option<rdm_core::certs::CertDates>, signing_cert_dates: Option<rdm_core::certs::SigningCertDates>) -> JoinReply {
         let answer = match (self.answer)().await {
             Ok(mut a) => {
                 a.control.member_cert = member_cert;
+                a.control.member_cert_dates = member_cert_dates;
+                a.control.signing_cert_dates = signing_cert_dates;
                 a.control.name = Some(node.clone());
                 a
             }
@@ -826,6 +816,8 @@ mod tests {
                                 build: None,
                                 rafka_time_ms: 5_000_000,
                                 member_cert: Vec::new(),
+                                member_cert_dates: None,
+                                signing_cert_dates: None,
                                 name: None,
                                 cert_policy: None,
                             },
@@ -930,7 +922,7 @@ mod tests {
                 .expect("cert row written on NodesStorage");
             assert!(
                 stored_row.birth(&dep.incarnation).and_then(|b| b.cert.as_ref()).is_some(),
-                "birth cert dates written on NodeRow"
+                "birth cert dates written on NodeRecord"
             );
             assert!(stored_row.birth(&dep.incarnation).and_then(|b| b.signing_cert.as_ref()).is_some(), "an admin's signing dates follow its explicit kind, even when its name looks like another kind and mesh");
         });

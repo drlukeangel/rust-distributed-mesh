@@ -27,12 +27,12 @@ pub fn birth_of_line(line: &str) -> Option<Result<MeshNode, String>> {
 /// incarnation): how a process that read the view reaches that node as it reaches one whose birth line
 /// it read. `None` for a node not born yet.
 pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
-    Some(MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
+    Some(MeshNode { mesh: n.mesh(), r#type: n.r#type.clone(),
         node_id: n.node_id.clone(),
         path: n.path.clone(), name: n.name.clone(),
         endpoint_id: rdm_core::EndpointId(n.endpoint_id.clone().filter(|e| !e.is_empty())?),
         transport_addr: n.transport_addr?,
-        incarnation: n.incarnation_id.clone()?,
+        incarnation: n.incarnation.clone()?,
         supersedes: None,
         runtime: None,
     })
@@ -76,11 +76,11 @@ impl Peers {
     /// Make every node of `views` reachable.
     pub fn learn(&self, views: &[NodeView]) {
         for n in views {
-            self.hold(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
+            self.hold(ResolvedNode { mesh: n.mesh(), r#type: n.r#type.clone(),
                 node_id: n.node_id.clone(),
                 path: n.path.clone(), name: n.name.clone(),
                 endpoint_id: n.endpoint_id.as_deref().expect("a ready node carries its endpoint").parse().expect("an iroh key"),
-                incarnation: n.incarnation_id.clone().expect("a ready node carries its incarnation"),
+                incarnation: n.incarnation.clone().expect("a ready node carries its incarnation"),
                 transport_addr: n.transport_addr.expect("a ready node carries its address"),
             });
         }
@@ -108,12 +108,12 @@ impl Peers {
     /// read that finds it ready.
     pub fn learn_known(&self, views: &[NodeView]) {
         for n in views {
-            if n.status == NodeStatus::Deleted {
+            if n.state == NodeStatus::Deleted {
                 self.resolver.remove_gone(&n.node_id);
                 continue;
             }
-            let (Some(endpoint), Some(incarnation), Some(addr)) = (n.endpoint_id.as_deref().and_then(|e| e.parse().ok()), n.incarnation_id.clone(), n.transport_addr) else { continue };
-            self.hold(ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
+            let (Some(endpoint), Some(incarnation), Some(addr)) = (n.endpoint_id.as_deref().and_then(|e| e.parse().ok()), n.incarnation.clone(), n.transport_addr) else { continue };
+            self.hold(ResolvedNode { mesh: n.mesh(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
         }
     }
 

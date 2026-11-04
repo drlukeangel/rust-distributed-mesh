@@ -14,7 +14,7 @@
 //!    mesh-primary's tickle, then the provider's exact exited verdict, then recovery only on proof.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
-use crate::storage::NodeRow;
+use crate::storage::NodeRecord;
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
@@ -56,19 +56,16 @@ impl MapNode {
 }
 
 impl MapNode {
-    /// The birth `record` names to reach: its newest birth, at the address the node wrote in its own
-    /// part of its record, `own` (Q333), at that birth. A record whose newest birth has no such part
-    /// names none. A stored record says nothing of who lives: the birth is settled and not ready.
-    pub(crate) fn of_record(record: &NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> Option<Self> {
-        let b = record.newest_birth()?;
-        let own = crate::current_record::of_birth(own, &record.node_id, &b.incarnation_id)?;
+    /// The birth `record` names to reach, at the address the node wrote on its own record. A stored
+    /// record says nothing of who lives: the birth is settled and not ready.
+    pub(crate) fn of_record(record: &NodeRecord) -> Option<Self> {
         Some(Self {
-            mesh: record.mesh.clone(), r#type: record.r#type.clone(),
+            mesh: record.mesh(), r#type: record.r#type.clone(),
             node_id: record.node_id.clone(),
             path: record.path.clone(), name: record.name.clone(),
-            endpoint_id: own.endpoint_id.clone()?,
-            transport_addr: own.transport_addr?,
-            incarnation: b.incarnation_id.clone(),
+            endpoint_id: record.endpoint_id.clone(),
+            transport_addr: record.transport_addr,
+            incarnation: record.incarnation.clone(),
             transition: None,
             ready: false,
             data_dir: None,

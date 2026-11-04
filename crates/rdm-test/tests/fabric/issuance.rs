@@ -83,7 +83,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let before = estate.node_view(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
     let path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     estate.stop_then_start(&path).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "RPC fixture ready after its stop and start", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "RPC fixture ready after its stop and start", SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready && !n.stopped && n.node_id == before.node_id && n.incarnation == before.incarnation).map(|_| ())).await;
     let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();
@@ -100,7 +100,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         let (inc, cert) = &held[0];
         assert_eq!(
             (&cert.cert.name, cert.cert.mesh.as_str(), &cert.cert.node_id, cert.cert.incarnation.to_string()),
-            (&view.name, view.mesh.as_str(), node, inc.clone()),
+            (&view.name, view.mesh().as_str(), node, inc.clone()),
             "the cert names the birth that holds it"
         );
         // Every JoinNode issues a fresh member cert (fabric-certs.md, When a cert is issued): a join the
@@ -118,10 +118,10 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
             .unwrap_or_else(|| panic!("the process holds a cert its birth was issued at one of its joins: {:?} expiring {}, issued {joins:?}", cert.cert.name, cert.cert.expiry_ms));
         let at = s_u64(&held_issue["attributes"]["issued_at_rafka_ms"]);
         assert_eq!(certs::verify(cert, &[root], at, 0), Ok(()), "{node}'s cert verifies to its issuer, the issuer to the fabric CA and the CA to the root");
-        assert_eq!(cert.issuer.cert.mesh, view.mesh, "signed by its own mesh's issuer");
+        assert_eq!(cert.issuer.cert.mesh, view.mesh(), "signed by its own mesh's issuer");
     }
     // The rejoin (start after stop) is a second JoinNode of the same birth, issued a fresh cert on the later rafka-time.
-    let rejoins: Vec<&Value> = issued.iter().copied().filter(|sp| sp["attributes"]["node_id"] == before.node_id.as_str() && sp["attributes"]["incarnation_id"] == before.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default().as_str()).collect();
+    let rejoins: Vec<&Value> = issued.iter().copied().filter(|sp| sp["attributes"]["node_id"] == before.node_id.as_str() && sp["attributes"]["incarnation_id"] == before.incarnation.as_ref().map(|i| i.to_string()).unwrap_or_default().as_str()).collect();
     assert_eq!(rejoins.len(), 2, "one issuance for the birth's join and one for its rejoin: {rejoins:?}");
 
     // Every launched admin carries its mesh's issuing material, signed by the root; a mesh's issuer is
@@ -134,7 +134,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     for location in [("mesh1.node-admin", "2"), ("mesh2.node-admin", "1"), ("mesh2.node-admin", "2")].map(|(path, name)| PathName::new(path, name).unwrap()) {
         let view = views.iter().find(|v| v.location() == location).expect("launched admin");
         let node = &view.node_id;
-        let mesh = &view.mesh;
+        let mesh = &view.mesh();
         let issuing = issuing_of(node);
         assert_eq!(&issuing.cert.mesh, mesh, "{node} carries its own mesh's issuing cert");
         assert_eq!(certs::verify_issuer(&issuing, &[root]), Ok(()), "{node}'s issuing cert is signed by the fabric CA, and the CA by the root");
@@ -146,7 +146,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         assert_eq!(ca, issuing.ca, "{node}'s CA is its issuing cert's");
         assert_eq!(sp["attributes"]["ca_key"], "true", "{node} was launched with the fabric CA's key beside the root: {sp}");
     }
-    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2" && v.r#type == "node-admin").collect();
+    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh() == "mesh2" && v.r#type == "node-admin").collect();
     assert_eq!(mesh2_admins.len(), 2);
     assert_eq!(issuing_of(&mesh2_admins[0].node_id), issuing_of(&mesh2_admins[1].node_id), "mesh2's admins carry the one issuer minted at mesh2's birth");
     let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();

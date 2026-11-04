@@ -155,6 +155,8 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                             build: None,
                             rafka_time_ms: 1_000,
                             member_cert: Vec::new(),
+                            member_cert_dates: None,
+                            signing_cert_dates: None,
                             name: None,
                         },
                         statuses: Vec::new(),
@@ -289,7 +291,7 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
         let writer = rdm_node::node_records::NodePropertyWriter::new(nodes_storage.clone(), || "memory".into());
         writer
             .bound(
-                rdm_node::node_records::NodeProperties {
+                rdm_node::nodes_storage::NodeRecord {
                     birth: rdm_node::node_records::RecordBirth { node_id: dep.node_id.clone(), incarnation_id: dep.incarnation.clone() },
                     config: Default::default(),
                     tags: Default::default(),

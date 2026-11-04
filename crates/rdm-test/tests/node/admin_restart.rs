@@ -66,11 +66,11 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     // The target mesh is the one that does not hold the fabric-primary role: its primary (the primary) and its
     // other admin (the successor the primary's restart hands the role to).
     let fabric_primary = before.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
-    let primary_view = before.iter().find(|n| n.mesh != fabric_primary.mesh && n.r#type == "node-admin" && n.is_primary).expect("other mesh primary");
-    let successor_view = before.iter().find(|n| n.mesh == primary_view.mesh && n.r#type == "node-admin" && n.node_id != primary_view.node_id).expect("other admin");
-    let (primary, successor, away) = (&primary_view.location(), &successor_view.location(), &primary_view.mesh);
-    let successor_birth = (successor_view.node_id.to_string(), successor_view.incarnation_id.as_ref().expect("successor birth").to_string());
-    let primary_birth = (primary_view.node_id.to_string(), primary_view.incarnation_id.as_ref().expect("primary birth").to_string());
+    let primary_view = before.iter().find(|n| n.mesh() != fabric_primary.mesh() && n.r#type == "node-admin" && n.is_primary).expect("other mesh primary");
+    let successor_view = before.iter().find(|n| n.mesh() == primary_view.mesh() && n.r#type == "node-admin" && n.node_id != primary_view.node_id).expect("other admin");
+    let (primary, successor, away) = (&primary_view.location(), &successor_view.location(), &primary_view.mesh());
+    let successor_birth = (successor_view.node_id.to_string(), successor_view.incarnation.as_ref().expect("successor birth").to_string());
+    let primary_birth = (primary_view.node_id.to_string(), primary_view.incarnation.as_ref().expect("primary birth").to_string());
 
     // 1. The primary's stop then start: its role goes to the successor by node.primary.update at the
     //    stop, then the same birth starts again.

@@ -75,7 +75,7 @@ async fn a_node_stopped_and_a_node_deleting_frame_carry_their_operation_and_birt
     let deleting_frame = frame_of("node-deleting", deleted.node_id.as_str());
     for (sp, node) in [(&stopped_frame, &stopped), (&deleting_frame, &deleted)] {
         assert!(sp["attributes"].get("attempt").is_none(), "a status frame carries no attempt (Q344): {sp}");
-        assert_eq!(attr(sp, "incarnation_id"), node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or_default(), "the frame names the exact birth: {sp}");
+        assert_eq!(attr(sp, "incarnation_id"), node.incarnation.as_ref().map(|i| i.as_str()).unwrap_or_default(), "the frame names the exact birth: {sp}");
         assert_eq!((attr(sp, "subject_path"), attr(sp, "subject_name")), (node.path.as_str(), node.name.as_str()), "{sp}");
     }
     assert_eq!(attr(&stopped_frame, "operation"), "node.stop", "{stopped_frame}");

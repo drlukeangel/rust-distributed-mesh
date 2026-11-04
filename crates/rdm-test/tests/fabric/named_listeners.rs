@@ -58,17 +58,17 @@ fn wanted(gateways: u32) -> BTreeSet<PathName> {
 
 /// The latest appended node-owned property record, selected by globally unique node ID.
 fn row_of(estate: &Estate, node: &NodeView) -> Value {
-    serde_json::to_value(estate.node_properties(&node.node_id).expect("node-owned property record"))
+    serde_json::to_value(estate.record(&node.node_id).expect("node-owned property record"))
         .expect("properties serialize")
 }
 
 /// Listeners belong to node-owned properties, not a primary's lifecycle record.
 fn row_listeners(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)> {
     let row = row_of(estate, node);
-    let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(row)
+    let properties: rdm_node::nodes_storage::NodeRecord = serde_json::from_value(row)
         .expect("complete node-owned properties");
     assert_eq!(properties.birth.node_id, node.node_id);
-    assert_eq!(Some(properties.birth.incarnation_id), node.incarnation_id);
+    assert_eq!(Some(properties.birth.incarnation_id), node.incarnation);
     properties.listeners
 }
 
@@ -80,7 +80,7 @@ async fn join_reported(estate: &Estate, node: &NodeView) -> Option<String> {
         let found = estate
             .spans()
             .into_iter()
-            .find(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["node_id"] == node.node_id.to_string().as_str() && s["attributes"]["incarnation_id"] == node.incarnation_id.as_ref().expect("ready birth").as_str() && s["attributes"]["outcome"] == "installed")
+            .find(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["node_id"] == node.node_id.to_string().as_str() && s["attributes"]["incarnation_id"] == node.incarnation.as_ref().expect("ready birth").as_str() && s["attributes"]["outcome"] == "installed")
             .map(|s| s["attributes"]["listeners"].as_str().unwrap_or_default().to_string());
         if found.is_some() || std::time::Instant::now() > until {
             return found;

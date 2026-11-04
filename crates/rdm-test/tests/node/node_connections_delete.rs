@@ -57,7 +57,7 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     // The birth is connections-deleted (node-connections-delete.md step 4: its mesh-primary sets it from
     // the `Established` completion; a read answers the row's status, Q233), the same birth, and its
     // process is still alive.
-    let after = estate.until_node(&node, &format!("{node:?} is connections-deleted"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ConnectionsDeleted).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
+    let after = estate.until_node(&node, &format!("{node:?} is connections-deleted"), Duration::from_secs(30), |n| n.filter(|n| n.state == NodeStatus::ConnectionsDeleted).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
     assert_eq!(after["node_id"], before["node_id"]);
     assert_eq!(after["incarnation_id"], before["incarnation_id"]);
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "the process {pid} whose connections were deleted is still running");

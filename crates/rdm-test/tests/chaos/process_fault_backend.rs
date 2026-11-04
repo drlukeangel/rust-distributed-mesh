@@ -193,7 +193,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let stopped = json!({"applied": "hang", "held": hung.held, "leader": proc_state(hold_rt.pid).map(String::from)});
     ev.primitive = Some(Primitive { armed: true, ack: stopped.clone() });
     let silent_view = estate
-        .until_node(&hold, &format!("{hold:?} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .until_node(&hold, &format!("{hold:?} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.state != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     // The hold ends inside the silent window: past the second unreached tickle ladder node investigation
     // decides, and a verdict other than reached re-creates the node (Q111), so nothing the cell needs only

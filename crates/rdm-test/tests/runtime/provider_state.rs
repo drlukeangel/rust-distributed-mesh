@@ -43,7 +43,7 @@ async fn mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
     estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let member = estate.node_views().await.into_iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("an rpc member that holds no primary role");
+    let member = estate.node_views().await.into_iter().filter(|n| n.mesh() == "mesh1" && n.r#type == "node" && !n.is_primary).map(|n| n.location()).min().expect("an rpc member that holds no primary role");
     let dir = estate.data_dir(&member).await;
     let rt = ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{member:?}: no exact runtime published in {dir}: {r:?}"));
     (estate, member, rt)
@@ -68,7 +68,7 @@ async fn an_os_stopped_member_is_recovered_at_once_over_a_new_data_dir_and_its_r
     let test = "an_os_stopped_member_is_recovered_at_once_over_a_new_data_dir_and_its_runtime_is_sent_nothing";
     let (mut estate, member, rt) = mesh_with_a_member(test).await;
     let before = estate.node_value(&member).await;
-    let primary = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
+    let primary = estate.node_views().await.into_iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
     let old_dir = estate.data_dir(&member).await;
     let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
@@ -156,9 +156,9 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
-    assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
-    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
-    let other = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != mp.node_id).cloned().unwrap_or_else(|| panic!("mesh2's other node-admin: {views:#?}"));
+    assert_eq!(fp.mesh(), "mesh1", "the fabric-primary is mesh1's: {fp:?}");
+    let mp = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let other = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.node_id != mp.node_id).cloned().unwrap_or_else(|| panic!("mesh2's other node-admin: {views:#?}"));
     let fp_name = fp.location();
     let first = hold_until_recovered(&estate, &mp.location()).await;
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
@@ -285,8 +285,8 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let views = estate.node_views().await;
-    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
-    let successor = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.node_id != mp.node_id).cloned().unwrap_or_else(|| panic!("mesh2's other node-admin: {views:#?}"));
+    let mp = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let successor = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.node_id != mp.node_id).cloned().unwrap_or_else(|| panic!("mesh2's other node-admin: {views:#?}"));
     assert!(!mp.is_fabric_primary, "mesh2's primary is not the fabric-primary: {mp:?}");
     let path = mp.location();
     let node_id = mp.node_id.to_string();

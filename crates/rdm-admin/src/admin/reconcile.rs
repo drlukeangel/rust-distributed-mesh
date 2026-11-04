@@ -90,7 +90,7 @@ impl crate::build_drive::Gate for RoleGate {
 
     /// The node records of `ids`, read through the reader (query.md §1): the births a fabric.delete's
     /// begun node.deletes act on once the view has let them go.
-    async fn node_rows(&self, ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRow>, String> {
+    async fn node_rows(&self, ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRecord>, String> {
         let records = self.control.current_records().ok_or_else(|| format!("{}: this admin holds no node records to read", self.primary_update.node_id))?;
         crate::atlas::subject_rows(&records, ids.iter()).await
     }
@@ -491,6 +491,8 @@ mod tests {
                 }),
                 rafka_time_ms: 5_000,
                 member_cert: Vec::new(),
+                member_cert_dates: None,
+                signing_cert_dates: None,
                 name: Some(me.clone()),
                 cert_policy: None,
             },

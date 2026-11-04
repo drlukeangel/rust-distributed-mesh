@@ -61,33 +61,25 @@ fn requests_match_the_frozen_wire_schema() {
 /// The smallest own row: `m.node.1`, ready, one config key, every optional field absent.
 fn own_row() -> rdm_core::views::NodeView {
     rdm_core::views::NodeView {
+        node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(),
         path: "m.node".into(), name: "1".into(),
         r#type: "node".into(),
-        mesh: "m".into(),
-        node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(),
+        incarnation: None,
+        state: rdm_core::views::NodeStatus::Ready,
         endpoint_id: None,
-        incarnation_id: None,
-        deployment_id: None,
-        provider: None,
-        data_dir: None,
-        status: rdm_core::views::NodeStatus::Ready,
-        is_primary: false,
-        is_fabric_primary: false,
-        admin_api_base: None,
         transport_addr: None,
         listeners: vec![],
-        declared: None,
-        stopped: false,
+        runtime: None,
+        is_primary: false,
+        is_fabric_primary: false,
+        cert: None,
+        signing_cert: None,
+        storage: Default::default(),
+        executable: None,
+        config: [("k".to_string(), "v".to_string())].into(),
+        tags: Default::default(),
         load: None,
         gossip: None,
-        tags: Default::default(),
-        config: [("k".to_string(), "v".to_string())].into(),
-        cert: None,
-        executable: None,
-        storage_persistence: None,
-       
-        properties: Default::default(),
-        topology_storage_provider: None,
     }
 }
 
@@ -114,11 +106,13 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
-        // Q234: the reader's own whole row, a `NodeView` in its field order (its trailing properties Read,
-        // Q318), and nothing after it: a node record carries no revision (i150 D10; durable format moved), and no
-        // data-dir facts (Q359; wire format moved).
-        (OwnRow { node: own_row() }, "0e 06 6d2e6e6f6465 01 31 04 6e6f6465 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 \
-            00 00 00 00 00"),
+        // Q234: the reader's own whole row, a `NodeView` in the node record's field order (Q366; wire
+        // format moved), then load and gossip: node_id | path | name | type | incarnation None | state Ready
+        // | endpoint_id, transport_addr, listeners, runtime, is_primary, is_fabric_primary, cert,
+        // signing_cert, storage { persistence, data_dir }, executable all absent | config { k: v } | tags []
+        // | load None | gossip None.
+        (OwnRow { node: own_row() }, "0e 0c 303472616a303970337a7037 06 6d2e6e6f6465 01 31 04 6e6f6465 00 01 00 00 00 00 00 00 00 00 00 00 00 \
+            01 016b 0176 00 00 00"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Topology::encode_reply(&r).unwrap()[0]);

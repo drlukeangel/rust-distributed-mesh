@@ -336,7 +336,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let mut subject_row =
-            rdm_admin::storage::NodeRow::new(subject_name.clone(), "mesh1", "node", subject_id.clone(), NodeStatus::Ready);
+            rdm_admin::storage::NodeRecord::new(subject_name.clone(), "mesh1", "node", subject_id.clone(), NodeStatus::Ready);
         subject_row.births.push(rdm_admin::storage::BirthFacts::new(
             subject_inc.clone(),
             subject_name.clone(),

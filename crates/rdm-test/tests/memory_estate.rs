@@ -96,7 +96,7 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     tokio::time::timeout(WRONG, async {
         loop {
             let listed = nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
-            if listed.iter().any(|n| &n.location() == node && n.status == want) {
+            if listed.iter().any(|n| &n.location() == node && n.state == want) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

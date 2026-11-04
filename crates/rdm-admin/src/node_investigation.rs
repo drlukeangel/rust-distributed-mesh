@@ -140,12 +140,11 @@ pub struct BirthRuntime {
 }
 
 /// The runtime fact of a birth, one way for every inspect: the one a digest of it carries, else the
-/// one its durable runtime row records (written at its admission, or handed into this admin's
-/// nodes.storage at its own create). `None` when neither holds one.
-pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&crate::storage::RuntimeRow>) -> Option<BirthRuntime> {
+/// one its node record holds (the node wrote it at its start). `None` when neither holds one.
+pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&crate::storage::NodeRecord>) -> Option<BirthRuntime> {
     match (digest, row) {
         (Some(d), _) if d.node.runtime.is_some() => Some(BirthRuntime { fact: d.node.runtime.clone().expect("checked"), data_dir: d.data_dir.clone(), incarnation: d.node.incarnation.clone() }),
-        (_, Some(r)) => Some(BirthRuntime { fact: r.runtime.clone(), data_dir: r.data_dir.clone(), incarnation: r.incarnation_id.clone() }),
+        (_, Some(r)) => Some(BirthRuntime { fact: r.runtime.clone(), data_dir: r.storage.data_dir.clone(), incarnation: r.incarnation.clone() }),
         _ => None,
     }
 }
@@ -153,9 +152,9 @@ pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&cr
 /// The runtime recorded at launch of `n`'s exact birth (node-recovery.md step 3: "the exact runtime
 /// recorded at launch"), the one resolution every inspect copy makes: a digest `digest_view` holds of that
 /// exact birth (heard, else carried by its mesh-primary's projection, else the last one of a stopped
-/// birth) when it carries a runtime fact, else the birth's own durable runtime row in `nodes`, a point
-/// read by its key ([`runtime_of`]). A birth lost before this admin heard it has no digest here; its
-/// row is still the runtime recorded at launch. `Err` names what was missing.
+/// birth) when it carries a runtime fact, else the runtime on the node's record in `nodes`, a point read
+/// ([`runtime_of`]). A birth lost before this admin heard it has no digest here; its record still holds
+/// the runtime the node wrote at its start. `Err` names what was missing.
 pub async fn birth_runtime(digest_view: &rdm_transport::topology::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Result<BirthRuntime, String> {
     let Some(incarnation) = n.incarnation_id.clone() else { return Err(format!("{} holds no recorded birth: there is no exact runtime to inspect", n.node_id)) };
     let id = n.node_id.as_str();
@@ -167,12 +166,12 @@ pub async fn birth_runtime(digest_view: &rdm_transport::topology::DigestView, no
         .or_else(|| digest_view.projected_at(id, std::time::Instant::now()).map(|(d, _)| d).filter(exact))
         .or_else(|| digest_view.stopped_digests().into_iter().find(|d| d.node.node_id == n.node_id && exact(d)));
     let row = match (digest.as_ref().is_some_and(|d| d.node.runtime.is_some()), nodes) {
-        (false, Some(nodes)) => nodes.runtime(&n.node_id, &incarnation).await.map_err(|e| format!("the durable runtime row of {} at {} could not be read: {e}", n.node_id, incarnation.as_str()))?,
+        (false, Some(nodes)) => crate::node_rows::birth_record(nodes, &n.node_id, &incarnation).await.map_err(|e| format!("the node record of {} at {} could not be read: {e}", n.node_id, incarnation.as_str()))?,
         _ => None,
     };
     runtime_of(digest.as_ref(), row.as_ref()).ok_or_else(|| {
         let held = if digest.is_some() { "a digest of this exact birth that carries no runtime fact" } else { "no digest of this exact birth" };
-        format!("this admin holds {held} and no runtime row of it, so no runtime fact")
+        format!("this admin holds {held} and no node record of it, so no runtime fact")
     })
 }
 

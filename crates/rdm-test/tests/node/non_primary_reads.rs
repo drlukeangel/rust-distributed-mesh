@@ -37,7 +37,7 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 
 /// The exact birth of `n`, the node a tags or config command names.
 fn birth_of(n: &NodeView) -> ExactBirth {
-    ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap_or_else(|| panic!("{:?} names its incarnation", n.name)) }
+    ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation: n.incarnation.clone().unwrap_or_else(|| panic!("{:?} names its incarnation", n.name)) }
 }
 
 /// The two meshes the cells read: mesh1 holds the fabric-primary alone; mesh2 holds its mesh-primary, a
@@ -54,10 +54,10 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
-    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
-    let other = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's node-admin that is not a primary: {views:#?}"));
-    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's node: {views:#?}"));
-    assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
+    let mp = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let other = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's node-admin that is not a primary: {views:#?}"));
+    let rpc = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's node: {views:#?}"));
+    assert_eq!(fp.mesh(), "mesh1", "the fabric-primary is mesh1's: {fp:?}");
 
     // Commands go down: each tag and the config is sent to the fabric-primary, which sends it to the
     // node's mesh-primary.

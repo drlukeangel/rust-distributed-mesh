@@ -50,6 +50,11 @@ impl TryFrom<PathFields> for PathName {
     fn try_from(p: PathFields) -> Result<Self, Self::Error> { Self::new(p.path, p.name) }
 }
 
+/// A node's mesh: the first location of its `path` (Q366), everything before its first `.`.
+pub fn mesh_of(path: &str) -> String {
+    path.split('.').next().unwrap_or_default().to_string()
+}
+
 /// `[a-z0-9][a-z0-9-]{0,63}`.
 pub fn is_valid_mesh_name(m: &str) -> bool {
     let b = m.as_bytes();

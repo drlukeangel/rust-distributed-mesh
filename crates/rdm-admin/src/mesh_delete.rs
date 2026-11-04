@@ -252,15 +252,15 @@ pub fn manifest_of(key: &MeshDeleteKey, roster: &[RosterBirth], final_primary: &
 
 /// node.runtime.inspect of the lost birth `lost` (mesh-delete.md, "Resume after the primary's loss",
 /// step 1: the lost final primary; "when none survives": another node-admin of the leaving mesh; a
-/// member of an unanswered mesh during fabric.delete), read from the durable runtime row this admin
-/// stored for that birth (`row`, the point read of the blind put every admin makes the moment it first
-/// holds a birth): the one inspect ([`crate::deployment::provider::inspect_runtime`]). Its answer is the
-/// verdict the birth's node.delete acts on (node-recovery.md step 3: `TerminateRuntime` first when it
-/// runs). A birth with no row names no runtime to act on.
-pub async fn predecessor_verdict(provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, lost: &RosterBirth) -> Result<crate::deployment::provider::Inspected, String> {
+/// member of an unanswered mesh during fabric.delete), read from the runtime the birth wrote on its own
+/// record (`row`, a point read of the record of that exact birth): the one inspect
+/// ([`crate::deployment::provider::inspect_runtime`]). Its answer is the verdict the birth's node.delete
+/// acts on (node-recovery.md step 3: `TerminateRuntime` first when it runs). A birth with no record
+/// names no runtime to act on.
+pub async fn predecessor_verdict(provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::NodeRecord>, lost: &RosterBirth) -> Result<crate::deployment::provider::Inspected, String> {
     let named = format!("{} {}", lost.node_id, lost.incarnation_id);
-    let row = row.ok_or_else(|| format!("no durable runtime row of {named} was ever written here: its runtime is unknown"))?;
-    Ok(crate::deployment::provider::inspect_runtime(provider, &row.runtime, row.data_dir.as_deref(), &lost.incarnation_id).await)
+    let row = row.ok_or_else(|| format!("no node record of {named} was ever written: its runtime is unknown"))?;
+    Ok(crate::deployment::provider::inspect_runtime(provider, &row.runtime, row.storage.data_dir.as_deref(), &lost.incarnation_id).await)
 }
 
 /// The first available generated name for a node-admin created in a leaving mesh.
@@ -288,22 +288,20 @@ pub async fn leaving_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey,
     Ok(roster)
 }
 
-/// The roster of `mesh` (`mesh_id`) captured from its node rows on the store, every birth that was a
-/// member when this Build's delete began: each row's newest birth, or, on the row a create's claim wrote
-/// before any fact of its birth (lifecycles/node-create.md step 1: the name is claimed before the
-/// deployment is recorded and launched), the birth that claim allocated, so a create admitted before
-/// the delete and still in flight is a birth the delete deletes (build.md §1); a row of another mesh of
-/// that name left out; a `Deleted` row only when this Build's own node.delete of that node deleted it (its
-/// `NodeDeleting` step ended `complete`), never a birth an earlier Build deleted. In path order.
-pub fn stored_roster(rows: &[crate::storage::NodeRow], mesh: &str, mesh_id: &MeshId, steps: &[BuildStep]) -> Vec<RosterBirth> {
+/// The roster of `mesh` captured from its node records on the store, every birth that was a member when
+/// this Build's delete began: each record's birth, by the mesh of its path; a `Deleted` record only when
+/// this Build's own node.delete of that node deleted it (its `NodeDeleting` step ended `complete`), never
+/// a birth an earlier Build deleted: a mesh deleted and created again under the name holds only `Deleted`
+/// records of the deleted mesh's nodes. One topology Build runs at a time (build.md §6.9), so no create
+/// is in flight across the delete. In path order.
+pub fn stored_roster(rows: &[crate::storage::NodeRecord], mesh: &str, steps: &[BuildStep]) -> Vec<RosterBirth> {
     let deleting = crate::deployment::pipeline::DeleteStep::NodeDeleting.name();
-    let began = |r: &crate::storage::NodeRow, _inc: &crate::model::IncarnationId| completed(steps, &rdm_core::OperationId::node("node.delete", &r.node_id).to_string(), deleting);
+    let began = |r: &crate::storage::NodeRecord| completed(steps, &rdm_core::OperationId::node("node.delete", &r.node_id).to_string(), deleting);
     let mut roster: Vec<RosterBirth> = rows
         .iter()
-        .filter(|r| r.mesh_id.as_ref().is_none_or(|id| id == mesh_id) && r.mesh == mesh)
-        .filter_map(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone())).map(|inc| (r, inc)))
-        .filter(|(r, inc)| r.status != crate::model::NodeStatus::Deleted || began(r, inc))
-        .map(|(r, inc)| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() })
+        .filter(|r| r.mesh() == mesh)
+        .filter(|r| r.state != crate::model::NodeStatus::Deleted || began(r))
+        .map(|r| RosterBirth { mesh: r.mesh(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: r.incarnation.as_str().to_string() })
         .collect();
     roster.sort();
     roster.dedup();
@@ -330,31 +328,6 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
             })
         })
         .collect()
-}
-
-/// The read the leave's member workflows take before they run (R13: "Rebuild after a role change
-/// reads the mesh's own rows"): the row of every roster birth `records` hold no record of, held by
-/// `rows`, the writer of the mesh's rows, so the birth's `Deleted` row, node.delete's `NodeDeleted`
-/// step's write (node-delete.md step 3), is written from the row its node holds; the admin created
-/// for a leaving mesh with no admin left joined after such a birth stopped, and its views never held it. One
-/// `rdm.node_admin.mesh.resolve.via-roster-row` span per birth read names what the read found; a
-/// row not read leaves the birth's `Deleted` write to refuse by name.
-pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &rdm_core::OperationId, roster: &[RosterBirth], records: &[Node]) {
-    let Some(rows) = rows else { return };
-    let exact = |b: &RosterBirth, n: &Node| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id);
-    for b in roster.iter().filter(|b| !records.iter().any(|n| exact(b, n))) {
-        let read = match NodeId::parse(&b.node_id) {
-            Ok(node_id) => rows.hold_row_of(&b.node, &node_id).await,
-            Err(e) => Err(format!("{executor}: roster birth {} has invalid node id: {e}", b.node_id)),
-        };
-        let (outcome, detail) = match &read {
-            Ok(true) => ("held", String::new()),
-            Ok(false) => ("no-row", format!("the store holds no row of node {}", b.node_id)),
-            Err(e) => ("unreadable", e.clone()),
-        };
-        tracing::info_span!("rdm.node_admin.mesh.resolve.via-roster-row", executor = %executor, member = %b.node_id, node_id = %b.node_id, incarnation_id = %b.incarnation_id, operation = ?operation, outcome, detail = %detail)
-            .in_scope(|| tracing::info!("the row of a roster birth this admin holds no record of is read from the mesh's own rows"));
-    }
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-delete.md steps 3-4):
@@ -497,27 +470,28 @@ pub(crate) async fn mesh_row_deleted(meshes: &dyn crate::storage::MeshStorage, c
 }
 
 /// mesh-left takes the primaries of every birth the complete proof set `proof` names off its node's
-/// record (its addresses are the node's own part of the record, Q333, and each member's row is
-/// deleted by its node.delete, mesh-delete.md "Rows") (R-MN1; R14 item 2: a mesh's records are its primary's, written here by the
-/// fabric-primary as acting primary of a mesh with none left): a deleted birth never answers, and a
-/// maker's stored map never hands it to a mesh created again under the name. Each record is written
-/// whole from the copy the writer holds ([`crate::node_rows::WrittenRows::update`]); a birth whose record
-/// holds no address for it is left as it is. One `rdm.node_admin.node.remove.via-mesh-left-contact` span
-/// names them, and a refused write ends mesh-left by name.
+/// record (each member's record is deleted by its node.delete, mesh-delete.md "Rows") (R-MN1; a deleted
+/// node's record is written by the admin acting for its mesh, Q356, here the fabric-primary as acting
+/// primary of a mesh with none left): a deleted birth never answers, and a maker's stored map never
+/// hands it to a mesh created again under the name. Each record is written whole from its latest line;
+/// a record of another birth is left as it is. One `rdm.node_admin.node.remove.via-mesh-left-contact`
+/// span names them, and a refused write ends mesh-left by name.
 async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, exited: &[TerminalReceipt]) -> Result<(), String> {
     let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to take {mesh}'s births' primaries off", format!("{:?}", key.operation)))?;
     let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), operation = %key.operation.action, operation_subject = ?key.operation.subject, dropped = tracing::field::Empty, error = tracing::field::Empty);
     let mut dropped = Vec::new();
     for t in exited {
         let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("{}: the Exited receipt of {} {} names no node id ({:?}): {e}", format!("{:?}", key.operation), t.node_id, t.incarnation_id, t.node_id))?;
-        let written = rows
-            .written()
-            .update(&**rows.storage(), &node_id, None, |r| {
-                if let Some(b) = r.births.iter_mut().find(|b| b.incarnation_id.as_str() == t.incarnation_id) {
-                    crate::storage::clear_primaries(b);
-                }
-            })
-            .await;
+        let storage = rows.storage();
+        let written = async {
+            let Some(mut r) = storage.node(&node_id).await.map_err(|e| e.to_string())?.map(|l| l.record) else { return Ok(()) };
+            if r.incarnation.as_str() != t.incarnation_id || (r.is_primary.is_none() && r.is_fabric_primary.is_none()) {
+                return Ok(());
+            }
+            crate::storage::clear_primaries(&mut r);
+            storage.put_node(&r).await.map_err(|e| e.to_string())
+        }
+        .await;
         if let Err(e) = written {
             let why = format!("{}: the primaries of {} ({node_id}) could not be taken off its record: {e}", format!("{:?}", key.operation), t.node_id);
             span.record("error", why.as_str());
@@ -1219,20 +1193,20 @@ mod tests {
     /// birth of the delete and is never deleted.
     #[test]
     fn a_roster_captured_from_the_node_rows_holds_the_birth_a_create_in_flight_wrote() {
-        use crate::storage::{Allocation, BirthFacts, NodeRow};
+        use crate::storage::{Allocation, BirthFacts, NodeRecord};
         let mesh_id = MeshId::mint();
         let joined = |name: crate::model::PathName, mesh: &str, r#type: &str| {
-            let mut row = NodeRow::new(name.clone(), mesh, r#type, NodeId::mint(), crate::model::NodeStatus::Ready);
+            let mut row = NodeRecord::new(name.clone(), mesh, r#type, NodeId::mint(), crate::model::NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             row.births.push(BirthFacts::new(crate::model::IncarnationId::mint(), name));
             row
         };
         let (admin, rpc) = (joined(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), joined(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
         let claimed_inc = crate::model::IncarnationId::mint();
-        let mut claim = NodeRow::new(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", NodeId::mint(), crate::model::NodeStatus::Pending);
+        let mut claim = NodeRecord::new(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", NodeId::mint(), crate::model::NodeStatus::Pending);
         claim.allocated = Some(Allocation { predecessor: None, build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())), incarnation: claimed_inc.clone(), deployment_id: crate::model::DeploymentId::mint() });
         let roster = stored_roster(&[admin.clone(), rpc.clone(), claim.clone()], "mesh1", &mesh_id, &[]);
-        let of = |r: &NodeRow, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
+        let of = |r: &NodeRecord, inc: &crate::model::IncarnationId| RosterBirth { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node: r.location(), node_id: r.node_id.to_string(), incarnation_id: inc.as_str().to_string() };
         let mut want = vec![of(&admin, &admin.births[0].incarnation_id), of(&rpc, &rpc.births[0].incarnation_id), of(&claim, &claimed_inc)];
         want.sort();
         assert_eq!(roster, want, "the create in flight's claimed birth is a birth of the roster");

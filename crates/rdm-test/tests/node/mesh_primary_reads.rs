@@ -36,7 +36,7 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 
 /// The exact birth of `n`, the node a tags command names.
 fn birth_of(n: &NodeView) -> ExactBirth {
-    ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap_or_else(|| panic!("{:?} names its incarnation", n.name)) }
+    ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation: n.incarnation.clone().unwrap_or_else(|| panic!("{:?} names its incarnation", n.name)) }
 }
 
 // @feature: node-lifecycle
@@ -61,9 +61,9 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     estate.enter_fabric_primary().await;
     let views = estate.node_views().await;
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
-    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
-    let rpc = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's node: {views:#?}"));
-    assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
+    let mp = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let rpc = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node").cloned().unwrap_or_else(|| panic!("mesh2's node: {views:#?}"));
+    assert_eq!(fp.mesh(), "mesh1", "the fabric-primary is mesh1's: {fp:?}");
 
     // Commands go down: each tag is sent to the fabric-primary, which sends it to the node's mesh-primary.
     let nodes = estate.nodes_obj().await;
@@ -109,7 +109,7 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     assert_eq!(attr(own_read, "nodes"), "1", "{own_read}");
     assert!(attr(own_read, "io_calls").parse::<u64>().expect("I/O count") > 0, "node-owned properties are read from storage: {own_read}");
     let property_ids: BTreeSet<String> = named(&spans, "rdm.node.properties.read.via-node-get").into_iter().filter(|sp| sp["trace_id"] == own_read["trace_id"] && sp["parent_span_id"] == own_read["span_id"]).map(|sp| attr(sp, "node_id")).collect();
-    let expected_ids: BTreeSet<String> = views.iter().filter(|node| node.mesh == "mesh2").map(|node| node.node_id.to_string()).collect();
+    let expected_ids: BTreeSet<String> = views.iter().filter(|node| node.mesh() == "mesh2").map(|node| node.node_id.to_string()).collect();
     assert_eq!(property_ids, expected_ids, "the local query reads only its own mesh’s candidate property records");
     let trace = up["trace_id"].as_str().unwrap_or_default().to_string();
     println!("carried read: http://192.168.68.99:16687/trace/{trace}");

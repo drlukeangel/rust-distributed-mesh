@@ -399,10 +399,6 @@ pub struct Records {
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
     /// that no create of it claimed. Set once at start.
     pub(crate) rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
-    /// Births whose row is to be seeded at their arrival (`RowFor::Arrival`), taken at a Join while
-    /// this admin wrote no rows yet (a Day-0 admin before it is Ready holds its mesh's role by no view:
-    /// Q59 = x), seeded with its first write after it takes the role.
-    pub(crate) held_arrival_seeds: Mutex<Vec<rdm_core::MeshDigest>>,
     /// What the provider holds recorded at a path (`crate::path_investigation::PathProbe`), asked for a node the
     /// accepted topology names that no view and no durable runtime row holds a birth of. Set once at start.
     pub(crate) path_probe: std::sync::OnceLock<Arc<dyn crate::path_investigation::PathProbe>>,
@@ -469,44 +465,6 @@ impl Records {
     /// The writer of node rows the installed views feed (set once, at start).
     pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
         let _ = self.rows.set(rows);
-    }
-
-    /// Seed the arriving birth's row ([`crate::node_rows::NodeRows::seed_at_arrival`]) through this
-    /// mesh's existing node-row writer.
-    pub async fn seed_at_arrival(&self, d: &rdm_core::MeshDigest) -> Result<(), String> {
-        let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
-        rows.seed_at_arrival(d).await
-    }
-
-    /// Seed the arriving birth's row now, or hold the seed until this admin writes its mesh's rows
-    /// (gossip.md §8, Q59 = x): a launched birth reaching a Day-0 admin before it is Ready has no row
-    /// writer yet, and the Join is answered with the seed held. `Ok(true)` seeded, `Ok(false)` held.
-    pub async fn seed_at_arrival_or_hold(&self, d: &rdm_core::MeshDigest) -> Result<bool, String> {
-        let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
-        if rows.writes_now(&d.node.mesh, &d.node.location()).await {
-            rows.seed_at_arrival(d).await.map(|_| true)
-        } else {
-            tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed-held", node_path = %rows.me().path, node_name = %rows.me().name, subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id)
-                .in_scope(|| tracing::info!("no writer of the mesh's rows yet: the arrival seed is held until this admin takes the role"));
-            self.held_arrival_seeds.lock().unwrap().push(d.clone());
-            Ok(false)
-        }
-    }
-
-    /// Seed every arrival held for the role this admin now holds; one still refused stays held.
-    pub async fn write_held_arrival_seeds(&self) {
-        let held: Vec<_> = std::mem::take(&mut *self.held_arrival_seeds.lock().unwrap());
-        for d in held {
-            match self.seed_at_arrival(&d).await {
-                Ok(()) => tracing::info_span!("rdm.node_admin.node.create.via-arrival-seed-written", subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id)
-                    .in_scope(|| tracing::info!("an arrival seed held before the role is written")),
-                Err(why) => {
-                    tracing::info_span!("rdm.node_admin.node.reject.via-arrival-seed-held", subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id, detail = %why)
-                        .in_scope(|| tracing::info!("the held arrival seed is still refused: kept"));
-                    self.held_arrival_seeds.lock().unwrap().push(d);
-                }
-            }
-        }
     }
 
     /// The probe of what the provider holds recorded at a path (set once, at start).
@@ -785,9 +743,6 @@ impl Records {
             if let Some(fold) = self.status.get() {
                 fold.on_install(&t, &self.declared, self.digest_view.get()).await;
             }
-            // The births the fabric-primary's view holds for the first time: their rows are written
-            // from this held record once the view is installed (`crate::node_rows`).
-            let arrivals = self.rows.get().map(|rows| rows.arrivals(&held, &t)).unwrap_or_default();
             // The backbone holds the meshes this view names, each deleted or not, from this install on
             // and in the order views are installed: the fabric-primary publishes a deleted mesh's
             // mesh topology from its last admin's stop on (mesh-delete.md step 7), and never a live
@@ -798,9 +753,6 @@ impl Records {
             self.view_tick.send_modify(|v| *v += 1);
             self.wake.poke();
             self.view_changed.notify_one();
-            if let (Some(rows), false) = (self.rows.get(), arrivals.is_empty()) {
-                rows.write_arrivals(&t, arrivals).await;
-            }
         }
         t
     }

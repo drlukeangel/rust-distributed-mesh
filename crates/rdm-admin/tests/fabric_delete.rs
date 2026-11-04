@@ -27,7 +27,7 @@ use rdm_admin::mesh_delete::{accepted_roster, complete_fabric_delete, first_mism
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{RowFor, RowCreated, NodeRows};
 use rdm_admin::status_rpc::Declared;
-use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRow, NodesStorage, RuntimeRow};
+use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRecord, NodesStorage, RuntimeRow};
 use rdm_admin::topology::Topology;
 use rdm_core::status::MeshState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -161,7 +161,7 @@ async fn records_roster(storage: &MemoryNodesStorage, builds: &dyn BuildStateAda
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         // The record a create wrote: the node's row and its birth.
-        let mut row = NodeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
+        let mut row = NodeRecord { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 path: n.path.clone(), name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::Ready,

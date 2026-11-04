@@ -1,5 +1,5 @@
-//! `node.name.update` at the node's mesh-primary, the one writer of its mesh's rows (proposal
-//! node-properties-own-commands.md §2; R13, R-CR1, R-MN1, R-OW1). The request carries the exact birth
+//! `node.name.update` at the node's mesh-primary (proposal node-properties-own-commands.md §2; R13,
+//! R-CR1, R-MN1, R-OW1). The request carries the exact birth
 //! and separate path/name fields: the path must match the held node and cannot change. From what the mesh-primary holds, in
 //! order (§2.1 Validation): the exact birth matches its record (`RejectedStaleIncarnation`); it is the
 //! node's writer, the mesh-primary or, before the mesh has one, the fabric-primary
@@ -7,18 +7,17 @@
 //! mesh-primary holds the birth's `node.connections.deleted` of an `All` that left nothing held
 //! (`RejectedAdmittingConnections { status, held_connections }`); the name is within the name grammar
 //! and the path is unchanged (`RejectedName`). Then, one change at a time with every other change
-//! to a node record: the mesh-primary checks the new pair against the records it holds (`NameHeld {
-//! by }`, nothing written) and the row moved through the one writer of a row's move
-//! (`crate::node_rows::move_row`): one write of the record at its node.id carrying the new pair and
-//! `renamed_from`, the name move. The node is told `ApplyNodeName` (this admin itself in-process,
-//! through its own name decision). A live node then rejoins its mesh under the new name: this
+//! to a node record: the mesh-primary checks the new pair against the node records, a runtime read
+//! (`crate::node_rows::check_name`: `NameHeld { by }`, nothing written), and the node is told
+//! `ApplyNodeName` (this admin itself in-process, through its own name decision): the node writes its
+//! own record at its node.id with the new name (Q356), the name move, then publishes it. A live node
+//! then rejoins its mesh under the new name: this
 //! mesh-primary commands its `node.mesh.join` ([`crate::heard_again::HeardAgain::rejoin`]), and the
 //! command completes on its `MeshJoined`; a stopped node completes on its `Applied` or
-//! `AlreadyApplied`, and its start rejoins it under the name. A repeat naming the name the row already
+//! `AlreadyApplied`, and its start rejoins it under the name. A repeat naming the name the record already
 //! holds resends `ApplyNodeName` (Idempotency).
 
 use crate::model::{Node, PathName};
-use crate::node_rows::RenameRefused;
 use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rdm_core::ConnectionId;
@@ -27,16 +26,16 @@ use rdm_transport::{CallOptions, NodeTarget, RouteChoice};
 use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
 
-/// What a mesh-primary's `node.name.update` acts through: the `NodeConfigs` its record changes take turns at
-/// (`crate::node_config::NodeConfigs`: the writer's held record and the client it tells births
-/// through), its view's take of a moved row, its own name decision for a rename of itself, and the
-/// command of a renamed node's rejoin.
+/// What a mesh-primary's `node.name.update` acts through: the `NodeConfigs` its node commands take
+/// turns at (`crate::node_config::NodeConfigs`: the client it tells births through), its view's take
+/// of a moved name, its own name decision for a rename of itself, and the command of a renamed node's
+/// rejoin.
 pub struct NodeNameUpdateService<'a> {
     /// The `NodeConfigs`: `None` until this admin's node-RPC client exists.
     pub configs: Option<&'a crate::node_config::NodeConfigs>,
-    /// This admin's view taking a moved row.
+    /// This admin's view taking a moved name.
     pub moved: &'a crate::status_rpc::RowMoved,
-    /// This admin deciding a name its own row gives it.
+    /// This admin deciding a name its mesh-primary gives it.
     pub rename: &'a crate::status_rpc::Rename,
     /// This admin's command of a renamed live birth's `node.mesh.join`.
     pub rejoin: &'a crate::status_rpc::Rejoin,
@@ -47,18 +46,18 @@ pub enum Routed {
     /// Answered on its route: the fabric-primary's answer carried back up, or the node's mesh-primary's
     /// answer to the fabric-primary that sent it down.
     Answered(StatusReply),
-    /// Served here, by the node's row writer ([`update`]).
+    /// Served here, by the node's mesh-primary ([`update`]).
     Here,
 }
 
 /// The route of a `node.name.update` at the admin `me` (born `me_id`) sent by `sent_by`, over the view
 /// `view` holds (node-name-update.md step 1; commands go down): a caller's at an admin that is not the fabric-primary is carried up
 /// to the fabric-primary its view names, owed until it answers, and that answer is handed back
-/// ([`crate::node_config::NodeConfigs::forward_up`]); at the fabric-primary, a node whose row another
-/// admin writes (its mesh-primary) is sent the command down, owed until that mesh-primary answers
-/// ([`crate::node_config::NodeConfigs::send_down`]): the record that mesh-primary writes is what the
-/// fabric-primary's node reads read next (query.md §1). Every other command, and a node whose row this
-/// admin writes, is served here ([`Routed::Here`]). A node.update step of a Build is served at its
+/// ([`crate::node_config::NodeConfigs::forward_up`]); at the fabric-primary, a node of a mesh another
+/// admin is the mesh-primary of is sent the command down, owed until that mesh-primary answers
+/// ([`crate::node_config::NodeConfigs::send_down`]): the record the node writes is what the
+/// fabric-primary's node reads read next (query.md §1). Every other command, and a node of a mesh this
+/// admin acts as the mesh-primary of, is served here ([`Routed::Here`]). A node.update step of a Build is served at its
 /// executor and never routed: its receipt is the atlas's.
 #[allow(clippy::too_many_arguments)]
 pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
@@ -73,7 +72,7 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         }
     }
     let Some(subject) = first.own(node_id).cloned() else { return Routed::Here };
-    if !first.is_fabric_primary(me_id) || crate::node_rows::writes_for(&first, me_id, &subject.mesh) {
+    if !first.is_fabric_primary(me_id) || crate::node_rows::acts_as_mesh_primary(&first, me_id, &subject.mesh) {
         return Routed::Here;
     }
     let span = tracing::info_span!(
@@ -116,7 +115,7 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     );
     let reply = tracing::Instrument::instrument(
         async {
-            // A snapshot of the view: no read lock is held across the row write's I/O.
+            // A snapshot of the view: no read lock is held across the store reads and the node's call.
             let now = view.read().await.clone();
             rename(me, me_id, &now, storage, service, deleted, node_id, incarnation, name, &span).await
         },
@@ -191,10 +190,10 @@ async fn rename(
         }
         Some(_) => {}
     }
-    // 2. The writer: the mesh-primary of the node's mesh, or the fabric-primary for a mesh with none (R-OW1).
-    if !crate::node_rows::writes_for(now, me_id, &held.mesh) {
+    // 2. The receiver: the mesh-primary of the node's mesh, or the fabric-primary for a mesh with none (R-OW1).
+    if !crate::node_rows::acts_as_mesh_primary(now, me_id, &held.mesh) {
         let held_by = now.node_type_primary(&held.mesh, "node-admin").map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
-        let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me_id} does not hold it)", held.mesh, held.node_id);
+        let needed = format!("{}'s primary node-admin, the mesh-primary of {} ({held_by}; {me_id} does not hold it)", held.mesh, held.node_id);
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
     }
@@ -215,33 +214,33 @@ async fn rename(
     let Some(configs) = service.configs else {
         return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no `NodeConfigs` its record changes take turns at: the rename of {} is refused and nothing is written", held.node_id));
     };
-    // One change to a node record at a time, through the writer's held record: the row carries every
-    // field the writer knows of it, the config and the tags included.
+    // One command to a node at a time. The name the node's record stands at now (a runtime point read,
+    // Q237 A), else the name the view holds.
     let one = configs.one_at_a_time().await;
-    let known = match configs.written().known_row(storage, node_id).await {
-        Ok(row) => row,
+    let known = match storage.node(node_id).await {
+        Ok(line) => line.map(|l| l.record),
         Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
     };
-    // The key the node's row stands at now: the row's own, else the name the view holds.
     let from = known.as_ref().map_or_else(|| held.location(), |r| r.location());
     if from.path != to.path {
         return rdm_core::reply::status::bounded_rejected_name("a node's path is immutable; only its name may change, and nothing is claimed or written");
     }
-    if from != to {
+    let moved = if from != to {
         let Some(moved) = service.moved.get() else {
-            return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved row yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
+            return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved name yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
         };
-        let moved_row = crate::node_rows::move_row(storage, configs.written(), me, &held, &from, &to).await;
-        match moved_row {
-            Ok(_) => {}
-            Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.location(), h.by),
-            Err(RenameRefused::Unwritten(why)) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &why),
+        // Another node's live record at the destination refuses it by name; nothing is written.
+        match crate::node_rows::check_name(storage, &to, node_id).await {
+            Ok(Ok(())) => {}
+            Ok(Err(h)) => return rdm_core::reply::status::name_held(h.location(), h.by),
+            Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: the records at path={to_path:?} name={to_name:?} could not be read: {why}; nothing is written")),
         }
-        // The view reads the moved row: the birth is listed at the row's name from now on.
-        moved(held.location(), node_id.clone(), incarnation.clone(), to.clone()).await;
-    }
+        Some(moved)
+    } else {
+        None
+    };
     let done = StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
-    // The live birth takes the row's name. This admin itself takes it through its own name
+    // The live birth takes the name. This admin itself takes it through its own name
     // decision in-process, as its `NodeConfigs` applies its own config: it never calls itself.
     let applied = if held.node_id == *me_id {
         span.record("apply", "in-process");
@@ -260,6 +259,11 @@ async fn rename(
     let (answered, detail) = match applied {
         Ok(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => {
             span.record("answered", r.name());
+            // The node's record holds the name (it wrote it before it answered): the view lists the birth
+            // there from now on.
+            if let Some(moved) = moved {
+                moved(held.location(), node_id.clone(), incarnation.clone(), to.clone()).await;
+            }
             // A stopped node rejoins at its start, this admin is on its own mesh: done. A live node
             // rejoins its mesh under the name now (Q347), commanded down by this mesh-primary once the
             // `NodeConfigs` turn is released: the join's arrival takes the same turn.
@@ -270,7 +274,7 @@ async fn rename(
             drop(one);
             let Some(rejoin) = service.rejoin.get() else {
                 span.record("rejoin", "no-runner");
-                return rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "not-ready", &format!("{me_id} moved the row to path={to_path:?} name={to_name:?} and the birth took it; this admin has no runner yet to command its node.mesh.join; a resubmit resends the apply and the join"));
+                return rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "not-ready", &format!("the birth took path={to_path:?} name={to_name:?} on its record; this admin has no runner yet to command its node.mesh.join; a resubmit resends the apply and the join"));
             };
             let mut renamed = held.clone();
             (renamed.path, renamed.name) = (to.path.clone(), to.name.clone());
@@ -280,24 +284,22 @@ async fn rename(
                     done
                 }
                 Ok(other) => {
-                    span.record("rejoin", other.name()).record("detail", format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth took it and answered its node.mesh.join {other:?}; a resubmit resends the apply and the join").as_str());
+                    span.record("rejoin", other.name()).record("detail", format!("the birth took path={to_path:?} name={to_name:?} on its record and answered its node.mesh.join {other:?}; a resubmit resends the apply and the join").as_str());
                     rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), other.name(), &format!("{me_id}: the birth's node.mesh.join under path={to_path:?} name={to_name:?} answered {other:?}"))
                 }
                 Err(why) => {
-                    span.record("rejoin", "unanswered").record("detail", format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth took it and its node.mesh.join ended {why}; a resubmit resends the apply and the join").as_str());
+                    span.record("rejoin", "unanswered").record("detail", format!("the birth took path={to_path:?} name={to_name:?} on its record and its node.mesh.join ended {why}; a resubmit resends the apply and the join").as_str());
                     rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "unanswered", &format!("{me_id}: the birth's node.mesh.join under path={to_path:?} name={to_name:?} ended {why}"))
                 }
             };
         }
-        Ok(refused) => (refused.name(), format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth answered {refused:?}; a resubmit resends the apply")),
-        Err(end) => (end.outcome(), format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; apply-node-name ended {end:?}; a resubmit resends the apply")),
+        Ok(refused) => (refused.name(), format!("{me_id} asked the birth to take path={to_path:?} name={to_name:?}; it answered {refused:?}; a resubmit resends the apply")),
+        Err(end) => (end.outcome(), format!("{me_id} asked the birth to take path={to_path:?} name={to_name:?}; apply-node-name ended {end:?}; a resubmit resends the apply")),
     };
     span.record("answered", answered).record("detail", detail.as_str());
     rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), answered, &detail)
 }
 
-/// The command ends incomplete after its put at `to`: the release of `from` is pending, both keys held
-/// (proposal §2.4); the next writer that meets the row finishes it.
 #[cfg(test)]
 mod tests {
     use super::*;

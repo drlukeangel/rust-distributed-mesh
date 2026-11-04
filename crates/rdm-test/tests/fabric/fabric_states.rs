@@ -112,11 +112,11 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     let nodes = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let fp = nodes.iter().find(|n| n.is_fabric_primary).expect("one fabric primary");
-    let old = nodes.iter().find(|n| n.mesh != fp.mesh && n.is_primary && n.r#type == "node-admin").expect("another mesh's primary admin");
-    let heir = nodes.iter().find(|n| n.mesh == old.mesh && n.r#type == "node-admin" && n.node_id != old.node_id).expect("another admin in the lost mesh");
+    let old = nodes.iter().find(|n| n.mesh() != fp.mesh() && n.is_primary && n.r#type == "node-admin").expect("another mesh's primary admin");
+    let heir = nodes.iter().find(|n| n.mesh() == old.mesh() && n.r#type == "node-admin" && n.node_id != old.node_id).expect("another admin in the lost mesh");
     let heir_id = heir.node_id.as_str();
     estate.kill_node(&old.location()).await;
-    let roles: Vec<_> = nodes.iter().filter(|n| n.mesh == old.mesh && matches!(n.r#type.as_str(), "broker" | "gateway" | "compute")).map(|n| n.node_id.to_string()).collect();
+    let roles: Vec<_> = nodes.iter().filter(|n| n.mesh() == old.mesh() && matches!(n.r#type.as_str(), "broker" | "gateway" | "compute")).map(|n| n.node_id.to_string()).collect();
     // A role node's re-declaration to the new mesh-primary is a call it makes: no object reports it, and the
     // span the node records is the only place the fact lives. Both source and destination are IDs.
     wait_for("every role node of the mesh declared its state to the new primary", Duration::from_secs(90), || {
@@ -438,14 +438,14 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
             let addressed = || {
                 let record = estate.node_record(&id)?;
                 let birth = record["data"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["incarnation_id"].as_str()).map(str::to_string)?;
-                let own = estate.node_properties(&rdm_core::NodeId::parse(&id).ok()?)?;
+                let own = estate.record(&rdm_core::NodeId::parse(&id).ok()?)?;
                 (own.birth.incarnation_id.as_str() == birth && own.transport_addr.is_some()).then_some(record)
             };
             let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while addressed().is_none() && std::time::Instant::now() < until {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert!(addressed().is_some(), "{mesh}: {id} recorded its address in its own part of its record at its birth: {:?} {:?}", estate.node_record(&id), rdm_core::NodeId::parse(&id).ok().and_then(|n| estate.node_properties(&n)));
+            assert!(addressed().is_some(), "{mesh}: {id} recorded its address in its own part of its record at its birth: {:?} {:?}", estate.node_record(&id), rdm_core::NodeId::parse(&id).ok().and_then(|n| estate.record(&n)));
         }
     };
     let fp_id = s(&nodes[0]["node_id"]);
@@ -458,8 +458,8 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let mut want_later = want.clone();
     want_later.extend([("mesh1.node", "1"), ("mesh2.node-admin", "1"), ("mesh2.node", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()));
     let later_nodes = estate.settles_to_named(&want_later, Duration::from_secs(60)).await;
-    let source = later_nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node").expect("source RPC");
-    let destination = later_nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node").expect("destination RPC");
+    let source = later_nodes.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node").expect("source RPC");
+    let destination = later_nodes.iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node").expect("destination RPC");
     let source_target = format!("exact:{}", source.node_id);
     let destination_target = format!("exact:{}", destination.node_id);
     ready_under(&estate, &second).await;
@@ -475,7 +475,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     estate.artifact("originate-after-growth.json", &straight);
     assert_eq!(straight["call_outcome"].as_str(), Some("reply"), "mesh2.node.1 originated its connection to mesh1.node.1: {straight}");
     for node in &later_nodes {
-        addressed(&node.mesh, node.node_id.as_str()).await;
+        addressed(&node.mesh(), node.node_id.as_str()).await;
     }
     // The originated connection's row is owed on mesh2.node.1's writer queue and lands after the open
     // answered (Q169): the store is read once it stands, within the bound.
@@ -544,8 +544,8 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let build = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await.build_id.to_string();
     until_fabric(&estate, ScopeStatus::Ready, Some(build.as_str()), Duration::from_secs(60)).await;
     let nodes = estate.node_views().await;
-    let rpc = nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node").expect("the `node` fixture");
-    let primary = nodes.iter().find(|n| n.mesh == "mesh1" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
+    let rpc = nodes.iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node").expect("the `node` fixture");
+    let primary = nodes.iter().find(|n| n.mesh() == "mesh1" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
     estate.stop().await;
     let spans = estate.spans();
     let ready = named(&spans, "rdm.node_admin.status.update.via-declaration")

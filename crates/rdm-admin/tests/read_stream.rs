@@ -126,7 +126,7 @@ async fn one_read_answers_every_row_across_frames_in_order() {
     let held = rows(10, 100, 300);
     let s = serve(held.clone(), Ending::Whole).await;
     let mesh7 = read(&s, Filter::new().eq("mesh", ["mesh7"])).await.expect("a filtered read");
-    assert_eq!(mesh7, held.iter().filter(|n| n.mesh == "mesh7").cloned().collect::<Vec<_>>(), "the filter's rows, in order");
+    assert_eq!(mesh7, held.iter().filter(|n| n.mesh() == "mesh7").cloned().collect::<Vec<_>>(), "the filter's rows, in order");
 }
 
 // @feature: node-lifecycle

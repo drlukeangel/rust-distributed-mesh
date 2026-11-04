@@ -27,7 +27,7 @@ fn owner(test: &str) -> Owner {
 }
 
 fn ready(n: &rdm_client::NodeView) -> bool {
-    n.status == NodeStatus::Ready
+    n.state == NodeStatus::Ready
 }
 
 /// Bootstraps mesh1 and builds 1 more node-admin and 2 nodes, all ready, on a fabric ready.
@@ -87,11 +87,11 @@ async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
         }
         Err(why) => panic!("netfault required: {why}"),
     };
-    let held = estate.until_node(&victim, "the cut node is no longer ready in the admin's view", SETTLE, |n| n.filter(|n| !ready(n)).map(|n| n.status)).await;
+    let held = estate.until_node(&victim, "the cut node is no longer ready in the admin's view", SETTLE, |n| n.filter(|n| !ready(n)).map(|n| n.state)).await;
     eprintln!("poc: under the cut {victim:?} reads {held:?}");
     drop(cut);
     let back = estate.until_node(&victim, "the healed node is ready again", SETTLE, |n| n.filter(|n| ready(n)).cloned()).await;
-    assert_eq!((&back.node_id, &back.incarnation_id), (&before.node_id, &before.incarnation_id), "the heal brings back the same node: {back:?}");
+    assert_eq!((&back.node_id, &back.incarnation), (&before.node_id, &before.incarnation), "the heal brings back the same node: {back:?}");
     estate.stop().await;
 }
 

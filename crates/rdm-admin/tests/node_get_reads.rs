@@ -6,7 +6,7 @@
 //! plans.
 
 use rdm_admin::model::*;
-use rdm_admin::storage::NodeRow;
+use rdm_admin::storage::NodeRecord;
 use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::storage::MemoryNodesStorage;
 use rdm_admin::topology::Topology;
@@ -33,7 +33,7 @@ fn properties() -> &'static MemoryNodesStorage {
 /// `node_id`'s own property record carrying `config` and `tags`, as its own writer put it.
 async fn own(node_id: &NodeId, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>) {
     use rdm_admin::storage::NodesStorage as _;
-    properties().put_properties(&rdm_node::node_records::NodeProperties {
+    properties().put_properties(&rdm_node::nodes_storage::NodeRecord {
         birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: IncarnationId::mint() },
         config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(),
     }).await.unwrap();
@@ -109,7 +109,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (&broker, &["silver"][..], &[("zone", "eu-1"), ("rack", "7")][..]),
         (&gw2, &["gold"][..], &[("rack", "7")][..]),
     ] {
-        let row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         status.write_record(&row).await.unwrap();
         own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
@@ -130,7 +130,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
 
     for (filter, pair) in [
         (Filter::new().eq("mesh", ["mesh1"]).eq("zone", ["eu-1"]), "the pair (zone, [eu-1]) names no property of a node row"),
-        (Filter::new().eq("status", ["redy"]), "the pair (status, [redy])"),
+        (Filter::new().eq("state", ["redy"]), "the pair (state, [redy])"),
         (Filter::new().eq("is_primary", ["yes"]), "the pair (is_primary, [yes])"),
         (Filter::new().eq("tags", Vec::<String>::new()), "the pair (tags, []) names no value"),
     ] {
@@ -222,7 +222,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     let records = Arc::new(MemoryNodesStorage::default());
     let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
     for (n, expires_at) in expiries {
-        let mut row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location()).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
@@ -283,16 +283,16 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     for n in [&admin, &rpc, &peer] {
         own(&n.node_id, BTreeMap::new(), Default::default()).await;
     }
-    let mut row = NodeRow::new(rpc.location(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
+    let mut row = NodeRecord::new(rpc.location(), rpc.mesh.clone(), &rpc.r#type, rpc.node_id.clone(), NodeStatus::Ready);
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.location()).declared.insert(rdm_core::status::NodeState::Ready);
     records.write_record(&row).await.unwrap();
     // mesh2's record as its current writer holds it.
-    let mut peer_row = NodeRow::new(peer.location(), peer.mesh.clone(), &peer.r#type, peer.node_id.clone(), NodeStatus::Pending);
+    let mut peer_row = NodeRecord::new(peer.location(), peer.mesh.clone(), &peer.r#type, peer.node_id.clone(), NodeStatus::Pending);
     peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.location());
     records.write_record(&peer_row).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Ready, false), "a stop the node has not acknowledged moves its row nowhere: ready");
-    let ready: Vec<PathName> = answer(&view, &records, Filter::new().eq("status", ["ready"])).await.into_iter().map(|n| n.location()).collect();
+    let ready: Vec<PathName> = answer(&view, &records, Filter::new().eq("state", ["ready"])).await.into_iter().map(|n| n.location()).collect();
     assert_eq!(ready, [path("mesh1.node", "1"), path("mesh1.node-admin", "1")], "[status: ready] matches the birth whose stop is unacknowledged, never mesh2's pending record");
     // Another mesh's record is read under its current writer as every record is (query.md §1): the
     // state it took answers, never the view's.
@@ -355,7 +355,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         n.is_primary = primary;
         n.endpoint_id = Some(EndpointId(format!("key-{}", n.node_id)));
         n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
-        let row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+        let row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
         records.write_record(&row).await.unwrap();
         own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
@@ -387,7 +387,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
     };
     let local = |f: &Filter| gateway.nodes_get(f).map(|ds| ds.into_iter().map(|d| d.node.location()).collect::<Vec<_>>());
     for f in [
-        Filter::new().eq("type", ["node"]).eq("status", ["ready"]),
+        Filter::new().eq("type", ["node"]).eq("state", ["ready"]),
         Filter::new().eq("mesh", ["mesh1"]),
         Filter::new().eq("is_primary", ["true"]),
         Filter::new().eq("mesh", ["mesh2"]).eq("type", ["broker"]),
@@ -397,7 +397,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         assert_eq!(local(&f), Ok(atlas.clone()), "{f:?}: the topology the gateway holds answers what the atlas answers");
         assert!(!atlas.is_empty(), "{f:?} matches a node");
     }
-    assert_eq!(local(&Filter::new().eq("type", ["node"]).eq("status", ["ready"])), Ok(vec![path("mesh1.node", "1")]), "the local query filters type and status");
+    assert_eq!(local(&Filter::new().eq("type", ["node"]).eq("state", ["ready"])), Ok(vec![path("mesh1.node", "1")]), "the local query filters type and status");
     for (f, pair) in [(Filter::new().eq("tags", ["gold"]), "(tags, [gold])"), (Filter::new().eq("config.zone", ["eu-1"]), "(config.zone, [eu-1])")] {
         assert_eq!(answer(&view, &records, f.clone()).await.len(), 4, "node.get answers the row-only pair {f:?}");
         let why = local(&f).expect_err("a row-only pair is refused locally");
@@ -408,7 +408,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
 /// The status and `stopped` of the birth `id`, as `node.get [id: id]` over `view` answers it, each record read through the reader over `records` ([`reply`]).
 async fn status_of(view: &Topology, records: &MemoryNodesStorage, id: &NodeId) -> (rdm_core::views::NodeStatus, bool) {
     let n = answer(view, records, Filter::new().eq("id", [id.to_string()])).await.into_iter().next().expect("the birth is answered");
-    (n.status, n.stopped)
+    (n.state, n.stopped)
 }
 
 /// CONTRACT (query.md §1: "Properties are read separately at the subject node ID. A missing
@@ -431,7 +431,7 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     };
     let records = MemoryNodesStorage::default();
     for n in [&admin, &owned, &bare] {
-        let mut row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
+        let mut row = NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
         records.write_record(&row).await.unwrap();
     }
@@ -444,7 +444,7 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     let of = |id: &NodeId| all.iter().find(|n| &n.node_id == id).unwrap_or_else(|| panic!("{id} listed: {all:#?}")).clone();
     let b = of(&bare.node_id);
     assert!(matches!(&b.properties, rdm_core::views::PropertyRecord::Unavailable { reason } if reason.contains(bare.node_id.as_str())), "its properties are unavailable, naming it: {b:?}");
-    assert_eq!((b.status, b.tags.len(), b.config.len()), (rdm_core::views::NodeStatus::Ready, 0, 0), "its lifecycle facts stand, its properties empty: {b:?}");
+    assert_eq!((b.state, b.tags.len(), b.config.len()), (rdm_core::views::NodeStatus::Ready, 0, 0), "its lifecycle facts stand, its properties empty: {b:?}");
     let o = of(&owned.node_id);
     assert_eq!((o.properties.clone(), o.tags.clone()), (rdm_core::views::PropertyRecord::Read, ["gold".to_string()].into()), "a node whose record is read answers its own tags");
 

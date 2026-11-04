@@ -165,7 +165,7 @@ impl Observer {
 fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n.r#type == "node-admin" && n.mesh == "mesh1")
+        .filter(|n| n.r#type == "node-admin" && n.mesh() == "mesh1")
         .filter_map(|n| {
             let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
             Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
@@ -221,7 +221,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // NodeIds' draw (the lowest complete NodeId), so it is read from the settled view.
     let held: PathName = nodes
         .iter()
-        .find(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
+        .find(|n| n.mesh() == "mesh2" && n.r#type == "node" && !n.is_primary)
         .map(|n| n.location())
         .unwrap_or_else(|| panic!("mesh2 holds a node that is not its rpc primary: {nodes:?}"));
     let held = &held;

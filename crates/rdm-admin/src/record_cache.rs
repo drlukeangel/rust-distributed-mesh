@@ -54,8 +54,6 @@ impl<K: Eq + Hash + Clone, V: Clone> RecordCache<K, V> {
 /// mesh's rows and its `NodeConfigs`), its mesh records and the Fabric record.
 #[derive(Debug, Clone, Default)]
 pub struct Caches {
-    /// The node records.
-    pub nodes: Arc<crate::node_rows::WrittenRows>,
     /// The mesh records, by mesh id.
     pub meshes: Arc<RecordCache<crate::model::MeshId, crate::storage::MeshRecord>>,
     /// The Fabric record, by fabric id.

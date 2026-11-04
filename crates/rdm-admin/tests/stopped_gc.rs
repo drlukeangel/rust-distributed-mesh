@@ -116,7 +116,7 @@ fn birth(t: &Topology, p: &PathName) -> (PathName, NodeId, IncarnationId) {
 /// a stop writes the stopped period's `stopped_at_rafka_ms` at `at_ms`, the start's ready clears it (D50).
 async fn period(cp: &ControlPlane, _builds: &MemoryBuildStateAdapter, (path, node_id, incarnation): &(PathName, NodeId, IncarnationId), stop: bool, at_ms: u64) {
     let rows = cp.node_rows.get().expect("the plane binds the node records").clone();
-    let base = rdm_admin::storage::NodeRow::new(path.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Ready);
+    let base = rdm_admin::storage::NodeRecord::new(path.clone(), "mesh1", "node", node_id.clone(), NodeStatus::Ready);
     rdm_admin::node_rows::WrittenRows::default()
         .update(&*rows, node_id, Some(base), |r| r.birth_mut(incarnation, path).stopped_at_rafka_ms = stop.then_some(at_ms))
         .await

@@ -925,11 +925,11 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
     // The record and its config stay (node-delete.md step 3): the exited node's own property record,
     // at its node id, still holds the config and the tag.
-    let exited = estate.node_properties(&s(&before["node_id"]).parse().unwrap()).expect("the exited node's property record stays");
+    let exited = estate.record(&s(&before["node_id"]).parse().unwrap()).expect("the exited node's property record stays");
     assert_eq!((exited.config.clone(), exited.tags.clone()), (told.clone(), labels.clone()), "the exited node's property record keeps its config and tag: {exited:?}");
     // The new node writes its own property record from its launch snapshot, the exited birth's
     // acknowledged config and tags (node-recovery.md; its join answer is not where config lives).
-    let own = wait_for("the new node's own property record", Duration::from_secs(30), || async { estate.node_properties(&s(&after["node_id"]).parse().unwrap()) }).await;
+    let own = wait_for("the new node's own property record", Duration::from_secs(30), || async { estate.record(&s(&after["node_id"]).parse().unwrap()) }).await;
     assert_eq!((own.config.clone(), own.tags.clone()), (told.clone(), labels.clone()), "the new node's own record holds the exited birth's config and tag: {own:?}");
     let carried = wait_for(&format!("the new {node_path:?} carries the config"), Duration::from_secs(30), || async { let n = estate.node_value(node_path).await; (n["config"] == told_json).then_some(n) }).await;
     assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");

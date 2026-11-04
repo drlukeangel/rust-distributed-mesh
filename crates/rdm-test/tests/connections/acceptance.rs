@@ -733,7 +733,7 @@ async fn mesh_primary(estate: &Estate) -> rdm_core::NodeId {
 /// `node`'s exact birth.
 async fn exact_birth(estate: &Estate, node: &PathName) -> rdm_client::ExactBirth {
     let v = estate.node_view(node).await;
-    rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(v.node_id.clone()), node_id: v.node_id.clone(), incarnation: v.incarnation_id.clone().expect("a live birth") }
+    rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(v.node_id.clone()), node_id: v.node_id.clone(), incarnation: v.incarnation.clone().expect("a live birth") }
 }
 
 /// CONTRACT (node-connections-delete.md step 3: "4. Close every open connection, each open Direct or
@@ -803,8 +803,8 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     estate.resize_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let p = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");
-    let na2 = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().expect("mesh2's other node-admin");
+    let p = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");
+    let na2 = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && !n.is_primary).cloned().expect("mesh2's other node-admin");
     assert!(!p.is_fabric_primary, "mesh2's primary is not the fabric-primary");
     let (p_name, na2_name, p_id, na2_id) = (p.location(), na2.location(), p.node_id.to_string(), na2.node_id.to_string());
 
@@ -813,7 +813,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     for admin in views.iter().filter(|n| n.r#type == "node-admin" && n.location() != p.location()) {
         let view = estate.node_views_at(&admin.location()).await.unwrap_or_else(|| panic!("{:?} answers node.get", admin.name));
-        let primary: Vec<PathName> = view.iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).collect();
+        let primary: Vec<PathName> = view.iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{:?} names {na2_name:?} mesh2's primary", admin.name);
     }
     estate.stop().await;

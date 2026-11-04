@@ -1,131 +1,18 @@
-//! `nodes.storage`'s rows (storage-whole-records.md, "The objects"): each node's record at its node id,
-//! in two parts (Q333), its mesh-primary's whole row line and the node's own line, the reader folding
-//! the latest of each; every birth's runtime row; and the point reads of a node's record by its id or
-//! by its `(path, name)` through the name claim (query.md §1, Q237). The node-admin writes the rows
-//! ([`NodesStorage`]) and each node writes its own part through the same store; any node reads another
-//! node's row here, the store opened on its first read and never at its start, join or create (Q227).
+//! `nodes.storage` (storage-whole-records.md, "The objects"): each node's record at its node id
+//! (Q366), written whole by the node itself (Q356), and the point reads of a node's record by its id or
+//! by its `(path, name)` (query.md §1, Q237). A node's mesh-primary, or the fabric-primary for a mesh
+//! with none, writes a node's record only when the node cannot: a node that is lost, killed or
+//! deleted. Any node reads another node's record here at runtime, the store opened on its first read
+//! and never at its start, join or create (Q227).
 
-use crate::model::{IncarnationId, MeshId, NodeId, PathName};
+use crate::model::{IncarnationId, NodeId, PathName};
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
-use rdm_core::status::NodeState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 pub use rdm_client::NameHeld;
-
-/// A row written before `topology_storage_provider` was recorded reads as `file`, the one backend there
-/// was.
-fn file_provider() -> Option<String> {
-    Some(rdm_core::launch::TOPOLOGY_STORAGE_FILE.into())
-}
-
-/// An operation effect applied to one birth (Q49), on its node's record: independent of the birth's
-/// current cycle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeOperation {
-    /// The operation that produced this effect.
-    pub operation: rdm_core::status::DeclaredOperation,
-    /// The effect applied.
-    pub state: NodeState,
-}
-
-/// A birth's member cert dates (fabric-certs.md §Tracking), written by the node's mesh-primary when
-/// the birth holds the cert. The written expiry is the receipt (Q141); the dates are the birth's
-/// renewal state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CertDates {
-    /// When the cert was issued, rafka-time ms.
-    pub issued_at: u64,
-    /// When it expires, rafka-time ms.
-    pub expires_at: u64,
-    /// When its issuing cert expires, rafka-time ms.
-    pub issuer_expires_at: u64,
-    /// When its issuer renews it (`rdm_core::certs::renew_at`), rafka-time ms.
-    pub renew_at: u64,
-}
-
-/// A node-admin birth's signing cert dates (mesh-issuer-renew.md): the cert it signs its mesh's member
-/// certs with stays in its process, like the root; its dates are written by the admin's mesh-primary
-/// when the admin holds it. The written expiry is the receipt (Q141).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SigningCertDates {
-    /// When the signing cert was minted, rafka-time ms.
-    pub issued_at: u64,
-    /// When it expires, rafka-time ms.
-    pub expires_at: u64,
-    /// When the fabric-primary renews it, rafka-time ms.
-    pub renew_at: u64,
-}
-
-/// One birth's facts on its node's record (storage-whole-records.md, "The objects"), each kept by its
-/// full identity so no fact erases another: one declared entry per state (a late Pending never removes
-/// Ready; the reader takes the greatest), one effect per operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BirthFacts {
-    /// The birth.
-    pub incarnation_id: IncarnationId,
-    /// The path the birth held when its first fact was written.
-    pub path: String,
-    /// The name, beside its path.
-    pub name: String,
-    /// The states the birth declared and its authority applied in its current cycle.
-    #[serde(default)]
-    pub declared: BTreeSet<NodeState>,
-    /// The operation effects applied to the birth, of every cycle.
-    #[serde(default)]
-    pub operations: Vec<NodeOperation>,
-    /// The silence status its mesh-primary holds (node-identity-and-state.md §7.3): `PendingReconnect`,
-    /// then `Dead`; `None` while heard. Observer-inferred: never itself a reason to act.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub silence: Option<crate::model::NodeStatus>,
-    /// The member cert dates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cert: Option<CertDates>,
-    /// A node-admin birth's signing cert dates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signing_cert: Option<SigningCertDates>,
-    /// The revision at which this birth is its node type's primary in its mesh, when it is: the
-    /// election's result, recorded by the mesh-primary (node-identity-and-state.md §2.7); the write
-    /// records the role and does not grant it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_primary: Option<u64>,
-    /// The revision at which this birth is the fabric-primary, when it is, recorded on the node-admin's
-    /// own row by its mesh-primary (node-identity-and-state.md §2.8; node-primary-update.md: for a
-    /// fabric-primary that is its own mesh's primary, itself), as [`Self::is_primary`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_fabric_primary: Option<u64>,
-    /// When the birth's current stopped period began, in rafka-time milliseconds: recorded by its
-    /// mesh-primary when it writes the birth `stopped`, cleared when it writes the start's `ready`
-    /// (node-identity-and-state.md §6.9 "Age", D50). What the stopped-node TTL ages the birth from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stopped_at_rafka_ms: Option<u64>,
-}
-
-impl BirthFacts {
-    /// The `(path, name)` lookup index key of path and name.
-    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
-}
-
-impl BirthFacts {
-    /// A birth that holds no fact yet.
-    pub fn new(incarnation_id: IncarnationId, name: PathName) -> Self {
-        Self { incarnation_id, path: name.path.clone(), name: name.name.clone(), declared: BTreeSet::new(), operations: Vec::new(), silence: None, cert: None, signing_cert: None, is_primary: None, is_fabric_primary: None, stopped_at_rafka_ms: None }
-    }
-
-    /// The greatest state declared in the birth's current cycle.
-    pub fn declared_state(&self) -> Option<NodeState> {
-        self.declared.iter().next_back().copied()
-    }
-
-    /// Keep the effect `state` of `operation`, once per operation: an effect already held for that
-    /// operation stands.
-    pub fn apply_operation(&mut self, operation: &rdm_core::status::DeclaredOperation, state: NodeState) {
-        if !self.operations.iter().any(|o| o.operation == *operation) {
-            self.operations.push(NodeOperation { operation: operation.clone(), state });
-        }
-    }
-}
+pub use rdm_core::certs::{CertDates, SigningCertDates};
 
 /// One exact birth, by node and incarnation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,179 +23,78 @@ pub struct BirthRef {
     pub incarnation_id: IncarnationId,
 }
 
-/// How many births a record keeps the facts of: its current incarnation and the one a restart replaced
-/// (storage-whole-records.md, "The objects"); the Build journal keeps the history.
-pub const BIRTHS_KEPT: usize = 2;
-/// One birth's exact runtime as this admin first held it: the durable map a successor fabric
-/// primary proves an exit from when its own topology view never heard the birth, and the validated
-/// report its accepting authority admitted (written first at the join's admission,
-/// `rdm_admin::join::Joins::keep_admitted`, before the report is released: a re-run of the create after
-/// that admin restarted completes WaitForMeshJoin from it, node-create.md step 5). Its own keyed row
-/// (NodeId + IncarnationId), written once by a blind put, never rewritten.
+/// A node's record (Q366): one record per node, keyed by its node id, append-only, its latest line
+/// current. The node writes every field of it itself (Q356); its mesh-primary, or the fabric-primary
+/// for a mesh with none, writes it only for a node that is lost, killed or deleted, from the node's
+/// latest line. A node's mesh is the first location of its `path` ([`Self::mesh`]). A record with a
+/// field outside these is refused by name at decode. A `Deleted` record stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeRow {
-    /// Explicit birth ownership and type.
-    pub mesh: String,
-    /// The explicit type of this birth.
-    pub r#type: String,
-    /// The node's minted id.
+#[serde(deny_unknown_fields)]
+pub struct NodeRecord {
+    /// The node's minted id: the record's key.
     pub node_id: NodeId,
-    /// The node's path.
+    /// The node's path; its first location is its mesh.
     pub path: String,
-    /// The name, beside its path.
+    /// The name, beside its path; it changes only by node.name.update.
     pub name: String,
-    /// The incarnation of the birth.
-    pub incarnation_id: IncarnationId,
-    /// The runtime the birth ran in.
-    pub runtime: rdm_core::RuntimeFact,
-    /// The data dir the birth reported: where its process runtime records an exit code.
-    pub data_dir: Option<String>,
-}
-
-impl RuntimeRow {
-    /// The `(path, name)` lookup index key of path and name.
-    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
-}
-
-impl RuntimeRow {
-    /// The row's key: the birth it describes.
-    pub fn key(&self) -> String {
-        format!("{}--{}", self.node_id, self.incarnation_id.as_str())
-    }
-}
-
-/// The lifecycle record of one node (storage-whole-records.md, "The objects"): kept at its minted node
-/// id and written whole by its writer, the node's mesh-primary (the fabric-primary only as the acting
-/// primary of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `(path, name)`,
-/// status and executable, and the facts of its current birth and of the one a restart replaced: the
-/// mesh-primary's part of the node's record (Q333). What the node writes itself (config, tags,
-/// listeners, endpoint, transport address) is the node's own part at the same
-/// key (`crate::node_records::NodeProperties`). A `Deleted` record stands. A `(path, name)` resolves to
-/// the node whose live record stands there ([`NodeRowsStorage::node_at`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeRow {
-    /// The explicitly declared owning mesh.
-    pub mesh: String,
-    /// The explicitly declared type.
+    /// The node's type.
     pub r#type: String,
-    /// The node's path.
-    pub path: String,
-    /// The name, beside its path.
-    pub name: String,
-    /// The node that held the name when the row was written.
-    pub node_id: NodeId,
-    /// The node's status: `Deleted` once its runtime exit is proven.
-    pub status: crate::model::NodeStatus,
-    /// What the create that claimed the name allocated (lifecycles/node-create.md step 1: the claim
-    /// precedes everything prepared or launched for the birth): the claim row only. The claim is the
-    /// one write of the create that outlives a lost executor (its Build receipts are in that
-    /// executor's own journal, build.md §5.2), so the identity the claim was made with is durable in
-    /// it, and a later run of the same operation of the same Build that never heard the
-    /// `AllocateIdentity` receipt continues under that identity: its claim is the same birth's
-    /// (`rdm_admin::node_rows::RowCreated::HeldByNode`). Every later row of the node is written after its
-    /// launch and carries none; a row written before allocations existed carries none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allocated: Option<Allocation>,
-    /// The immutable property snapshot selected by this exact claim, handed to its launch.
-    /// It includes application knowledge from the same read as recovered config and tags.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_properties: Option<rdm_core::launch::InitialProperties>,
-    /// The name a rename moved this row from, at its unchanged path (node-name-update.md "Check and
-    /// move": `renamed_from: <old name>`), written by the put at the new key. While the key it names still holds this
-    /// row's node, the release of that key is pending and the writer that meets the row releases it
-    /// (`rdm_admin::node_rows::finish_release`); once that key no longer holds the node it says nothing,
-    /// so it is never cleared. A row no rename wrote carries none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub renamed_from: Option<String>,
-    /// The executable binding the node runs, beside its config (build-deployment.md §2: "the row is the
-    /// record of what this birth runs"): written at the create's claim with the binding that create
-    /// launches, kept by every later write of the row, a `Deleted` row's included, and seeded from the
-    /// previous row like the config, so a node recovered at the path runs the bin its row records,
-    /// never the recovering admin's (node-recovery.md "Retained"). A row written before it was
-    /// recorded carries none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executable: Option<rdm_core::binding::Binding>,
-    /// The facts of the node's births, at most [`BIRTHS_KEPT`], the newest last.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub births: Vec<BirthFacts>,
-    /// The Mesh the node belongs to, by its minted id (node-identity-and-state.md §2.7: `Node.mesh_id`),
-    /// written by its mesh's writer with its births' addresses (`rdm_admin::admin::rows_writer`): a mesh
-    /// created again under the name is another mesh with another id (R-MN1). A record no writer has
-    /// written it on carries none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mesh_id: Option<MeshId>,
-    /// The exact birth this node replaced, written at its create from the recovery that named it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub predecessor: Option<BirthRef>,
-    /// The node's `storage_persistence` as its create spec names it (storage.md §1; Q166, build.md §1:
-    /// "onto the row, effective at the node's next birth"): written at the claim and by a Build whose
-    /// spec names another, inherited with the config by a recovery. A row
-    /// written before the field carries none, and no Build compares it. A row written before storage.md
-    /// §1's rename carries it as `storage` (durable format moved).
-    #[serde(default, alias = "storage", skip_serializing_if = "Option::is_none")]
-    pub storage_persistence: Option<rdm_core::meta::StoragePersistence>,
-    /// The `topology_storage_provider` the node writes (storage.md §2): the fact, beside the Fabric
-    /// row's intent, recorded by RDM at the node's name claim from the provider the claiming admin
-    /// writes, the one it writes into the node's launch; never put by a caller. A row written before
-    /// the field read as `file`, the one backend there was; `None` (written as `null`) on a row no claim
-    /// recorded it on.
-    #[serde(default = "file_provider")]
-    pub topology_storage_provider: Option<String>,
-    /// The birth that wrote this version of the record (Q109: "the row's key names its writer's
-    /// birth"), stamped by its writer on every write (`rdm_admin::node_rows::WrittenRows::put`): a reader
-    /// ignores a version written by a birth its fold holds deleted (build.md: "a deleted birth whose
-    /// writes every reader refuses"; `rdm_admin::node_rows::fold_records`). A row written before the
-    /// field carries none, and no reader ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub writer: Option<BirthRef>,
-}
-
-impl NodeRow {
-    /// The `(path, name)` lookup index key of path and name.
-    pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
-}
-
-/// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
-/// row's `node_id`), and the operation of the Build that decided it: keyed by `(build_id,
-/// operation)`, because every run of the operation continues the same birth.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Allocation {
-    /// The exact predecessor admitted for this create, independent of successor ownership.
-    pub predecessor: Option<BirthRef>,
-    /// The Build whose operation claimed the name; `None` for a create that belongs to no Build, a node
-    /// recovery's (the primary's own workflow, Q342). A row written before it held a Build reads `Some`.
-    #[serde(default)]
-    pub build_id: Option<rdm_core::BuildId>,
-    /// The operation that claimed it (`node.create:<path>`).
-    pub operation: rdm_core::OperationId,
-    /// The incarnation minted for the birth.
+    /// The node's incarnation: the same through stop and start, new for a new node.
     pub incarnation: IncarnationId,
-    /// The exact deployment minted for the birth: what the provider finds its runtime by, if one
-    /// was ever launched.
-    pub deployment_id: crate::model::DeploymentId,
+    /// The node's lifecycle state.
+    pub state: crate::model::NodeStatus,
+    /// The node's bound fabric endpoint.
+    pub endpoint_id: crate::model::EndpointId,
+    /// The node's bound fabric transport address.
+    pub transport_addr: std::net::SocketAddr,
+    /// The node's bound non-Iroh listeners, by name.
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
+    /// The runtime the node runs in: what its provider finds it by.
+    pub runtime: rdm_core::RuntimeFact,
+    /// The revision at which the node is its type's primary in its mesh, when it is (a node-admin's:
+    /// the mesh-primary): the election's result, recorded by the node; the write records the role and
+    /// does not grant it.
+    pub is_primary: Option<u64>,
+    /// The revision at which the node is the fabric-primary, when it is, as [`Self::is_primary`].
+    pub is_fabric_primary: Option<u64>,
+    /// The node's member cert dates (fabric-certs.md §Tracking), when it holds a cert.
+    pub cert: Option<CertDates>,
+    /// A node-admin's signing cert dates, when it holds one.
+    pub signing_cert: Option<SigningCertDates>,
+    /// The node's own storage (storage.md §1).
+    pub storage: rdm_core::meta::Storage,
+    /// The executable binding the node runs (build-deployment.md §2), when its create named one.
+    pub executable: Option<rdm_core::binding::Binding>,
+    /// The application's complete configuration map.
+    pub config: BTreeMap<String, String>,
+    /// The node's tag labels.
+    pub tags: BTreeSet<String>,
 }
 
-
-impl NodeRow {
-    /// A record of `node_id` at `name` with `status`, nothing else on it yet.
-    pub fn new(name: PathName, mesh: impl Into<String>, r#type: &str, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { path: name.path.clone(), name: name.name.clone(), mesh: mesh.into(), r#type: r#type.to_string(), node_id, status, allocated: None, initial_properties: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
+impl NodeRecord {
+    /// The `(path, name)` lookup index key of path and name.
+    pub fn location(&self) -> PathName {
+        PathName { path: self.path.clone(), name: self.name.clone() }
     }
 
-    /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
-    /// each state" names for the birth `birth`: whether the status moved. A `Deleted` or `Withdrawn`
-    /// record stands; a birth that is not the record's newest moves nothing. A start of a stopped node
-    /// (`Starting`) and a new join (`Pending`, from any status but `Deleting`) begin its next cycle (a
-    /// create's claim writes `Starting` as the record's first status). `Deleting` is the mesh-primary's,
-    /// from node.delete's claim, over any status (states.md, the paragraph after "Who sets each state",
-    /// Q233). A stop's acknowledgement (`Stopping`) sets stopping over any status but `Stopped`, a node
-    /// already connections-deleted or left included: the node's `Stopped` declaration may reach the
-    /// mesh-primary before the stop's own frames (node-stop.md step 5), and a stopped row stands. Every
-    /// other status only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting,
-    /// pending, ready, deleting, stopping, connections-deleting, connections-deleted,
-    /// leaving, left, stopped), so each primitive's frame moves the row on from stopping, and the stop a
-    /// delete composes moves it on from deleting to stopped before the delete writes it deleted.
-    pub fn set_status(&mut self, birth: &IncarnationId, to: crate::model::NodeStatus) -> bool {
+    /// The node's mesh: the first location of its path (Q366).
+    pub fn mesh(&self) -> String {
+        rdm_core::path::mesh_of(&self.path)
+    }
+
+    /// The node's exact birth.
+    pub fn birth(&self) -> BirthRef {
+        BirthRef { node_id: self.node_id.clone(), incarnation_id: self.incarnation.clone() }
+    }
+
+    /// Set `to` as the node's state: whether it moved. A `Deleted` or `Withdrawn` record stands. A
+    /// start of a stopped node (`Starting`) and a new join (`Pending`, from any state but `Deleting`)
+    /// begin its next cycle. `Deleting` is the mesh-primary's, from node.delete's admission, over any
+    /// state (states.md). A stop's acknowledgement (`Stopping`) sets stopping over any state but
+    /// `Stopped`. Every other state only moves forward along node.stop's frames (node-stop.md steps
+    /// 1-4, Q205: starting, pending, ready, deleting, stopping, connections-deleting,
+    /// connections-deleted, leaving, left, stopped).
+    pub fn set_state(&mut self, to: crate::model::NodeStatus) -> bool {
         use crate::model::NodeStatus as S;
         fn order(s: S) -> u8 {
             match s {
@@ -325,10 +111,9 @@ impl NodeRow {
                 S::Deleted | S::Withdrawn => 10,
             }
         }
-        let current = self.status;
-        let newest = self.newest_birth().is_none_or(|b| b.incarnation_id == *birth);
+        let current = self.state;
         let moves = match to {
-            _ if matches!(current, S::Deleted | S::Withdrawn) || !newest => false,
+            _ if matches!(current, S::Deleted | S::Withdrawn) => false,
             S::Starting => matches!(current, S::Stopped | S::Leaving),
             S::Pending => current != S::Deleting,
             S::Deleting => true,
@@ -336,77 +121,42 @@ impl NodeRow {
             _ => order(to) > order(current),
         };
         if moves {
-            self.status = to;
+            self.state = to;
         }
         moves && current != to
     }
+}
 
-    /// The facts of the node's newest birth, if the record keeps any.
-    pub fn newest_birth(&self) -> Option<&BirthFacts> {
-        self.births.last()
-    }
-
-    /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
-    pub fn path(&self) -> String {
-        self.path.clone()
-    }
-
-    /// The node's name within its path (it changes only by node.name.update).
-    pub fn node_name(&self) -> String {
-        self.name.clone()
-    }
-
-    /// The facts of the birth `incarnation_id`, if the record keeps them.
-    pub fn birth(&self, incarnation_id: &IncarnationId) -> Option<&BirthFacts> {
-        self.births.iter().find(|b| b.incarnation_id == *incarnation_id)
-    }
-
-    /// The facts of the birth `incarnation_id`, made when the record keeps none, at `name`: a birth
-    /// new to the record is the newest, and the oldest is let go past [`BIRTHS_KEPT`].
-    pub fn birth_mut(&mut self, incarnation_id: &IncarnationId, name: &PathName) -> &mut BirthFacts {
-        let at = match self.births.iter().position(|b| b.incarnation_id == *incarnation_id) {
-            Some(at) => at,
-            None => {
-                self.births.push(BirthFacts::new(incarnation_id.clone(), name.clone()));
-                while self.births.len() > BIRTHS_KEPT {
-                    self.births.remove(0);
-                }
-                self.births.len() - 1
-            }
-        };
-        &mut self.births[at]
-    }
+/// A node's record as a point read answers it: the record of its latest line and that line's `time`
+/// (its CloudEvents `time`, the writer's rafka-time at the write; `None` when the writer held none or
+/// the store keeps no time).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeLine {
+    /// The node's record.
+    pub record: NodeRecord,
+    /// The latest line's write time, RFC 3339 in UTC milliseconds.
+    pub time: Option<String>,
 }
 
 /// The point reads of the nodes storage: a node's record by its id or by its `(path, name)`.
 #[async_trait]
 pub trait NodeRowsStorage: Send + Sync {
-    /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
-    /// was ever written.
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// Every node's latest record standing at the path and name `name`, in any status: persistence
+    /// The record of `node_id` with its latest line's time: a point read of its key, a `Withdrawn` one
+    /// included; `None` when none was ever written.
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeLine>, StorageError>;
+    /// Every node's latest record standing at the path and name `name`, in any state: persistence
     /// only, the reader folds them ([`crate::pair_record::resolve`], Q109).
-    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError>;
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, StorageError>;
 }
 
 /// The `dataschema` of a node's record line in `nodes.jsonl`, its `subject` the node id.
-pub const RECORD_FORMAT: &str = "node-record/1";
+pub const RECORD_FORMAT: &str = "node-record/2";
 /// The `type` of [`RECORD_FORMAT`]'s lines.
 pub const RECORD_KIND: &str = "node-record";
-/// The `dataschema` of a birth's runtime row line in `nodes.jsonl`, its `subject` `<node id>--<incarnation>`.
-pub const RUNTIME_FORMAT: &str = "node-runtime/1";
-/// The `type` of [`RUNTIME_FORMAT`]'s lines.
-pub const RUNTIME_KIND: &str = "node-runtime";
-/// The `dataschema` of the node's own part of its record (Q333): the line the node appends at its node id,
-/// carrying only what it writes ([`crate::node_records::NodeProperties`]). `/2` carries no `app_types`
-/// and no `held` (Q362); a `/1` line is refused by name, never decoded with its fields dropped.
-pub const PROPERTIES_FORMAT: &str = "node-properties/2";
-/// The `type` of [`PROPERTIES_FORMAT`]'s lines.
-pub const PROPERTIES_KIND: &str = "node-properties";
 #[cfg(feature = "file-backend")]
-/// The `dataschema`s `nodes.jsonl` holds: every reader of the file folds all of them.
+/// The `dataschema`s `nodes.jsonl` holds: its one, the node record.
 pub fn formats() -> crate::store_log::Formats {
-    crate::store_log::Formats::new().with::<NodeRow>(RECORD_FORMAT).with::<RuntimeRow>(RUNTIME_FORMAT).with::<crate::node_records::NodeProperties>(PROPERTIES_FORMAT)
+    crate::store_log::Formats::new().with::<NodeRecord>(RECORD_FORMAT)
 }
 
 #[cfg(feature = "file-backend")]
@@ -433,13 +183,18 @@ impl FileNodeRows {
 }
 
 #[cfg(feature = "file-backend")]
+fn line_of(log: &crate::store_log::StoreLog, line: &crate::store_log::Line) -> Result<NodeLine, StorageError> {
+    Ok(NodeLine { record: line.decode(log.path())?, time: line.attributes.time.clone() })
+}
+
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodeRowsStorage for FileNodeRows {
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
-        self.records.latest(RECORD_KIND, node_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeLine>, StorageError> {
+        self.records.latest(RECORD_KIND, node_id.as_str()).await?.map(|l| line_of(&self.records, &l)).transpose()
     }
-    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
-        let rows = self.records.latest_of(RECORD_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect::<Result<Vec<NodeRow>, _>>()?;
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, StorageError> {
+        let rows = self.records.latest_of(RECORD_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect::<Result<Vec<NodeRecord>, _>>()?;
         Ok(rows.into_iter().filter(|r| r.location() == *name).collect())
     }
 }
@@ -468,169 +223,111 @@ impl FileNodeRowsOnFirstRead {
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodeRowsStorage for FileNodeRowsOnFirstRead {
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeLine>, StorageError> {
         self.rows().await?.node(node_id).await
     }
-    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, StorageError> {
         self.rows().await?.records_at(name).await
     }
 }
 
 /// The durable record of the nodes: each node's record at its id, through which a `(path, name)`
-/// resolves to the node whose live record stands there, and every birth's runtime row. Nothing is removed (R-SR2): a
-/// create withdrawn before its node ran leaves its record `Withdrawn`.
+/// resolves to the node whose live record stands there. Nothing is removed (R-SR2).
 #[async_trait]
 pub trait NodesStorage: Send + Sync {
-    /// Keep the runtime of one birth (a blind put of its own row).
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
-    /// Every birth's runtime row the store holds; folded by the reader.
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
-    /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError>;
-    /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
+    /// The record of `node_id` with its latest line's time: a point read of its key; `None` when none
     /// was ever written.
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// Every node record of `mesh`, a `Withdrawn` one skipped.
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError>;
-    /// Write `row` whole at its node id, as given (Q109: storage stores and returns what it is given):
-    /// the mesh-primary's part of the node's record (Q333). Durable before it answers (Q54).
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError>;
-    /// Write `record` whole at its node id: the node's own part of its record (Q333), appended by the
-    /// node itself beside its mesh-primary's part. Durable before it answers (Q54).
-    async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), StorageError>;
-    /// The node's own part of the record of `node_id`, its latest line; `None` when the node has
-    /// written none.
-    async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError>;
-    /// Every node's latest record standing at `name`, in any status ([`NodeRowsStorage::records_at`]).
-    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError>;
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeLine>, StorageError>;
+    /// Every node record of `mesh` (its path's first location), a `Withdrawn` one skipped.
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, StorageError>;
+    /// Write `record` whole at its node id, as given (Q109: storage stores and returns what it is
+    /// given). Durable before it answers (Q54).
+    async fn put_node(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    /// Every node's latest record standing at `name`, in any state ([`NodeRowsStorage::records_at`]).
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, StorageError>;
 }
 
-/// A nodes store held in memory.
+/// A nodes store held in memory: it keeps no write time.
 #[derive(Debug, Default)]
 pub struct MemoryNodesStorage {
-    runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
-    records: Mutex<BTreeMap<NodeId, NodeRow>>,
-    /// The nodes' own parts of their records.
-    properties: Mutex<BTreeMap<NodeId, crate::node_records::NodeProperties>>,
+    records: Mutex<BTreeMap<NodeId, NodeRecord>>,
 }
 
 #[async_trait]
 impl NodesStorage for MemoryNodesStorage {
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.runtimes.lock().unwrap().insert(row.key(), row.clone());
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeLine>, StorageError> {
+        Ok(self.records.lock().unwrap().get(node_id).cloned().map(|record| NodeLine { record, time: None }))
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, StorageError> {
+        Ok(self.records.lock().unwrap().values().filter(|r| r.mesh() == mesh && r.state != crate::model::NodeStatus::Withdrawn).cloned().collect())
+    }
+    async fn put_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
+        self.records.lock().unwrap().insert(record.node_id.clone(), record.clone());
         Ok(())
     }
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().values().cloned().collect())
-    }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
-    }
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
-        Ok(self.records.lock().unwrap().get(node_id).cloned())
-    }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
-        Ok(self.records.lock().unwrap().values().filter(|r| r.mesh == mesh && r.status != crate::model::NodeStatus::Withdrawn).cloned().collect())
-    }
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.records.lock().unwrap().insert(row.node_id.clone(), row.clone());
-        Ok(())
-    }
-    async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), StorageError> {
-        self.properties.lock().unwrap().insert(record.birth.node_id.clone(), record.clone());
-        Ok(())
-    }
-    async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError> {
-        Ok(self.properties.lock().unwrap().get(node_id).cloned())
-    }
-    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, StorageError> {
         Ok(self.records.lock().unwrap().values().filter(|r| r.location() == *name).cloned().collect())
     }
 }
 
 #[cfg(feature = "file-backend")]
-/// The nodes' records and their runtime rows, each write one line of the
-/// root's `nodes.jsonl` (R-SR1, R-SR2), appended straight to the file: a record at its node id, written by its mesh's writer, durable before the answer
-/// (Q54); a runtime row at `<node id>--<incarnation>`, written once by its birth's launching admin, the
-/// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir.
-/// A `(path, name)` resolves to the live record standing there. The admin's own row stays its own seed in its
-/// data dir, `nodes/self.json` (`rdm_admin::storage::own_in`).
+/// The nodes' records, each write one line of the root's `nodes.jsonl` (R-SR1, R-SR2), appended
+/// straight to the file with no fold before it (a node's start writes its record and reads nothing,
+/// Q227), durable before the answer (Q54). A `(path, name)` resolves to the live record standing
+/// there. The admin's own row stays its own seed in its data dir, `nodes/self.json`
+/// (`rdm_admin::storage::own_in`).
 #[derive(Debug)]
 pub struct FileNodesStorage {
-    /// The records and the runtime rows, and their point reads.
+    /// The records and their point reads.
     rows: FileNodeRows,
-    /// The rows' file, appended to.
-    records: crate::store_log::StoreLog,
-    /// The same file opened to append ([`crate::store_log::StoreLog::open_append`]): the node's own
-    /// part of its record is appended through it with no fold before the append, as a node's start
-    /// writes it and reads nothing (Q227).
-    own_parts: crate::store_log::StoreLog,
+    /// The same file opened to append ([`crate::store_log::StoreLog::open_append`]).
+    appends: crate::store_log::StoreLog,
     log_writer: crate::store_log::LogWriter,
 }
 
 #[cfg(feature = "file-backend")]
 impl FileNodesStorage {
-    /// Open the store on the fabric's store `root`, written by `writer`. `own_data_dir` and `own_mesh`
-    /// are the opening admin's (its own row is read from the one, `rdm_admin::storage::own_in`); the store is the
-    /// fabric's, every mesh's nodes in one file.
-    pub async fn open(own_data_dir: &std::path::Path, root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
-        let _ = (own_data_dir, own_mesh);
+    /// Open the store on the fabric's store `root`, written by `writer`: the fabric's store, every
+    /// mesh's nodes in one file.
+    pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
         let rows = FileNodeRows::open(root).await?;
-        let records = rows.log().clone();
-        let own_parts = root.log_append(crate::store_root::NODES_FILE, formats()).await?;
-        Ok(Self { rows, records, own_parts, log_writer: writer.clone() })
+        let appends = root.log_append(crate::store_root::NODES_FILE, formats()).await?;
+        Ok(Self { rows, appends, log_writer: writer.clone() })
     }
 
-    /// Finishes every write of the node records and the runtime rows this store has
-    /// issued (node-primary-update.md step 3).
+    /// Finishes every write of the node records this store has issued (node-primary-update.md step 3).
     pub async fn finish_issued_writes(&self) {
-        self.records.finish_issued_writes().await;
-        self.own_parts.finish_issued_writes().await;
+        self.rows.log().finish_issued_writes().await;
+        self.appends.finish_issued_writes().await;
     }
 }
 
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodesStorage for FileNodesStorage {
-    /// A blind put of the birth's own row: one append, nothing read first (its one writer is the admin
-    /// that launched the birth, build.md §5.3).
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, RUNTIME_KIND, RUNTIME_FORMAT, &row.key(), row).await
-    }
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        self.records.latest_of(RUNTIME_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
-    }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        self.records.latest(RUNTIME_KIND, &format!("{}--{}", node_id, incarnation.as_str())).await?.map(|l| l.decode(self.records.path())).transpose()
-    }
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeLine>, StorageError> {
         NodeRowsStorage::node(&self.rows, node_id).await
     }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, StorageError> {
+        let log = self.rows.log();
         let mut out = Vec::new();
-        for l in self.records.latest_of(RECORD_KIND).await? {
-            let row: NodeRow = l.decode(self.records.path())?;
-            if row.mesh == mesh && row.status != crate::model::NodeStatus::Withdrawn {
+        for l in log.latest_of(RECORD_KIND).await? {
+            let row: NodeRecord = l.decode(log.path())?;
+            if row.mesh() == mesh && row.state != crate::model::NodeStatus::Withdrawn {
                 out.push(row);
             }
         }
         Ok(out)
     }
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, RECORD_KIND, RECORD_FORMAT, row.node_id.as_str(), row).await
+    async fn put_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
+        self.appends.append(&self.log_writer, RECORD_KIND, RECORD_FORMAT, record.node_id.as_str(), record).await
     }
-    async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), StorageError> {
-        self.own_parts.append(&self.log_writer, PROPERTIES_KIND, PROPERTIES_FORMAT, record.birth.node_id.as_str(), record).await
-    }
-    async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError> {
-        self.records.latest(PROPERTIES_KIND, node_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
-    }
-    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, StorageError> {
         NodeRowsStorage::records_at(&self.rows, name).await
     }
 }
 
-/// A node's `id` or its `(path, name)`: what a point read of its row names (`node_row(id | name)`,
+/// A node's `id` or its `(path, name)`: what a point read of its record names (`node_row(id | name)`,
 /// query.md §1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdOrName {
@@ -653,13 +350,38 @@ impl From<PathName> for IdOrName {
 }
 
 impl IdOrName {
-    /// The row `rows` holds at this id or name: [`NodeRowsStorage::node`], or the records at the name
-    /// folded by [`crate::pair_record::resolve`].
-    pub async fn read(&self, rows: &dyn NodeRowsStorage) -> Result<Option<NodeRow>, StorageError> {
+    /// The record `rows` holds at this id or name: [`NodeRowsStorage::node`], or the records at the
+    /// name folded by [`crate::pair_record::resolve`].
+    pub async fn read(&self, rows: &dyn NodeRowsStorage) -> Result<Option<NodeRecord>, StorageError> {
         match self {
-            Self::Id(id) => rows.node(id).await,
+            Self::Id(id) => Ok(rows.node(id).await?.map(|l| l.record)),
             Self::Name(name) => crate::pair_record::resolve(rows.records_at(name).await?, name),
         }
+    }
+}
+
+/// A record of every Q366 field for a cell: `node_id` at `name` of `type` in `state`, bound at
+/// `127.0.0.1:1`, an all-zero endpoint and a process runtime of deployment `fixture-deployment`.
+pub fn fixture_record(name: &PathName, r#type: &str, node_id: NodeId, incarnation: IncarnationId, state: crate::model::NodeStatus) -> NodeRecord {
+    NodeRecord {
+        node_id,
+        path: name.path.clone(),
+        name: name.name.clone(),
+        r#type: r#type.to_string(),
+        incarnation,
+        state,
+        endpoint_id: crate::model::EndpointId("0".repeat(64)),
+        transport_addr: "127.0.0.1:1".parse().expect("an address"),
+        listeners: Vec::new(),
+        runtime: rdm_core::RuntimeFact { deployment_id: "fixture-deployment".into(), provider: rdm_core::RuntimeProvider::Process, control_domain: "fixture".into(), locator: rdm_core::RuntimeLocator::Process { pid: 1, start: 1 } },
+        is_primary: None,
+        is_fabric_primary: None,
+        cert: None,
+        signing_cert: None,
+        storage: Default::default(),
+        executable: None,
+        config: BTreeMap::new(),
+        tags: BTreeSet::new(),
     }
 }
 
@@ -667,77 +389,84 @@ impl IdOrName {
 mod tests {
     use super::*;
 
-    /// CONTRACT: a birth's declared state is the greatest it declared in its current cycle.
+    /// CONTRACT (Q366): a node record holds exactly Q366's fields: it round-trips through its JSON, and
+    /// a record with any other field is refused by name at decode. Must NOT happen: a line carrying a
+    /// field outside the schema decoded as a record.
     #[test]
-    fn declared_state_is_the_greatest_declared() {
-        let inc = IncarnationId::mint();
-        let name: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let mut birth = BirthFacts::new(inc, name.clone());
-        assert_eq!(birth.declared_state(), None);
-
-        birth.declared.insert(NodeState::Ready);
-        assert_eq!(birth.declared_state(), Some(NodeState::Ready));
-        birth.declared.insert(NodeState::Stopped);
-        assert_eq!(birth.declared_state(), Some(NodeState::Stopped));
+    fn a_record_round_trips_with_exactly_its_fields_and_any_other_field_is_refused() {
+        let name = PathName::new("mesh1.node", "1").unwrap();
+        let record = fixture_record(&name, "node", NodeId::mint(), IncarnationId::mint(), crate::model::NodeStatus::Ready);
+        let json = serde_json::to_value(&record).unwrap();
+        let fields: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut expected = vec!["node_id", "path", "name", "type", "incarnation", "state", "endpoint_id", "transport_addr", "listeners", "runtime", "is_primary", "is_fabric_primary", "cert", "signing_cert", "storage", "executable", "config", "tags"];
+        expected.sort();
+        let mut fields_sorted = fields.clone();
+        fields_sorted.sort();
+        assert_eq!(fields_sorted, expected, "the record's fields are Q366's");
+        assert_eq!(serde_json::from_value::<NodeRecord>(json.clone()).unwrap(), record);
+        let mut extra = json;
+        extra.as_object_mut().unwrap().insert("mesh".into(), serde_json::json!("mesh1"));
+        let refused = serde_json::from_value::<NodeRecord>(extra).unwrap_err().to_string();
+        assert!(refused.contains("unknown field `mesh`"), "the field is refused by name: {refused}");
     }
 
-    /// CONTRACT (node-identity-and-state.md §2; storage.md §2; Q333, Q365): each of the nodes store's
-    /// lines in the root's `nodes.jsonl` is frozen byte for byte: a CloudEvents event whose `source`
-    /// is its writer, `subject` its node id (`<node id>--<incarnation>` for a runtime row), `type` and
-    /// `dataschema` `node-record` `node-record/1`, `node-properties` `node-properties/2` and
-    /// `node-runtime` `node-runtime/1`, and `data` the whole record; its `id` and `time` the write's. A
-    /// layout that moves moves this cell with it (`durable format moved`). Must NOT happen: a line whose
-    /// attributes or record bytes moved while this cell still passes.
+    /// CONTRACT: a node's mesh is the first location of its path.
+    #[test]
+    fn a_nodes_mesh_is_its_paths_first_location() {
+        let record = fixture_record(&PathName::new("mesh2.broker", "1").unwrap(), "broker", NodeId::mint(), IncarnationId::mint(), crate::model::NodeStatus::Ready);
+        assert_eq!(record.mesh(), "mesh2");
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2; storage.md §2; Q365, Q366): the nodes store's line in
+    /// the root's `nodes.jsonl` is frozen byte for byte: a CloudEvents event whose `source` is its
+    /// writer, `subject` its node id, `type` `node-record`, `dataschema` `node-record/2`, and `data` the
+    /// whole record; its `id` and `time` the write's. A layout that moves moves this cell with it
+    /// (`durable format moved`). Must NOT happen: a line whose attributes or record bytes moved while
+    /// this cell still passes.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn the_nodes_store_lines_are_frozen_byte_for_byte() {
+    async fn the_nodes_store_line_is_frozen_byte_for_byte() {
         let d = crate::record_store::tempdir("nodes-store-layout");
         let root = crate::store_root::StoreRoot::at(&d);
         let writer = crate::store_log::LogWriter::mint();
-        let store = FileNodesStorage::open(&d, &root, "mesh1", &writer).await.unwrap();
+        let store = FileNodesStorage::open(&root, &writer).await.unwrap();
         let name = PathName::new("mesh1.node", "1").unwrap();
         let node_id = NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap();
-        let incarnation_id = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();
-        let row = NodeRow::new(name.clone(), "mesh1", "node", node_id.clone(), crate::model::NodeStatus::Ready);
-        store.put_node(&row).await.unwrap();
-        let properties = crate::node_records::NodeProperties { birth: crate::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation_id.clone() }, config: BTreeMap::new(), tags: BTreeSet::new(), endpoint_id: None, transport_addr: None, listeners: Vec::new() };
-        store.put_properties(&properties).await.unwrap();
+        let incarnation = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();
+        let mut record = fixture_record(&name, "node", node_id.clone(), incarnation.clone(), crate::model::NodeStatus::Ready);
+        store.put_node(&record).await.unwrap();
         store.finish_issued_writes().await;
         let file = d.join(crate::store_root::NODES_FILE);
         let lines = crate::store_log::read_file(&file).unwrap();
-        assert_eq!(lines.len(), 2);
-        let expect = |at: usize, r#type: &str, dataschema: &str, subject: &str, data: String| {
-            let written = &lines[at].attributes;
-            let attributes = crate::store_log::Attributes { id: written.id.clone(), source: writer.source(), r#type: r#type.into(), subject: Some(subject.into()), time: None, dataschema: dataschema.into(), traceparent: None, tracestate: None };
-            crate::store_log::encode_line(&attributes, data.as_bytes())
-        };
-        let record = format!(r#"{{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"1","node_id":"{node_id}","status":"ready","topology_storage_provider":null}}"#);
-        let own = format!(r#"{{"birth":{{"node_id":"{node_id}","incarnation_id":"{incarnation_id}"}},"config":{{}},"tags":[],"endpoint_id":null,"transport_addr":null,"listeners":[]}}"#);
-        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8([expect(0, "node-record", "node-record/1", node_id.as_str(), record), expect(1, "node-properties", "node-properties/2", node_id.as_str(), own)].concat()).unwrap());
-        assert_eq!(lines[1].attributes.source_node_id(), Some(writer.node_id.as_str()), "the source names the writer's node id");
+        assert_eq!(lines.len(), 1);
+        let attributes = crate::store_log::Attributes { id: lines[0].attributes.id.clone(), source: writer.source(), r#type: "node-record".into(), subject: Some(node_id.to_string()), time: None, dataschema: "node-record/2".into(), traceparent: None, tracestate: None };
+        let zero = "0".repeat(64);
+        let data = format!(r#"{{"node_id":"{node_id}","path":"mesh1.node","name":"1","type":"node","incarnation":"{incarnation}","state":"ready","endpoint_id":"{zero}","transport_addr":"127.0.0.1:1","listeners":[],"runtime":{{"deployment_id":"fixture-deployment","provider":"process","control_domain":"fixture","locator":{{"kind":"process","pid":1,"start":1}}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{{"persistence":null,"data_dir":null}},"executable":null,"config":{{}},"tags":[]}}"#);
+        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8(crate::store_log::encode_line(&attributes, data.as_bytes())).unwrap());
+        assert_eq!(lines[0].attributes.source_node_id(), Some(writer.node_id.as_str()), "the source names the writer's node id");
     }
 
-    /// CONTRACT (Q362, Q365: `dataschema` is the record's kind and schema version): a node's own line
-    /// of `node-properties/1`, the schema that carried `app_types` and `held`, is refused by name when
-    /// the nodes store is read, naming the dataschema and the ones this build reads. Must NOT happen:
-    /// the line decoded as `node-properties/2` with its fields dropped.
+    /// CONTRACT (Q365, Q366: `dataschema` is the record's kind and schema version): a line of a schema
+    /// written before the one node record, `node-properties/1` here, is refused by name when the nodes
+    /// store is read, naming the dataschema and the one this build reads (`durable format moved`). Must
+    /// NOT happen: the old line decoded as a node record with its fields dropped.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn a_node_properties_1_line_is_refused_by_name() {
+    async fn a_line_of_a_schema_before_the_node_record_is_refused_by_name() {
         let d = crate::record_store::tempdir("nodes-store-properties-1");
         let root = crate::store_root::StoreRoot::at(&d);
         let writer = crate::store_log::LogWriter::mint();
         let node_id = NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap();
         let incarnation_id = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();
-        let old = serde_json::json!({"birth": {"node_id": node_id, "incarnation_id": incarnation_id}, "config": {}, "tags": [], "endpoint_id": null, "transport_addr": null, "listeners": [], "app_types": null, "held": []});
+        let old = serde_json::json!({"birth": {"node_id": node_id, "incarnation_id": incarnation_id}, "config": {}, "tags": [], "endpoint_id": null, "transport_addr": null, "listeners": []});
         let raw = crate::store_log::StoreLog::open(&d.join(crate::store_root::NODES_FILE), crate::store_log::Formats::any()).await.unwrap();
-        raw.append(&writer, PROPERTIES_KIND, "node-properties/1", node_id.as_str(), &old).await.unwrap();
+        raw.append(&writer, "node-properties", "node-properties/1", node_id.as_str(), &old).await.unwrap();
         drop(raw);
-        let read = match FileNodesStorage::open(&d, &root, "mesh1", &writer).await {
-            Ok(store) => store.properties(&node_id).await.map(|_| ()),
+        let read = match FileNodesStorage::open(&root, &writer).await {
+            Ok(store) => store.node(&node_id).await.map(|_| ()),
             Err(e) => Err(e),
         };
         let why = read.expect_err("a node-properties/1 line is refused").to_string();
-        assert!(why.contains("\"node-properties/1\"") && why.contains("node-properties/2"), "refused naming the old dataschema and the one this build reads: {why}");
+        assert!(why.contains("\"node-properties/1\"") && why.contains(RECORD_FORMAT), "refused naming the old dataschema and the one this build reads: {why}");
     }
 }

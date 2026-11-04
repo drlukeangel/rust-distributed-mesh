@@ -155,7 +155,7 @@ impl Day0 {
         tokio::time::timeout(WRONG, async {
             loop {
                 let listed = self.nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
-                if listed.iter().any(|n| &n.location() == node && n.status == NodeStatus::Ready) {
+                if listed.iter().any(|n| &n.location() == node && n.state == NodeStatus::Ready) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;

@@ -1,5 +1,5 @@
 //! The storage backend a node runs on: its own connections rows (`connections.storage`) and its point
-//! reads of other nodes' rows and its own part of its record (`nodes.storage`, query.md §1, Q237, Q331). A node-admin's backend opens the admin's five boundaries (`rdm_admin::storage_backend`);
+//! reads of other nodes' records and its own record (`nodes.storage`, query.md §1, Q237, Q356). A node-admin's backend opens the admin's five boundaries (`rdm_admin::storage_backend`);
 //! a node opens this one at its boot. RDM standalone's is [`FileNodeBackend`] (the `file-backend`
 //! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
 //! one process's rows.
@@ -17,8 +17,8 @@ pub struct NodeStorage {
     /// The nodes' rows, a point read by id or by `(path, name)` (query.md §1, Q237): the backend opens
     /// them on the first read, never at the node's start, join or create (Q227).
     pub node_rows: Arc<dyn NodeRowsStorage>,
-    /// The nodes store, bound for the node's own id: the node appends its own part of its record there
-    /// (Q333, [`crate::nodes_storage::NodesStorage::put_properties`]) and reads it back.
+    /// The nodes store, bound for the node's own id: the node appends its own record there
+    /// (Q356, [`crate::nodes_storage::NodesStorage::put_node`]) and reads it back.
     pub nodes: Arc<dyn crate::nodes_storage::NodesStorage>,
     /// Where the rows are written now, as the boot's span records it.
     pub writes_to: String,
@@ -62,7 +62,7 @@ impl NodeStorageBackend for FileNodeBackend {
         let connections = crate::storage::FileConnectionsStorage::open(&root, &writer).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
-            nodes: Arc::new(crate::nodes_storage::FileNodesStorage::open(&launch.data_dir, &root, &launch.mesh, &writer).await.map_err(|e| format!("nodes storage: {e}"))?),
+            nodes: Arc::new(crate::nodes_storage::FileNodesStorage::open(&root, &writer).await.map_err(|e| format!("nodes storage: {e}"))?),
             node_rows: Arc::new(crate::nodes_storage::FileNodeRowsOnFirstRead::at(root)),
             writes_to: "store-root".into(),
         })
@@ -220,57 +220,41 @@ struct NodeRowsThroughHandle(Arc<NodeStorageHandle>);
 
 #[async_trait]
 impl NodeRowsStorage for NodeRowsThroughHandle {
-    async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
         self.0.current.read().stores().node_rows.node(node_id).await
     }
-    async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
         self.0.current.read().stores().node_rows.records_at(name).await
     }
 }
 
-/// `nodes.storage` through a node's [`NodeStorageHandle`], bound for the node's own id (Q331): it
-/// writes the node's own part of its record and nothing else, its writes taking the same migration
-/// admission as connection writes; every other write (a row, a runtime row, a name claim) is its
-/// mesh-primary's or its launcher's, refused here by name.
+/// `nodes.storage` through a node's [`NodeStorageHandle`], bound for the node's own id (Q356): it
+/// writes the node's own record and nothing else, its writes taking the same migration admission as
+/// connection writes; another node's record is refused here by name.
 struct NodesThroughHandle(Arc<NodeStorageHandle>);
 
 impl NodesThroughHandle {
     fn not_the_nodes(&self, what: &str) -> crate::storage_error::StorageError {
-        crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: format!("node {} writes only its own part of its record; {what} is not its to write", self.0.launch.node_id) }
+        crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: format!("node {} writes only its own record; {what} is not its to write", self.0.launch.node_id) }
     }
 }
 
 #[async_trait]
 impl crate::nodes_storage::NodesStorage for NodesThroughHandle {
-    async fn put_runtime(&self, _row: &crate::nodes_storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-        Err(self.not_the_nodes("a runtime row"))
-    }
-    async fn runtimes(&self) -> Result<Vec<crate::nodes_storage::RuntimeRow>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().nodes.runtimes().await
-    }
-    async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::nodes_storage::RuntimeRow>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().nodes.runtime(node_id, incarnation).await
-    }
-    async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
         self.0.current.read().stores().nodes.node(node_id).await
     }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn nodes(&self, mesh: &str) -> Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
         self.0.current.read().stores().nodes.nodes(mesh).await
     }
-    async fn put_node(&self, _row: &crate::nodes_storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-        Err(self.not_the_nodes("a mesh-primary's row"))
-    }
-    async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-        if record.birth.node_id != self.0.launch.node_id {
-            return Err(self.not_the_nodes(&format!("the own part of node {}", record.birth.node_id)));
+    async fn put_node(&self, record: &crate::nodes_storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+        if record.node_id != self.0.launch.node_id {
+            return Err(self.not_the_nodes(&format!("the record of node {}", record.node_id)));
         }
         let w = self.0.current.write();
-        w.nodes.put_properties(record).await
+        w.nodes.put_node(record).await
     }
-    async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().nodes.properties(node_id).await
-    }
-    async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
         crate::nodes_storage::NodesStorage::records_at(&*self.0.current.read().stores().nodes, name).await
     }
 }
@@ -280,19 +264,19 @@ struct NoNodeRows;
 
 #[async_trait]
 impl NodeRowsStorage for NoNodeRows {
-    async fn node(&self, _: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn node(&self, _: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
         Err(no_node_rows())
     }
-    async fn records_at(&self, _: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn records_at(&self, _: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
         Err(no_node_rows())
     }
 }
 
 fn no_node_rows() -> crate::storage_error::StorageError {
-    crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: "the memory backend holds this process's own connections only: no node's row is read from it".into() }
+    crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: "the memory backend holds this process's own connections only: no node's record is read from it".into() }
 }
 
-/// One process's rows: the node's connections and its own part of its record held in memory, gone
+/// One process's rows: the node's connections and its own record held in memory, gone
 /// with its process; a point read of a node's row is refused by name.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MemoryNodeBackend;

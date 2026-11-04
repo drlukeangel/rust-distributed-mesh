@@ -19,7 +19,7 @@
 //!     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
 //!     let peers = Peers::at(&birth).await?;
 //!     let nodes = Nodes::new(peers.carrier_at(birth.name.clone()));
-//!     nodes.get(&Filter::new().eq("mesh", ["mesh1"]).eq("status", ["ready"])).await.map_err(|e| e.to_string())
+//!     nodes.get(&Filter::new().eq("mesh", ["mesh1"]).eq("state", ["ready"])).await.map_err(|e| e.to_string())
 //! }
 //! ```
 //!

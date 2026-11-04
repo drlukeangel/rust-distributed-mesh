@@ -886,16 +886,14 @@ impl Estate {
         }
     }
 
-    /// The node's own part of its record (Q333), its latest line at its node id in the root's `nodes.jsonl`.
-    pub fn node_properties(&self, node_id: &rdm_core::NodeId) -> Option<rdm_node::node_records::NodeProperties> {
-        let stored = rdm_admin::store_log::read_record(
-            &self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE),
-            "node-properties", Some(node_id.as_str()),
-        )?;
-        let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(stored["data"].clone())
-            .expect("complete node-owned properties");
-        assert_eq!(&properties.birth.node_id, node_id, "property record matches its node ID index");
-        Some(properties)
+    /// The node's record (Q366), its latest line at its node id in the root's `nodes.jsonl`, decoded
+    /// whole: a line with a field outside the record is refused at decode.
+    pub fn record(&self, node_id: &rdm_core::NodeId) -> Option<rdm_node::nodes_storage::NodeRecord> {
+        let stored = self.node_record(node_id.as_str())?;
+        let record: rdm_node::nodes_storage::NodeRecord = serde_json::from_value(stored["data"].clone())
+            .expect("a whole node record");
+        assert_eq!(&record.node_id, node_id, "the record's line is at its node id");
+        Some(record)
     }
 
     /// The latest record of `node_id` in the root's `nodes.jsonl` (R-SR1), as

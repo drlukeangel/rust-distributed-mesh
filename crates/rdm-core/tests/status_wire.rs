@@ -83,7 +83,7 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         // node_id | incarnation | build_id | operation "leave-mesh:mesh1.node.1"
         (Reserved29 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
-        (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
+        (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3], cert_dates: None }, "1e0c3031323334353637383961620c3977637072666777767468790301020300"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
         (UpdateIssuer { node_id: node(), incarnation: birth(), key: rdm_core::status::IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: rdm_core::status::CaKeyHex("ef".into()) }, "1f0c3031323334353637383961620c397763707266677776746879026162026364026566"),
         // fabrics.atlas.get (fabric-atlas.md R-FA4), appended last
@@ -169,18 +169,16 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         (Reserved32 { reason: "r".into() }, "200172"),
         (
             Nodes { nodes: vec![node_view()] },
+            // The node record's fields in its order (Q366; wire format moved), then load and gossip: node_id |
+            // path | name | type | incarnation Some | state Ready (1) | endpoint_id Some("e") | transport_addr
+            // Some(127.0.0.1:4000) | listeners [] | runtime None | is_primary | is_fabric_primary | cert None |
+            // signing_cert None | storage { persistence None, data_dir None } | executable None | config |
+            // tags | load Some | gossip Some.
             concat!(
                 "2101",
-                "0a6d657368312e6e6f64650131", "046e6f6465", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
-                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64",
-                // cert None (i145 e3)
-                "00",
-                // executable None (the row's, proposal executable-bindings-at-create.md rule 7)
-                "00",
-                // storage_persistence None and topology_storage_provider None (storage.md §1, §2), appended last
-                "00", "00",
-                // properties Read (Q318: a node's property record read, or Unavailable), appended last
-                "00",
+                "0c303132333435363738396162", "0a6d657368312e6e6f6465", "0131", "046e6f6465", "010c397763707266677776746879",
+                "01", "010165", "01007f000001a01f", "00", "00", "00", "00", "00", "00", "00", "00", "00",
+                "01047469657204676f6c64", "0103726564", "0101020304", "0102010304",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010c303132333435363738396162", "00", "010c343132333435363738396162", "00")),
@@ -318,32 +316,29 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
     assert_eq!(Status::decode_request(&bytes).unwrap(), request);
 }
 
-/// One node as a `node.get` answer carries it: a `node` with its birth, provider, address, load
-/// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
+/// One node as a `node.get` answer carries it, under the node record's names (Q366): a `node` with its
+/// birth, address, load and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
+    NodeView {
+        node_id: node(),
         path: "mesh1.node".into(), name: "1".into(),
         r#type: "node".into(),
-        mesh: "mesh1".into(),
-        node_id: node(),
+        incarnation: Some(birth()),
+        state: NodeStatus::Ready,
         endpoint_id: Some("e".into()),
-        incarnation_id: Some(birth()),
-        deployment_id: None,
-        provider: Some(ProviderKind::Process),
-        data_dir: None,
-        status: NodeStatus::Ready,
-        is_primary: false,
-        is_fabric_primary: false,
-        admin_api_base: None,
         transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
         listeners: vec![],
-        declared: None,
-        stopped: false,
+        runtime: None,
+        is_primary: false,
+        is_fabric_primary: false,
+        cert: None,
+        signing_cert: None,
+        storage: Default::default(),
+        executable: None,
+        config: [("tier".to_string(), "gold".to_string())].into(),
+        tags: ["red".to_string()].into(),
         load: Some(rdm_core::NodeLoad { cpu_used_millicores: 1, cpu_budget_millicores: 2, ram_used_bytes: 3, ram_budget_bytes: 4 }),
         gossip: Some(rdm_core::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
-        tags: ["red".to_string()].into(),
-        config: [("tier".to_string(), "gold".to_string())].into(),
-        properties: Default::default(),
     }
 }
 

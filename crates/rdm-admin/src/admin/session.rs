@@ -313,6 +313,8 @@ pub(crate) struct AdminSession {
     /// The Builds this admin drives: the callers reading a Build's frames are what a stop its own run
     /// commands spares (`Drive::callers`).
     pub(crate) drives: Arc<crate::build_drive::Drives>,
+    /// This admin's own property writer's holder: a start's Ready is on its own record first (Q356).
+    pub(crate) configs: crate::node_config::NodeConfigsSlot,
 }
 
 #[async_trait::async_trait]
@@ -499,6 +501,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             fabric_id: s.fabric_id.clone(),
             digest: s.digest.clone(),
             wake: s.wake.clone(),
+            configs: s.configs.clone(),
             root: self.root.clone(),
             floor: AdminFloor {
                 me_path: me.path.clone(), me_name: me.name.clone(),
@@ -556,6 +559,8 @@ pub(crate) struct AdminAfterStopTail {
     pub(crate) fabric_id: FabricId,
     pub(crate) digest: Arc<Mutex<MeshDigest>>,
     pub(crate) wake: Arc<Records>,
+    /// This admin's own property writer's holder: its Ready is on its own record first (Q356).
+    pub(crate) configs: crate::node_config::NodeConfigsSlot,
     pub(crate) root: tracing::Span,
     pub(crate) floor: AdminFloor,
     /// Set for a commanded `node.mesh.join`: a Build's start after a stop leaves nothing (its process stays stopped).
@@ -586,6 +591,13 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
     }
 
     async fn report(self: Box<Self>) {
+        // Its own record holds Ready before its digest does (Q356); a refused write is named, and the
+        // start's report stands on its digest.
+        if let Some(configs) = self.configs.get() {
+            if let Err(e) = configs.own_state(crate::model::NodeStatus::Ready).await {
+                tracing::info!(error = %e, "this admin's own record's ready state is not written");
+            }
+        }
         let (set, d) = set_own_status(&self.digest, Some(MemberStatus::Pending), MemberStatus::Ready);
         if set {
             // The Ready names the birth that became ready, as the first start's does.
@@ -861,7 +873,7 @@ impl EntryState {
         let current = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?;
         let build = current.map(|b| crate::wire::BuildFloor { build_id: b.build_id });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
-        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None };
+        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None };
         let me_str = e.node_id.to_string();
         Ok(crate::wire::JoinAnswer { served_by: e.node_id.clone(), control, statuses: e.topology_view.status_frames(&me_str) })
     }

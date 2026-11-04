@@ -26,8 +26,7 @@ fn operation_row(row: &crate::status_rpc::Declaration, operation: &DeclaredOpera
     crate::status_rpc::OperationEffect { node_id: row.node_id.clone(), incarnation_id: row.incarnation_id.clone(), name: row.name.clone(), state: row.state, operation: operation.clone() }
 }
 
-/// One declared state of one birth, as its authority applied it: the fact kept on the birth's node
-/// record (`crate::storage::BirthFacts::declared`).
+/// One declared state of one birth, as its authority applied it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
     /// Kind declared by the exact subject birth.
@@ -44,8 +43,8 @@ pub struct Declaration {
     pub state: NodeState,
 }
 
-/// An operation effect already applied to one exact birth (Q49): the fact kept on its node record
-/// (`crate::storage::BirthFacts::operations`), independent of the birth's current cycle.
+/// An operation effect already applied to one exact birth (Q49), held by the admin that applied it,
+/// independent of the birth's current cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationEffect {
     /// The birth's node.
@@ -60,19 +59,7 @@ pub struct OperationEffect {
     pub state: NodeState,
 }
 
-impl Declaration {
-    /// Every declared state the records keep, one per (birth, state), in record order.
-    pub fn of_records<'a>(records: impl IntoIterator<Item = &'a crate::storage::NodeRow>) -> Vec<Declaration> {
-        records.into_iter().flat_map(|r| r.births.iter().flat_map(move |b| b.declared.iter().map(move |state| Declaration { r#type: r.r#type.clone(), mesh: r.mesh.clone(), node_id: r.node_id.clone(), incarnation_id: b.incarnation_id.clone(), name: b.location(), state: *state }))).collect()
-    }
-}
-
 impl OperationEffect {
-    /// Every operation effect the records keep, in record order.
-    pub fn of_records<'a>(records: impl IntoIterator<Item = &'a crate::storage::NodeRow>) -> Vec<OperationEffect> {
-        records.into_iter().flat_map(|r| r.births.iter().flat_map(move |b| b.operations.iter().map(move |o| OperationEffect { node_id: r.node_id.clone(), incarnation_id: b.incarnation_id.clone(), name: b.location(), operation: o.operation.clone(), state: o.state }))).collect()
-    }
-
     /// The operation identity: exact birth and operation, never its current state.
     pub fn key(&self) -> OperationEffectKey {
         (self.node_id.clone(), self.incarnation_id.clone(), self.operation.operation.clone())
@@ -239,12 +226,13 @@ impl Declared {
 }
 
 impl Declared {
-    /// Fold records into what this admin applied: the greatest state per Mesh and per birth of the
-    /// births `holds` keeps, each Fabric event once, the path and name each birth declared at, and every
-    /// operation effect of those births. What this admin already holds stands where it is the greater;
-    /// nothing is written back.
-    pub fn fold_records(&mut self, meshes: &[crate::storage::MeshRecord], fabric: Option<&crate::fabric_storage::FabricRecord>, nodes: &[crate::storage::NodeRow], holds: impl Fn(&NodeId, &IncarnationId) -> bool) -> usize {
-        let (nodes_before, meshes_before) = (self.nodes.clone(), self.meshes.clone());
+    /// Fold the Mesh and Fabric records into what this admin applied: the greatest state per Mesh and
+    /// each Fabric event once. What this admin already holds stands where it is the greater; nothing is
+    /// written back. A node's state is never folded from a record: each node writes its own (Q356) and
+    /// owes it again to a new mesh-primary (R-S2), and a stopped node is held stopped from the old
+    /// primary's `NodeStopped` (Q260).
+    pub fn fold_records(&mut self, meshes: &[crate::storage::MeshRecord], fabric: Option<&crate::fabric_storage::FabricRecord>) {
+        let meshes_before = self.meshes.clone();
         for m in meshes {
             let held = self.meshes.entry(m.mesh_id.clone()).or_insert(m.state);
             *held = (*held).max(m.state);
@@ -255,34 +243,17 @@ impl Declared {
                 held.push("ready".into());
             }
         }
-        let mut births = 0;
-        for r in nodes {
-            for b in r.births.iter().filter(|b| holds(&r.node_id, &b.incarnation_id)) {
-                let birth = (r.node_id.clone(), b.incarnation_id.clone());
-                for o in &b.operations {
-                    let effect = OperationEffect { node_id: r.node_id.clone(), incarnation_id: b.incarnation_id.clone(), name: b.location(), operation: o.operation.clone(), state: o.state };
-                    self.operations.insert(effect.key(), effect);
-                }
-                if let Some(state) = b.declared_state() {
-                    births += 1;
-                    self.names.entry(birth.clone()).or_insert((b.location(), r.mesh.clone()));
-                    let held = self.nodes.entry(birth).or_insert(state);
-                    *held = (*held).max(state);
-                }
-            }
-        }
-        if self.nodes != nodes_before || self.meshes != meshes_before {
+        if self.meshes != meshes_before {
             self.moved.moved();
         }
-        births
     }
 }
 
 /// The status rows of this admin's own mesh, which it folds into what it applied when it takes
 /// the mesh's role.
 pub struct RoleFold {
-    /// The records this admin writes: the copy its create, start and join hydrated, which it folds when
-    /// it takes its mesh's role (Q227, Q260).
+    /// The Mesh and Fabric records this admin writes: the copy its create, start and join hydrated, which
+    /// it folds when it takes its mesh's role (Q227, Q260).
     caches: crate::record_cache::Caches,
     nodes: Arc<dyn crate::storage::NodesStorage>,
     meshes: Arc<dyn crate::storage::MeshStorage>,
@@ -313,7 +284,7 @@ impl RoleFold {
         &self.fabric
     }
 
-    /// The nodes store this fold reads the facts on its mesh's births from.
+    /// The nodes store of this admin's records.
     pub fn nodes(&self) -> &Arc<dyn crate::storage::NodesStorage> {
         &self.nodes
     }
@@ -329,8 +300,8 @@ impl RoleFold {
     }
 
     /// The view `now` is being installed: when it names this admin its mesh's primary and this
-    /// tenure has not folded the mesh's rows, fold them into `declared` from this admin's caches, reading no storage (Q227,
-    /// Q260). Every other admin of the mesh folds none of them: what
+    /// tenure has not folded, fold the Mesh and Fabric records into `declared` from this admin's caches,
+    /// reading no storage and no node record (Q227, Q260, Q356). Every other admin of the mesh folds none of them: what
     /// it holds is only what it applied itself. Called under the view's write lock, so two installs
     /// never fold at once. A read that fails leaves the tenure unfolded, named in the span.
     ///
@@ -358,24 +329,19 @@ impl RoleFold {
             node_path = %me_name.path, node_name = %me_name.name,
             node_id = %self.me,
             mesh = %self.mesh,
-            node_declared_rows = tracing::field::Empty,
             mesh_status_rows = tracing::field::Empty,
             fabric_state = tracing::field::Empty,
             error = tracing::field::Empty,
         );
-        // A node-admin taking its mesh's role reads no storage (Q227, Q242, Q260): it folds the records its
-        // create, start and join hydrated into its caches, the copy every later write of them starts from.
-        // Storage is read only by a re-born fabric-primary that is the lone node of a single mesh.
-        let read = Ok::<_, String>((self.caches.meshes.all(), self.caches.fabric.all().into_iter().next(), self.caches.nodes.rows_of(&self.mesh)));
+        // A node-admin taking its mesh's role reads no storage (Q227, Q242, Q260): it folds the Mesh and
+        // Fabric records its create, start and join hydrated into its caches, the copy every later write
+        // of them starts from. Its members' states are the view's digests and the declarations each owes
+        // the new mesh-primary. Storage is read only by a re-born fabric-primary that is the lone node of a
+        // single mesh.
+        let read = Ok::<_, String>((self.caches.meshes.all(), self.caches.fabric.all().into_iter().next()));
         match read {
-            Ok((meshes, fabric, nodes)) => {
-                // Acquisition belongs to the exact births in the incoming view,
-                // including predecessors still held there, never to a path and name.
-                let holds_birth = |node_id: &NodeId, incarnation: &IncarnationId| {
-                    now.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation))
-                };
-                let births = declared.lock().unwrap().fold_records(&meshes, fabric.as_ref(), &nodes, holds_birth);
-                span.record("node_declared_rows", births);
+            Ok((meshes, fabric)) => {
+                declared.lock().unwrap().fold_records(&meshes, fabric.as_ref());
                 span.record("mesh_status_rows", meshes.len());
                 span.record("fabric_state", fabric.as_ref().map_or("none", |f| f.state.as_str()));
                 *self.folded.lock().unwrap() = true;
@@ -643,7 +609,7 @@ pub fn decide(service: &StatusService, view: &Topology, declared: &Declared, req
         StatusRequest::DeclareNodeState { node_id, incarnation, state, operation } => {
             // The role first: an admin that is no mesh-primary, and runs no fabric recovery, answers that
             // it is not the primary, whatever it holds of the subject (node-status.md "Status report").
-            let recovering = service.fabric_recovery.get().is_some_and(|read| read(view).is_some_and(|fr| service.caches.nodes.writer().is_some_and(|birth| crate::fabric_recovery::executes_for(Some(read), view, birth, &fr.target.mesh))));
+            let recovering = service.fabric_recovery.get().is_some_and(|read| read(view).is_some_and(|fr| service.running_birth(view).is_some_and(|birth| crate::fabric_recovery::executes_for(Some(read), view, &birth, &fr.target.mesh))));
             if !me.is_primary && !recovering {
                 let mesh = view.births().find(|n| n.node_id == *node_id).map_or(me.mesh.as_str(), |n| n.mesh.as_str());
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {mesh}") }), None);
@@ -666,7 +632,7 @@ pub fn decide(service: &StatusService, view: &Topology, declared: &Declared, req
             // which sets its status (node-status.md "Status report"). While fabric recovery runs and the
             // mesh has no mesh-primary, its executor takes the declarations of the node it re-creates at
             // the target's path and name: its own node.create waits on them (build.md §5.3, Q122).
-            let recovers = service.fabric_recovery.get().is_some_and(|read| service.caches.nodes.writer().is_some_and(|birth| crate::fabric_recovery::executes_for(Some(read), view, birth, &subject.mesh)) && read(view).is_some_and(|fr| fr.at.as_ref() == Some(&subject.location())));
+            let recovers = service.fabric_recovery.get().is_some_and(|read| service.running_birth(view).is_some_and(|birth| crate::fabric_recovery::executes_for(Some(read), view, &birth, &subject.mesh)) && read(view).is_some_and(|fr| fr.at.as_ref() == Some(&subject.location())));
             if !(me.is_primary && me.mesh == subject.mesh) && !recovers {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
             }
@@ -676,13 +642,11 @@ pub fn decide(service: &StatusService, view: &Topology, declared: &Declared, req
                 Some(held) => return (rdm_core::reply::stale(held.clone()), None),
                 None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
             }
-            // A birth deleted (its record, as this admin, its mesh's writer, holds it, deleted, or its
-            // delete completed; a withdrawn claim is not a delete) is not held, whatever the view still
-            // shows before the departure lands: refused `SubjectUnknown` and decided as every refused
-            // caller is, deleted and never re-admitted (node-investigation.md; Q207, Q217), as the
-            // `JoinService` refuses it on `status`.
-            let held_row = service.caches.nodes.row_of(&subject.node_id);
-            if service.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation, held_row.as_ref())) {
+            // A birth deleted (its delete completed, as this admin's atlas holds it) is not held, whatever
+            // the view still shows before the departure lands: refused `SubjectUnknown` and decided as
+            // every refused caller is, deleted and never re-admitted (node-investigation.md; Q207, Q217),
+            // as the `JoinService` refuses a record `Deleted`.
+            if service.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation, None)) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None);
             }
             if let Some(operation) = operation {
@@ -886,6 +850,11 @@ impl StatusService {
         self.topology.read().await.own(&self.node_id).map(|n| n.location()).unwrap_or_else(|| self.me.clone())
     }
 
+    /// The birth this admin runs as, as its view `view` holds it.
+    fn running_birth(&self, view: &Topology) -> Option<crate::storage::BirthRef> {
+        view.own(&self.node_id).and_then(|n| Some(crate::storage::BirthRef { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone()? }))
+    }
+
     fn held_name_in(&self, view: &Topology) -> crate::model::PathName {
         self.digest_view.as_ref().and_then(|b| b.held_path_name()).or_else(|| view.own(&self.node_id).map(|n| n.location())).unwrap_or_else(|| self.me.clone())
     }
@@ -943,24 +912,23 @@ impl StatusService {
     }
 
     /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
-    /// (build.md §1, "The Build applies the diff"): the one `NodeConfigs`, the spec's `storage` and
-    /// `placement` written onto the row with the map.
-    pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StoragePersistence) -> StatusReply {
+    /// (build.md §1, "The Build applies the diff"): the one config door.
+    pub async fn update_config_from_spec(&self, req: &StatusRequest) -> StatusReply {
         let me = self.held_name().await;
         let view = self.topology.read().await.clone();
         match self.configs.get() {
-            Some(configs) => configs.update_with(&me, &self.node_id, &view, &*self.nodes_storage, req, Some(storage)).await,
+            Some(configs) => configs.update(&me, &self.node_id, &view, &*self.nodes_storage, req).await,
             None => rdm_core::reply::status::not_ready(format!("path {me_path:?}, name {me_name:?} has no node-RPC client yet; {} is refused", req.op(), me_path = &me.path, me_name = &me.name)),
         }
     }
 
     /// A Build's entry follows the same downward route and node writer as caller changes.
-    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StoragePersistence) -> Result<(), String> {
+    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties) -> Result<(), String> {
         self.commands.admitted().await;
         let view = self.topology.read().await.clone();
         let me = self.held_name_in(&view);
         self.configs.get().ok_or_else(|| format!("path {me_path:?}, name {me_name:?}: node property client is not bound", me_path = &me.path, me_name = &me.name))?
-            .apply_entry(&me, &self.node_id, &view, &*self.nodes_storage, birth, entry, storage).await
+            .apply_entry(&me, &self.node_id, &view, birth, entry).await
     }
 
     /// Close one exact birth's own-property admission before the provider copy. Silence or
@@ -1032,23 +1000,12 @@ impl StatusService {
             }
         };
         match done {
-            NodeCommandReply::StorageStepped { provider } => {
-                let recorded = provider.clone();
-                if let Err(e) = self.caches.nodes.update(&*self.nodes_storage, node_id, None, move |r| r.topology_storage_provider = Some(recorded)).await {
-                    return Carried::NotDone(format!("{} moved onto {provider} and its row could not record it: {e}", subject.node_id));
-                }
-                Carried::Stepped(provider)
-            }
+            // The provider a node writes is the Fabric record's (Q361), never the node's.
+            NodeCommandReply::StorageStepped { provider } => Carried::Stepped(provider),
             NodeCommandReply::RejectedStaleChange { held } => Carried::Stale(held),
             NodeCommandReply::Failed { reason, .. } => Carried::Refused(reason),
             other => Carried::NotDone(format!("{} answered the move {}", subject.node_id, other.name())),
         }
-    }
-
-    /// Record `provider` on this admin's own row: the provider it writes since its unblock.
-    pub async fn record_own_provider(&self, provider: &str) -> Result<(), String> {
-        let recorded = provider.to_string();
-        self.caches.nodes.update(&*self.nodes_storage, &self.node_id, None, move |r| r.topology_storage_provider = Some(recorded)).await.map(|_| ())
     }
 
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
@@ -1331,22 +1288,26 @@ impl StatusService {
             Some(own) => own.renew_cert(cert),
             None => return rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections registry yet", self.node_id)),
         };
-        // A mesh-primary writes its own record: the dates of the cert it installed, issued by the
-        // fabric-primary (node-cert-renew.md Row).
-        if let (StatusReply::CertRenewed { .. }, Some(certs)) = (&reply, &self.certs) {
-            if let (true, Some(dates)) = (crate::node_rows::writes_for(view, &self.node_id, &me.mesh), crate::cert_renewal::installed_dates(req, certs)) {
-                if let Err(why) = self.write_own(&me, incarnation, |b| b.cert = Some(dates)).await {
-                    return rdm_core::reply::status::not_ready(format!("{}: the cert is installed and its dates could not be written on its record: {why}", self.node_id));
+        // An admin writes its own record (Q356): the dates of the cert it installed, as its issuer
+        // computed them, else as the cert carries them.
+        if let StatusReply::CertRenewed { .. } = &reply {
+            let dates = match req {
+                StatusRequest::RenewCert { cert_dates: Some(dates), .. } => Some(dates.clone()),
+                _ => self.certs.as_ref().and_then(|certs| crate::cert_renewal::installed_dates(req, certs)),
+            };
+            if let Some(dates) = dates {
+                if let Err(why) = self.write_own(move |r| r.cert = Some(dates)).await {
+                    return rdm_core::reply::status::not_ready(format!("{}: the cert is installed and its dates could not be written on its record: {why}", me.node_id));
                 }
             }
         }
         reply
     }
 
-    /// Write `change` to this admin's own birth's facts on its own record, as its mesh's writer.
-    async fn write_own(&self, me: &crate::model::Node, incarnation: &IncarnationId, change: impl FnOnce(&mut crate::storage::BirthFacts)) -> Result<(), String> {
-        let base = crate::storage::NodeRow::new(me.location(), me.mesh.clone(), &me.r#type, me.node_id.clone(), me.status);
-        self.caches.nodes.update(&*self.nodes_storage, &self.node_id, Some(base), |r| change(r.birth_mut(incarnation, &me.location()))).await.map(|_| ())
+    /// Write `change` on this admin's own record, through its own property writer (Q356).
+    async fn write_own(&self, change: impl FnOnce(&mut crate::storage::NodeRecord) + Send + 'static) -> Result<(), String> {
+        let configs = self.configs.get().ok_or_else(|| format!("{} has no own property writer yet", self.node_id))?;
+        configs.own_update(change).await
     }
 
     /// `node.issuer.update` of this admin's exact birth (node-issuer-update.md step 3): the material must
@@ -1442,13 +1403,10 @@ impl StatusService {
                 let previous = certs.install_issuer(key);
                 tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node_path = %self.me.path, node_name = %self.me.name, node_id = %self.node_id, mesh = %me.mesh, sender_node_id = sender, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
                     .in_scope(|| tracing::info!("the mesh's new issuer is installed: member certs are signed with it from now"));
-                // A mesh-primary writes its own signing cert dates on its own record at its install
-                // (node-issuer-update.md step 4).
-                if crate::node_rows::writes_for(view, &self.node_id, &me.mesh) {
-                    let dates = crate::cert_renewal::installed_signing_dates(&installed, certs);
-                    if let Err(why) = self.write_own(&me, incarnation, |b| b.signing_cert = Some(dates)).await {
-                        return rdm_core::reply::status::not_ready(format!("{}: the issuer is installed and its dates could not be written on its record: {why}", self.node_id));
-                    }
+                // An admin writes its own signing cert dates on its own record at its install (Q356).
+                let dates = crate::cert_renewal::installed_signing_dates(&installed, certs);
+                if let Err(why) = self.write_own(move |r| r.signing_cert = Some(dates)).await {
+                    return rdm_core::reply::status::not_ready(format!("{}: the issuer is installed and its dates could not be written on its record: {why}", self.node_id));
                 }
                 StatusReply::IssuerUpdated { node_id: self.node_id.clone(), incarnation: incarnation.clone(), issuer_expires_at: expiry }
             }
@@ -1628,57 +1586,6 @@ impl StatusService {
         }
     }
 
-    /// Keep the declared state `row`, and the operation effect that produced it when one did, on its
-    /// birth's node record: the record held, the facts applied, written whole (a birth of another mesh:
-    /// the fabric-primary accepting the join report of a birth of a mesh with no primary, Q97). A state
-    /// that moves the birth (`moves`, not one already applied) is also the record's status
-    /// (node-identity-and-state.md §4: "its **status** — the readiness on its durable row"; states.md
-    /// "Who sets each state"), in the same put, before the declaration is answered
-    /// ([`crate::storage::NodeRow::set_status`]), with one `rdm.node_admin.node.update.via-row-status`
-    /// span.
-    async fn put_declared(&self, row: &crate::status_rpc::Declaration, operation: Option<&OperationEffect>, moves: bool) -> Result<(), String> {
-        // Once this admin replied `blocked`, nothing of its mesh writes the old provider: the report waits,
-        // neither applied nor answered, until its `mesh.unblock` moved it, and its row is written on the
-        // provider current then before it is answered (storage.md §2 step 2, states.md; i149 R8).
-        let _turn = loop {
-            match self.commands.row_writes().await {
-                Some(turn) => break turn,
-                None => {
-                    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node_path = %self.me.path, node_name = %self.me.name, subject_path = %row.name.path, subject_name = %row.name.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), status = ?node_status_of(row.state), outcome = "held", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("this mesh-primary replied blocked to a storage change: the node's report waits for its unblock, unanswered"));
-                    self.commands.rows_released().await;
-                }
-            }
-        };
-        let base = crate::storage::NodeRow::new(row.name.clone(), row.mesh.clone(), &row.r#type, row.node_id.clone(), crate::model::NodeStatus::Pending);
-        let status = node_status_of(row.state);
-        // The current stopped period's own stop, recorded on the node record when the birth is written
-        // `stopped` and cleared at the start's `ready` (node-identity-and-state.md §6.9 "Age", D50).
-        let now_ms = self.topology_view.as_ref().map(|v| v.clock().now_rafka_ms());
-        let written = self.caches.nodes.update_spanned(&*self.nodes_storage, &row.node_id, Some(base), |r| {
-            let birth = r.birth_mut(&row.incarnation_id, &row.name);
-            birth.declared.insert(row.state);
-            match row.state {
-                NodeState::Stopped if birth.stopped_at_rafka_ms.is_none() => birth.stopped_at_rafka_ms = now_ms,
-                NodeState::Ready => birth.stopped_at_rafka_ms = None,
-                _ => {}
-            }
-            if let Some(o) = operation {
-                birth.apply_operation(&o.operation, o.state);
-            }
-            moves && r.set_status(&row.incarnation_id, status)
-        }, |written| if moves { row_status_span(&self.me, &row.name, &row.node_id, &row.incarnation_id, status, written) }).await;
-        written.map(|_| ())
-    }
-
-    /// Write `status` on the record of `node_id` for its birth `incarnation`, whole, at the transition
-    /// states.md "Who sets each state" names ([`crate::storage::NodeRow::set_status`]); a node with no
-    /// record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
-    pub(crate) async fn put_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &crate::model::PathName, status: crate::model::NodeStatus) -> Result<(), String> {
-        let written = self.caches.nodes.update_spanned(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status), |written| row_status_span(&self.me, name, node_id, incarnation, status, written)).await;
-        written.map(|_| ())
-    }
-
     /// The name of the mesh carrying `mesh_id`: a mesh this admin's Build created, else one its view
     /// holds.
     async fn mesh_name_of(&self, mesh_id: &MeshId) -> Option<String> {
@@ -1688,23 +1595,10 @@ impl StatusService {
         self.topology.read().await.meshes.iter().find(|m| m.id.as_ref() == Some(mesh_id)).map(|m| m.name.clone())
     }
 
-    /// Clear every declared state of the birth `(node_id, birth)` on its node record, its operation
-    /// effects kept; `forget_effects` lets those go too (the exact birth is forgotten).
-    async fn remove_declared(&self, node_id: &NodeId, birth: &IncarnationId, forget_effects: bool) -> Result<(), String> {
-        self.caches.nodes.update(&*self.nodes_storage, node_id, None, |r| {
-            if let Some(b) = r.births.iter_mut().find(|b| b.incarnation_id == *birth) {
-                b.declared.clear();
-                if forget_effects {
-                    b.operations.clear();
-                }
-            }
-        }).await.map(|_| ())
-    }
-
     /// A start begins `birth`'s next cycle (node-start.md): what it declared before its stop
     /// (`Leaving`) is no longer where its next declarations are measured from, so `Pending` and
-    /// `Ready` run forward again from the start. The cleared state is a row put before it
-    /// is held, as every applied state is.
+    /// `Ready` run forward again from the start. The node writes its own states on its record
+    /// (Q356); this is what this admin holds of them.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
         let _operation = self.operation_effects.write().await;
         self.begin_cycle_held(&node.node_id, &node.location(), birth).await;
@@ -1716,14 +1610,11 @@ impl StatusService {
         self.declared.lock().unwrap().connections_deleted.remove(&(node_id.clone(), birth.clone()));
         let held = self.declared.lock().unwrap().node(node_id, birth);
         let Some(state) = held else { return };
-        let outcome = match self.remove_declared(node_id, birth, false).await {
-            Ok(()) => {
-                let mut declared = self.declared.lock().unwrap();
-                declared.forget_node(&(node_id.clone(), birth.clone()));
-                declared.names.remove(&(node_id.clone(), birth.clone()));
-                "begun"
-            }
-            Err(_) => "refused",
+        let outcome = {
+            let mut declared = self.declared.lock().unwrap();
+            declared.forget_node(&(node_id.clone(), birth.clone()));
+            declared.names.remove(&(node_id.clone(), birth.clone()));
+            "begun"
         };
         tracing::info_span!("rdm.node_admin.status.update.via-cycle-begun", node_path = %name.path, node_name = %name.name, node_id = %node_id, incarnation_id = %birth.as_str(), held = ?state, outcome, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
@@ -1760,10 +1651,14 @@ impl StatusService {
             return rdm_core::reply::already_applied();
         }
         self.begin_cycle_held(node_id, name, birth).await;
-        let (mesh, r#type) = match self.nodes_storage.node(node_id).await {
-            Ok(Some(row)) => (row.mesh, row.r#type),
-            Ok(None) => return rdm_core::reply::status::not_ready(format!("node {node_id}: no node record at the accepted join")),
-            Err(e) => return rdm_core::reply::status::not_ready(format!("node {node_id}: node record read failed: {e}")),
+        let held = self.topology.read().await.births().find(|n| n.node_id == *node_id).map(|n| (n.mesh.clone(), n.r#type.clone()));
+        let (mesh, r#type) = match held {
+            Some(held) => held,
+            None => match self.nodes_storage.node(node_id).await {
+                Ok(Some(line)) => (line.record.mesh(), line.record.r#type),
+                Ok(None) => return rdm_core::reply::status::not_ready(format!("node {node_id}: neither the view nor the node records hold it at the accepted join")),
+                Err(e) => return rdm_core::reply::status::not_ready(format!("node {node_id}: node record read failed: {e}")),
+            },
         };
         let row = crate::status_rpc::Declaration { r#type, mesh, node_id: node_id.clone(), incarnation_id: birth.clone(), name: name.clone(), state: NodeState::Pending };
         self.commit_held(Effect::Node(row, NodeState::Pending, None)).await
@@ -1813,25 +1708,14 @@ impl StatusService {
                     None => continue,
                 },
             };
-            // The birth's declared states and operation effects leave its node record in one write, by
-            // its mesh's writer only: "The mesh-primary is the one writer of its mesh's node rows ... No
-            // other process writes a Node row" (node-identity-and-state.md §4.3). Any other admin forgets
-            // them in memory and writes nothing: its copy of another mesh's row is not that row.
-            let writer = {
-                let view = self.topology.read().await;
-                let mesh = self.declared.lock().unwrap().names.get(&(node_id.clone(), incarnation.clone())).map(|(_, mesh)| mesh.clone()).or_else(|| view.births().find(|n| n.node_id == node_id).map(|n| n.mesh.clone()));
-                mesh.is_none_or(|mesh| crate::node_rows::writes_for(&view, &self.node_id, &mesh))
-            };
-            let removed = if writer { self.remove_declared(&node_id, &incarnation, true).await } else { Ok(()) };
-            let (outcome, error) = match removed {
-                Ok(()) => {
-                    let mut declared = self.declared.lock().unwrap();
-                    declared.operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);
-                    declared.forget_node(&(node_id.clone(), incarnation.clone()));
-                    declared.names.remove(&(node_id.clone(), incarnation.clone()));
-                    ("deleted", String::new())
-                }
-                Err(e) => ("refused", e.to_string()),
+            // The birth's declared states and operation effects are forgotten here; nothing is written:
+            // each node writes its own record (Q356).
+            let (outcome, error) = {
+                let mut declared = self.declared.lock().unwrap();
+                declared.operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);
+                declared.forget_node(&(node_id.clone(), incarnation.clone()));
+                declared.names.remove(&(node_id.clone(), incarnation.clone()));
+                ("deleted", String::new())
             };
             let span = match why {
                 "new-incarnation" => tracing::info_span!("rdm.node_admin.status.remove.via-new-incarnation", node_path = %me_name.path, node_name = %me_name.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), held_incarnation_id = %by, outcome, error = %error, "otel.kind" = "internal"),
@@ -1847,11 +1731,11 @@ impl StatusService {
     /// it never substitutes for the exact node's deletion evidence.
     async fn superseded_on_rows(&self, node_id: &NodeId) -> Option<(&'static str, String)> {
         let storage = &*self.nodes_storage;
-        let own = storage.node(node_id).await.ok()??;
+        let own = storage.node(node_id).await.ok()??.record;
         if !crate::node_rows::released_its_name(&own) {
             return None;
         }
-        if let Some(by) = storage.nodes(&own.mesh).await.ok().into_iter().flatten().find(|r| r.location() == own.location() && r.node_id != *node_id && !crate::node_rows::released_its_name(r)) {
+        if let Some(by) = storage.nodes(&own.mesh()).await.ok().into_iter().flatten().find(|r| r.location() == own.location() && r.node_id != *node_id && !crate::node_rows::released_its_name(r)) {
             return Some(("new-node", by.node_id.to_string()));
         }
         Some(("node-deleted", String::new()))
@@ -1932,47 +1816,18 @@ impl StatusService {
                         if let Some(digest_view) = &self.digest_view { let _ = set_member_status(digest_view, MemberStatusReceipt::StopAdmitted(&op)); }
                         tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
                     }
-                    // The node's acknowledgement sets its status on its row (states.md "Who sets each
-                    // state", Q233: stopping from the stop's CommandAccepted, starting from a stopped
-                    // node's CommandAccepted on StartNode), durable before the frame is acknowledged.
-                    let status = if start { Some(crate::model::NodeStatus::Starting) } else if !completed { Some(crate::model::NodeStatus::Stopping) } else { None };
-                    if let Some(status) = status {
-                        if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.location(), status)).await {
-                            return A::Indeterminate { code: Code::Unavailable, reason: format!("{} admitted; its {status:?} row was not written: {e}", request_name(start)) };
-                        }
-                    }
+                    // The node wrote its state on its own record before it sent the frame (Q356).
                     None
                 }
                 // node.stop calls its primitives and streams each one's acknowledgement and completion
-                // (Q205); this mesh-primary writes the node's row from each frame, before it
-                // acknowledges the frame (states.md "Who sets each state").
-                R::ConnectionsDeleting { .. } if !start => {
-                    if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.location(), crate::model::NodeStatus::ConnectionsDeleting)).await {
-                        return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's connections-deleting row was not written: {e}") };
-                    }
-                    None
-                }
+                // (Q205); the node writes each state on its own record before it sends the frame (Q356).
+                R::ConnectionsDeleting { .. } if !start => None,
                 R::StopConnectionsDeleted { receipt } if !start => {
                     closure = Some(receipt.clone());
-                    if matches!(receipt, rdm_core::status::ConnectionsReceipt::Established { .. }) {
-                        if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.location(), crate::model::NodeStatus::ConnectionsDeleted)).await {
-                            return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's connections-deleted row was not written: {e}") };
-                        }
-                    }
                     None
                 }
-                R::Leaving { .. } if !start => {
-                    if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.location(), crate::model::NodeStatus::Leaving)).await {
-                        return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's leaving row was not written: {e}") };
-                    }
-                    None
-                }
-                R::StopMeshLeft { .. } if !start => {
-                    if let Err(e) = Box::pin(self.put_status(&op.node_id, &op.incarnation, &op.location(), crate::model::NodeStatus::Left)).await {
-                        return A::Indeterminate { code: Code::Unavailable, reason: format!("the stop's left row was not written: {e}") };
-                    }
-                    None
-                }
+                R::Leaving { .. } if !start => None,
+                R::StopMeshLeft { .. } if !start => None,
                 R::NodeJoined if start => {
                     let applied = self.node_joined(&op, node, &incarnation).await;
                     if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
@@ -2138,16 +1993,9 @@ impl StatusService {
                     }
                     Ok(frame @ NodeCommandReply::ConnectionsDeleting { .. }) => {
                         self.commands.on_to_caller(node_id, incarnation, &frame);
-                        // The node reported it: this mesh-primary records and publishes the state the
-                        // node entered (states.md "Who sets each state"), never before.
+                        // The node reported it, its own record written first (Q356): this mesh-primary
+                        // publishes the state the node entered, never before.
                         reported = true;
-                        if all {
-                            if let Err(e) = Box::pin(self.put_status(node_id, incarnation, &subject.location(), crate::model::NodeStatus::ConnectionsDeleting)).await {
-                                let reason = format!("path {me_name_path:?}, name {me_name_name:?}: {} reported connections-deleting and its row was not written: {e}", subject.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name);
-                                tracing::Span::current().record("detail", reason.as_str());
-                                return CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unavailable };
-                            }
-                        }
                         let recorded = self.digest_view.as_ref().is_some_and(|digest_view| set_member_status(digest_view, MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation }) == Ok(true));
                         let position = frames.position();
                         let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", invocation_id = tracing::field::Empty, seq = tracing::field::Empty, node_path = %subject.path, node_name = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder_node_id = %self.node_id, reported_by = "node", recorded, "otel.kind" = "internal");
@@ -2162,15 +2010,6 @@ impl StatusService {
                         tracing::Span::current().record("closed", closed.len()).record("held", held.len());
                         let kept = ConnectionsDeletedReceipt { all, held: held.clone(), status_at_cut: if all { crate::model::NodeStatus::ConnectionsDeleting } else { subject.status } };
                         self.declared.lock().unwrap().connections_deleted.insert((node_id.clone(), incarnation.clone()), kept);
-                        if all && matches!(receipt, Some(rdm_core::status::ConnectionsReceipt::Established { .. })) {
-                            // states.md "Who sets each state": connections-deleted from the completion
-                            // carrying `Established`, on the row before the completion is acknowledged.
-                            if let Err(e) = Box::pin(self.put_status(node_id, incarnation, &subject.location(), crate::model::NodeStatus::ConnectionsDeleted)).await {
-                                let reason = format!("path {me_name_path:?}, name {me_name_name:?}: {} completed its node.connection.delete and its row was not written: {e}", subject.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name);
-                                tracing::Span::current().record("detail", reason.as_str());
-                                return CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unavailable };
-                            }
-                        }
                         if let Some(r) = &receipt {
                             // Established completes the closure; Deadline leaves the birth connections-deleting
                             // with its incomplete receipt (node-connections-delete.md steps 4-5).
@@ -2326,17 +2165,8 @@ impl StatusService {
             };
             return reply;
         }
-        let put = match &effect {
-            Effect::Node(row, state, _) => {
-                let moves = transition(self.declared.lock().unwrap().node(&row.node_id, &row.incarnation_id), *state) == Transition::Apply;
-                self.put_declared(row, operation.as_ref(), moves).await.map_err(|e| format!("the node declared-state fact: {e}"))
-            }
-            Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
-            Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
-        };
-        if let Err(reason) = put {
-            return rdm_core::reply::status::not_ready(reason);
-        }
+        // A node's declared state is on its own record already: the node writes it before it declares
+        // it (Q356); this admin holds it in its view and atlas.
         let reply = {
             let mut declared = self.declared.lock().unwrap();
             if let Some(row) = &operation { declared.operations.insert(row.key(), row.clone()); }
@@ -2590,59 +2420,11 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     }
 }
 
-/// What this admin does as the carrier of another's call (node-issuer-update.md step 4): the
-/// fabric-primary's `node.issuer.update` of an admin of this admin's mesh, forwarded through it as the
-/// mesh-primary, returns `IssuerUpdated`; as that admin's writer it writes the signing cert dates
-/// answered on the admin's record. Anything else carried is not read.
-struct CarriedIssuerDates(Arc<OnceLock<Arc<StatusService>>>);
-
-#[async_trait::async_trait]
-impl rdm_transport::CarriedReplies for CarriedIssuerDates {
-    async fn carried(&self, target: &NodeId, inner_op: u8, request: &[u8], reply: &[u8]) {
-        use rdm_core::protocol::NodeProtocol;
-        if inner_op != Status::OP {
-            return;
-        }
-        let (Ok(StatusRequest::UpdateIssuer { incarnation, cert, .. }), Ok(StatusReply::IssuerUpdated { node_id, incarnation: answered, .. })) = (Status::decode_request(request), Status::decode_reply(reply)) else { return };
-        let Some(service) = self.0.get().cloned() else { return };
-        if node_id != *target || answered != incarnation {
-            return;
-        }
-        // The admin installed the cert carried, or refused it: its dates are that cert's.
-        let Ok(signed) = rdm_core::certs::decode_issuing_cert(&cert) else { return };
-        service.write_carried_issuer(&node_id, &incarnation, &signed).await;
-    }
-}
-
-impl StatusService {
-    /// Write the signing cert dates admin `node_id`'s birth `incarnation` answered, carried through this
-    /// admin, on the admin's record when this admin writes its mesh's records.
-    async fn write_carried_issuer(&self, node_id: &NodeId, incarnation: &IncarnationId, signed: &rdm_core::certs::SignedIssuingCert) {
-        let view = self.topology.read().await.clone();
-        let Some(admin) = view.births().find(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)).cloned() else { return };
-        let (Some(certs), true) = (&self.certs, crate::node_rows::writes_for(&view, &self.node_id, &admin.mesh)) else { return };
-        let dates = crate::cert_renewal::installed_signing_dates(signed, certs);
-        let span = tracing::info_span!("rdm.node_admin.issuer.update.via-carried", node_path = %admin.path, node_name = %admin.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), carrier_node_id = %self.node_id, issuer_expires_at = dates.expires_at, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        let base = crate::storage::NodeRow::new(admin.location(), admin.mesh.clone(), &admin.r#type, admin.node_id.clone(), admin.status);
-        match self.caches.nodes.update(&*self.nodes_storage, node_id, Some(base), |r| r.birth_mut(incarnation, &admin.location()).signing_cert = Some(dates)).await {
-            Ok(_) => {
-                span.record("outcome", "written");
-                span.in_scope(|| tracing::info!("the signing cert dates the admin answered are written on its record"));
-            }
-            Err(e) => {
-                span.record("outcome", "unwritten");
-                span.record("reason", e.as_str());
-                span.in_scope(|| tracing::warn!("the signing cert dates the admin answered could not be written; its record stands as it was"));
-            }
-        }
-    }
-}
-
 /// Serve `Status` on this admin, and the node command op 0x22 for this admin as a commanded node
 /// (i144 R22). `service` is filled once the admin holds a view; until then a declaration is
 /// `NotReady` by name.
 pub fn serve(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>>>) -> ServerBuilder {
-    serve_node_command(b.observe_carried(Arc::new(CarriedIssuerDates(service.clone()))), service.clone()).serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
+    serve_node_command(b, service.clone()).serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
         let service = service.clone();
         async move {
             let Some(service) = service.get().cloned() else {
@@ -3228,7 +3010,7 @@ mod tests {
     /// that has one, and its mesh and kind are read from it.
     async fn claimed(status: &crate::storage::MemoryNodesStorage, nodes: &[&crate::model::Node]) {
         for n in nodes {
-            let row = crate::storage::NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
+            let row = crate::storage::NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status);
             assert_eq!(crate::node_rows::write_record(status, &row).await, Ok(Ok(())), "{}'s record is claimed", n.node_id);
         }
     }
@@ -3393,7 +3175,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: NodeId::mint(),
-                        control: crate::wire::JoinControl { cert_policy: None, provider: crate::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
+                        control: crate::wire::JoinControl { cert_policy: None, provider: crate::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
                         statuses: vec![],
                     })
                 })
@@ -3513,32 +3295,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for SlowPuts {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtimes().await
-        }
-        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.inner.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             self.inner.put_node(row).await
         }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.records_at(name).await
         }
     }
@@ -4295,8 +4062,8 @@ mod tests {
         recovered.incarnation_id = Some(IncarnationId::mint());
         // The records of the recovery: the exited birth's row is Deleted (it released the path and name),
         // and the new node's row claims the name over it.
-        assert!(crate::node_rows::write_deleted(&*status, &service.caches.nodes, &exited.location(), &exited.node_id).await.is_ok(), "the exited birth's Deleted row is written");
-        assert_eq!(crate::node_rows::write_record(&*status, &crate::storage::NodeRow::new(recovered.location(), recovered.mesh.clone(), &recovered.r#type, recovered.node_id.clone(), recovered.status)).await, Ok(Ok(())), "the new node's row claims the (path, name)");
+        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &exited.location(), &exited.node_id).await.is_ok(), "the exited birth's Deleted row is written");
+        assert_eq!(crate::node_rows::write_record(&*status, &crate::storage::NodeRecord::new(recovered.location(), recovered.mesh.clone(), &recovered.r#type, recovered.node_id.clone(), recovered.status)).await, Ok(Ok(())), "the new node's row claims the (path, name)");
         let digest_view = rdm_transport::topology::DigestView::default();
         digest_view.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");

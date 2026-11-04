@@ -218,7 +218,7 @@ fn profile_one(label: &str, pid: u32, window: Duration) -> Option<std::process::
 /// itself, so a Status load would measure those effects, not the RPC.
 async fn rpc_load(estate: &Estate, node: &rdm_core::PathName, concurrency: usize, window: Duration) -> (Vec<f64>, u64, f64) {
     let view = estate.node_view(node).await;
-    let mesh = view.mesh;
+    let mesh = view.mesh();
     let node = view.node_id;
     let carrier = estate.peers().await.carrier_for(node.clone());
     let start = Instant::now();
@@ -357,7 +357,7 @@ async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(String, f64, f64)>
     let runtimes = estate.live_runtimes();
     let nodes = estate.node_views().await;
     let before: Vec<(String, u32, u64)> = runtimes.iter().filter_map(|(dir, pid)| {
-        let node = nodes.iter().find(|n| n.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).unwrap_or_else(|| panic!("live runtime {} has no matching node metadata", dir.display()));
+        let node = nodes.iter().find(|n| n.storage.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).unwrap_or_else(|| panic!("live runtime {} has no matching node metadata", dir.display()));
         cpu_ticks(*pid).map(|ticks| (node.r#type.clone(), *pid, ticks))
     }).collect();
     let profiles = profile_one_per_role(&before, window);
@@ -756,7 +756,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
         if !evidence {
             let at = rdm_core::PathName::new(format!("{}.node-admin", meshes.last().unwrap()), p.admins.to_string()).unwrap();
             let node = estate.node_view(&at).await;
-            let pid = estate.live_runtimes().into_iter().find(|(dir, _)| node.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).map(|(_, pid)| pid);
+            let pid = estate.live_runtimes().into_iter().find(|(dir, _)| node.storage.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).map(|(_, pid)| pid);
             for (callers, target) in [(32, true), (128, false)] {
                 let (t0, c0) = (pid.and_then(cpu_ticks), cpu_ticks(std::process::id()));
                 // With `RDM_LOAD_PERF`, the node's CPU profile over the held concurrency's window.
@@ -809,7 +809,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     let views = estate.node_views().await;
     let admin_ids: Vec<_> = admins.iter().map(|location| views.iter().find(|n| &n.location() == location).expect("admin fixture").node_id.clone()).collect();
     let member = views.iter().find(|n| n.location() == subject).expect("RPC fixture");
-    let member = rdm_core::framing::Birth { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().expect("launched RPC") };
+    let member = rdm_core::framing::Birth { node_id: member.node_id.clone(), incarnation: member.incarnation.clone().expect("launched RPC") };
     // With evidence the sample is read from the spans: the mesh-primary's write of the status to the last
     // node-admin applying it to its own topology; without, from the call's Complete to every node-admin's
     // `node.topology.get` holding it, polled.

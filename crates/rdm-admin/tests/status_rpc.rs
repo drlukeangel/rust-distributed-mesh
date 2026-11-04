@@ -1315,7 +1315,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         let rig = rig(mp, &[&member], BTreeMap::new()).await;
         let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
-        rig.service.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.location(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+        rig.service.nodes_storage.put_node(&rdm_admin::storage::NodeRecord::new(member.node.location(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
         let status = || async { rig.service.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 

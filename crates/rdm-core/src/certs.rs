@@ -28,6 +28,36 @@ pub const ISSUING_CERT_TTL_SECS: u64 = 30 * 86_400;
 /// The fabric CA's lifetime, in seconds (fabric-certs.md §Tracking, `RDM_CA_CERT_TTL_SECS`'s default).
 pub const CA_CERT_TTL_SECS: u64 = 365 * 86_400;
 
+/// A node's member cert dates (fabric-certs.md §Tracking), the node record's `cert`: written by the
+/// node when it installs the cert its join or a renewal handed it. The written expiry is the receipt
+/// (Q141); the dates are the node's renewal state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertDates {
+    /// When the cert was issued, rafka-time ms.
+    pub issued_at: u64,
+    /// When it expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When its issuing cert expires, rafka-time ms.
+    pub issuer_expires_at: u64,
+    /// When its issuer renews it ([`renew_at`]), rafka-time ms.
+    pub renew_at: u64,
+}
+
+/// A node-admin's signing cert dates (mesh-issuer-renew.md), the node record's `signing_cert`: the
+/// cert it signs its mesh's member certs with stays in its process, like the root; the node-admin
+/// writes its dates on its own record when it holds the cert. The written expiry is the receipt (Q141).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningCertDates {
+    /// When the signing cert was minted, rafka-time ms.
+    pub issued_at: u64,
+    /// When it expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When the fabric-primary renews it, rafka-time ms.
+    pub renew_at: u64,
+}
+
 /// The exact birth a member cert is issued to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BirthIdentity {

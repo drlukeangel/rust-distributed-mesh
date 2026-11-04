@@ -1,39 +1,10 @@
-//! The node's own part of its record (Q333), written by the node itself: its config, tags, bound
-//! addresses and join declaration, appended at its node id in the nodes store
-//! ([`crate::nodes_storage::NodesStorage::put_properties`]) beside its mesh-primary's part. The store
-//! persists lines at their explicit keys; it decides nothing.
+//! The node's record (Q366), written by the node itself (Q356): every field of it, one whole line at
+//! its node id in the nodes store ([`crate::nodes_storage::NodesStorage::put_node`]). The store persists
+//! lines at their explicit keys; it decides nothing.
 
+use crate::nodes_storage::NodeRecord;
 use crate::storage_error::StorageError;
-use rdm_core::{IncarnationId, NodeId};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-
-/// The identity already assigned to a running node: a birth.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecordBirth {
-    /// The node instance.
-    pub node_id: NodeId,
-    /// Its runtime incarnation.
-    pub incarnation_id: IncarnationId,
-}
-
-/// The node's own part of its record (Q333): what the node writes itself, one whole line at its node id;
-/// its mesh-primary's part (`crate::nodes_storage::NodeRow`) is the other.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeProperties {
-    /// The node writing this record; the durable key is its node ID.
-    pub birth: RecordBirth,
-    /// The application's complete configuration map.
-    pub config: BTreeMap<String, String>,
-    /// The node's current tag set.
-    pub tags: BTreeSet<String>,
-    /// The bound fabric endpoint.
-    pub endpoint_id: Option<crate::model::EndpointId>,
-    /// The actual fabric transport address.
-    pub transport_addr: Option<std::net::SocketAddr>,
-    /// Actual non-Iroh listener addresses.
-    pub listeners: Vec<(String, std::net::SocketAddr)>,
-}
+use std::collections::BTreeSet;
 
 /// One running node's serialized property write path. All its property commands use this
 /// instance. The task owning the lock also owns the provider call: cancelling a caller never
@@ -44,10 +15,13 @@ pub struct NodePropertyWriter {
     /// The registered name of the topology storage provider the node writes now (storage.md §2), as a
     /// write's span names its backend.
     provider: std::sync::Arc<dyn Fn() -> String + Send + Sync>,
-    current: std::sync::Arc<tokio::sync::Mutex<Option<NodeProperties>>>,
+    current: std::sync::Arc<tokio::sync::Mutex<Option<NodeRecord>>>,
     /// The writing node's current path and name, once its topology view holds them
     /// ([`Self::named_by`]): what each write's span names it by. Unset: the span names none.
     name: std::sync::Arc<std::sync::OnceLock<NameOf>>,
+    /// The record this process's start wrote ([`Self::bound`]): what a later command starts from when
+    /// the writer holds no record (after an unacknowledged write it reads the store first).
+    start: std::sync::Arc<std::sync::OnceLock<NodeRecord>>,
 }
 
 /// Where a writer reads its node's current path and name from.
@@ -55,17 +29,41 @@ type NameOf = std::sync::Arc<dyn Fn() -> Option<rdm_core::PathName> + Send + Syn
 
 /// The existing property writer's admission lock retained through a provider copy and move.
 /// Releasing it invalidates the cached record while still excluding subsequent mutations.
-pub struct PropertyFreeze(tokio::sync::OwnedMutexGuard<Option<NodeProperties>>);
+pub struct PropertyFreeze(tokio::sync::OwnedMutexGuard<Option<NodeRecord>>);
 
 impl Drop for PropertyFreeze {
     fn drop(&mut self) { *self.0 = None; }
+}
+
+/// The roles this birth holds as `primaries` names them: `is_primary` at the revision its type's primary
+/// record in `mesh` names this birth (a node-admin's: the mesh-primary's), `is_fabric_primary` at the
+/// fabric-primary record's; `None` where the view names another birth or none.
+pub fn own_roles(primaries: &rdm_transport::topology::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str) -> (Option<u64>, Option<u64>) {
+    let mine = |p: Option<rdm_core::Primary>| p.filter(|p| p.node_id == birth.node_id && p.incarnation == birth.incarnation_id).map(|p| p.revision);
+    (mine(primaries.node_type_primary(mesh, r#type)), mine(primaries.fabric()))
+}
+
+/// Record this birth's own roles on its own record (Q356; node-primary-update.md step 5): the roles
+/// `primaries` names it ([`own_roles`]), written when they differ from `written`, what this birth last
+/// wrote; a role given up is cleared the same way. The write records the role; it does not grant it. A
+/// write the store refuses leaves `written` as it was, so the view's next change writes again. Nothing is
+/// written before the start's record ([`NodePropertyWriter::bound`]).
+pub async fn write_own_roles(writer: &NodePropertyWriter, primaries: &rdm_transport::topology::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str, config: std::collections::BTreeMap<String, String>, written: &mut (Option<u64>, Option<u64>)) {
+    let roles = own_roles(primaries, birth, mesh, r#type);
+    if roles == *written {
+        return;
+    }
+    let Some(initial) = writer.start_record(config) else { return };
+    if writer.update(initial, move |record| { record.is_primary = roles.0; record.is_fabric_primary = roles.1; }, |_| {}).await.is_ok() {
+        *written = roles;
+    }
 }
 
 /// A durable property effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyWritten {
     /// The complete durable record, including fields untouched by this command.
-    pub record: NodeProperties,
+    pub record: NodeRecord,
 }
 
 /// A tag command applied at the node, alongside its other property changes.
@@ -87,6 +85,7 @@ impl NodePropertyWriter {
             provider: std::sync::Arc::new(provider),
             current: Default::default(),
             name: Default::default(),
+            start: Default::default(),
         }
     }
 
@@ -96,30 +95,40 @@ impl NodePropertyWriter {
         let _ = self.name.set(std::sync::Arc::new(name));
     }
 
+    /// The record this process's start wrote, with `config` as its config: what a command after the
+    /// start hands the writer as its `initial` record. `None` before the start wrote one.
+    pub fn start_record(&self, config: std::collections::BTreeMap<String, String>) -> Option<NodeRecord> {
+        self.start.get().cloned().map(|mut record| { record.config = config; record })
+    }
+
     /// Close property admission and finish every earlier admitted put. The storage transition
     /// owns this guard until its exact change moves or rolls back.
     pub async fn freeze(&self) -> PropertyFreeze {
         PropertyFreeze(self.current.clone().lock_owned().await)
     }
 
-    /// Publish the actual bound addresses and join declaration at this start. `initial` carries the
-    /// retained config and tags for the same node ID as the start holds them (the hydration sync's own
-    /// row, Q234, else the launch snapshot): the start reads nothing from the store (Q227); a part
-    /// already written by this process stands under the bound facts.
+    /// Write the node's record at this start: `initial` is the whole record as the start holds it (the
+    /// hydration sync's own row, Q234, else the launch), its bound addresses, runtime, data dir and
+    /// state this start's; the start reads nothing from the store (Q227). A record already written by
+    /// this process keeps its config, tags, roles, cert dates and name under the start's facts.
     pub async fn bound(
         &self,
-        initial: NodeProperties,
-        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+        initial: NodeRecord,
+        publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
+        let _ = self.start.set(initial.clone());
         let bound = initial.clone();
         self.write(
             initial,
             false,
             move |record| {
-                record.birth = bound.birth;
+                record.incarnation = bound.incarnation;
+                record.state = bound.state;
                 record.endpoint_id = bound.endpoint_id;
                 record.transport_addr = bound.transport_addr;
                 record.listeners = bound.listeners;
+                record.runtime = bound.runtime;
+                record.storage.data_dir = bound.storage.data_dir;
                 Ok(())
             },
             publish,
@@ -127,13 +136,24 @@ impl NodePropertyWriter {
         .await
     }
 
+    /// Write `to` as the node's state ([`NodeRecord::set_state`]), the node's own record first, before
+    /// the node reports it (Q356). A state the record already holds, or one its order refuses, writes
+    /// nothing.
+    pub async fn state(
+        &self,
+        initial: NodeRecord,
+        to: crate::model::NodeStatus,
+    ) -> Result<PropertyWritten, StorageError> {
+        self.update(initial, move |record| { record.set_state(to); }, |_| {}).await
+    }
+
     /// Apply the whole Build entry through the same serialized writer as local changes.
     /// Both property fields are one durable effect.
     pub async fn entry(
         &self,
-        initial: NodeProperties,
+        initial: NodeRecord,
         entry: rdm_core::properties::EntryProperties,
-        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+        publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
         self.update_checked(initial, move |record| {
             if let Some(reason) = rdm_core::status::tags_refusal(&entry.tags) {
@@ -149,9 +169,9 @@ impl NodePropertyWriter {
     /// complete resulting set are checked before persistence; a refusal changes nothing.
     pub async fn tags(
         &self,
-        initial: NodeProperties,
+        initial: NodeRecord,
         change: TagChange,
-        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+        publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<rdm_core::status::StatusReply, StorageError> {
         use rdm_core::status::{StatusReply, TagScope};
         let refusal = match &change {
@@ -167,8 +187,8 @@ impl NodePropertyWriter {
             .update_checked(
                 initial,
                 move |record| {
-                    let node_id = record.birth.node_id.clone();
-                    let incarnation = record.birth.incarnation_id.clone();
+                    let node_id = record.node_id.clone();
+                    let incarnation = record.incarnation.clone();
                     let reply = match change {
                         TagChange::Create(labels) => {
                             let already_carried =
@@ -229,9 +249,9 @@ impl NodePropertyWriter {
     /// the command's future nor its receiver owns the lifetime of a pending provider write.
     pub async fn update(
         &self,
-        initial: NodeProperties,
-        change: impl FnOnce(&mut NodeProperties) + Send + 'static,
-        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+        initial: NodeRecord,
+        change: impl FnOnce(&mut NodeRecord) + Send + 'static,
+        publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
         self.update_checked(
             initial,
@@ -253,9 +273,9 @@ impl NodePropertyWriter {
     /// a tag or any other value.
     pub async fn update_checked(
         &self,
-        initial: NodeProperties,
-        change: impl FnOnce(&mut NodeProperties) -> Result<(), StorageError> + Send + 'static,
-        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+        initial: NodeRecord,
+        change: impl FnOnce(&mut NodeRecord) -> Result<(), StorageError> + Send + 'static,
+        publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
         self.write(initial, true, change, publish).await
     }
@@ -266,17 +286,17 @@ impl NodePropertyWriter {
     /// the retained part and reads nothing (Q227).
     async fn write(
         &self,
-        initial: NodeProperties,
+        initial: NodeRecord,
         read_retained: bool,
-        change: impl FnOnce(&mut NodeProperties) -> Result<(), StorageError> + Send + 'static,
-        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+        change: impl FnOnce(&mut NodeRecord) -> Result<(), StorageError> + Send + 'static,
+        publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
         use tracing::Instrument;
         let (records, current) = (self.records.clone(), self.current.clone());
         let backend = (self.provider)();
         let at = self.name.get().and_then(|name| name());
         let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
-        let (node_id, incarnation_id) = (initial.birth.node_id.clone(), initial.birth.incarnation_id.clone());
+        let (node_id, incarnation_id) = (initial.node_id.clone(), initial.incarnation.clone());
         let write = move || tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %backend, outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
         // particular no timeout may allow a second command to overtake the first call.
@@ -284,7 +304,7 @@ impl NodePropertyWriter {
             async move {
                 let mut held = current.lock().await;
                 if held.is_none() && read_retained {
-                    *held = records.properties(&initial.birth.node_id).await.inspect_err(|e| {
+                    *held = records.node(&initial.node_id).await.map(|line| line.map(|l| l.record)).inspect_err(|e| {
                         write().record("outcome", "failed").record("cause", e.to_string());
                     })?;
                 }
@@ -295,7 +315,7 @@ impl NodePropertyWriter {
                 })?;
                 if held.as_ref() == Some(&next) {
                     write.record("outcome", "unchanged");
-                } else if let Err(error) = records.put_properties(&next).instrument(write.clone()).await {
+                } else if let Err(error) = records.put_node(&next).instrument(write.clone()).await {
                     // An error may be a lost acknowledgement. The next admitted command must
                     // resolve the exact durable record before it can change anything. Never
                     // reuse a pre-write cached value.

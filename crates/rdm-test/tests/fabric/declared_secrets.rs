@@ -228,7 +228,7 @@ async fn a_launched_admins_create_sets_the_value_and_no_file_carries_it(test: &s
     let by = launcher.node_id.clone();
     let views = estate.node_views().await;
     let launching = views.iter().find(|n| n.node_id == by).expect("launcher ID in view");
-    assert!(launching.mesh == "mesh2" && launching.r#type == "node-admin" && by != bootstrap_id, "the broker was launched by mesh2's launched admin: {launcher:?}");
+    assert!(launching.mesh() == "mesh2" && launching.r#type == "node-admin" && by != bootstrap_id, "the broker was launched by mesh2's launched admin: {launcher:?}");
     let admin = environ(by.as_str(), estate.pid_of(&launching.location()).await);
     assert_eq!(custody_of(&admin).as_deref(), Some(value.as_str()), "{by}, which ran the create, holds the custody document (permitted)");
     assert!(!admin.contains_key(DECLARED_SECRET), "{by} is not a named type: its process holds no {DECLARED_SECRET}");

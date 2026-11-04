@@ -80,7 +80,7 @@ async fn pending_contract(cell: &str) {
     let create = created.build_id.to_string();
     let runs = estate.starts_of_build(&create).await;
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
-    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2 elects a primary");
+    let mesh2_primary = nodes.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2 elects a primary");
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
     let bootstrap2 = nodes.iter().find(|n| n.location() == Estate::path("mesh2.node-admin", "1")).cloned().expect("mesh2's bootstrap admin");
     let of = |sp: &Value, n: &NodeView| rdm_test::estate::of_node(sp, &n.location(), n.node_id.as_str());
@@ -88,7 +88,7 @@ async fn pending_contract(cell: &str) {
     // immutable container id).
     let provider = estate.owner.provider.clone();
     let mut mesh2_runtimes: Vec<Value> = Vec::new();
-    for n in nodes.iter().filter(|n| n.mesh == "mesh2" && n.r#type != "node-admin") {
+    for n in nodes.iter().filter(|n| n.mesh() == "mesh2" && n.r#type != "node-admin") {
         mesh2_runtimes.push(json!({"node": n.name, "provider": n.provider, "container": estate.container_of(&n.location()).await}));
     }
     for r in &mesh2_runtimes {
@@ -146,7 +146,7 @@ async fn pending_contract(cell: &str) {
     assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) || (d["attributes"]["outcome"] == "rejected-not-primary" && d["attributes"]["detail"] == "subject-unknown")), "{mesh_declared:?}");
     let mesh2_applied: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
+        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
         .collect();
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
     // The creation Build ran once, and its section call to mesh2 runs under its drive: the
@@ -227,13 +227,13 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let restart_build = String::new();
     let after = estate.settled_views(&shape).await;
     let after = after.iter().find(|n| n.location() == target).cloned().expect("the restarted admin in the view");
-    let mesh_name = after.mesh.clone();
+    let mesh_name = after.mesh().clone();
     estate.stop().await;
     let spans = estate.spans();
 
     assert_eq!(after.node_id, before.node_id, "the same node");
-    assert_eq!(after.incarnation_id, before.incarnation_id, "the same incarnation: a stop then a start keep the birth (node-stop.md, Kept: same node.id, incarnation)");
-    assert_eq!(after.status, NodeStatus::Ready, "{after:?}");
+    assert_eq!(after.incarnation, before.incarnation, "the same incarnation: a stop then a start keep the birth (node-stop.md, Kept: same node.id, incarnation)");
+    assert_eq!(after.state, NodeStatus::Ready, "{after:?}");
     let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| rdm_test::estate::of_node(r, &target, before.node_id.as_str())).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == mesh_name.as_str()).collect();
@@ -247,8 +247,8 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
         "cell": cell,
         "target": target,
         "restart_build": restart_build,
-        "before_incarnation": before.incarnation_id,
-        "after_incarnation": after.incarnation_id,
+        "before_incarnation": before.incarnation,
+        "after_incarnation": after.incarnation,
         "ready_spans": readies.len(),
         "handoff_spans": handoffs.len(),
         "mesh_ids": mesh_ids,
@@ -284,7 +284,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let fabric_primary = fabric_primary_view.location();
     // The lost mesh is a sole-admin mesh that does not hold the fabric-primary role.
     let lost_admin = bootstrap_admin_not_fabric_primary(&before);
-    let lost = before.iter().find(|n| n.location() == lost_admin).map(|n| n.mesh.clone()).expect("the lost admin's mesh");
+    let lost = before.iter().find(|n| n.location() == lost_admin).map(|n| n.mesh().clone()).expect("the lost admin's mesh");
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.location() == lost_admin).cloned().unwrap();
     let runs_before = estate.starts_of_build(&built.build_id.to_string()).await;
@@ -301,11 +301,11 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     }
     assert_eq!(killed, 1, "the lost mesh's only admin was killed");
 
-    let admin_inc = serde_json::to_value(&admin_before.incarnation_id).expect("an incarnation serializes");
+    let admin_inc = serde_json::to_value(&admin_before.incarnation).expect("an incarnation serializes");
     let recovered = estate
         .until_node(&lost_admin, "the lost mesh's admin is created again and ready", Duration::from_secs(240), |n| {
             let n = n?;
-            (n.incarnation_id != admin_before.incarnation_id && n.status == NodeStatus::Ready).then(|| serde_json::to_value(n).expect("a view serializes"))
+            (n.incarnation != admin_before.incarnation && n.state == NodeStatus::Ready).then(|| serde_json::to_value(n).expect("a view serializes"))
         })
         .await;
     assert_eq!(estate.mesh_view(&lost).await.id.expect("the lost mesh still has its id").to_string(), mesh_id, "the lost mesh recovered under its own MeshId");

@@ -197,7 +197,7 @@ impl DeploymentProvider for Fleet {
                     let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
                     if !withheld && matches!(joins.standing(&digest, &[]), rdm_admin::join::Standing::Deployed { .. }) {
                         joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
-                        let bound = rdm_node::node_records::NodeProperties {
+                        let bound = rdm_node::nodes_storage::NodeRecord {
                             birth: rdm_node::node_records::RecordBirth { node_id: digest.node.node_id.clone(), incarnation_id: digest.node.incarnation.clone() },
                             config: Default::default(),
                             tags: Default::default(),

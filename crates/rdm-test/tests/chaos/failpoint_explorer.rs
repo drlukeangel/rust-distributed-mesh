@@ -208,7 +208,7 @@ impl Run {
 
     /// `node` once the admin the estate asks lists it ready.
     async fn node_ready(&self, node: &PathName) -> Value {
-        let ready = self.estate.until_node(node, &format!("{node:?} ready"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+        let ready = self.estate.until_node(node, &format!("{node:?} ready"), Duration::from_secs(60), |v| v.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
         serde_json::to_value(ready).expect("a view serializes")
     }
 
@@ -310,7 +310,7 @@ impl Run {
 
     /// The admin that executes the operations on `mesh`'s members: the mesh's admin primary.
     async fn node_faults(&self, mesh: &str) -> FaultClient {
-        let primary = self.primary_where(&format!("{mesh} has an admin primary"), |n| n.r#type == "node-admin" && n.mesh == mesh && n.is_primary).await;
+        let primary = self.primary_where(&format!("{mesh} has an admin primary"), |n| n.r#type == "node-admin" && n.mesh() == mesh && n.is_primary).await;
         self.faults_of(&primary).await
     }
 

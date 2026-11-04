@@ -58,7 +58,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let declared_by_birth = Estate::values(
         &estate
             .until_view("every birth's own Ready declared at the authority", Duration::from_secs(20), |views| {
-                nodes.iter().all(|before| views.iter().any(|now| now.node_id.as_str() == before["node_id"].as_str().unwrap() && serde_json::to_value(&now.incarnation_id).unwrap() == before["incarnation_id"] && now.declared.as_deref() == Some("Ready"))).then(|| views.to_vec())
+                nodes.iter().all(|before| views.iter().any(|now| now.node_id.as_str() == before["node_id"].as_str().unwrap() && serde_json::to_value(&now.incarnation).unwrap() == before["incarnation_id"] && now.declared.as_deref() == Some("Ready"))).then(|| views.to_vec())
             })
             .await,
     );
@@ -197,16 +197,16 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "the stop completes: {frames:?}");
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1.node-admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.node-admin.1", estate.nodes_obj().await.start(&a1).await).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
     let before_rpc = estate.node_view(&rpc1).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
-    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1.node.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
 
     // A declaration straight to the admin holding no role: its own role decision.
     let (rpc1v, a1v, a2v) = (estate.node_value(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await);
     assert_eq!(rpc1v["node_id"], before_rpc.node_id.as_str(), "stop/start keeps the node ID");
-    assert_eq!(rpc1v["incarnation_id"], serde_json::to_value(&before_rpc.incarnation_id).unwrap(), "stop/start keeps the incarnation");
+    assert_eq!(rpc1v["incarnation_id"], serde_json::to_value(&before_rpc.incarnation).unwrap(), "stop/start keeps the incarnation");
     let primary_id = a2v["node_id"].as_str().unwrap().to_string();
     let node = format!("exact:{}", rpc1v["node_id"].as_str().unwrap());
     let non_primary = format!("exact:{}", a1v["node_id"].as_str().unwrap());

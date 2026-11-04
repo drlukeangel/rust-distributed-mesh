@@ -64,7 +64,7 @@ async fn a_create_of_two_meshes_and_their_nodes_is_one_build_that_births_each() 
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     for (path, mesh) in [(at("mesh2.node-admin", "1"), "mesh2"), (at("mesh2.node", "1"), "mesh2"), (at("mesh3.node-admin", "1"), "mesh3"), (at("mesh3.node", "1"), "mesh3")] {
         let v = estate.node_view(&path).await;
-        assert_eq!((v.status, v.mesh.as_str()), (NodeStatus::Ready, mesh), "{path:?} is ready in {mesh}: {v:?}");
+        assert_eq!((v.state, v.mesh().as_str()), (NodeStatus::Ready, mesh), "{path:?} is ready in {mesh}: {v:?}");
     }
     estate.stop().await;
     let spans = estate.spans();
@@ -113,7 +113,7 @@ async fn a_delete_by_node_id_deletes_that_birth_and_refuses_it_by_name_once_gone
     assert_ne!(again.node_id, one.node_id, "the path and name are born again as a new node.id");
     refused_by_name(nodes.delete(vec![one.node_id.clone()]).await, "a Delete of the replaced node.id");
     let still = estate.node_view(&at("mesh1.node", "1")).await;
-    assert_eq!((still.node_id.clone(), still.status), (again.node_id.clone(), NodeStatus::Ready), "the new birth at mesh1.node.1 is untouched by the refused Delete: {still:?}");
+    assert_eq!((still.node_id.clone(), still.state), (again.node_id.clone(), NodeStatus::Ready), "the new birth at mesh1.node.1 is untouched by the refused Delete: {still:?}");
     estate.stop().await;
     let spans = estate.spans();
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"].as_str() == Some(deleted.build_id.to_string().as_str())).expect("the Delete's acceptance span");
@@ -140,7 +140,7 @@ async fn a_config_update_made_after_the_callers_read_survives_a_create() {
     let read = estate.node_view(&at("mesh1.node", "1")).await;
     assert_eq!(read.config, zone("a"), "the caller reads mesh1.node.1 with the config its Create named: {read:?}");
 
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(read.node_id.clone()), node_id: read.node_id.clone(), incarnation: read.incarnation_id.clone().expect("the read names the incarnation") };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(read.node_id.clone()), node_id: read.node_id.clone(), incarnation: read.incarnation.clone().expect("the read names the incarnation") };
     let carrier = estate.carrier().await;
     let mesh_primary = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1's primary");
     let updated = rdm_client::NodeRpc::new(carrier.client()).config_update(&mesh_primary, &rdm_transport::RouteChoice::Direct, &birth, zone("b"), &rdm_transport::CallOptions::default()).await;

@@ -73,7 +73,7 @@ async fn an_idle_admin_rebuilds_its_view_on_no_poll_and_a_sigkilled_node_is_mark
     let killed_at = now_ns();
     estate
         .until_view(&format!("a new birth at {victim:?} restores two ready nodes"), floor + Duration::from_secs(60), |views| {
-            let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.status == NodeStatus::Ready).collect();
+            let ready: Vec<_> = views.iter().filter(|n| n.r#type == "node" && n.state == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.node_id.to_string() == victim_id)).then_some(())
         })
         .await;

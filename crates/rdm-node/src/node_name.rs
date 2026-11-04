@@ -25,6 +25,14 @@ pub enum NameApply {
         /// The routes it holds, as `<destination> (<kind>, entry <id>)`.
         routes: Vec<String>,
     },
+    /// The node would take the name, and the store refused its record's write of it: nothing is
+    /// published (record first, mesh second; Q356).
+    Unwritten {
+        /// The node, as the refusal names it.
+        node: String,
+        /// Why the write was refused.
+        reason: String,
+    },
 }
 
 impl NameApply {
@@ -35,6 +43,7 @@ impl NameApply {
             Self::Applied => "applied",
             Self::AlreadyApplied => "already-applied",
             Self::Busy { .. } => "busy",
+            Self::Unwritten { .. } => "record-refused",
         }
     }
 }
@@ -70,6 +79,7 @@ pub fn reply(decision: &NameApply) -> StatusReply {
         NameApply::Applied => rdm_core::reply::applied(),
         NameApply::AlreadyApplied => rdm_core::reply::already_applied(),
         NameApply::Busy { connections, .. } => rdm_core::reply::status::bounded_busy_holding_connections(connections),
+        NameApply::Unwritten { node, reason } => rdm_core::reply::status::bounded_node_row_refused(node, reason),
     }
 }
 

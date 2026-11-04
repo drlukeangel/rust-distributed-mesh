@@ -16,8 +16,6 @@ pub(crate) struct RecoverySubmitter {
     pub digest_view: DigestView,
     pub provider: Arc<dyn DeploymentProvider>,
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
-    /// The node records this admin writes, as it holds them.
-    pub written: Arc<crate::node_rows::WrittenRows>,
     /// This admin's runner, once built: it runs the recovery and the terminate of a deleted birth
     /// heard again, the primary's own workflow (Q342).
     pub runner: Arc<std::sync::OnceLock<Arc<super::runner::AdminRunner>>>,
@@ -314,10 +312,7 @@ pub(crate) fn submit_span(me: &NodeId, node: &Node, incarnation: &IncarnationId,
     )
 }
 
-/// The silence-status memo of the mesh primary's tick: what it last put per node.
-pub(crate) type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<NodeStatus>)>;
-
-/// The durable runtime rows of its own mesh the offline tick of a mesh-primary watches births from
+/// The node records of its own mesh the offline tick of a mesh-primary watches births from
 /// ([`durable_births`]). Only the mesh-primary runs node investigation on its mesh's births
 /// (fabric-node-lifecycle-elections.md §4.1; node-recovery.md step 2: "Only the mesh-primary acts"), so
 /// only it reads them: once, at the first tick that finds this admin its mesh's primary, and held while it
@@ -328,13 +323,13 @@ pub(crate) type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<
 /// that is refused holds none, so the next tick reads again.
 #[derive(Debug, Default)]
 pub(crate) struct TenureRows {
-    rows: Option<Vec<crate::storage::RuntimeRow>>,
+    rows: Option<Vec<crate::storage::NodeRecord>>,
 }
 
 impl TenureRows {
     /// The rows for one tick of the admin `reader` of `mesh`, `primary` when its view names it its
     /// mesh's primary: those this tenure read from `nodes`, read now at its first tick.
-    pub(crate) async fn for_tick(&mut self, primary: bool, nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> &[crate::storage::RuntimeRow] {
+    pub(crate) async fn for_tick(&mut self, primary: bool, nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> &[crate::storage::NodeRecord] {
         if !primary {
             self.rows = None;
             return &[];
@@ -346,21 +341,21 @@ impl TenureRows {
     }
 }
 
-/// The durable runtime rows of `mesh` that `nodes` holds, read for `reader` as it takes its mesh's
-/// primary role ([`runtime_rows_read`]).
-async fn read_runtime_rows(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> Option<Vec<crate::storage::RuntimeRow>> {
-    runtime_rows_read(reader, Some(mesh), nodes.runtimes().await)
+/// The node records of `mesh` that `nodes` holds, each with the runtime its node wrote, read for
+/// `reader` as it takes its mesh's primary role ([`runtime_rows_read`]).
+async fn read_runtime_rows(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, mesh: &str) -> Option<Vec<crate::storage::NodeRecord>> {
+    runtime_rows_read(reader, Some(mesh), nodes.nodes(mesh).await)
 }
 
 /// What a primary's one read of the durable runtime rows (`read`) holds for its tenure: `mesh`'s rows
 /// for a mesh-primary (`Some`, [`TenureRows`]), every mesh's for the fabric-primary (`None`,
 /// `FabricTenureRows`), named on one `rdm.node_admin.node.resolve.via-runtime-rows-read` with how many;
 /// `None` when the read was refused, named on its own span, so the next tick or pass reads again.
-pub(crate) fn runtime_rows_read(reader: &PathName, mesh: Option<&str>, read: Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError>) -> Option<Vec<crate::storage::RuntimeRow>> {
+pub(crate) fn runtime_rows_read(reader: &PathName, mesh: Option<&str>, read: Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError>) -> Option<Vec<crate::storage::NodeRecord>> {
     let role = if mesh.is_some() { "mesh-primary" } else { "fabric-primary" };
     match read {
         Ok(rows) => {
-            let rows: Vec<crate::storage::RuntimeRow> = rows.into_iter().filter(|r| mesh.is_none_or(|m| r.mesh == m)).collect();
+            let rows: Vec<crate::storage::NodeRecord> = rows.into_iter().filter(|r| mesh.is_none_or(|m| r.mesh() == m)).collect();
             let span = tracing::info_span!("rdm.node_admin.node.resolve.via-runtime-rows-read", reader_path = %reader.path, reader_name = %reader.name, role, mesh = tracing::field::Empty, store = "nodes.storage", rows = rows.len() as u64);
             match mesh {
                 Some(mesh) => {
@@ -385,13 +380,13 @@ pub(crate) fn runtime_rows_read(reader: &PathName, mesh: Option<&str>, read: Res
 /// never heard and never launched, at a path the accepted Build names (`planned`), whose departure
 /// is not held (a deleted birth's row is history). Each stands in the map as `PendingReconnect`,
 /// to be inspected like any unheard birth: only an exited runtime counts. One birth per path.
-pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], planned: &dyn Fn(&PathName) -> bool, deleted: &dyn Fn(&str) -> bool) -> Vec<Node> {
+pub fn durable_births(view: &Topology, durable: &[crate::storage::NodeRecord], planned: &dyn Fn(&PathName) -> bool, deleted: &dyn Fn(&str) -> bool) -> Vec<Node> {
     let mut births: Vec<Node> = Vec::new();
     for row in durable {
         if view.node(&row.location()).is_none() && !births.iter().any(|n| n.location() == row.location()) && planned(&row.location()) && !deleted(row.node_id.as_str()) {
-            let mut n = Node::allocated(row.location(), row.mesh.clone(), &row.r#type);
+            let mut n = Node::allocated(row.location(), row.mesh(), &row.r#type);
             n.node_id = row.node_id.clone();
-            n.incarnation_id = Some(row.incarnation_id.clone());
+            n.incarnation_id = Some(row.incarnation.clone());
             n.status = NodeStatus::PendingReconnect;
             births.push(n);
         }
@@ -435,12 +430,10 @@ pub fn recovery_due(holds_role: bool, mesh: &str, watched: &BTreeMap<String, Nod
 
 /// The mesh primary's per-birth bookkeeping speaks only for the births it still watches: a birth
 /// whose node left the view (deleted, or recovered under a new node.id at its path and name) or whose
-/// node the view now holds at another incarnation (superseded) leaves the TRUE OFFLINE set; the
-/// silence memo lives only while its node is watched. Run every tick, after the tick's writes, so
-/// nothing of a gone birth outlives one tick.
-pub(crate) fn clear_unwatched(watched: &BTreeMap<String, Node>, offline: &mut HashSet<(NodeId, IncarnationId)>, written: &mut WrittenSilence) {
+/// node the view now holds at another incarnation (superseded) leaves the TRUE OFFLINE set. Run every
+/// tick, so nothing of a gone birth outlives one tick.
+pub(crate) fn clear_unwatched(watched: &BTreeMap<String, Node>, offline: &mut HashSet<(NodeId, IncarnationId)>) {
     offline.retain(|(node_id, incarnation)| watched.get(node_id.as_str()).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)));
-    written.retain(|node_id, _| watched.contains_key(node_id.as_str()));
 }
 
 /// How a recovery ended.
@@ -476,13 +469,14 @@ impl RecoverySubmitter {
     /// fabric-primary, which terminates its runtime ([`Self::report_terminate`], Q207).
     pub(crate) async fn superseded_births(&self, view: &Topology, mesh: &str) -> Vec<rdm_core::LifecycleOp> {
         // The mesh-primary's own repair, never a Build or part of one (Q342).
-        superseded_births(&self.me(), view, mesh, &*self.nodes_storage, &self.written, rdm_core::LifecycleOp::NO_BUILD).await
+        superseded_births(&self.me(), view, mesh, &*self.nodes_storage, rdm_core::LifecycleOp::NO_BUILD).await
     }
 }
 
-/// [`RecoverySubmitter::superseded_births`] on `storage` and the records `written` holds, by `me`, the
-/// operations it answers named under the current Build `build_id`.
-pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str, storage: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, build_id: &str) -> Vec<rdm_core::LifecycleOp> {
+/// [`RecoverySubmitter::superseded_births`] on `storage`, by `me`, the operations it answers named
+/// under the current Build `build_id`. Each superseded birth's record is written `Deleted` from its latest
+/// line (a killed node's record is its mesh-primary's to write, Q356).
+pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str, storage: &dyn crate::storage::NodesStorage, build_id: &str) -> Vec<rdm_core::LifecycleOp> {
     let mut at: BTreeMap<PathName, Vec<&Node>> = BTreeMap::new();
     for n in view.births().filter(|n| n.mesh == mesh && n.status != NodeStatus::Deleted && n.incarnation_id.is_some()) {
         at.entry(n.location()).or_default().push(n);
@@ -496,10 +490,13 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
         for b in births.into_iter().filter(|b| b.node_id != holder) {
             let incarnation = b.incarnation_id.clone().expect("filtered above");
             let span = tracing::info_span!("rdm.node_admin.node.delete.via-superseded-birth", node_path = %me.path, node_name = %me.name, subject_path = %path.path, subject_name = %path.name, node_id = %b.node_id, incarnation_id = %incarnation.as_str(), holder = %holder, outcome = tracing::field::Empty);
-            let row = written.update(storage, &b.node_id, None, |r| {
-                r.status = NodeStatus::Deleted;
-                r.allocated = None;
-            }).await;
+            let row = async {
+                let Some(mut r) = storage.node(&b.node_id).await.map_err(|e| e.to_string())?.map(|l| l.record) else {
+                    return Err(format!("node {} wrote no record", b.node_id));
+                };
+                r.state = NodeStatus::Deleted;
+                storage.put_node(&r).await.map_err(|e| e.to_string())
+            }.await;
             match row {
                 Ok(_) => {
                     span.record("outcome", "row-deleted");
@@ -550,7 +547,7 @@ impl RecoverySubmitter {
 #[cfg(test)]
 mod superseded_tests {
     use super::*;
-    use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
+    use crate::storage::{MemoryNodesStorage, NodeRecord, NodesStorage};
 
     fn birth(path: PathName, mesh: &str, r#type: &str) -> Node {
         let mut n = Node::allocated(path, mesh, r#type);
@@ -577,11 +574,11 @@ mod superseded_tests {
         let written = crate::node_rows::WrittenRows::default();
         let (first, second, alone) = (birth(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), birth(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin"), birth(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"));
         for n in [&first, &alone] {
-            crate::node_rows::write_record(&storage, &NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status)).await.unwrap().unwrap();
+            crate::node_rows::write_record(&storage, &NodeRecord::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), n.status)).await.unwrap().unwrap();
         }
         // The second birth's create was refused at the name the first birth's record holds: its own record
         // stands Withdrawn, and the view holds both births.
-        storage.put_node(&NodeRow::new(second.location(), second.mesh.clone(), &second.r#type, second.node_id.clone(), NodeStatus::Withdrawn)).await.unwrap();
+        storage.put_node(&NodeRecord::new(second.location(), second.mesh.clone(), &second.r#type, second.node_id.clone(), NodeStatus::Withdrawn)).await.unwrap();
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let ops = superseded_births(&me, &view(vec![first.clone(), second.clone(), alone.clone()]), "mesh1", &storage, &written, "b1").await;
         assert_eq!(ops.iter().map(|o| (o.node_id.clone(), o.operation.clone())).collect::<Vec<_>>(), vec![(second.node_id.clone(), rdm_core::OperationId::node("node.delete", &second.node_id))], "only the second birth is answered");
@@ -589,7 +586,7 @@ mod superseded_tests {
         assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::Ready, "the record's birth stands");
         assert_eq!(crate::node_rows::record_at(&storage, &first.location()).await.unwrap().map(|r| r.node_id), Some(first.node_id.clone()), "the name stays the first birth's");
         let (one, other, holder) = (birth(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), birth(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), birth(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
-        storage.put_node(&NodeRow::new(holder.location(), holder.mesh.clone(), &holder.r#type, holder.node_id.clone(), holder.status)).await.unwrap();
+        storage.put_node(&NodeRecord::new(holder.location(), holder.mesh.clone(), &holder.r#type, holder.node_id.clone(), holder.status)).await.unwrap();
         assert!(superseded_births(&me, &view(vec![one, other]), "mesh1", &storage, &written, "b1").await.is_empty(), "a path whose live record names neither birth answers nothing");
     }
 }

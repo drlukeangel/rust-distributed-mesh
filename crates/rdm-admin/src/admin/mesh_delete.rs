@@ -163,29 +163,12 @@ impl AdminRunner {
         result
     }
 
-    /// The roster of `mesh` (`mesh_id`) captured from its node rows on the store
-    /// ([`crate::mesh_delete::stored_roster`]). A birth a create's claim allocated and no fact of which is
-    /// written is a birth of the roster while the provider finds its launch running, held here by its exact
-    /// handle ([`AdminRunner::claimed_launch`]); a launch the provider proves never started, or started and
-    /// exited, left no runtime for the delete to delete, and its birth is no birth of the roster. A launch
-    /// that cannot be found refuses the capture by name.
-    async fn stored_roster(&self, mesh: &str, mesh_id: &MeshId, steps: &[crate::build_state::BuildStep]) -> Result<Vec<RosterBirth>, String> {
-        let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node rows of {mesh} from", self.node_id))?;
-        let rows = store.nodes(mesh).await.map_err(|e| format!("the node rows of {mesh} could not be read: {e}"))?;
-        let mut roster = crate::mesh_delete::stored_roster(&rows, mesh, mesh_id, steps);
-        for row in rows.iter().filter(|r| r.births.is_empty() && r.allocated.is_some()) {
-            let Some(b) = roster.iter().find(|b| b.node_id == row.node_id.to_string()).cloned() else { continue };
-            let birth = b.birth().map_err(|e| format!("the roster birth {}: {e}", b.node_id))?;
-            match self.claimed_launch(&b.record()?, &birth).await? {
-                Some((crate::deployment::provider::Found::Running(_), _)) | None => {}
-                Some((found, _)) => {
-                    tracing::info_span!("rdm.node_admin.mesh.resolve.via-claimed-birth-gone", mesh = %mesh, mesh_id = %mesh_id, member = %b.node_id, node_id = %b.node_id, incarnation_id = %b.incarnation_id, found = found.name())
-                        .in_scope(|| tracing::info!("the launch the create's claim records left no runtime: its birth is no birth of the roster"));
-                    roster.retain(|x| *x != b);
-                }
-            }
-        }
-        Ok(roster)
+    /// The roster of `mesh` captured from its node records on the store
+    /// ([`crate::mesh_delete::stored_roster`]): each a birth that wrote its own record (Q356).
+    async fn stored_roster(&self, mesh: &str, _mesh_id: &MeshId, steps: &[crate::build_state::BuildStep]) -> Result<Vec<RosterBirth>, String> {
+        let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node records of {mesh} from", self.node_id))?;
+        let rows = store.nodes(mesh).await.map_err(|e| format!("the node records of {mesh} could not be read: {e}"))?;
+        Ok(crate::mesh_delete::stored_roster(&rows, mesh, steps))
     }
 
     /// The leaving mesh holds no node-admin primary. Before admission that refuses the leave; after
@@ -272,13 +255,13 @@ impl AdminRunner {
         let node_id = NodeId::parse(&predecessor.node_id).map_err(|e| format!("the roster names {} by node id `{}`, which does not parse: {e}", predecessor.node_id, predecessor.node_id))?;
         let store = self.records.contacts.get().ok_or_else(|| format!("node.create:path={node_path:?} name={node_name:?}: {} holds no node rows, so the executable of the predecessor {} {} cannot be read; nothing is launched", self.node_id, predecessor.node_id, predecessor.incarnation_id))?;
         let row = store.node(&node_id).await.map_err(|e| format!("node.create:path={node_path:?} name={node_name:?}: the row of the predecessor {} ({node_id}) could not be read for its executable: {e}", predecessor.node_id))?;
-        row.and_then(|r| r.executable).ok_or_else(|| format!("node.create:path={node_path:?} name={node_name:?}: the row of the predecessor {} {} records no executable, so the admin created for {} has none to run; nothing is launched", predecessor.node_id, predecessor.incarnation_id, predecessor.mesh))
+        row.and_then(|l| l.record.executable).ok_or_else(|| format!("node.create:path={node_path:?} name={node_name:?}: the row of the predecessor {} {} records no executable, so the admin created for {} has none to run; nothing is launched", predecessor.node_id, predecessor.incarnation_id, predecessor.mesh))
     }
 
-    /// The durable runtime row of the roster birth `b` (the lost final primary, or another
-    /// node-admin of the leaving mesh), read by its key ([`crate::admin::birth_runtime_row`]); a
+    /// The node record of the roster birth `b` (the lost final primary, or another node-admin of the
+    /// leaving mesh), read by its node id and incarnation ([`crate::admin::birth_runtime_row`]); a
     /// roster birth whose ids do not parse is refused by name.
-    async fn roster_birth_row(&self, store: &dyn crate::storage::NodesStorage, b: &RosterBirth) -> Result<Option<crate::storage::RuntimeRow>, String> {
+    async fn roster_birth_row(&self, store: &dyn crate::storage::NodesStorage, b: &RosterBirth) -> Result<Option<crate::storage::NodeRecord>, String> {
         let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("the roster names {} by node id `{}`, which does not parse: {e}", b.node_id, b.node_id))?;
         crate::admin::birth_runtime_row(store, &self.held_name(), &node_id, &b.birth().map_err(|e| format!("the roster names {} at birth `{}`, which does not parse: {e}", b.node_id, b.incarnation_id))?).await
     }
@@ -497,31 +480,29 @@ impl AdminRunner {
 
     /// The mesh.delete whose `MeshDeleted` step ended `complete` and whose `MeshLeft` did not, of the mesh
     /// of `op`'s birth: that birth is the mesh's final primary, the one birth of the mesh its records do
-    /// not hold deleted (D67). The mesh is the one the birth's own node record names by its id (a
-    /// fabric-primary that took the role from the deleted mesh never created it, and holds no id of it
-    /// otherwise). Only a mesh whose record is deleted has one: its mesh-primary writes the mesh's record
-    /// deleted before it reports mesh.deleted (mesh-delete.md step 5). Its Build is the newest one holding
-    /// a step event of `mesh.delete:<mesh_id>`, read newest first: the final primary's own node.delete is
-    /// a Build of its own, accepted after it, so the current Build is not it. `None` when no such
-    /// mesh.delete is open.
+    /// not hold deleted (D67). The mesh is the deleted mesh of the birth's mesh name (`op.mesh`, the
+    /// first location of its path) whose `mesh.delete:<mesh_id>` step event the newest Build holding one
+    /// holds: only a mesh whose record is deleted has one, its mesh-primary writing the mesh's record
+    /// deleted before it reports mesh.deleted (mesh-delete.md step 5). The Builds are read newest first:
+    /// the final primary's own node.delete is a Build of its own, accepted after it, so the current Build
+    /// is not it. `None` when no such mesh.delete is open.
     async fn mesh_deleted_of(&self, op: &rdm_core::LifecycleOp) -> Result<Option<(crate::build::BuildId, rdm_core::OperationId, MeshId)>, String> {
-        let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node record of {}", self.node_id, op.node_id))?;
-        let row = store.node(&op.node_id).await.map_err(|e| format!("the node record of {} could not be read: {e}", op.node_id))?;
-        let Some(mesh_id) = row.and_then(|r| r.mesh_id) else { return Ok(None) };
-        let mesh = self.mesh_storage.mesh(&mesh_id).await.map_err(|e| format!("the record of {} ({mesh_id}) could not be read: {e}", op.mesh))?;
-        if !mesh.is_some_and(|m| m.state == rdm_core::status::MeshState::Deleted) {
+        let deleted: Vec<MeshId> = self.mesh_storage.meshes().await.map_err(|e| format!("the mesh records could not be read for {}: {e}", op.mesh))?.into_iter().filter(|m| m.name == op.mesh && m.state == rdm_core::status::MeshState::Deleted).map(|m| m.mesh_id).collect();
+        if deleted.is_empty() {
             return Ok(None);
         }
-        let operation = crate::mesh_delete::operation(&mesh_id);
-        let key = operation.to_string();
         for id in self.builds.accepted_newest_first().await.map_err(|e| e.to_string())? {
             let p = match self.builds.read_build(&id).await {
                 Ok(p) => p,
                 Err(crate::build_state::BuildStateError::UnknownBuild(_)) => continue,
                 Err(e) => return Err(e.to_string()),
             };
-            if p.steps.iter().any(|s| s.operation == key) {
-                return Ok((crate::mesh_delete::owner_resume(&p.steps, &key) == crate::mesh_delete::OwnerResume::Deleted).then(|| (p.build_id.clone(), operation, mesh_id)));
+            for mesh_id in &deleted {
+                let operation = crate::mesh_delete::operation(mesh_id);
+                let key = operation.to_string();
+                if p.steps.iter().any(|s| s.operation == key) {
+                    return Ok((crate::mesh_delete::owner_resume(&p.steps, &key) == crate::mesh_delete::OwnerResume::Deleted).then(|| (p.build_id.clone(), operation, mesh_id.clone())));
+                }
             }
         }
         Ok(None)
@@ -726,7 +707,6 @@ impl AdminRunner {
         let roster = crate::mesh_delete::leaving_roster(&*self.builds, key, &me_name, &me_birth, || Ok(stored)).await?;
         let mesh: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
         let records = crate::mesh_delete::roster_records(&mesh, &roster, |b| self.held_record(b));
-        crate::mesh_delete::roster_rows_read(self.records.node_rows().as_deref(), &me_name, &key.operation, &roster, &records).await;
         members_exited(&*self.builds, key, &me_name, &roster, &me_birth, my_runtime, &records, |n| async move { self.shutdown_one(key, &n).await }).await
     }
 
@@ -1099,7 +1079,6 @@ mod tests {
                 topology.clone(),
                 nodes_storage.clone(),
             )
-            .with_written(records.caches.nodes.clone()),
         ));
         let runner = Arc::new(AdminRunner {
             storage_changes,
@@ -1185,7 +1164,7 @@ mod tests {
         let final_id = NodeId::mint();
         let final_inc = IncarnationId::mint();
         // The final primary's record, its birth on it, written Deleted by its own node.delete.
-        let mut final_row = crate::storage::NodeRow::new(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", final_id.clone(), NodeStatus::Deleted);
+        let mut final_row = crate::storage::NodeRecord::new(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", final_id.clone(), NodeStatus::Deleted);
         final_row.birth_mut(&final_inc, &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap());
         final_row.mesh_id = Some(mesh2_id.clone());
         runner.nodes_storage.put_node(&final_row).await.unwrap();

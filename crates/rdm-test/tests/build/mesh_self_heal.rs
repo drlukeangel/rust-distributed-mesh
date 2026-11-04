@@ -31,15 +31,15 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
 
-    let primary = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
+    let primary = estate.node_views().await.into_iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).expect("mesh primary");
     let mesh2_primary = primary.node_id.to_string();
-    let executor = rdm_core::framing::Birth { node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("launched primary") };
+    let executor = rdm_core::framing::Birth { node_id: primary.node_id.clone(), incarnation: primary.incarnation.clone().expect("launched primary") };
     let victim = estate
         .node_views()
         .await
         .into_iter()
-        .filter(|n| n.mesh == "mesh2" && n.r#type == "node" && !n.is_primary)
-        .map(|n| (n.location(), n.node_id, n.incarnation_id.expect("launched victim")))
+        .filter(|n| n.mesh() == "mesh2" && n.r#type == "node" && !n.is_primary)
+        .map(|n| (n.location(), n.node_id, n.incarnation.expect("launched victim")))
         .min_by(|a, b| a.0.cmp(&b.0))
         .expect("a node of mesh2");
 
@@ -50,7 +50,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
             &victim.0,
             &format!("{:?} is recovered by its mesh-primary", victim.0),
             crate::node_recovery_due(),
-            |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != victim.1).cloned(),
+            |n| n.filter(|n| n.state == NodeStatus::Ready && n.node_id != victim.1).cloned(),
         )
         .await;
     assert_ne!(born.node_id, victim.1);

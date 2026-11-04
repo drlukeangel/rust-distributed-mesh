@@ -36,7 +36,7 @@ fn owner(test: &str) -> Owner {
 }
 
 fn ready(n: &NodeView) -> bool {
-    n.status == NodeStatus::Ready
+    n.state == NodeStatus::Ready
 }
 
 fn attr(sp: &Value, k: &str) -> String {
@@ -110,7 +110,7 @@ fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
             }
         };
         let (a, b, spared) = (published(&estate, &rpc("1")).await, published(&estate, &rpc("2")).await, published(&estate, &rpc("3")).await);
-        let births: Vec<_> = [rpc("1"), rpc("2")].iter().map(|n| { let row = views.iter().find(|x| x.location() == *n).unwrap(); (row.node_id.clone(), row.incarnation_id.clone()) }).collect();
+        let births: Vec<_> = [rpc("1"), rpc("2")].iter().map(|n| { let row = views.iter().find(|x| x.location() == *n).unwrap(); (row.node_id.clone(), row.incarnation.clone()) }).collect();
         let fabric_ready = estate.fabric_ready();
         let done = tokio::task::spawn_blocking({
             let (targets, protected) = (vec![a.clone(), b.clone()], vec![protected.clone()]);
@@ -123,7 +123,7 @@ fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
         assert!(gone(a.pid) && gone(b.pid), "both victims exited");
         assert!(!gone(spared.pid) && !gone(protected.pid), "the spared node and the protected fabric primary still run");
         for (name, birth) in [(rpc("1"), &births[0]), (rpc("2"), &births[1])] {
-            estate.until_node(&name, &format!("{name:?}'s birth no longer ready in the view"), SETTLE, |n| n.filter(|n| !ready(n) || n.node_id != birth.0 || n.incarnation_id != birth.1).map(|_| ())).await;
+            estate.until_node(&name, &format!("{name:?}'s birth no longer ready in the view"), SETTLE, |n| n.filter(|n| !ready(n) || n.node_id != birth.0 || n.incarnation != birth.1).map(|_| ())).await;
         }
         finish(estate).await;
         let spans = capture.spans().expect("the cell's spans can be read");
@@ -224,7 +224,7 @@ fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
         };
         assert_eq!(flapped.cycles, 3);
         let back = back_ready(&estate, &victim, &before.node_id).await;
-        assert_eq!(back.incarnation_id, before.incarnation_id, "a flap shorter than the floor leaves the same birth");
+        assert_eq!(back.incarnation, before.incarnation, "a flap shorter than the floor leaves the same birth");
         assert_eq!(estate.node_views().await.len(), nodes.len(), "no ghost birth");
         finish(estate).await;
         let spans = capture.spans().expect("the cell's spans can be read");

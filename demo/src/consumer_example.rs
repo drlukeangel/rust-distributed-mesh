@@ -595,7 +595,7 @@ impl Caller {
             pending.insert(format!("{path}-{name}-{}-{n:06}", ctx.birth.incarnation.as_str()), (format!("operation {n} of path {path:?}, name {name:?}"), Progress::ToSend));
             // Target selection: the serving kind's ready nodes in this node's mesh, as the topology
             // this node holds names them; a node that answered Unserved is passed over.
-            let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("type", [SERVING_TYPE]).eq("status", ["ready"])) {
+            let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("type", [SERVING_TYPE]).eq("state", ["ready"])) {
                 Ok(nodes) => nodes.into_iter().filter(|d| !unserved.contains(&d.node.node_id)).collect(),
                 Err(refused) => {
                     tracing::error!(target: "rshape", %refused, "the topology query was refused");

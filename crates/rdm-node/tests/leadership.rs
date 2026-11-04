@@ -5,29 +5,11 @@ use rdm_client::{NodeStatus, NodeView};
 use rdm_node::leadership::{fabric_primary, primary_of};
 
 fn row(name: rdm_core::PathName, r#type: &str, primary: bool, fabric: bool) -> NodeView {
-    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
-        path: name.path.clone(), name: name.name.clone(),
-        r#type: r#type.to_string(),
-        mesh: "mesh1".into(),
-        node_id: NodeId::mint(),
-        endpoint_id: None,
-        incarnation_id: Some(IncarnationId::mint()),
-        deployment_id: None,
-        provider: None,
-        data_dir: None,
-        status: NodeStatus::Ready,
-        is_primary: primary,
-        is_fabric_primary: fabric,
-        admin_api_base: None,
-        transport_addr: None,
-        listeners: vec![],
-        declared: None,
-        stopped: false,
-        load: None,
-        gossip: None,
-        tags: Default::default(),
-        config: Default::default(),
-    }
+    let mut view = NodeView::new(&name, r#type, NodeId::mint(), NodeStatus::Ready);
+    view.incarnation = Some(IncarnationId::mint());
+    view.is_primary = primary;
+    view.is_fabric_primary = fabric;
+    view
 }
 
 #[test]

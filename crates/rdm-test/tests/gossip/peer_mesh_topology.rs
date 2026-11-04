@@ -74,7 +74,7 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     let ordinary: BTreeSet<String> = views.iter().filter(|n| n.r#type == "node").map(|n| n.node_id.to_string()).collect();
     let admins: BTreeSet<String> = views.iter().filter(|n| n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();
     assert_eq!((ordinary.len(), admins.len()), (4, 4), "{nodes:#?}");
-    let side = |m: &str| -> Vec<rdm_core::PathName> { views.iter().filter(|n| n.mesh == m).map(|n| n.location()).collect() };
+    let side = |m: &str| -> Vec<rdm_core::PathName> { views.iter().filter(|n| n.mesh() == m).map(|n| n.location()).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
 
     // Quiet: every node holds both meshes, then 60 s pass with nothing changing.

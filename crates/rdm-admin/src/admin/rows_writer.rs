@@ -1,4 +1,5 @@
-//! Durable node, mesh, and fabric row writers.
+//! The Mesh record's and the Fabric record's writers, and the reads of the node records the stores
+//! hold (each node writes its own record, Q356).
 
 use super::*;
 
@@ -9,66 +10,53 @@ pub(crate) fn held_births(digest_view: &DigestView, fabric: &FabricId, me: &Node
     digest_view.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }
 
-/// Read the exact birth's durable runtime by node ID and incarnation.
-/// Missing evidence and an unreadable store remain distinct outcomes.
-pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, String> {
-    match nodes.runtime(node_id, incarnation).await {
+/// Read the exact birth's node record by node ID and incarnation: the runtime the node wrote on it.
+/// A missing record and an unreadable store remain distinct outcomes.
+pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::NodeRecord>, String> {
+    match crate::node_rows::birth_record(nodes, node_id, incarnation).await {
         Ok(Some(row)) => Ok(Some(row)),
         Ok(None) => {
             tracing::info_span!("rdm.node_admin.node.reject.via-no-runtime-row", reader_path = %reader.path, reader_name = %reader.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), store = "nodes.storage")
-                .in_scope(|| tracing::info!("no durable runtime row of this birth was ever written here"));
+                .in_scope(|| tracing::info!("no node record of this birth was ever written here"));
             Ok(None)
         }
         Err(e) => {
             tracing::info_span!("rdm.node_admin.node.reject.via-runtime-row-unreadable", reader_path = %reader.path, reader_name = %reader.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), store = "nodes.storage", error = %e)
-                .in_scope(|| tracing::info!("the durable runtime row of this birth could not be read"));
-            Err(format!("the durable runtime row of node {node_id}, incarnation {} could not be read from nodes.storage by path {:?}, name {:?}: {e}", incarnation.as_str(), reader.path, reader.name))
+                .in_scope(|| tracing::info!("the node record of this birth could not be read"));
+            Err(format!("the node record of node {node_id}, incarnation {} could not be read from nodes.storage by path {:?}, name {:?}: {e}", incarnation.as_str(), reader.path, reader.name))
         }
     }
 }
 
-/// A mesh's members' addresses and primaries on their Node records, and its Mesh row, on the fabric's
-/// shared store root, written by that mesh's primary alone, for its own members alone (R14 item 2; the
-/// writer ladder, node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's
-/// primary's), and by the fabric-primary for the members of a mesh with no primary, as it writes their
-/// records (R13, `crate::node_rows::writes_for`). A sweep that writes no mesh writes nothing. The first
-/// sweep that writes its own mesh checks the mesh's name against the mesh records ([`crate::storage::write_mesh`]) and
-/// writes the Mesh row (node-identity-and-state.md §2.7): nothing else of the mesh is written until the
-/// row is written, and a name another mesh's live row holds leaves the mesh's rows unwritten for the tenure,
-/// named. Then each member birth's endpoint, address and the primaries the view holds for it are
-/// written onto the newest facts of its node's record, from the copy this admin holds, whole
-/// (storage-whole-records.md, "The rule"), only when they differ. A birth leaves its record's births by
-/// the record's own rule ([`crate::storage::BIRTHS_KEPT`]), and a deleted node's record is `Deleted`:
-/// neither is read as a node to reach. An address is a restart's hint, never topology.
+/// A mesh's Mesh row on the fabric's shared store root, written by that mesh's primary alone, and by
+/// the fabric-primary for a mesh with no primary (R13; node-identity-and-state.md §2.7). The first
+/// sweep of a tenure that writes its own mesh checks the mesh's name against the mesh records
+/// ([`crate::storage::write_mesh`]) and writes the Mesh row; a name another mesh's live row holds leaves
+/// it unwritten for the tenure, named. Each node writes its own node record (Q356).
 pub(crate) struct MeshRowsWriter {
     /// The admin's globally unique node ID, rendered for writer diagnostics.
     pub(crate) me: String,
     pub(crate) mesh: String,
     pub(crate) mesh_id: MeshId,
-    pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
     /// The records this admin writes, as it holds them.
     pub(crate) caches: crate::record_cache::Caches,
     /// The write of the mesh's row this role tenure decided: `None` outside a tenure or before the
     /// store answered it; `Some(Ok)` once it is written; `Some(Err)` when it was refused (another mesh's
-    /// live row holds the name, or this mesh is deleted): the mesh's rows stay unwritten for the tenure.
+    /// live row holds the name, or this mesh is deleted).
     pub(crate) written: Option<Result<(), crate::storage::MeshRefused>>,
 }
 
 impl MeshRowsWriter {
-    pub(crate) fn new(me: &str, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
-        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, written: None }
+    pub(crate) fn new(me: &str, mesh: &str, mesh_id: MeshId, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
+        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, meshes, caches, written: None }
     }
 
-    /// One sweep over the births `held` (every birth of the fabric this admin holds, itself
-    /// included, each with the primaries its view holds for it), `writes` the meshes whose rows this
-    /// admin writes now (its own mesh while it is its mesh-primary; a mesh with no primary while it is
-    /// the fabric-primary), `deleted` whether the view holds a node deleted. Returns whether a row is
-    /// owed: a write or a read the store did not acknowledge, or a member whose record is not written
-    /// yet (its create or its arrival writes it), which the caller retries on its own clock
-    /// under the one backoff rule (node-identity-and-state.md §2.7), never waiting for a birth or a
-    /// primary change.
-    pub(crate) async fn sweep(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, deleted: impl Fn(&NodeId) -> bool) -> bool {
+    /// One sweep: `writes` the meshes this admin writes now (its own mesh while it is its mesh-primary;
+    /// a mesh with no primary while it is the fabric-primary). Returns whether the Mesh row is owed: a
+    /// write the store did not acknowledge, which the caller retries on its own clock under the one
+    /// backoff rule (node-identity-and-state.md §2.7).
+    pub(crate) async fn sweep(&mut self, writes: &std::collections::BTreeSet<String>) -> bool {
         if !writes.contains(&self.mesh) {
             self.written = None;
         } else if self.written.is_none() {
@@ -78,68 +66,16 @@ impl MeshRowsWriter {
                 return true;
             }
         }
-        let own = matches!(self.written, Some(Ok(())));
-        let mut owed = false;
-        // Another mesh whose mesh-primary this admin's view holds is that primary's to write (one writer per
-        // record, storage-whole-records.md): the writing set comes from a view that can still show it with
-        // none, and a whole write from this admin's older copy would replace what its primary wrote.
-        let primaried: std::collections::BTreeSet<&str> = held
-            .iter()
-            .filter(|d| d.node.mesh != self.mesh && rdm_core::is_node_admin(&d.node.r#type) && d.is_primary.is_some() && !deleted(&d.node.node_id))
-            .map(|d| d.node.mesh.as_str())
-            .collect();
-        // A deleted birth is never written: its node's record is written `Deleted` by its delete.
-        for d in held.iter().filter(|d| !deleted(&d.node.node_id) && writes.contains(&d.node.mesh) && !primaried.contains(d.node.mesh.as_str()) && (d.node.mesh != self.mesh || own)) {
-            let mesh_id = if d.node.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
-            // The primaries the view holds, put whole on the birth's record from the copy this admin holds
-            // (its addresses are the node's own part of its record, Q333); a `Deleted` record is left as
-            // it stands.
-            let written = self
-                .caches
-                .nodes
-                .update(&*self.nodes, &d.node.node_id, None, |r| {
-                    if r.status == crate::model::NodeStatus::Deleted {
-                        return false;
-                    }
-                    let before = r.clone();
-                    if mesh_id.is_some() {
-                        r.mesh_id = mesh_id.clone();
-                    }
-                    let b = r.birth_mut(&d.node.incarnation, &d.node.location());
-                    b.is_primary = d.is_primary;
-                    b.is_fabric_primary = d.is_fabric_primary;
-                    *r != before
-                })
-                .await;
-            match written {
-                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
-                    .in_scope(|| tracing::info!("the node's record is put whole, the primaries the view holds recorded on it")),
-                Ok(Some(false)) => {}
-                Ok(None) => owed = true,
-                Err(e) => {
-                    owed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.path, subject_name = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
-                        .in_scope(|| tracing::info!("the store did not acknowledge the node's record: it is owed and written again under the one backoff rule"));
-                }
-            }
-        }
-        owed
+        false
     }
 }
 
-/// The mesh rows writer's loop: a sweep over what `digest_view` holds of `fabric` each time a birth or a
-/// primary record changes there or `writes` (the meshes whose rows this admin writes) moves, each birth
-/// carrying the primaries the view holds for it. A row the store did not acknowledge is owed: the sweep
-/// runs again on this writer's own clock under the one backoff rule (node-rpc.md §43), never waiting
-/// for a birth, a digest or a primary change (node-identity-and-state.md §2.7). Each sweep takes its
-/// turn of `stop`. While this admin, a mesh-primary, has replied `blocked` to a storage change
-/// (`commands`), nothing of its mesh is written to the old provider: its rows are held, owed, and the
-/// first sweep once its `mesh.unblock` moved it writes them on the provider current then, the new one
-/// after the switch, the old one when the change failed before it (storage.md §2 steps 1, 2 and 4; i149
-/// R8).
-pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate, commands: Arc<crate::node_commands::CommandView>) {
-    let mut births = digest_view.birth_changes();
-    let mut primaries = digest_view.primaries.subscribe();
+/// The Mesh row writer's loop: a sweep each time `writes` (the meshes whose rows this admin writes)
+/// moves, and again on this writer's own clock under the one backoff rule (node-rpc.md §43) while a
+/// write is owed. Each sweep takes its turn of `stop`. While this admin, a mesh-primary, has replied
+/// `blocked` to a storage change (`commands`), nothing of its mesh is written to the old provider
+/// (storage.md §2 steps 1, 2 and 4; i149 R8).
+pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate, commands: Arc<crate::node_commands::CommandView>) {
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
     let mut owed_sweeps = 0u32;
     loop {
@@ -152,19 +88,8 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: Dige
             commands.rows_released().await;
             continue;
         };
-        births.borrow_and_update();
-        primaries.borrow_and_update();
         let meshes = writes.borrow_and_update().clone();
-        let held: Vec<MeshDigest> = digest_view
-            .all()
-            .into_iter()
-            .filter(|d| d.fabric_id == fabric)
-            .map(|mut d| {
-                digest_view.recorded_primaries(&mut d);
-                d
-            })
-            .collect();
-        let owed = writer.sweep(&held, &meshes, |id| digest_view.is_deleted(id.as_str())).await;
+        let owed = writer.sweep(&meshes).await;
         owed_sweeps = if owed { owed_sweeps + 1 } else { 0 };
         drop(writing);
         drop(turn);
@@ -175,8 +100,6 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: Dige
             tokio::time::sleep(pacing.after(owed_sweeps)).await
         };
         tokio::select! {
-            changed = births.changed() => if changed.is_err() { return },
-            changed = primaries.changed() => if changed.is_err() { return },
             changed = writes.changed() => if changed.is_err() { return },
             () = again => {}
         }
@@ -191,9 +114,7 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: Dige
 pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str) -> Result<Vec<crate::reenter::MapNode>, crate::storage_error::StorageError> {
     let mut out = Vec::new();
     for record in crate::storage::live_records(meshes, nodes, own_mesh).await? {
-        // The birth's address is the node's own part of its record (Q333), one point read at its id.
-        let own = nodes.properties(&record.node_id).await?;
-        out.extend(crate::reenter::MapNode::of_record(&record, own.as_ref()));
+        out.extend(crate::reenter::MapNode::of_record(&record));
     }
     Ok(out)
 }
@@ -206,12 +127,11 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
 pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, primaries: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
-        let Some(b) = r.newest_birth() else { continue };
-        let record = |revision| rdm_core::Primary { mesh: r.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
-        if let Some(revision) = b.is_primary {
+        let record = |revision| rdm_core::Primary { mesh: r.mesh(), node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), revision };
+        if let Some(revision) = r.is_primary {
             taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_type(&r.r#type), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
         }
-        if let Some(revision) = b.is_fabric_primary {
+        if let Some(revision) = r.is_fabric_primary {
             taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
         }
     }
@@ -224,7 +144,7 @@ pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshSto
 /// is the record of the mesh id its own row holds, read by that id, and live. The name held by
 /// another MeshId means the admin's mesh was removed and a mesh created again under the name; refused
 /// by name, naming both ids, as are a deleted record and no record.
-pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: &crate::storage::NodeRecord) -> Result<crate::storage::MeshRecord, String> {
+pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: &crate::storage::OwnRow) -> Result<crate::storage::MeshRecord, String> {
     let (mesh, mesh_id) = (&own.mesh, &own.mesh_id);
     let unread = |e: crate::storage_error::StorageError| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the record of {mesh}: {e}", own.node_id);
     let held = meshes.mesh(mesh_id).await.map_err(unread)?;
@@ -494,7 +414,7 @@ impl FabricRowsWriter {
 pub async fn inspection_of(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     held_row: &Option<(MeshDigest, Duration)>,
-    row: Option<&crate::storage::RuntimeRow>,
+    row: Option<&crate::storage::NodeRecord>,
 ) -> Inspected {
     inspection_with_handle(provider, held_row, row).await.0
 }
@@ -505,11 +425,11 @@ pub async fn inspection_of(
 pub async fn inspection_with_handle(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     held_row: &Option<(MeshDigest, Duration)>,
-    row: Option<&crate::storage::RuntimeRow>,
+    row: Option<&crate::storage::NodeRecord>,
 ) -> (Inspected, Option<DeploymentHandle>) {
     // The runtime fact one way for every inspect (`node_investigation::runtime_of`).
     let Some(crate::node_investigation::BirthRuntime { fact, data_dir, incarnation: birth }) = crate::node_investigation::runtime_of(held_row.as_ref().map(|(dg, _)| dg), row) else {
-        return (Inspected::Unavailable(format!("no runtime fact: the view holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })), None);
+        return (Inspected::Unavailable(format!("no runtime fact: the view holds {} for it and no node record names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })), None);
     };
     // The exact runtime handle the inspect asks about: none when the provider refuses to adopt the
     // fact, which the inspect names as its `unavailable`.

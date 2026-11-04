@@ -291,7 +291,7 @@ impl Node {
     fn broker_to_ask(&self) -> Option<NodeId> {
         let view = self.view.get()?;
         let ready: Vec<(NodeId, IncarnationId)> = view
-            .nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("type", ["broker"]).eq("status", ["ready"]))
+            .nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("type", ["broker"]).eq("state", ["ready"]))
             .unwrap_or_default()
             .into_iter()
             .map(|d| (d.node.node_id, d.node.incarnation))

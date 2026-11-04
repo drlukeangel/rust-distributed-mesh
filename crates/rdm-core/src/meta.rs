@@ -188,6 +188,18 @@ pub enum PersistentDisposition {
     Release,
 }
 
+/// A node's own storage (storage.md §1, Q364), the node record's `storage`: `persistence` set by a
+/// Build at create, `data_dir` the node's `RDM_DATA_DIR`, set by its launch, never by a Build.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Storage {
+    /// What becomes of the node's data dir across its births and once it is gone; `None` when its
+    /// create named none.
+    pub persistence: Option<StoragePersistence>,
+    /// The node's data dir, `RDM_DATA_DIR`.
+    pub data_dir: Option<String>,
+}
+
 /// `node`: RDM's base type, the plain node that serves the core protocols only; every type extends it.
 pub const NODE: &str = "node";
 /// `node-admin`: RDM's other type.

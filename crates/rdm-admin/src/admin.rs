@@ -96,10 +96,8 @@ mod tests {
         let kept_birth = (kept.node_id.clone(), kept.incarnation_id.clone().unwrap());
         let watched: BTreeMap<String, Node> = [&kept, &restarted].into_iter().map(|n| (n.node_id.to_string(), n.clone())).collect();
         let mut offline: HashSet<_> = [kept_birth.clone(), superseded.clone(), deleted.clone()].into();
-        let mut written: WrittenSilence = [(kept.node_id.clone(), (kept.incarnation_id.clone(), Some(NodeStatus::Dead))), (deleted.0.clone(), (Some(deleted.1.clone()), Some(NodeStatus::Dead)))].into();
-        clear_unwatched(&watched, &mut offline, &mut written);
+        clear_unwatched(&watched, &mut offline);
         assert_eq!(offline, [kept_birth.clone()].into(), "only the watched TRUE OFFLINE birth stays offline");
-        assert_eq!(written.keys().cloned().collect::<HashSet<_>>(), [kept.node_id.clone()].into(), "the silence memo of a deleted node is deleted");
     }
 
     /// CONTRACT (node-recovery.md step 1: "Each node's pruner marks a member `PendingReconnect` once it is
@@ -594,32 +592,17 @@ mod tests {
     #[cfg(feature = "file-backend")]
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for CountingNodes {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.0.runtimes().await
-        }
-        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.0.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.0.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_node(row).await
         }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.0.records_at(name).await
         }
     }
@@ -635,28 +618,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for RefusingNodes {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtimes().await
-        }
-        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.inner.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
                 self.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.mesh, row.node_id), reason: "No space left on device (os error 28)".into() });
@@ -665,19 +633,19 @@ mod tests {
             self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.records_at(name).await
         }
     }
 
     /// The record of `d`'s node as its create writes it, before any address is on it.
     async fn created_record(nodes: &dyn crate::storage::NodesStorage, d: &MeshDigest) {
-        crate::node_rows::write_record(nodes, &crate::storage::NodeRow::new(d.node.location(), d.node.mesh.clone(), &d.node.r#type, d.node.node_id.clone(), NodeStatus::Pending)).await.unwrap().unwrap();
+        crate::node_rows::write_record(nodes, &crate::storage::NodeRecord::new(d.node.location(), d.node.mesh.clone(), &d.node.r#type, d.node.node_id.clone(), NodeStatus::Pending)).await.unwrap().unwrap();
     }
 
     /// `d`'s own part of its record (Q333): its address, as its own writer puts it at its start.
     async fn own_part(nodes: &dyn crate::storage::NodesStorage, d: &MeshDigest) {
-        nodes.put_properties(&rdm_node::node_records::NodeProperties {
+        nodes.put_properties(&rdm_node::nodes_storage::NodeRecord {
             birth: rdm_node::node_records::RecordBirth { node_id: d.node.node_id.clone(), incarnation_id: d.node.incarnation.clone() },
             config: Default::default(), tags: Default::default(),
             endpoint_id: Some(d.node.endpoint_id.clone()), transport_addr: Some(d.node.transport_addr), listeners: Vec::new(),
@@ -1362,31 +1330,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for RuntimeRowUnreadable {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: "runtimes".into(), reason: "Input/output error (os error 5)".into() })
-        }
-        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Unrecognised { file: format!("runtimes/{node_id}--{}.json", incarnation.as_str()), reason: "format runtime/9 is not one this build reads".into() })
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.0.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
         }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.0.records_at(name).await
         }
     }
@@ -2468,7 +2421,7 @@ mod tests {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Leaving), "200000000000");
             let (_fp, digest_view, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-            crate::node_rows::write_record(&*storage, &crate::storage::NodeRow::new(last.node.location(), last.node.mesh.clone(), &last.node.r#type, last.node.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
+            crate::node_rows::write_record(&*storage, &crate::storage::NodeRecord::new(last.node.location(), last.node.mesh.clone(), &last.node.r#type, last.node.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
             depart(&digest_view, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
             let meshes = crate::storage::MemoryMeshStorage::default();
@@ -2520,7 +2473,7 @@ mod tests {
         // mesh2's primary wrote its members' primaries on their records while it was mesh2's primary, and
         // each node its own address; mesh1's own stays.
         for d in [&last, &member, &fp] {
-            let mut row = crate::storage::NodeRow::new(d.node.location(), d.node.mesh.clone(), &d.node.r#type, d.node.node_id.clone(), NodeStatus::Ready);
+            let mut row = crate::storage::NodeRecord::new(d.node.location(), d.node.mesh.clone(), &d.node.r#type, d.node.node_id.clone(), NodeStatus::Ready);
             row.birth_mut(&d.node.incarnation, &d.node.location()).is_primary = Some(1);
             crate::node_rows::write_record(&*storage, &row).await.unwrap().unwrap();
             own_part(&*storage, d).await;
@@ -2955,7 +2908,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: NodeId::parse("100000000000").unwrap(),
-                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
+                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
                         statuses: vec![],
                     })
                 })
@@ -3034,7 +2987,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = crate::storage::NodeRecord { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         crate::node_rows::move_row(&primary, &Default::default(), &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), &record, &held.node.location(), &to).await.unwrap();
         // This admin: the same view, its own store on the same root, no rename of its own.
@@ -3314,18 +3267,18 @@ mod tests {
         // The node rows this admin writes: a row's name moved, or released, is a change of the name the
         // view lists a birth that does not publish at.
         let storage = crate::storage::MemoryNodesStorage::default();
-        let row = crate::storage::NodeRow::new(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rpc.node.node_id.clone(), crate::model::NodeStatus::Ready);
+        let row = crate::storage::NodeRecord::new(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rpc.node.node_id.clone(), crate::model::NodeStatus::Ready);
         records.caches.nodes.put(&storage, &row).await.unwrap();
         assert_eq!(due(&mut wake), Some("rows"), "a row first written");
         wake.seen();
         let held = records.caches.nodes.row_of(&row.node_id).unwrap();
         records.caches.nodes.put(&storage, &held).await.unwrap();
         assert_eq!(due(&mut wake), None, "the row written again at its name, not released, moves nothing");
-        records.caches.nodes.put(&storage, &crate::storage::NodeRow { path: "mesh1.node".into(), name: "9".into(), ..held.clone() }).await.unwrap();
+        records.caches.nodes.put(&storage, &crate::storage::NodeRecord { path: "mesh1.node".into(), name: "9".into(), ..held.clone() }).await.unwrap();
         assert_eq!(due(&mut wake), Some("rows"), "the row's name moved");
         wake.seen();
         let held = records.caches.nodes.row_of(&row.node_id).unwrap();
-        records.caches.nodes.put(&storage, &crate::storage::NodeRow { status: crate::model::NodeStatus::Deleted, ..held }).await.unwrap();
+        records.caches.nodes.put(&storage, &crate::storage::NodeRecord { status: crate::model::NodeStatus::Deleted, ..held }).await.unwrap();
         assert_eq!(due(&mut wake), Some("rows"), "the row released its name");
         wake.seen();
 
@@ -3386,32 +3339,17 @@ mod tests {
     #[cfg(feature = "file-backend")]
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for ProbedRows {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtimes().await
-        }
-        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.read(&self.id_reads);
             self.inner.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.inner.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.records_at(name).await
         }
     }
@@ -3441,7 +3379,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = crate::storage::NodeRecord { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: held.node.path.clone(), name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = (rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.location(), &base).await.unwrap();
@@ -3833,7 +3771,7 @@ mod tests {
     fn entry_answer(frames: Vec<rdm_transport::topology::Frame>) -> crate::wire::JoinAnswer {
         crate::wire::JoinAnswer {
             served_by: NodeId::parse("100000000000").unwrap(),
-            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
+            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), member_cert_dates: None, signing_cert_dates: None, name: None },
             statuses: frames,
         }
     }
@@ -3890,35 +3828,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for RuntimeReads {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(crate::storage_error::StorageError::Io { file: "nodes.jsonl".into(), reason: "Input/output error (os error 5)".into() });
-            }
-            self.inner.runtimes().await
-        }
-        async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.inner.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeLine>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.inner.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        async fn put_node(&self, row: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
             self.inner.records_at(name).await
         }
     }
