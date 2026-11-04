@@ -112,8 +112,7 @@ pub(crate) enum CallerDecision {
     },
     /// The caller's record is deleted and nothing else is at the path: the caller is deleted, its
     /// runtime terminated, never re-admitted (Q217). A path the topology still `needed` is recovered by
-    /// a re-create at that path and name, a new birth, through node recovery (its owed resubmit,
-    /// `RecoverySubmitter::owed_submits`).
+    /// a re-create at that path and name, a new birth, through node recovery.
     DeleteDeletedBirth {
         /// The caller's path.
         path: String,

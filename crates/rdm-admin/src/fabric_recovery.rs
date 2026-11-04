@@ -290,17 +290,15 @@ impl FabricRecoveryService {
 
     async fn run_in(self: &Arc<Self>, span: &tracing::Span, target: &Primary) -> String {
         let mut investigated = false;
-        // A re-create was submitted for the lost birth: only then is one owed again after a submit that
+        // A re-create was submitted for the lost birth: only then is one owed again after a re-create that
         // ended without the node. A reached birth is commanded back, never re-created (Q111); if it is not
         // heard again within a staleness floor, the next investigation decides again.
         let mut submitted = false;
         let mut next_look = std::time::Instant::now();
-        // The re-create is owed until its attempt completes, under the one backoff rule: a submit that ends
-        // without the node is made again after a delay that doubles, never on every pass.
+        // The re-create is owed until it completes: one that ends failed is run again by the next pass that
+        // finds the node still lost, one at a time, with no wait of its own; its calls retry only under
+        // their `Send` (Q344).
         let mut done = false;
-        let mut next_submit = std::time::Instant::now();
-        let mut backoff = rdm_transport::topology::gossip_interval();
-        let ceiling = rdm_transport::topology::staleness_floor() * 4;
         loop {
             let me = self.held_name();
             let Some(fr) = self.read().await.filter(|fr| fr.target == *target) else {
@@ -394,25 +392,25 @@ impl FabricRecoveryService {
                         }
                         (_, Some(inspected)) => {
                             submitted = true;
-                            done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
+                            done = self.submit(&node, &inspected, fr.own_mesh).await;
                         }
                         (_, None) => {}
                     }
                 }
-                // Gone from the view and not re-created yet (a replacement executor, or a re-create that
-                // ended without the node): the attempt resumes from its receipts.
-                (Some(node), None) if submitted && !done && std::time::Instant::now() >= next_submit => {
-                    // Investigated already: its re-create is owed again after a submit that ended without it.
-                    let inspected = crate::deployment::provider::Inspected::Unavailable("re-create owed after a submit that ended without the node".into());
-                    done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
+                // Not re-created yet, the lost birth still in the view or gone from it (a replacement
+                // executor, or a re-create that ended without the node): this pass runs the re-create.
+                (Some(node), None) if submitted && !done => {
+                    // Investigated already: its re-create is owed again after one that ended without the node.
+                    let inspected = crate::deployment::provider::Inspected::Unavailable("re-create owed after one that ended without the node".into());
+                    done = self.submit(&node, &inspected, fr.own_mesh).await;
                 }
-                (None, None) if !done && std::time::Instant::now() >= next_submit => {
+                (None, None) if !done => {
                     let mut node = Node::allocated(at.clone(), target.mesh.clone(), "node-admin");
                     node.node_id = target.node_id.clone();
                     node.incarnation_id = Some(target.incarnation.clone());
                     let inspected = crate::deployment::provider::Inspected::Unavailable("gone from the view".into());
                     submitted = true;
-                    done = self.submit(&node, &inspected, fr.own_mesh, &mut next_submit, &mut backoff, ceiling).await;
+                    done = self.submit(&node, &inspected, fr.own_mesh).await;
                 }
                 _ => {}
             }
@@ -454,19 +452,17 @@ impl FabricRecoveryService {
         }
     }
 
-    /// One submit of the re-create of `node`: `true` once its attempt completed; else the next is due after
-    /// `backoff`, which doubles up to `ceiling`.
+    /// One run of the re-create of `node`: `true` once it completed; else it ended failed, named on its
+    /// recovery span's `outcome`, and the next pass that finds the node still lost runs it again (Q344).
     /// From the backbone (`own_mesh` false) the re-create terminates nothing in the mesh (fabric-recovery.md
     /// step 3, Q148): its node.delete of the exact lost birth writes that birth's row deleted with no
     /// `TerminateRuntime` and releases the name, then node.create at the path and name; it is never submitted on `running` (Q153).
-    async fn submit(&self, node: &Node, inspected: &crate::deployment::provider::Inspected, own_mesh: bool, next: &mut std::time::Instant, backoff: &mut std::time::Duration, ceiling: std::time::Duration) -> bool {
+    async fn submit(&self, node: &Node, inspected: &crate::deployment::provider::Inspected, own_mesh: bool) -> bool {
         let route = if own_mesh { "fabric-recovery" } else { "fabric-recovery-backbone" };
         match self.recovery.submit_route(node, inspected, route).await {
             Ok(()) => true,
             Err(e) => {
-                tracing::info!(node_path = %node.path, node_name = %node.name, error = %e, retry_ms = backoff.as_millis() as u64, "fabric recovery's re-create ended without the node: owed again after the backoff");
-                *next = std::time::Instant::now() + *backoff;
-                *backoff = (*backoff * 2).min(ceiling);
+                tracing::info!(node_path = %node.path, node_name = %node.name, error = %e, "fabric recovery's re-create ended without the node: the next pass that finds it still lost runs it again");
                 false
             }
         }

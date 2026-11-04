@@ -28,7 +28,7 @@ fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "node-recovery".into(),
-        subfeature: "submit-backoff".into(),
+        subfeature: "recovery-under-cut".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: test.into(),

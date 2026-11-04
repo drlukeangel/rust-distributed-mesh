@@ -451,36 +451,38 @@ async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh
     assert!(ran.is_empty(), "{victim:?} started no fabric recovery: {ran:#?}");
     eprintln!("the cut held {held_ms} ms; {victim:?} found {:?} left", left.iter().map(|sp| (attr(sp, "subject_path"), attr(sp, "subject_name"), attr(sp, "finding"))).collect::<Vec<_>>());
 
-    // Q209 (node-recovery.md "Detection and the verdict": "After a retryable recovery-submit failure, that
-    // exact birth becomes eligible again after a backoff doubling from the gossip interval to the staleness
-    // floor"): the cut admin, mesh2's primary in its own view with no fabric-primary in it, fails each
-    // recovery of the mesh2 births it cannot reach by name (Q118). Per birth, each failed submit records its
-    // backoff, at most the floor, and the next submit of that birth, with its provider inspection, starts
-    // no earlier than the backoff after the failed one ended. Must NOT happen: a failed submit made again,
-    // with an inspection, on every tick (the held commit's flame: 22 inspections in 5 s).
+    // Q344 (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again by the
+    // next check that finds the node still lost; its calls retry only under their `Send`"; "Execution": one
+    // recovery per birth in flight): the cut admin, mesh2's primary in its own view with no fabric-primary
+    // in it, fails each recovery of the mesh2 births it cannot reach by name (Q118). Per birth, each run
+    // after the first is a run again of the failed recovery (`again`), starting no earlier than the one
+    // before it ended, and the birth is inspected only for its first run. Must NOT happen: two runs of one
+    // birth at once, or a failed recovery inspected again on every tick (the held commit's flame: 22
+    // inspections in 5 s).
     let end = |sp: &Value| sp["end_unix_nano"].as_u64().unwrap_or(0);
     let in_cut = |sp: &&Value| at(sp) >= cut_at && at(sp) <= healed_ns;
     let mut cut_submits: std::collections::BTreeMap<String, Vec<&Value>> = std::collections::BTreeMap::new();
     for sp in named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(in_cut).filter(|sp| attr(sp, "submitter") == victim_id && attr(sp, "node_path").starts_with("mesh2.")) {
         cut_submits.entry(attr(sp, "node_id")).or_default().push(sp);
     }
-    let mut paced = 0usize;
+    let mut ran_again = 0usize;
     for (node_id, submits) in &mut cut_submits {
         submits.sort_by_key(|sp| at(sp));
         for pair in submits.windows(2) {
-            let backoff_ms: u64 = attr(pair[0], "backoff_ms").parse().unwrap_or_else(|_| panic!("{victim:?}'s failed submit of {node_id} records its backoff: {}", pair[0]));
-            assert!(Duration::from_millis(backoff_ms) <= floor, "{victim:?}'s backoff of {node_id} is at most the staleness floor: {backoff_ms} ms");
-            let gap_ms = at(pair[1]).saturating_sub(end(pair[0])) / 1_000_000;
-            assert!(gap_ms + 2 >= backoff_ms, "{victim:?} submitted {node_id} again {gap_ms} ms after a failed submit whose backoff was {backoff_ms} ms: {} then {}", pair[0], pair[1]);
-            paced += 1;
+            assert!(attr(pair[0], "outcome") != "complete", "{victim:?} ran {node_id}'s recovery again after it completed: {} then {}", pair[0], pair[1]);
+            assert!(at(pair[1]) >= end(pair[0]), "{victim:?} ran {node_id}'s recovery beside the one in flight: {} then {}", pair[0], pair[1]);
+            assert_eq!(attr(pair[1], "again"), "true", "{victim:?}'s next run of {node_id} is its failed recovery run again: {}", pair[1]);
+            ran_again += 1;
         }
         // The tick's inspections: a submit's own TerminateRuntime step inspects the runtime it terminates
         // (`caller` "terminate"), which is that submit's, not a look of the tick.
         let inspections = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(in_cut).filter(|sp| attr(sp, "inspector") == victim_id && attr(sp, "node_id") == *node_id && attr(sp, "caller") != "terminate").count();
-        assert!(inspections <= submits.len() + 1, "{victim:?} inspected {node_id} only for a submit: {inspections} inspections, {} submits", submits.len());
-        eprintln!("Q209: {victim:?} under the {held_ms} ms cut: {node_id} submitted {} times (every tick: {}), inspected {inspections} times, backoffs {:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64, submits.iter().map(|sp| attr(sp, "backoff_ms")).collect::<Vec<_>>());
+        let first_runs = submits.iter().filter(|sp| attr(sp, "again") != "true").count();
+        assert!(inspections <= first_runs + 1, "{victim:?} inspected {node_id} only for its first run: {inspections} inspections, {} runs, {first_runs} first", submits.len());
+        let gaps: Vec<u64> = submits.windows(2).map(|p| at(p[1]).saturating_sub(end(p[0])) / 1_000_000).collect();
+        eprintln!("Q344: {victim:?} under the {held_ms} ms cut: {node_id} run {} times (one tick each: {}), inspected {inspections} times, gaps after each failed run {gaps:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64);
     }
-    assert!(paced > 0, "{victim:?} failed a recovery of a mesh2 birth and submitted it again under the cut, so the backoff was read: {cut_submits:?}");
+    assert!(ran_again > 0, "{victim:?} failed a recovery of a mesh2 birth and ran it again under the cut: {cut_submits:?}");
     // mesh2's primary's recovery of the cut admin is its own workflow: no Build is opened for it (Q342).
     let opened_for_victim: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "node_id") == victim_id).collect();
     assert!(opened_for_victim.is_empty(), "no Build is opened for {victim:?}'s recovery: {opened_for_victim:#?}");

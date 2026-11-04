@@ -2494,7 +2494,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     build_service: build_slot.clone(),
                                                     client: Some(node_rpc.client.clone()),
                                                     builds: control.builds.clone(),
-                                                    resubmits: Arc::default(),
                                                     failed: Arc::default(),
                                                     investigated: investigated.clone(),
                                                 };
@@ -2791,26 +2790,24 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // exact runtime of each member of its own mesh, its secondary node-admins included
                                                 // (mesh-recovery.md:8-9), and the verdict opens the recovery at once, keyed on the
                                                 // birth. Re-evaluated every tick while the member stays TRUE OFFLINE, so a recovery
-                                                // that failed is submitted again once its birth is eligible (node-recovery.md, Q209):
-                                                // a birth whose last submit ended without the recovery is neither inspected nor
-                                                // submitted until its backoff, doubling from the gossip interval to the staleness
-                                                // floor, has passed, and a birth whose submit is in flight is followed, never
-                                                // submitted again beside it (`RecoverySubmitter::take_eligible`).
+                                                // that ended failed is run again by the next tick that finds the node still lost, with
+                                                // no wait of its own: its calls retry only under their `Send` (node-recovery.md, Q344).
+                                                // A birth whose recovery is in flight is followed, never run again beside it
+                                                // (`RecoverySubmitter::take`).
                                                 {
                                                     let offline = records.offline.lock().unwrap().clone();
-                                                    let now = std::time::Instant::now();
                                                     let failed_now = recovery.failed_recoveries(holds_role, &mesh);
                                                     let failed_births: HashSet<(NodeId, IncarnationId)> = failed_now.iter().filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
                                                     for n in recovery_due(investigates, &mesh, &watched, &offline) {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
                                                         // A birth whose recovery failed here is that recovery's, run again below
-                                                        // on its backoff with no inspection: its verdict stands, and its own
-                                                        // NodeDeleting is no other workflow's removal (Q209; Q342).
+                                                        // with no inspection: its verdict stands, and its own NodeDeleting is no
+                                                        // other workflow's removal (Q342, Q344).
                                                         if failed_births.contains(&birth) {
                                                             continue;
                                                         }
-                                                        if !recovery.take_eligible(&birth, now, &in_flight) {
+                                                        if !recovery.take(&birth, &in_flight) {
                                                             continue;
                                                         }
                                                         let (recovery, n) = (recovery.clone(), n.clone());
@@ -2818,14 +2815,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             recovery.recover(&n).await;
                                                         });
                                                     }
-                                                    // node-recovery.md "Failure": a birth whose recovery failed is run again once its
-                                                    // backoff passed, whether or not the view still holds it (a recovery whose delete
-                                                    // completed deleted it). One recovery per birth in flight, whichever way it is
-                                                    // due, and on the same backoff.
+                                                    // node-recovery.md "Failure": a birth whose recovery failed is run again by this
+                                                    // tick, whether or not the view still holds it (a recovery whose delete completed
+                                                    // deleted it). One recovery per birth in flight, whichever way it is due.
                                                     for n in failed_now {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
-                                                        if !recovery.take_eligible(&birth, now, &in_flight) {
+                                                        if !recovery.take(&birth, &in_flight) {
                                                             continue;
                                                         }
                                                         let recovery = recovery.clone();
@@ -2833,10 +2829,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             let _ = recovery.recover_again(&n).await;
                                                         });
                                                     }
-                                                    // A birth owed nothing now (heard again, gone from the view or replaced at its
-                                                    // path and name, or this admin no longer its mesh-primary) keeps no backoff: unheard
-                                                    // again, it is eligible at once (Q209).
-                                                    recovery.forget_resubmits(|birth| holds_role && (offline.contains(birth) || failed_births.contains(birth)));
                                                     // A second birth another executor made at a path and name of this mesh across a cut:
                                                     // superseded, its row written deleted and its NodeDeleted published, so its next
                                                     // digest is a deleted birth heard again (node-investigation.md, Q142).

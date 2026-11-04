@@ -28,12 +28,10 @@ pub(crate) struct RecoverySubmitter {
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// This admin's Build state: the current Build's paths a refused caller's decision reads (Q217).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
-    /// Per birth whose last recovery ended without completing: when it is eligible again, under the
-    /// one backoff rule ([`RecoverySubmitter::submit_ended`]). A birth with none is due at once.
-    pub resubmits: Arc<Mutex<HashMap<(NodeId, IncarnationId), Resubmit>>>,
-    /// The births whose recovery failed by a retryable cause, with the node each is of: run again once
-    /// eligible, whether or not the view still holds the birth (its delete may have completed)
-    /// (node-recovery.md "Detection and the verdict", "Failure"). Removed once a recovery of it completed.
+    /// The births whose recovery ended failed, with the node each is of: run again by the next tick that
+    /// finds the node still lost, whether or not the view still holds the birth (its delete may have
+    /// completed), with no wait of its own: the recovery's calls retry only under their `Send` (Q344;
+    /// node-recovery.md "Detection and the verdict", "Failure"). Removed once a recovery of it completed.
     pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), Node>>>,
     /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
     /// application's `on_node_investigated`, sent from that write (Q312).
@@ -43,17 +41,6 @@ pub(crate) struct RecoverySubmitter {
 impl RecoverySubmitter {
     /// The `(path, name)` lookup index key of me_path and me_name.
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
-}
-
-/// The next submit owed to one birth whose submits ended without the recovery: the one backoff rule
-/// (node-rpc.md §43, [`rdm_transport::delivery::Pacing`]): the first again after the gossip interval,
-/// each later one after twice the delay before, to the staleness floor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Resubmit {
-    /// The submits in a row that ended without the recovery.
-    pub failures: u32,
-    /// When the next submit is due.
-    pub due: std::time::Instant,
 }
 
 /// What the provider's inspection of a TRUE OFFLINE member found: node.runtime.inspect's own answer
@@ -139,8 +126,8 @@ impl RecoverySubmitter {
 
     /// One recovery the tick runs of `node`'s birth at `incarnation` (node-recovery.md "Detection and
     /// the verdict": the loop on every gossip interval), on the investigation's `verdict`, or again after
-    /// it failed (`again`). How it ends sets the birth's backoff ([`Self::submit_ended`]), recorded on
-    /// the span as `backoff_ms`; a recovery that failed stays owed to the birth ([`Self::failed`]).
+    /// it failed (`again`). A recovery that ends failed is named on its span's `outcome` and stays owed to
+    /// the birth ([`Self::failed`]): the next tick that finds the node still lost runs it again (Q344).
     async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, verdict: &str, again: bool) -> Result<(), String> {
         let span = submit_span(&self.me_id, node, incarnation, verdict);
         if again {
@@ -162,58 +149,16 @@ impl RecoverySubmitter {
                 self.failed.lock().unwrap().insert(birth.clone(), node.clone());
             }
         }
-        if let Some(backoff) = self.submit_ended(&birth, &ended) {
-            span.record("backoff_ms", backoff.as_millis() as u64);
-        }
         ended
     }
 
-    /// Whether `birth` is eligible for a submit at `now` (node-recovery.md "Detection and the verdict":
-    /// after a retryable recovery-submit failure, that exact birth becomes eligible again after a backoff
-    /// doubling from the gossip interval to the staleness floor): at once unless its last submit ended
-    /// without the recovery, then once its backoff has passed ([`Self::submit_ended`]). The tick asks
-    /// before it inspects or submits, so a birth whose submits keep failing (its mesh cut from the
-    /// fabric-primary: Q118) is neither inspected nor submitted on every tick.
-    pub(crate) fn submit_due(&self, birth: &(NodeId, IncarnationId), now: std::time::Instant) -> bool {
-        self.resubmits.lock().unwrap().get(birth).is_none_or(|r| now >= r.due)
-    }
-
-    /// The tick's one gate for a submit of `birth` at `now`: eligible ([`Self::submit_due`]) and no
-    /// submit of it in flight, which it then marks in flight, for the follower to clear at its end
-    /// (`offline::spawn_recovery_follower`). A submit whose recovery was accepted and still runs holds
-    /// the birth in flight, so it is followed, never submitted again beside it (Q209).
-    pub(crate) fn take_eligible(&self, birth: &(NodeId, IncarnationId), now: std::time::Instant, in_flight: &Mutex<HashSet<(NodeId, IncarnationId)>>) -> bool {
-        self.submit_due(birth, now) && in_flight.lock().unwrap().insert(birth.clone())
-    }
-
-    /// How a submit of `birth` ended: a recovery that ran to Complete owes nothing more; one that ended
-    /// without it (refused, failed by name, or its attempt Failed) is eligible again after the backoff's
-    /// next delay (node-recovery.md "Failure and receipts": the mesh-primary submits it again). The
-    /// delay, none once the recovery ran.
-    pub(crate) fn submit_ended(&self, birth: &(NodeId, IncarnationId), ended: &Result<(), String>) -> Option<std::time::Duration> {
-        self.resubmit_after(birth, ended.is_ok(), &rdm_transport::delivery::Pacing::from_cadences(), std::time::Instant::now())
-    }
-
-    /// [`Self::submit_ended`] on `pacing` at `now`: the delay before the next submit, none once the
-    /// recovery ran.
-    pub(crate) fn resubmit_after(&self, birth: &(NodeId, IncarnationId), recovered: bool, pacing: &rdm_transport::delivery::Pacing, now: std::time::Instant) -> Option<std::time::Duration> {
-        let mut resubmits = self.resubmits.lock().unwrap();
-        if recovered {
-            resubmits.remove(birth);
-            return None;
-        }
-        let failures = resubmits.get(birth).map_or(0, |r| r.failures).saturating_add(1);
-        let after = pacing.after(failures);
-        resubmits.insert(birth.clone(), Resubmit { failures, due: now + after });
-        Some(after)
-    }
-
-    /// Forget the backoff of every birth the tick no longer owes a submit (`owed` false: heard again,
-    /// left the view or replaced at its path and name, or this admin is no longer its mesh-primary), so a
-    /// birth unheard again later is eligible at once (Q209: the birth returning or its replacement
-    /// clears the backoff).
-    pub(crate) fn forget_resubmits(&self, owed: impl Fn(&(NodeId, IncarnationId)) -> bool) {
-        self.resubmits.lock().unwrap().retain(|birth, _| owed(birth));
+    /// The tick's one gate for a recovery of `birth`: none of it in flight, which it then marks in
+    /// flight, for the follower to clear at its end (`offline::spawn_recovery_follower`). One recovery per
+    /// birth in flight (node-recovery.md "Execution"): a recovery that still runs is followed, never run
+    /// again beside it; one that ended, however it ended, is taken by the next tick that finds the node
+    /// still lost, with no wait of its own (Q344).
+    pub(crate) fn take(&self, birth: &(NodeId, IncarnationId), in_flight: &Mutex<HashSet<(NodeId, IncarnationId)>>) -> bool {
+        in_flight.lock().unwrap().insert(birth.clone())
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's view holds it
@@ -224,10 +169,9 @@ impl RecoverySubmitter {
     /// mesh's status deleting, to mesh.deleted, every member's removal is the mesh.delete's;
     /// `mesh-deleting`, `mesh-deleted`), the status the view holds for the mesh. A recovery's own
     /// node.delete of the exited birth (the typed node.delete operation on its node ID) is such a workflow too: its overlay
-    /// closes when its attempt's verdict is terminal (`DigestView::deletions_from_facts`), and a
-    /// recovery whose Build ended Failed is submitted again by the next tick: from the view while it
-    /// holds the birth, else from the Failed attempt the accepted Build holds once its delete deleted
-    /// the birth ([`Self::owed_submits`]).
+    /// closes when its operation's verdict is terminal (`DigestView::deletions_from_facts`), and a
+    /// recovery that ended failed is run again by the next tick that finds the node still lost, whether
+    /// or not the view still holds the birth ([`Self::failed_recoveries`]).
     pub(crate) async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
         let of = |announced: &'static str, op: rdm_core::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id };
@@ -269,10 +213,10 @@ impl RecoverySubmitter {
         settled(&span, end)
     }
 
-    /// The births whose recovery the tick runs again (node-recovery.md "Detection and the verdict":
-    /// "After a recovery step fails by a retryable cause, that exact birth becomes eligible again after a
-    /// backoff"): none unless this admin holds its mesh's primary role; else every birth of its own mesh
-    /// whose recovery failed here, whether or not the view still holds it.
+    /// The births whose recovery the tick runs again (node-recovery.md "Detection and the verdict": "A
+    /// recovery that ends failed is run again by the next check that finds the node still lost"): none
+    /// unless this admin holds its mesh's primary role; else every birth of its own mesh whose recovery
+    /// failed here, whether or not the view still holds it.
     pub(crate) fn failed_recoveries(&self, holds_role: bool, mesh: &str) -> Vec<Node> {
         if !holds_role {
             return Vec::new();
@@ -292,7 +236,6 @@ impl RecoverySubmitter {
         if let Some(created) = created {
             let birth = (node.node_id.clone(), incarnation.clone());
             self.failed.lock().unwrap().remove(&birth);
-            self.resubmits.lock().unwrap().remove(&birth);
             let span = submit_span(&self.me_id, node, &incarnation, "");
             span.record("again", true);
             span.record("outcome", "already-recovered");
@@ -351,9 +294,8 @@ pub(crate) fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) ->
 
 /// The span of one submit of the unreached birth `node` at `incarnation` by the mesh primary `me` on
 /// the investigation's `verdict` (node-recovery.md "Observability contract": the submit has a span on
-/// the mesh-primary). `after_failed_attempt` is recorded on a submit that follows a Failed one of the
-/// same birth, whose verdict is not read again. `backoff_ms` is recorded on a tick's submit that ended
-/// without the recovery: the delay before its birth is eligible again (Q209).
+/// the mesh-primary). `again` is recorded on a recovery the tick runs again after it ended failed,
+/// whose verdict is not read again; `outcome` names how it ended.
 pub(crate) fn submit_span(me: &NodeId, node: &Node, incarnation: &IncarnationId, verdict: &str) -> tracing::Span {
     tracing::info_span!(
         "rdm.node_admin.node.update.via-node-recovery",
@@ -366,7 +308,6 @@ pub(crate) fn submit_span(me: &NodeId, node: &Node, incarnation: &IncarnationId,
         again = tracing::field::Empty,
         route = tracing::field::Empty,
         outcome = tracing::field::Empty,
-        backoff_ms = tracing::field::Empty,
     )
 }
 
@@ -510,7 +451,7 @@ pub(crate) enum RecoveryEnd {
 
 /// The recovery span's `outcome` and the recovery's result, from how it ended. A failed recovery ends
 /// in an error: the birth stays owed its recovery ([`RecoverySubmitter::failed_recoveries`]) and the
-/// tick runs it again once its backoff passed (node-recovery.md "Failure").
+/// next tick that finds the node still lost runs it again (node-recovery.md "Failure", Q344).
 pub(crate) fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
     match end {
         Ok(RecoveryEnd::Complete) => ("complete".to_string(), Ok(())),

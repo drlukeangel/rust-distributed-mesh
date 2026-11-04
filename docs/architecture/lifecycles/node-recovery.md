@@ -28,8 +28,7 @@ its path and name, Q335.)
 ## Detection and the verdict
 
 The mesh-primary runs one loop for its own members on every gossip interval, never on a timer of its
-own. After a recovery step fails by a retryable cause, that exact birth becomes eligible again after a
-backoff doubling from the gossip interval to the staleness floor.
+own. A recovery that ends failed is run again by the next check that finds the node still lost; its calls retry only under their `Send` (Q344).
 
 1. **Silence.** Each node's pruner marks a member `PendingReconnect` once it is unheard past the
    staleness floor. Nothing is sent; the mark comes from the digests not arriving. Peers stop routing
@@ -82,7 +81,7 @@ backoff doubling from the gossip interval to the staleness floor.
    address it held, its logs kept beside the data dir first; a process leaves nothing), so no runtime of
    a superseded birth stays on the host; a runtime already removed terminates as done (Q145). A
    terminate the provider refuses ends the recovery failed at `TerminateRuntime` by name, recorded on the
-   node record; the next tick after its backoff decides again.
+   node record; the next tick that finds the node still lost decides again.
 3. [node.create](node-create.md) at the same path and name, its spec naming the predecessor's data dir when the verdict was `exited`, its `storage_persistence` is `persistent` and the directory exists (a newly allocated data dir otherwise): it mints a new endpoint key and writes it there as the new node's own, never reading the predecessor's, and binds port 0, with a new node.id, incarnation, `endpoint_id` and `transport_addr` (Q358). Its config is seeded from the deleted row at that path and name.
 4. Create runs the whole [start](node-start.md#end-to-end-sequence) with FirstStart and
    `inherited = true` over the kept data dir (or `inherited = false` over a newly allocated one), and
@@ -123,7 +122,7 @@ sequenceDiagram
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A member unheard
 during a workflow belongs to that workflow: its Build or node command ends failed, and the
-mesh-primary's next tick after its backoff investigates the member again and runs the recovery.
+mesh-primary's next tick that finds the member still lost investigates it again and runs the recovery.
 
 One failed recovery is never run again: an adoption launch abandoned because the lost birth or a live
 node-admin answered before its first mutation ([fabric recovery](fabric-recovery.md#nothing-alive)),

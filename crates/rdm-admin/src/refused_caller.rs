@@ -292,7 +292,6 @@ mod tests {
             build_service: Default::default(),
             client,
             builds: builds.clone(),
-            resubmits: Default::default(),
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &admin.node_id),
         };

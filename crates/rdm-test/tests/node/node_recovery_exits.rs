@@ -358,18 +358,22 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     estate.shutdown().await;
 }
 
-/// CONTRACT (node-recovery.md "Failure and receipts": the mesh-primary runs its failed recovery again;
-/// keyed on the exited birth, never a second recovery; D48): the directory a member's new data dir is
-/// allocated in is made read-only and the member is killed. Its recovery's node.delete completes (the
-/// exited birth departs, node.deleted once) and its node.create refuses by name at PrepareStorage, so
-/// the recovery ends failed. The directory is made writable again. The mesh-primary submits the same
-/// exited birth again after its backoff, though no view holds that birth any longer: the recovery owed
-/// in its memory runs again (D48), the birth already deleted, and the path comes back as a new node.
-/// Must NOT happen: the failed recovery left for good (nothing at the path), a second node.deleted of
+/// CONTRACT (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again by
+/// the next check that finds the node still lost; its calls retry only under their `Send` (Q344)";
+/// "Failure and receipts": keyed on the exited birth, never a second recovery; D48): the directory a
+/// member's new data dir is allocated in is made read-only and the member is killed. Its recovery's
+/// node.delete completes (the exited birth departs, node.deleted once) and its node.create refuses by
+/// name at PrepareStorage, so the recovery ends failed. While the directory stays read-only the
+/// mesh-primary runs that recovery again on each next tick, though no view holds the birth any longer
+/// (the recovery owed in its memory, D48): each run starts within a tick of the failed one's end, with
+/// no wait of its own growing between them, and fails by name again. The directory is made writable
+/// again, the next run completes, the path comes back as a new node, and no recovery of the birth runs
+/// after it. Must NOT happen: the failed recovery left for good (nothing at the path), a wait of its
+/// own between two runs, two runs at once, a run after the one that completed, a second node.deleted of
 /// the exited birth, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes() {
-    let (estate, birth_build) = estate("a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes").await;
+async fn a_recovery_whose_create_failed_after_its_delete_is_run_again_by_the_next_tick_and_completes() {
+    let (estate, birth_build) = estate("a_recovery_whose_create_failed_after_its_delete_is_run_again_by_the_next_tick_and_completes").await;
     let node = &Estate::path("mesh1.node", "2");
     let before = estate.node_value(node).await;
     let data_dir = estate.data_dir(node).await;
@@ -382,10 +386,24 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
     estate.kill_node(node).await;
 
     let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
-    let failed = wait_for("the recovery's create fails at PrepareStorage", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
-    let outcome = s(&failed["attributes"]["outcome"]);
+    // Three runs that fail by name, the directory read-only throughout.
+    let failed_runs = |spans: &[Value]| -> Vec<Value> {
+        let mut v: Vec<Value> = submits(spans).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")).collect();
+        v.sort_by_key(start);
+        v
+    };
+    let failed = wait_for("the recovery's create fails at PrepareStorage three times", SETTLE, || async { let f = failed_runs(&estate.spans()); (f.len() >= 3).then_some(f) }).await;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode)).unwrap();
-    assert!(outcome.contains("PrepareStorage") && outcome.contains(&root.display().to_string()), "the create refused the data dir it could not write, by name: {failed}");
+    for run in &failed {
+        let outcome = s(&run["attributes"]["outcome"]);
+        assert!(outcome.contains("PrepareStorage") && outcome.contains(&root.display().to_string()), "the create refused the data dir it could not write, by name: {run}");
+    }
+    assert!(failed[1..].iter().all(|sp| s(&sp["attributes"]["again"]) == "true"), "each later run is the failed recovery run again: {failed:#?}");
+    // No wait of its own: each run starts on the tick after the failed one ended, never beside it.
+    let gossip = rdm_transport::topology::gossip_interval();
+    let gaps: Vec<Duration> = failed.windows(2).map(|p| Duration::from_nanos(start(&p[1]).saturating_sub(end(&p[0])))).collect();
+    assert!(failed.windows(2).all(|p| start(&p[1]) >= end(&p[0])), "never two runs of the birth at once: {failed:#?}");
+    assert!(gaps.iter().all(|g| *g <= gossip * 2), "each run again starts within a tick of the failed one's end ({gossip:?}): gaps {gaps:?}");
 
     let after = until_node_where(&estate, node, &format!("{node:?} ready as a new node after its recovery failed"), Duration::from_secs(60), |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
@@ -395,7 +413,12 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
     assert_eq!(s(&done["attributes"]["again"]), "true", "the submit runs again the recovery that failed, owed in its mesh-primary's memory (D48): {done}");
     assert_eq!(s(&done["attributes"]["mesh"]), "mesh1", "{done}");
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
+    // Once it completed, nothing runs it again: the node stands at the path.
+    tokio::time::sleep(rdm_transport::topology::staleness_floor()).await;
     let spans = estate.spans();
+    let after_done: Vec<Value> = submits(&spans).into_iter().filter(|sp| start(sp) >= end(&done)).collect();
+    assert!(after_done.is_empty(), "no recovery of the birth runs after the one that completed: {after_done:#?}");
+    eprintln!("the recovery of {node:?} failed {} times by name, gaps {gaps:?} after each, then completed; trace {}", failed.len(), s(&done["trace_id"]));
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "one node.deleted of the exited birth, never again: {deleted:?}");
     estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));
@@ -1094,8 +1117,8 @@ async fn a_re_created_node_is_launched_on_its_predecessors_data_dir_only_when_it
 /// its data is killed. Its mesh-primary's recovery deletes the exited birth and creates the new node,
 /// whose start ends `Failed` with the hook's reason: the recovery's step ends failed naming it, and the
 /// new node stays at the path, `Pending`, never Ready. Nothing retries until someone acts: the recovery
-/// is not run again (node-recovery.md sequence step 1: never a second recovery; its run after the
-/// backoff ends `already-recovered`), so the path holds that one new node. Must NOT happen: the node
+/// is not run again (node-recovery.md sequence step 1: never a second recovery; its run on the next
+/// tick ends `already-recovered`), so the path holds that one new node. Must NOT happen: the node
 /// Ready over data its application refused, the node stopped or deleted for it, a second create.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and_its_recovery_ends_failed() {
@@ -1114,7 +1137,7 @@ async fn a_re_created_node_whose_pre_node_ready_answers_failed_stays_pending_and
     let after = until_node_where(&estate, node, &format!("{node:?} a new node, pending"), Duration::from_secs(60), |n| n["node_id"] != before["node_id"] && n["status"] == "pending").await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new endpoint_id (Q358)");
     // The recovery owed after its failed step is not run again: the node it created stands there.
-    let settled = wait_for("the recovery's run after its backoff ends already-recovered", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]) == "already-recovered") }).await;
+    let settled = wait_for("the recovery's run on the next tick ends already-recovered", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]) == "already-recovered") }).await;
     assert_eq!(s(&settled["attributes"]["again"]), "true", "{settled}");
     // It stays Pending, and no second create: nothing makes it Ready over the data its application refused.
     tokio::time::sleep(Duration::from_secs(10)).await;

@@ -125,8 +125,8 @@ mod spent_call_investigation;
 #[path = "node/primary_spent_call_report.rs"]
 mod primary_spent_call_report;
 mod resend;
-#[path = "node/node_recovery_backoff.rs"]
-mod node_recovery_backoff;
+#[path = "node/node_recovery_under_cut.rs"]
+mod node_recovery_under_cut;
 #[path = "node/silent_node_view.rs"]
 mod silent_node_view;
 #[cfg(feature = "file-backend")]
