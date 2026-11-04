@@ -1088,7 +1088,7 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
     assert!(lost.iter().any(|sp| sp["attributes"]["outcome"] == "recovery-submitted"), "the refusing birth is handed to its mesh-primary's node recovery: {lost:#?}");
     let recreated = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| attr(sp, "node_id") == new_id && sp["attributes"]["moment"] == "create").unwrap_or_else(|| panic!("the re-created birth {new_id}'s row is written"));
     assert!(
-        recreated["attributes"]["outcome"] == "row-seeded" && attr(recreated, "seeded_from") == old_id && attr(recreated, "node_path") == "mesh2.admin" && recreated["attributes"]["change_id"].is_null(),
+        recreated["attributes"]["outcome"] == "row-seeded" && attr(recreated, "seeded_from") == old_id && attr(recreated, "node_path") == "mesh2.node-admin" && recreated["attributes"]["change_id"].is_null(),
         "mesh2's mesh-primary's node recovery re-creates the refusing birth at its (path, name), seeded from it, never a step of the change: {recreated}"
     );
     let new_moved = named(&spans, MOVE).into_iter().find(|sp| attr(sp, "node_id") == new_id && attr(sp, "change_id") == change_id && sp["attributes"]["outcome"] == "moved").unwrap_or_else(|| panic!("the re-created birth {new_id} answered its move under Build {change_id}"));
