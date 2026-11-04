@@ -8,10 +8,22 @@ use crate::model::PathName;
 use crate::nodes_storage::NodeRecord;
 use crate::storage_error::StorageError;
 
+/// The reading process's view of the births it holds deleted (their `NodeDeleted` applied): set once,
+/// by the process's start ([`read_deleted_from`]). Unset: none held.
+static HELD_DELETED: std::sync::OnceLock<Box<dyn Fn(&rdm_core::NodeId) -> bool + Send + Sync>> = std::sync::OnceLock::new();
+
+/// Read the births this process's view holds deleted from `deleted` (its digest view): a record whose
+/// birth it holds deleted is no live record at its pair. The first call in a process stands.
+pub fn read_deleted_from(deleted: impl Fn(&rdm_core::NodeId) -> bool + Send + Sync + 'static) {
+    let _ = HELD_DELETED.set(Box::new(deleted));
+}
+
 /// Whether `row` holds its path and name: it is neither `Deleted` (a delete frees the pair,
-/// node-delete.md) nor `Withdrawn`.
+/// node-delete.md) nor `Withdrawn`, and the reader's view does not hold its birth deleted (its
+/// `NodeDeleted` applied): a returned birth's own line written after its delete is not live at its
+/// pair (node-investigation.md: its re-created birth holds its path and name, and it is deleted; Q207).
 pub fn holds_its_name(row: &NodeRecord) -> bool {
-    !matches!(row.state, crate::model::NodeStatus::Deleted | crate::model::NodeStatus::Withdrawn)
+    !matches!(row.state, crate::model::NodeStatus::Deleted | crate::model::NodeStatus::Withdrawn) && !HELD_DELETED.get().is_some_and(|deleted| deleted(&row.node_id))
 }
 
 /// The one record of `records` that holds `name`: a record holds its name while [`holds_its_name`].

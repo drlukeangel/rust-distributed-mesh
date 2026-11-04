@@ -682,6 +682,9 @@ async fn start_booted(
                 // A node told it is deleted stops writing (S1): its own view holding its birth deleted.
                 let (held, me) = (topology_view.clone(), launch.node_id.to_string());
                 property_writer.deleted_by(move || held.digest_view.is_deleted(&me));
+                // Every pair this process reads: a record whose birth its view holds deleted is not live there.
+                let held = topology_view.clone();
+                crate::pair_record::read_deleted_from(move |id| held.digest_view.is_deleted(id.as_str()));
             }
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).

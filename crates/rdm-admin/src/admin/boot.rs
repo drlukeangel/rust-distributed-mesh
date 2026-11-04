@@ -1774,6 +1774,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // The birth fabric recovery's executor check names (build.md §5.3, Q122).
                                 rows.writes_as(crate::storage::BirthRef { node_id: node_id.clone(), incarnation_id: incarnation.clone() });
                                 records.set_rows(Arc::new(rows));
+                                // Every pair this admin reads: a record whose birth its view holds deleted is not live there.
+                                let held = digest_view.clone();
+                                rdm_node::pair_record::read_deleted_from(move |id| held.is_deleted(id.as_str()));
                                 let _ = build_slot.set(Arc::new(crate::build_op::BuildService { me_path: name.path.clone(), me_name: name.name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: section_run_service, primaries: topology_view.primaries().clone(), incarnation: incarnation.clone() }));
                                 env
                             };
