@@ -2816,7 +2816,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // primary role, the issuer it installed carried to its mesh's other admins. Whoever holds a
                                     // role continues the schedule from the rows; a stopped admin renews nothing.
                                     {
-                                        let own_cert = own_commands.clone();
+                                        let (own_cert, own_configs) = (own_commands.clone(), configs_slot.clone());
                                         let renewals = crate::cert_renewal::Renewals::new(
                                             name.clone(),
                                             node_id.clone(),
@@ -2824,9 +2824,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             nodes_storage.clone(),
                                             records.caches.clone(),
                                             node_rpc.client.clone(),
-                                            Arc::new(move |bytes: Vec<u8>| {
+                                            // The fabric-primary's own renewal: the cert installed, then its dates written on
+                                            // its own record (Q356, node-cert-renew.md Row), as a renewal sent to an admin writes them.
+                                            Arc::new(move |bytes: Vec<u8>, dates: rdm_core::certs::CertDates| {
                                                 if let Some(own) = own_cert.get() {
                                                     let _ = own.renew_cert(&bytes);
+                                                }
+                                                if let Some(configs) = own_configs.get().cloned() {
+                                                    tokio::spawn(async move {
+                                                        if let Err(why) = configs.own_update(move |r| r.cert = Some(dates)).await {
+                                                            tracing::info_span!("rdm.node_admin.cert.update.via-own-record", outcome = "not-written", reason = %why).in_scope(|| tracing::info!("the renewed cert's dates are not on its own record"));
+                                                        }
+                                                    });
                                                 }
                                             }),
                                         );

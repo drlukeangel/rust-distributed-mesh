@@ -147,7 +147,7 @@ impl Outcome {
 
 /// Installs a renewed member cert on this admin itself (the fabric-primary renews its own cert in
 /// process): the bytes it presents from now on.
-pub type InstallOwn = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+pub type InstallOwn = Arc<dyn Fn(Vec<u8>, CertDates) + Send + Sync>;
 
 /// The fabric-primary's own `node.roots.update` (its exact birth, the set, the phase, whether its secret
 /// rides along), answered as a node answers it.
@@ -316,7 +316,7 @@ async fn renew_one(r: &Renewals, n: &Node, birth: &BirthIdentity, held: &CertDat
             let dates = dates_of(&issue);
             // The fabric-primary's own cert is renewed in process, with no call.
             if n.node_id == r.node_id {
-                (r.install_own)(issue.bytes.clone());
+                (r.install_own)(issue.bytes.clone(), dates.clone());
                 return written(r, n, birth, &dates);
             }
             let req = StatusRequest::RenewCert { node_id: n.node_id.clone(), incarnation: birth.incarnation.clone(), cert: issue.bytes.clone(), cert_dates: Some(dates_of(&issue)) };
@@ -898,7 +898,7 @@ mod tests {
         let counted = installs.clone();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
-        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, store, Default::default(), client, Arc::new(move |_| *counted.lock().unwrap() += 1));
+        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, store, Default::default(), client, Arc::new(move |_, _| *counted.lock().unwrap() += 1));
         let marks: crate::offline::UnreachableMarks = Arc::default();
         r.set_marks(marks.clone());
         marks.lock().unwrap().insert(me.node_id.clone(), crate::offline::UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: 0, reason: crate::offline::ATTEMPTS_SPENT });
@@ -977,7 +977,7 @@ mod tests {
         caches.update_fabric(&*fabric_store, &fabric_id, Some(crate::fabric_storage::FabricRecord::new(identity)), |_| {}).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
-        let r = Renewals::new(me.location(), me.node_id.clone(), issuer.clone(), nodes_store.clone(), caches, client, Arc::new(|_| {}));
+        let r = Renewals::new(me.location(), me.node_id.clone(), issuer.clone(), nodes_store.clone(), caches, client, Arc::new(|_, _| {}));
         r.set_fabric(fabric_store.clone(), fabric_id.clone());
 
         // Before `renew_at` and not behind the CA row: nothing is minted.
@@ -1075,7 +1075,7 @@ mod tests {
         nodes_store.put_node(&held).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
-        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, nodes_store.clone(), Default::default(), client, Arc::new(|_| {}));
+        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, nodes_store.clone(), Default::default(), client, Arc::new(|_, _| {}));
 
         // A successor fabric-primary reads the node-admin rows (`signing_of`) and sees `renew_at = 8_000 <= now = 10_000`, so `renew_issuers` mints and installs in-process.
         renew_issuers(&r, &view).await;
@@ -1130,7 +1130,7 @@ mod tests {
         nodes_store.put_node(&held).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
-        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, nodes_store, Default::default(), client, Arc::new(|_| {}));
+        let r = Renewals::new(me.location(), me.node_id.clone(), issuer, nodes_store, Default::default(), client, Arc::new(|_, _| {}));
 
         renew_issuers(&r, &view).await;
         for _ in 0..200 {
