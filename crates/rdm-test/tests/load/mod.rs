@@ -499,10 +499,10 @@ async fn originate(estate: &Estate, node: &rdm_core::NodeId, req: rdm_test::orig
 /// M11's waits for a burst's receipts on the far node.
 const M11_WAIT: Duration = Duration::from_secs(120);
 
-/// M11 (load-testing.md: gossip load, Luke 2026-11-04): mesh1.node.1 publishes bursts on the testkit
+/// M11 (load-testing.md: gossip load, Luke 2026-11-04): mesh1.node.1 publishes bursts of messages on the testkit
 /// application's channel from inside the node (`PublishBurst`), and mesh2.node.1 receives them. For each
-/// burst: delivered of published, the channel's refusals by name, the latency from each event's publish
-/// span to its receipt span (matched by sequence within the burst's window) and events per second
+/// burst: delivered of published, the channel's refusals by name, the latency from each message's publish
+/// span to its receipt span (matched by sequence within the burst's window) and messages per second
 /// delivered. Count, size and both, each on its own row; reported, no target.
 async fn gossip_load(estate: &Estate, meshes: &[String], rows: &mut Rows) {
     use rdm_test::originate::{OriginateReply, OriginateRequest};
@@ -512,7 +512,7 @@ async fn gossip_load(estate: &Estate, meshes: &[String], rows: &mut Rows) {
     }
     let at = |m: &str| rdm_core::PathName::new(format!("{m}.node"), "1").unwrap();
     let (from, to) = (estate.node_view(&at(&meshes[0])).await.node_id, estate.node_view(&at(&meshes[1])).await.node_id.to_string());
-    // (axis, events, bytes each). The channel's maximum is 16 chunks of one gossip frame (gossip.rs), about
+    // (axis, messages, bytes each). The channel's maximum is 16 chunks of one gossip frame (gossip.rs), about
     // 60 KB; 70 KB is over it and is refused `Oversize` by name.
     let cells: [(&str, u32, u32); 10] = [("count", 100, 256), ("count", 1000, 256), ("count", 5000, 256), ("size", 20, 256), ("size", 20, 4096), ("size", 20, 32768), ("size", 20, 60_000), ("over the maximum", 1, 70_000), ("both", 1000, 32768), ("both", 100, 60_000)];
     for (i, (axis, count, size)) in cells.into_iter().enumerate() {
@@ -557,7 +557,7 @@ async fn gossip_load(estate: &Estate, meshes: &[String], rows: &mut Rows) {
         let latencies: Vec<f64> = got.iter().filter_map(|sp| publishes.get(&s(&sp["attributes"]["sequence"])).map(|p| sp["start_unix_nano"].as_u64().unwrap_or(0).saturating_sub(*p) as f64 / 1e6)).collect();
         let last = got.iter().filter_map(|sp| sp["start_unix_nano"].as_u64()).max().unwrap_or(t1);
         rows.value("M11", &format!("{what}, delivered of published"), "%", 100.0 * got.len() as f64 / published as f64, None);
-        rows.value("M11", &format!("{what}, delivered per second"), "events/s", got.len() as f64 / ((last.saturating_sub(t0)) as f64 / 1e9).max(1e-3), None);
+        rows.value("M11", &format!("{what}, delivered per second"), "messages/s", got.len() as f64 / ((last.saturating_sub(t0)) as f64 / 1e9).max(1e-3), None);
         rows.time("M11", &format!("{what}, publish to receipt"), latencies, None, None);
     }
 }

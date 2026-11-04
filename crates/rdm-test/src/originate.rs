@@ -176,18 +176,18 @@ pub enum OriginateRequest {
         /// The event's data.
         data: Vec<u8>,
     },
-    /// Publish `count` events of `size` bytes each on the testkit application's channel, one after
+    /// Publish `count` messages of `size` bytes each on the testkit application's channel, one after
     /// another, from inside this node (load-testing.md M11: the gossip load, never one Node RPC per
-    /// event): subjects `<prefix>/<i>`, sequences `i`. Each publish has its own channel span. Appended
+    /// message): subjects `<prefix>/<i>`, sequences `i`. Each publish has its own channel span. Appended
     /// last.
     ///
     /// Position 12 on the wire.
     PublishBurst {
-        /// The events' subject prefix.
+        /// The messages' subject prefix.
         prefix: String,
-        /// How many events.
+        /// How many messages.
         count: u32,
-        /// Each event's data, in bytes.
+        /// Each message's data, in bytes.
         size: u32,
     },
 }
@@ -440,9 +440,9 @@ pub enum OriginateReply {
     PublishedBurst {
         /// Who published them.
         by: AnsweredBy,
-        /// Events handed to the channel's gossip.
+        /// Messages handed to the channel's gossip.
         published: u32,
-        /// Events the channel refused.
+        /// Messages the channel refused.
         refused: u32,
         /// The first refusal, by name; empty when none.
         first_refusal: String,
