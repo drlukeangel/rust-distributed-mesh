@@ -2579,3 +2579,128 @@ async fn a_primary_update_whose_send_is_spent_ends_its_section_by_name_and_is_se
     assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "the update is sent once");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
 }
+
+/// A Build store whose current-Build read, Build read, or both, fail with `Io` (the store
+/// unreachable), counting each: every other call is the store's.
+struct BuildsUnread {
+    inner: Arc<MemoryBuildStateAdapter>,
+    current_fails: bool,
+    read_fails: bool,
+    currents: std::sync::atomic::AtomicU32,
+    reads: std::sync::atomic::AtomicU32,
+}
+
+impl BuildsUnread {
+    fn over(inner: Arc<MemoryBuildStateAdapter>, current_fails: bool, read_fails: bool) -> Arc<Self> {
+        Arc::new(Self { inner, current_fails, read_fails, currents: Default::default(), reads: Default::default() })
+    }
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for BuildsUnread {
+    async fn publish_accepted(&self, a: &rdm_admin::build_state::BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(a).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, BuildStateError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.read_fails {
+            return Err(BuildStateError::Io("the store is unreachable".into()));
+        }
+        self.inner.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, BuildStateError> {
+        self.currents.fetch_add(1, Ordering::SeqCst);
+        if self.current_fails {
+            return Err(BuildStateError::Io("the store is unreachable".into()));
+        }
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(id).await
+    }
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
+    }
+}
+
+/// `e` reading the Build store `builds`.
+fn env_reading(e: &DriveEnv, builds: Arc<dyn BuildStateAdapter>) -> Arc<DriveEnv> {
+    Arc::new(DriveEnv {
+        me_mesh: e.me_mesh.clone(),
+        me_path: e.me_path.clone(),
+        me_name: e.me_name.clone(),
+        birth: e.birth.clone(),
+        topology: e.topology.clone(),
+        builds,
+        dispatcher: e.dispatcher.clone(),
+        gate: e.gate.clone(),
+        notices: e.notices.clone(),
+        turns: e.turns.clone(),
+        send: e.send,
+    })
+}
+
+/// CONTRACT (Q344: "One `Send { attempts, TimeLimit }` on every call, the only retry mechanism ... No
+/// call keeps a retry of its own"; D32): the reconcile loop's read of the current Build is made under
+/// the drive's `Send`, its three attempts. Spent, the pass drives nothing and names the cause on
+/// `rdm.node_admin.build.update.via-store-spent` (`store` `builds`, no Build). Must NOT happen: a
+/// read past the Send's attempts, or a drive started.
+#[tokio::test(start_paused = true)]
+async fn the_reconcile_loops_current_build_read_spent_drives_nothing_and_names_its_cause() {
+    let r = rig().await;
+    let builds = BuildsUnread::over(r.builds.clone(), true, false);
+    let env = env_reading(&r.env, builds.clone());
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    let (capture, _guard) = crate::step_event_refusal::Capture::new("d32-current-build-spent");
+    assert!(rdm_admin::build_op::ensure_active(&drives, &env).await.is_empty(), "the pass drives nothing");
+    assert_eq!(builds.currents.load(Ordering::SeqCst), 3, "the read is made under the drive's Send: three attempts");
+    assert_eq!(builds.reads.load(Ordering::SeqCst), 0, "no Build is read");
+    assert!(drives.get(&r.build).is_none(), "no drive is made");
+    let spent = capture.spans("rdm.node_admin.build.update.via-store-spent");
+    assert!(
+        spent.iter().any(|(_, a)| a.get("build_id").map(String::as_str) == Some("none") && a.get("store").map(String::as_str) == Some("builds") && a.get("reason").is_some_and(|w| w.contains("the store is unreachable") && w.contains("its Send spent: 3 attempts"))),
+        "the cause by name: {spent:?}"
+    );
+    eprintln!("span rdm.node_admin.build.update.via-store-spent trace_id={} {:?}", spent[0].0, spent[0].1);
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing ran");
+}
+
+/// CONTRACT (Q344; D32; build.md §4.1): the reconcile loop's read of the current Build's record is
+/// made under the drive's `Send`, its three attempts. Spent, the Build's drive ends unwritten by name
+/// (its state unknown, nothing is written): its callers read `not-ready` naming the cause, and the
+/// next events' passes read the Build no more, each reading only the current Build, its own read,
+/// until the next build.create (`Drives::write_unwritten`). Must NOT happen: the Build read again for
+/// a later event, a drive run, or an ending written.
+#[tokio::test(start_paused = true)]
+async fn the_reconcile_loops_build_read_spent_ends_its_drive_unwritten_by_name_and_reads_it_no_more() {
+    let r = rig().await;
+    let builds = BuildsUnread::over(r.builds.clone(), false, true);
+    let env = env_reading(&r.env, builds.clone());
+    let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+    let (capture, _guard) = crate::step_event_refusal::Capture::new("d32-build-read-spent");
+    let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await;
+    let [drive] = ensured.as_slice() else { panic!("the pass hands back the Build's drive: {}", ensured.len()) };
+    assert_eq!(builds.reads.load(Ordering::SeqCst), 3, "the read is made under the drive's Send: three attempts");
+    assert!(drive.unwritten(), "the drive ended unwritten");
+    match terminal_of(drive).await {
+        BuildReply::NotReady { reason } => assert!(reason.contains("could not be read") && reason.contains("its Send spent: 3 attempts"), "the callers read the cause by name: {reason}"),
+        other => panic!("the callers read not-ready: {other:?}"),
+    }
+    let unwritten = capture.spans("rdm.node_admin.build.update.via-unwritten");
+    assert!(unwritten.iter().any(|(_, a)| a.get("build_id") == Some(&r.build.log().to_string()) && a.get("reason").is_some_and(|w| w.contains("its Send spent"))), "the end is named: {unwritten:?}");
+    eprintln!("span rdm.node_admin.build.update.via-unwritten trace_id={} {:?}", unwritten[0].0, unwritten[0].1);
+    for _ in 0..3 {
+        let again = rdm_admin::build_op::ensure_active(&drives, &env).await;
+        assert!(again.iter().all(|d| Arc::ptr_eq(d, drive)), "a later pass starts no drive");
+    }
+    assert_eq!(builds.reads.load(Ordering::SeqCst), 3, "the Build is read no more for a later event");
+    assert_eq!(builds.currents.load(Ordering::SeqCst), 4, "each later pass reads only the current Build, its own read");
+    assert!(ended_states(&*r.builds, &r.build).await.is_empty(), "no ending is written");
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing ran");
+}

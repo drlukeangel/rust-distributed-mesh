@@ -91,10 +91,13 @@ async fn pull_from_fabric_primary(
 ) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
     let mut primary = moved_to;
-    // The read is one call on the default `Send` (Q344); the pull reads again only on a domain answer,
-    // the primary's not-ready, within `Send`'s attempts and on its schedule (node-rpc.md §43).
-    let allowed = u32::from(rdm_transport::Send::default().attempts.max(1));
-    let pacing = rdm_transport::Pacing::from_cadences();
+    // The read is one call on its own `Send`, `read_topology`'s default (Q344): a primary that never
+    // answers ends the call with its attempts spent, and the pull with it, never read again. The pull
+    // reads again only on a domain answer, the primary's not-ready, a new delivery to the primary the
+    // records name then: within the call's own attempts, each after the client's resend schedule's
+    // next delay (node-rpc.md §43).
+    let allowed = u32::from(rdm_transport::CallOptions::default().send.attempts.max(1));
+    let pacing = client.delivery().pacing();
     let mut turn = 0u32;
     while turn < allowed {
         turn += 1;

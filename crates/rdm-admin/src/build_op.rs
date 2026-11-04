@@ -651,44 +651,42 @@ impl RpcDispatcher {
 /// run failed is the known state too, and only a caller's resubmit drives it on (R-BI3). The
 /// Build as read decides, never the current-Build read before it: a verdict that landed between the
 /// two reads leaves the Build no longer in progress, and nothing is driven
-/// (`rdm.node_admin.build.reject.via-not-in-progress-when-read`).
+/// (`rdm.node_admin.build.reject.via-not-in-progress-when-read`). A fabric.delete's drive drives on
+/// each Build it interrupts, from its own read of them (`build_drive`).
+///
+/// Each read is made under the drive's `Send` (Q344), never read again for a later event. The current
+/// Build unread with its Send spent, this pass drives nothing (`via-store-spent`, its cause by name);
+/// a later event's pass reads it as its own. The Build unread, its drive ends unwritten by name, its
+/// callers told the cause ([`Drives::unread`]), and nothing reads it again until the next build.create.
 pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc<Drive>> {
-    let (id, completed) = match env.builds.current_build().await {
+    let (id, completed) = match env.builds_call(|| env.builds.current_build()).await {
         Ok(crate::build_state::CurrentBuild::InProgress(id)) => (id, false),
         Ok(crate::build_state::CurrentBuild::Completed(id)) if drives.get(&id).is_some_and(|d| !d.ended()) => (id, true),
         Ok(_) => return Vec::new(),
-        Err(e) => {
-            tracing::info!(error = %e, "Build state unreadable; nothing driven");
+        Err(cause) => {
+            let me = env.held_name().await;
+            tracing::info_span!("rdm.node_admin.build.update.via-store-spent", build_id = "none", node_path = %me.path, node_name = %me.name, store = "builds", state = "unread", reason = %cause)
+                .in_scope(|| tracing::info!("the current Build could not be read with its Send spent: this pass drives nothing"));
             return Vec::new();
         }
     };
-    match env.builds.read_build(&id).await {
+    // A drive that ended writing no `rdm.build.ended` is run by nothing until the next build.create:
+    // its Build is not read again.
+    if let Some(d) = drives.get(&id).filter(|d| d.unwritten()) {
+        return vec![d];
+    }
+    match env.builds_call(|| env.builds.read_build(&id)).await {
         Ok(b) if completed && b.state != crate::build_state::BuildState::Complete => Vec::new(),
         Ok(b) if !completed && !matches!(crate::build_state::current_of(&b), Some(crate::build_state::CurrentBuild::InProgress(_))) => {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-in-progress-when-read", build_id = %b.build_id.log(), state = ?b.state)
                 .in_scope(|| tracing::info!("the Build read after the current-Build read is no longer in progress: a failed Build is never current, and only a caller's resubmit drives it on (R-BI3)"));
             Vec::new()
         }
-        Ok(b) => {
-            let mut driven = vec![drives.ensure(env, &b.build_id)];
-            // Every Build a fabric.delete interrupts that has not ended is driven on, a drive this admin
-            // holds of it or a new one (a successor fabric-primary holds none), so each ends `incomplete`
-            // naming the delete and its callers receive that terminal (build.md §1).
-            if b.deletes_fabric() {
-                let open = crate::build_state::interrupted_open(&*env.builds, &b).await.unwrap_or_default();
-                let mut interrupted = drives.unended();
-                interrupted.extend(open);
-                interrupted.sort();
-                interrupted.dedup();
-                for held in interrupted.into_iter().filter(|h| *h != b.build_id) {
-                    driven.push(drives.ensure(env, &held));
-                }
-            }
-            driven
-        }
-        Err(e) => {
-            tracing::info!(error = %e, build_id = %id.log(), "the current Build is unreadable; nothing driven");
-            Vec::new()
+        Ok(b) => vec![drives.ensure(env, &b.build_id)],
+        Err(cause) => {
+            let me = env.held_name().await;
+            let why = format!("path {me_path:?}, name {me_name:?}: the current Build {id} could not be read: {cause}", me_path = &me.path, me_name = &me.name);
+            vec![drives.unread(env, &id, why).await]
         }
     }
 }

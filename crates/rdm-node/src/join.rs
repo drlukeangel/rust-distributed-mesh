@@ -1,6 +1,5 @@
 //! Client side of the `node.join` protocol (`rdm-node`).
 
-use std::time::Duration;
 
 use rdm_transport::{NodeRpcClient, NodeTarget};
 use rdm_core::join::{Join, JoinReply, JoinRequest};
@@ -99,8 +98,9 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
             Err(JoinFailure::Unreached(why)) => {
                 last = why;
                 match step {
-                    // The receiver answered it is not ready: a domain answer, asked again after a pause.
-                    "not-ready" => tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await,
+                    // The receiver answered it is not ready: a domain answer, asked again after the
+                    // client's resend schedule's next delay (node-rpc.md §43; Q344: no per-site constant).
+                    "not-ready" => tokio::time::sleep(client.delivery().pacing().after(attempt)).await,
                     // The call ended with its attempts spent: asked again only of a later commander.
                     "unanswered" => {
                         if !matches!(next().await, Ok((_, later)) if later != anchor) {

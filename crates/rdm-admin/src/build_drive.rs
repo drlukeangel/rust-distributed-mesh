@@ -250,6 +250,10 @@ pub struct Drive {
     /// The drive ended and wrote no `rdm.build.ended` ([`DriveEnd::Unwritten`]): [`Drives::ensure`]
     /// starts nothing of it until the next build.create ([`Drives::write_unwritten`]).
     unwritten: Mutex<Option<Unwritten>>,
+    /// A fabric.delete's: the Builds it interrupts that its pass read open, each ensured by
+    /// [`Drives::ensure`]'s task once the pass ends (build.md §1), so each ends `incomplete` by its own
+    /// drive. The pass reads them under the drive's `Send`; nothing else reads them.
+    interrupted: Mutex<Vec<BuildId>>,
 }
 
 /// How a drive ended without writing the Build's `rdm.build.ended`.
@@ -291,6 +295,7 @@ impl Drive {
             replayed: AtomicBool::new(false),
             unfinished: Mutex::new(Default::default()),
             unwritten: Mutex::new(None),
+            interrupted: Mutex::new(Vec::new()),
         })
     }
 
@@ -698,6 +703,14 @@ impl Drives {
                     let end = loop {
                         d.again.store(false, Ordering::SeqCst);
                         let end = env.run(&d).await;
+                        // A fabric.delete waits on each Build it interrupts that its pass read open: each
+                        // is driven on, by a drive this admin holds of it or a new one (a successor
+                        // fabric-primary holds none), and each ends `incomplete` naming the delete. Its
+                        // end ensures the delete again (`Drives::subscribe_ended`).
+                        let interrupted = std::mem::take(&mut *d.interrupted.lock().unwrap());
+                        for held in interrupted.iter().filter(|h| **h != d.build_id) {
+                            drives.ensure(&env, held);
+                        }
                         // An ensure that found this run in progress (an event's pass, a submit) is run
                         // now: the run may have read the world before that event and ended waiting on it.
                         // Only a wait is run again; a drive that ended is never.
@@ -796,6 +809,33 @@ impl Drives {
             }
         }
         Ok(())
+    }
+
+    /// `build_id`'s Build could not be read with the reconcile loop's `Send` spent (`why`; Q344): its
+    /// drive ends [`DriveEnd::Unwritten`] by name (the state unknown, nothing is written), its callers
+    /// told not-ready with the cause, and nothing reads or runs it again until the next build.create
+    /// ([`Drives::write_unwritten`]). A drive whose pass runs now reads the Build itself under its own
+    /// `Send`: it is left to that pass.
+    pub async fn unread(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId, why: String) -> Arc<Drive> {
+        let me = env.held_name().await;
+        let drive = {
+            let mut drives = self.drives.lock().unwrap();
+            match drives.get(build_id) {
+                Some(d) if d.completed() || d.unwritten() => return d.clone(),
+                Some(d) if d.ended() => {
+                    drives.remove(build_id);
+                }
+                _ => {}
+            }
+            drives.entry(build_id.clone()).or_insert_with(|| Drive::new(build_id.clone())).clone()
+        };
+        if drive.running.swap(true, Ordering::SeqCst) {
+            drive.again.store(true, Ordering::SeqCst);
+            return drive;
+        }
+        env.unwritten(&me, &drive, None, rdm_core::reply::build::not_ready(why.clone()), why);
+        drive.running.store(false, Ordering::SeqCst);
+        drive
     }
 
     /// Forget `d`, when it is the drive held of its Build.
@@ -980,7 +1020,7 @@ impl DriveEnv {
 
     /// One call to the Build store under the drive's `Send` (Q344): an error that is the store's
     /// answer (`UnknownBuild`, `ConflictingIntent`, `RoleYielded`) is not sent again; `Io` is.
-    async fn builds_call<T, F, Fut>(&self, call: F) -> Result<T, String>
+    pub(crate) async fn builds_call<T, F, Fut>(&self, call: F) -> Result<T, String>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T, BuildStateError>>,
@@ -1025,7 +1065,7 @@ impl DriveEnv {
     /// The drive ends writing no `rdm.build.ended` (`why`): its callers are told `told`, and nothing
     /// runs it again until the next build.create writes `owed`, the terminal it could not write, or
     /// forgets the drive when it owes none ([`Drives::write_unwritten`]).
-    fn unwritten(&self, me: &PathName, drive: &Arc<Drive>, owed: Option<BuildReply>, told: BuildReply, why: String) -> DriveEnd {
+    pub(crate) fn unwritten(&self, me: &PathName, drive: &Arc<Drive>, owed: Option<BuildReply>, told: BuildReply, why: String) -> DriveEnd {
         tracing::info_span!("rdm.node_admin.build.update.via-unwritten", build_id = %drive.build_id.log(), node_path = %me.path, node_name = %me.name, owed = owed.as_ref().map(|t| t.name()).unwrap_or("none"), reason = %why)
             .in_scope(|| tracing::info!("the drive ends and writes no rdm.build.ended: nothing runs it again until the next build.create"));
         *drive.unwritten.lock().unwrap() = Some(Unwritten { owed });
@@ -1171,9 +1211,11 @@ impl DriveEnv {
                 match self.builds_call(|| crate::build_state::interrupted_open(&*self.builds, &p)).await {
                     Ok(open) if open.is_empty() => {}
                     Ok(open) => {
-                        // A wait: each interrupted Build's drive ends at its terminal once its steps in
-                        // flight have ended, and that end (`Drives::subscribe_ended`) ensures this one again.
+                        // A wait: each interrupted Build is driven on once this pass ends (`Drives::ensure`),
+                        // its drive ends at its terminal once its steps in flight have ended, and that end
+                        // (`Drives::subscribe_ended`) ensures this one again.
                         let waits: Vec<String> = open.iter().map(ToString::to_string).collect();
+                        *drive.interrupted.lock().unwrap() = open;
                         return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: fabric.delete {id} interrupts Build {}, which has not ended: the teardown runs once its steps in flight have ended and it has ended incomplete", waits.join(", "), me_path = &me.path, me_name = &me.name));
                     }
                     Err(e) => return self.store_spent(&me, drive, &p, "builds", format!("path {me_path:?}, name {me_name:?}: the Builds fabric.delete {id} interrupts could not be read: {e}", me_path = &me.path, me_name = &me.name), &span).await,

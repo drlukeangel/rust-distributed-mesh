@@ -65,12 +65,20 @@ impl Send {
     /// the time limit, each after the first after its delay on [`crate::Pacing::from_cadences`]
     /// (node-rpc.md §43). An error `answered` reads as an answer (asked again, it answers the same) ends
     /// the call at once and is never sent again.
-    pub async fn run<T, E, F, Fut>(&self, answered: impl Fn(&E) -> bool, mut call: F) -> Result<T, SendEnd<E>>
+    pub async fn run<T, E, F, Fut>(&self, answered: impl Fn(&E) -> bool, call: F) -> Result<T, SendEnd<E>>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T, E>>,
     {
-        let pacing = crate::delivery::Pacing::from_cadences();
+        self.run_paced(crate::delivery::Pacing::from_cadences(), answered, call).await
+    }
+
+    /// [`Send::run`] on the schedule `pacing` (a cell turns its jitter off, as a [`crate::Delivery`]'s).
+    pub async fn run_paced<T, E, F, Fut>(&self, pacing: crate::delivery::Pacing, answered: impl Fn(&E) -> bool, mut call: F) -> Result<T, SendEnd<E>>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
         let attempts = self.attempts.max(1);
         let mut last = None;
         for n in 1..=attempts {

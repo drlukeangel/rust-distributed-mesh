@@ -369,13 +369,13 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
                 return rest.run_inline(None).await.map_err(Into::into);
             };
             let end = match driver.first().await {
-                Some(end) => end,
+                Ok(end) => end,
                 // A first start's hook answered Pending: the start returns with the node Pending, and
-                // the hook's further attempts, then the steps after it, run in a task of their own,
-                // ended by the node's cancel token. Its end lands where the probe reads it.
-                None if kind == StartKind::FirstStart => {
+                // the rest of the hook's run on its Send, then the steps after it, run in a task of
+                // their own, ended by the node's cancel token. Its end lands where the probe reads it.
+                Err(hook_rest) if kind == StartKind::FirstStart => {
                     tokio::spawn(async move {
-                        match driver.rest().await {
+                        match hook_rest.await {
                             End::Passed => rest.run_on(Some(driver)).await,
                             End::Failed(why) => rest.ended_failed_at_the_hook(&why),
                             End::Cancelled => {}
@@ -385,7 +385,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
                 }
                 // A start after a stop runs its hook to its end inside the start: its node.start caller
                 // (or its node.mesh.join commander) is answered that end.
-                None => driver.rest().await,
+                Err(hook_rest) => hook_rest.await,
             };
             match end {
                 End::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),

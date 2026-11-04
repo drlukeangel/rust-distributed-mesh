@@ -249,6 +249,11 @@ impl NodeConfigs {
         let _ = self.views.set(views);
     }
 
+    /// The tick of this admin's installed view, once held ([`Self::watch_views`]).
+    pub(crate) fn views(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.views.get().cloned()
+    }
+
 
 
     /// A caller's config command goes through its primaries to the subject's writer.

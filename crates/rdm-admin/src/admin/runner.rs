@@ -1543,7 +1543,7 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
         if spent || std::time::Instant::now() >= until {
             break Err(seen);
         }
-        tokio::time::sleep(rdm_transport::Pacing::from_cadences().after(pings)).await;
+        tokio::time::sleep(client.delivery().pacing().after(pings)).await;
     };
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-pending-reachability",

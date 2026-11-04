@@ -1,7 +1,8 @@
 //! `pre_node_ready`: the one hook an embedding app supplies to be born full.
 //!
 //! A node reaches the hook after its `JoinNode` was accepted and its mesh channel joined
-//! (node-start.md step 3). RDM runs it under the hook's own [`PreNodeReady::send`] (Q350): each call
+//! (node-start.md step 3). RDM runs it under the hook's own [`PreNodeReady::send`] (Q350), through
+//! [`rdm_transport::Send::run_paced`], the one retry mechanism (Q344): each call
 //! must answer within the `TimeLimit`, and between calls RDM waits the one Send schedule
 //! ([`rdm_transport::Pacing`]). The hook answers [`HookOutcome`]:
 //!
@@ -458,15 +459,18 @@ pub enum End {
     Cancelled,
 }
 
-/// How one attempt ended.
-enum Attempt {
-    Passed,
+/// A hook's answer that is not `Ok`: `Pending` is sent again while the hook's `Send` has attempts
+/// left; `Failed` is an answer and ends the start at once.
+enum NotOk {
     Pending(String),
     Failed(String),
-    Cancelled,
 }
 
-/// Runs one birth's hook under its `Send`: the attempts, the backoff between them, and the state the
+/// The rest of a hook's run once its first attempt answered `Pending` with attempts left: its later
+/// attempts on the same `Send`, to its end ([`HookDriver::first`]).
+pub type Rest = std::pin::Pin<Box<dyn std::future::Future<Output = End> + Send>>;
+
+/// Runs one birth's hook under its `Send` ([`rdm_transport::Send::run_paced`]) and holds the state the
 /// Ready check and the probe read.
 pub struct HookDriver {
     hook: Arc<dyn PreNodeReady>,
@@ -477,8 +481,6 @@ pub struct HookDriver {
     boot: tracing::Span,
     send: rdm_transport::Send,
     pacing: rdm_transport::Pacing,
-    /// The attempts made so far.
-    made: std::sync::atomic::AtomicU32,
 }
 
 impl NodeHooks {
@@ -488,7 +490,7 @@ impl NodeHooks {
         self.driver_paced(ctx, boot, rdm_transport::Pacing::from_cadences())
     }
 
-    /// [`NodeHooks::driver`] on the backoff `pacing` (a cell turns its jitter off).
+    /// [`NodeHooks::driver`] on the Send schedule `pacing` (a cell turns its jitter off).
     pub fn driver_paced(&self, ctx: NodeReadyCtx, boot: tracing::Span, pacing: rdm_transport::Pacing) -> Option<Arc<HookDriver>> {
         let Some(hook) = self.before.clone() else {
             self.gate.open();
@@ -496,7 +498,7 @@ impl NodeHooks {
         };
         let send = hook.send();
         let (state, _) = tokio::sync::watch::channel(PreNodeReadyState::Running { attempt: 0 });
-        Some(Arc::new(HookDriver { hook, after: self.after.clone(), ctx, gate: self.gate.clone(), state, boot, send, pacing, made: std::sync::atomic::AtomicU32::new(0) }))
+        Some(Arc::new(HookDriver { hook, after: self.after.clone(), ctx, gate: self.gate.clone(), state, boot, send, pacing }))
     }
 }
 
@@ -506,52 +508,47 @@ impl HookDriver {
         PreNodeReadyHandle { rx: self.state.subscribe() }
     }
 
-    /// The hook under its `Send`: attempt after attempt, each bounded by the `TimeLimit`, the backoff
-    /// between them, until it answers `Ok`, answers `Failed`, spends its attempts answering `Pending`,
-    /// or the birth is cancelled. Nothing calls the hook again after it ends.
+    /// The hook under its `Send` ([`rdm_transport::Send::run_paced`]; Q344, Q350), the one retry
+    /// mechanism: each attempt bounded by the `TimeLimit`, the Send's backoff before each after the
+    /// first. `Pending`, and no answer within the time limit, are sent again while attempts are left;
+    /// `Ok` passes; `Failed` is an answer and ends the start at once; the attempts spent end it Failed
+    /// with the last reason. A cancel ends the attempt running or the wait between attempts. Nothing
+    /// calls the hook again after it ends.
     pub async fn run(&self) -> End {
-        match self.first().await {
-            Some(end) => end,
-            None => self.rest().await,
-        }
-    }
-
-    /// The first attempt: its end, or `None` when it answered `Pending` with attempts left, for
-    /// [`HookDriver::rest`] to go on from.
-    pub async fn first(&self) -> Option<End> {
-        self.step().await
-    }
-
-    /// The attempts after the first, each after its backoff, to the hook's end.
-    pub async fn rest(&self) -> End {
-        loop {
-            let cancel = self.ctx.cancel.clone();
-            let after = self.pacing.after(self.made.load(std::sync::atomic::Ordering::SeqCst));
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => {
-                    self.state.send_replace(PreNodeReadyState::Cancelled);
-                    return End::Cancelled;
-                }
-                () = tokio::time::sleep(after) => {}
+        let attempts = self.send.attempts.max(1);
+        let made = std::sync::atomic::AtomicU32::new(0);
+        let cancel = self.ctx.cancel.clone();
+        let sent = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                self.state.send_replace(PreNodeReadyState::Cancelled);
+                return End::Cancelled;
             }
-            if let Some(end) = self.step().await {
-                return end;
+            sent = self.send.run_paced(self.pacing, |e: &NotOk| matches!(e, NotOk::Failed(_)), || self.attempt(made.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1)) => sent,
+        };
+        match sent {
+            Ok(()) => End::Passed,
+            Err(rdm_transport::SendEnd::Answered(NotOk::Failed(why)) | rdm_transport::SendEnd::Spent { last: Some(NotOk::Failed(why)), .. }) => self.failed(why),
+            Err(rdm_transport::SendEnd::Answered(NotOk::Pending(reason)) | rdm_transport::SendEnd::Spent { last: Some(NotOk::Pending(reason)), .. }) => {
+                self.failed(format!("{reason} (pre_node_ready answered Pending on each of its {attempts} attempts)"))
             }
+            Err(rdm_transport::SendEnd::Spent { last: None, .. }) => self.failed(format!("time limit (pre_node_ready answered Pending on each of its {attempts} attempts)")),
         }
     }
 
-    /// One attempt, and the hook's end when it was the last.
-    async fn step(&self) -> Option<End> {
-        let attempts = u32::from(self.send.attempts.max(1));
-        let n = self.made.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        match self.attempt(n).await {
-            Attempt::Passed => Some(End::Passed),
-            Attempt::Cancelled => Some(End::Cancelled),
-            Attempt::Failed(why) => Some(self.failed(why)),
-            Attempt::Pending(reason) if n >= attempts => Some(self.failed(format!("{reason} (pre_node_ready answered Pending on each of its {attempts} attempts)"))),
-            Attempt::Pending(_) => None,
+    /// The hook's run, its first attempt awaited here: the hook's end when it ended there, or the
+    /// [`Rest`] of the same run once the first attempt answered `Pending` with attempts left, for its
+    /// caller to await or hand to a task. One `Send` covers every attempt.
+    pub async fn first(self: &Arc<Self>) -> Result<End, Rest> {
+        let me = self.clone();
+        let mut run: Rest = Box::pin(async move { me.run().await });
+        let mut state = self.state.subscribe();
+        tokio::select! {
+            biased;
+            end = &mut run => return Ok(end),
+            _ = state.wait_for(|s| matches!(s, PreNodeReadyState::Pending { .. })) => {}
         }
+        Err(run)
     }
 
     fn failed(&self, why: String) -> End {
@@ -559,10 +556,10 @@ impl HookDriver {
         End::Failed(why)
     }
 
-    /// Attempt `n`: one span under the boot span carrying the outcome and the reason. The hook future
-    /// is dropped when the birth is cancelled or its time limit passes, which ends any pull it has in
-    /// flight with it.
-    async fn attempt(&self, n: u32) -> Attempt {
+    /// Attempt `n`: one span under the boot span carrying the outcome and the reason. Its future is
+    /// dropped when its time limit passes (the Send's) or the birth is cancelled, which ends any pull
+    /// the hook has in flight with it; [`Unanswered`] records which.
+    async fn attempt(&self, n: u32) -> Result<(), NotOk> {
         self.state.send_replace(PreNodeReadyState::Running { attempt: n });
         let span = tracing::info_span!(
             parent: &self.boot,
@@ -579,43 +576,29 @@ impl HookDriver {
             reason = tracing::field::Empty,
         );
         let ctx = NodeReadyCtx { attempt: n, ..self.ctx.clone() };
-        let cancel = self.ctx.cancel.clone();
-        let limit = self.send.time_limit.0;
-        let out = async {
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => None,
-                o = tokio::time::timeout(limit, self.hook.pre_node_ready(&ctx)) => Some(o.unwrap_or_else(|_| HookOutcome::Pending { reason: "time limit".into() })),
-            }
-        }
-        .instrument(span.clone())
-        .await;
+        let mut unanswered = Unanswered { driver: self, span: span.clone(), attempt: n, answered: false };
+        let out = self.hook.pre_node_ready(&ctx).instrument(span.clone()).await;
+        unanswered.answered = true;
         match out {
-            Some(HookOutcome::Ok) => {
+            HookOutcome::Ok => {
                 self.gate.open();
                 span.record("outcome", "ok");
                 span.in_scope(|| tracing::info!("pre_node_ready returned Ok"));
                 self.state.send_replace(PreNodeReadyState::Passed);
-                Attempt::Passed
+                Ok(())
             }
-            Some(HookOutcome::Pending { reason }) => {
+            HookOutcome::Pending { reason } => {
                 span.record("outcome", "pending");
                 span.record("reason", reason.as_str());
                 span.in_scope(|| tracing::info!("pre_node_ready answered Pending: this attempt ends"));
                 self.state.send_replace(PreNodeReadyState::Pending { attempt: n, reason: reason.clone() });
-                Attempt::Pending(reason)
+                Err(NotOk::Pending(reason))
             }
-            Some(HookOutcome::Failed { reason }) => {
+            HookOutcome::Failed { reason } => {
                 span.record("outcome", "failed");
                 span.record("reason", reason.as_str());
                 span.in_scope(|| tracing::info!("pre_node_ready answered Failed"));
-                Attempt::Failed(reason)
-            }
-            None => {
-                span.record("outcome", "cancelled");
-                span.in_scope(|| tracing::info!("pre_node_ready was cancelled: the hook and its pull ended"));
-                self.state.send_replace(PreNodeReadyState::Cancelled);
-                Attempt::Cancelled
+                Err(NotOk::Failed(reason))
             }
         }
     }
@@ -633,6 +616,34 @@ impl HookDriver {
                 () = cancel.cancelled() => {}
             }
         });
+    }
+}
+
+/// An attempt the hook has not answered yet. Dropped unanswered, it records why the attempt ended:
+/// the birth cancelled (`cancelled`), or else its time limit passed, which is `Pending { reason: "time
+/// limit" }` (fabric-node-hooks.md "Outcomes and the gate").
+struct Unanswered<'a> {
+    driver: &'a HookDriver,
+    span: tracing::Span,
+    attempt: u32,
+    answered: bool,
+}
+
+impl Drop for Unanswered<'_> {
+    fn drop(&mut self) {
+        if self.answered {
+            return;
+        }
+        if self.driver.ctx.cancel.is_cancelled() {
+            self.span.record("outcome", "cancelled");
+            self.span.in_scope(|| tracing::info!("pre_node_ready was cancelled: the hook and its pull ended"));
+            self.driver.state.send_replace(PreNodeReadyState::Cancelled);
+        } else {
+            self.span.record("outcome", "pending");
+            self.span.record("reason", "time limit");
+            self.span.in_scope(|| tracing::info!("pre_node_ready gave no answer within its time limit: this attempt ends as Pending"));
+            self.driver.state.send_replace(PreNodeReadyState::Pending { attempt: self.attempt, reason: "time limit".into() });
+        }
     }
 }
 
@@ -838,6 +849,43 @@ mod tests {
             let End::Failed(why) = driver.run().await else { panic!("a hook that never answers ends the start Failed") };
             assert!(why.starts_with("time limit"), "no answer within the TimeLimit is Pending \"time limit\": {why}");
             assert!(started.elapsed() < Duration::from_secs(5), "the time limit bounds the attempt: {:?}", started.elapsed());
+            rig.ep.close().await;
+        });
+    }
+
+    // @feature: pre-node-ready
+    /// CONTRACT (Q344: one `Send` on every call, the only retry mechanism; Q350; D33): a first start's
+    /// first attempt is awaited inline and, answered `Pending`, the rest of the same run goes on under
+    /// the same `Send`: its attempts count from the first, so a hook answering `Pending` on each spends
+    /// three in all and ends Failed with the last reason, and a hook answering `Pending` then `Ok`
+    /// passes on its second. Must NOT happen: a fresh count for the rest (a fourth call), a call after
+    /// the end, or the first attempt's `Pending` taken for the end.
+    #[test]
+    fn the_first_attempts_pending_hands_on_the_rest_of_the_same_send() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        rt.block_on(async {
+            let rig = Rig::new().await;
+            let limit = Duration::from_secs(10);
+            let spent = ScriptedHook::new((0..4).map(|n| HookOutcome::Pending { reason: format!("not yet {n}") }).collect(), send(3, limit));
+            let driver = NodeHooks::new(spent.clone()).driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            let Err(rest) = driver.first().await else { panic!("the first attempt answered Pending: the rest is handed on") };
+            assert_eq!(spent.attempts_seen.lock().unwrap().len(), 1, "the first attempt is the only one awaited inline");
+            let End::Failed(why) = rest.await else { panic!("the Send's attempts spent end the start Failed") };
+            assert!(why.starts_with("not yet 2") && why.contains("each of its 3 attempts"), "the last reason, after three attempts in all: {why}");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(spent.attempts_seen.lock().unwrap().len(), 3, "three attempts in all, the first included, and no fourth");
+
+            let passes = ScriptedHook::new(vec![HookOutcome::Pending { reason: "not yet".into() }, HookOutcome::Ok], send(3, limit));
+            let hooks = NodeHooks::new(passes.clone());
+            let driver = hooks.driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            let Err(rest) = driver.first().await else { panic!("the first attempt answered Pending") };
+            assert_eq!(rest.await, End::Passed);
+            assert_eq!(passes.attempts_seen.lock().unwrap().iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![1, 2], "the second attempt is the Send's second");
+            assert!(hooks.gate().is_open());
+
+            let ok = ScriptedHook::new(vec![HookOutcome::Ok], send(3, limit));
+            let driver = NodeHooks::new(ok.clone()).driver_paced(rig.ctx(CancelToken::new()), tracing::Span::none(), PACING).expect("driver");
+            assert!(matches!(driver.first().await, Ok(End::Passed)), "an end on the first attempt is the end");
             rig.ep.close().await;
         });
     }

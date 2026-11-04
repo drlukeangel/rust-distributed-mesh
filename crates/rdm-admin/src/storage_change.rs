@@ -103,6 +103,18 @@ async fn command_reply(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, 
     Err("the stream ended without its terminal frame".into())
 }
 
+/// Wait until this admin installs its next view (`views`, its tick); an admin that holds no tick yet,
+/// or whose tick has closed, waits `delay`, the resend schedule's.
+async fn view_installed(views: &mut Option<tokio::sync::watch::Receiver<u64>>, delay: Duration) {
+    let installed = match views.as_mut() {
+        Some(rx) => rx.changed().await.is_ok(),
+        None => false,
+    };
+    if !installed {
+        tokio::time::sleep(delay).await;
+    }
+}
+
 /// What a read of the change's `rdm.storage.committed` event found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -660,15 +672,22 @@ impl StorageChanges {
         }
     }
 
-    /// `command` to `mesh`'s mesh-primary, the birth the view names now, one call on the default
-    /// `Send` (Q344) per turn until it answers its terminal (`blocked` or `unblocked`). Another turn is
-    /// taken on a domain answer only, after the schedule's delay: a reply other than the terminal, or
-    /// a view that names no mesh-primary yet. A call that ended unanswered is never made again to that
-    /// birth: it is a lost node, investigated and re-created by its own workflow (storage.md "A
-    /// mesh-primary that does not reply `blocked` or `unblocked` is a lost node"), and the command
-    /// goes to the birth the view names next. This fabric-primary's own mesh is served in-process.
+    /// `command` to `mesh`'s mesh-primary, the birth the view names now, one call on its own `Send`
+    /// (Q344) per turn until it answers its terminal (`blocked` or `unblocked`). A call that ended
+    /// unanswered is never made again to that birth: it is a lost node, investigated and re-created by
+    /// its own workflow (storage.md "A mesh-primary that does not reply `blocked` or `unblocked` is a
+    /// lost node"), and the command waits on this admin's installed view until it names another birth,
+    /// as it does while the view names no mesh-primary. Another turn on the same birth is taken on a
+    /// domain answer only, a reply other than the terminal, a new delivery after the client's resend
+    /// schedule's next delay (node-rpc.md §43). This fabric-primary's own mesh is served in-process.
     async fn command_mesh(&self, status_service: &Arc<StatusService>, change: &StorageChange, mesh: &str, command: MeshCommand) {
-        let pacing = rdm_transport::Pacing::from_cadences();
+        let configs = status_service.configs.get();
+        let pacing = configs.map(|c| c.client().delivery().pacing()).unwrap_or_else(rdm_transport::Pacing::from_cadences);
+        // A clone remembers the version its source last saw: only a view installed from now on wakes it.
+        let mut views = configs.and_then(|c| c.views());
+        if let Some(rx) = views.as_mut() {
+            rx.borrow_and_update();
+        }
         let mut turn = 0u32;
         let mut unanswered: Option<(NodeId, Option<rdm_core::IncarnationId>)> = None;
         loop {
@@ -677,7 +696,7 @@ impl StorageChanges {
             let primary = status_service.topology.read().await.node_type_primary(mesh, "node-admin").cloned();
             if let (Some(p), Some(lost)) = (&primary, &unanswered) {
                 if (&p.node_id, &p.incarnation_id) == (&lost.0, &lost.1) {
-                    tokio::time::sleep(pacing.after(turn)).await;
+                    view_installed(&mut views, pacing.after(turn)).await;
                     continue;
                 }
             }
@@ -688,7 +707,7 @@ impl StorageChanges {
                     MeshCommand::Block => self.serve_block(change).await,
                     MeshCommand::Unblock => self.serve_unblock(change).await,
                 }),
-                Some(p) => match (p.incarnation_id.clone(), status_service.configs.get()) {
+                Some(p) => match (p.incarnation_id.clone(), configs) {
                     (Some(incarnation), Some(configs)) => {
                         called = true;
                         let request = match command {
@@ -715,16 +734,19 @@ impl StorageChanges {
                 }
                 Ok(other) => {
                     span.record("outcome", other.name());
+                    drop(span);
+                    tokio::time::sleep(pacing.after(turn)).await;
                 }
                 Err(e) => {
                     span.record("outcome", "no-answer").record("reason", e.as_str());
+                    drop(span);
                     if let (true, Some(p)) = (called, &primary) {
                         unanswered = Some((p.node_id.clone(), p.incarnation_id.clone()));
                     }
+                    // What the view names changes only with a view installed.
+                    view_installed(&mut views, pacing.after(turn)).await;
                 }
             }
-            drop(span);
-            tokio::time::sleep(pacing.after(turn)).await;
         }
     }
 
