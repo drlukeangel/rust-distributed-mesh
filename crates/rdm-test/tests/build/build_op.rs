@@ -383,7 +383,7 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let old_primary = estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).expect("fabric primary");
-    let old_role = old_primary.node_id;
+    let old_role = old_primary.node_id.clone();
     assert_eq!(old_primary.mesh(), "mesh1", "mesh1 holds the fabric-primary role: {old_role}");
 
     // The Build deletes mesh1; the role leaves with it, by a planned handover inside the Build.

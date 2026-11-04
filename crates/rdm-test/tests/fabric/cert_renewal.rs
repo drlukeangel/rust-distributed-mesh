@@ -22,7 +22,7 @@ use rdm_core::outcome::RpcOutcome;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::filter::{Entity, Filter};
 use rdm_core::status::{Status, StatusReply, StatusRequest};
-use rdm_core::views::{FabricView, NodeCertView, NodeStatus, NodeView, Renewals};
+use rdm_core::views::{FabricView, NodeStatus, NodeView, Renewals};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::node::RunningNode;
 use rdm_test::test_certs::{root_choice, test_root_public};
@@ -281,15 +281,15 @@ async fn stop_all(nodes: Vec<RunningNode>, admins: Vec<Running>) {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT (fabric-certs.md §Tracking: "The issuer writes a cert row for the exact birth at every
-/// issue and renew ... `node.get` surfaces it as `cert { issued_at, expires_at, issuer_expires_at }`"):
-/// a JoinNode the admin accepts puts the birth's cert row before the answer: its node id, path.name,
-/// incarnation, issued_at, expires_at, issuer_expires_at and renew_at, the renew point the policy's
-/// fraction of the cert's life plus at most 5 %. `node.get` of the birth shows the row's three times,
-/// and they are the cert's the birth holds.
+/// CONTRACT (fabric-certs.md §Tracking; Q356): a JoinNode the admin accepts answers the member cert
+/// with its dates (`member_cert_dates`), and the node writes them as `cert` on its own record when it
+/// holds the cert: the record at its node id, path.name and incarnation carries issued_at, expires_at,
+/// issuer_expires_at and renew_at, the renew point the policy's fraction of the cert's life plus at
+/// most 5 %. `node.get` of the node answers the record's `cert`, and its dates are the cert's the node
+/// holds.
 #[test]
-fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
-    let cell = "a_join_writes_the_births_cert_row_and_node_get_shows_it";
+fn a_joined_node_writes_its_cert_dates_on_its_record_and_node_get_shows_them() {
+    let cell = "a_joined_node_writes_its_cert_dates_on_its_record_and_node_get_shows_them";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
@@ -303,17 +303,17 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
         let held = signed(&a.member_cert);
         let issued_at = num(&issued, "issued_at_rafka_ms");
 
-        let shown = until("node.get of mesh1.node.1 shows its cert row", BOUND, async || node_get(&root, &a.digest.node.node_id).await.and_then(|v| v.cert)).await;
-        assert_eq!(shown, NodeCertView { issued_at, expires_at: held.cert.expiry_ms, issuer_expires_at: held.issuer.cert.expiry_ms }, "node.get shows the cert the birth holds");
+        let shown = until("node.get of mesh1.node.1 shows its cert dates", BOUND, async || node_get(&root, &a.digest.node.node_id).await.and_then(|v| v.cert)).await;
+        assert_eq!((shown.issued_at, shown.expires_at, shown.issuer_expires_at), (issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms), "node.get shows the cert the birth holds");
 
-        let record = root.runner.nodes_storage.node(&a.digest.node.node_id).await.expect("the record read").expect("mesh1.node.1's record");
-        let birth = record.birth(&a.digest.node.incarnation).unwrap_or_else(|| panic!("no facts of the exact birth on mesh1.node.1's record: {record:?}"));
-        let row = birth.cert.clone().unwrap_or_else(|| panic!("no cert dates on mesh1.node.1's record: {record:?}"));
+        let record = root.runner.nodes_storage.node(&a.digest.node.node_id).await.expect("the record read").expect("mesh1.node.1's record").record;
+        let row = record.cert.clone().unwrap_or_else(|| panic!("no cert dates on mesh1.node.1's record: {record:?}"));
         assert_eq!(
-            (birth.location(), row.issued_at, row.expires_at, row.issuer_expires_at),
-            (rdm_core::PathName::new("mesh1.node", "1").unwrap(), issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
+            (record.location(), record.incarnation.clone(), row.issued_at, row.expires_at, row.issuer_expires_at),
+            (rdm_core::PathName::new("mesh1.node", "1").unwrap(), a.digest.node.incarnation.clone(), issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
             "the record names the exact birth and its cert"
         );
+        assert_eq!(shown, row, "node.get answers the record's cert dates");
         let life = row.expires_at - row.issued_at;
         assert!((row.issued_at + life * RENEW_FROM / 1000..=row.issued_at + life * RENEW_TO / 1000).contains(&row.renew_at), "renewed at the policy's point plus at most 5 %: {row:?}");
         stop_all(vec![a], vec![root]).await;
@@ -548,7 +548,7 @@ fn a_renewal_its_own_admin_blocks_is_spent_nowhere_marks_nothing_and_is_sent_aga
             "a call refused before any attempt is spent nowhere: nothing marks the birth"
         );
         assert_eq!((view.state, view.incarnation.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
-        let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
+        let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|l| l.record.cert.filter(|_| l.record.incarnation == b.digest.node.incarnation)).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.node.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");
 
         root.node_rpc.client.admit_new_connections();
@@ -855,7 +855,7 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         // The next expiry across the fabric with the member's cert expiring at `member`: the sooner of
         // it and the Day-0 root's own, as its record holds it now.
         let next = async |member: u64| {
-            let own = root.runner.nodes_storage.node(&me.node_id).await.unwrap().and_then(|r| r.birth(&me.incarnation).and_then(|f| f.cert.clone())).expect("the Day-0 root's own cert dates");
+            let own = root.runner.nodes_storage.node(&me.node_id).await.unwrap().and_then(|l| l.record.cert.filter(|_| l.record.incarnation == me.incarnation)).expect("the Day-0 root's own cert dates");
             Some(member.min(own.expires_at))
         };
         let shown = until("fabric.get shows the next expiry across the member's and the root's certs", BOUND, async || {
@@ -866,7 +866,7 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         assert_eq!(mesh1(&shown), Some(None), "nothing stalls");
         cut_calls(&root, &b);
 
-        let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
+        let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|l| l.record.cert.filter(|_| l.record.incarnation == b.digest.node.incarnation)).expect("the member's cert dates");
         let stalled = until("fabric.get shows mesh1's renewals stalled", BOUND, async || {
             let f = fabric_get(&root).await?;
             (matches!(mesh1(&f), Some(Some(_))) && f.next_expiry == next(joined).await).then_some(f)

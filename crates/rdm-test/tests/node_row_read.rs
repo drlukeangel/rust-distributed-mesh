@@ -52,10 +52,10 @@ fn nodes_folds(spans: &crate::common::Spans) -> Vec<Option<String>> {
 // @feature: node-lifecycle
 /// CONTRACT (query.md §1, Q237: "A node reads another node's row from the nodes storage itself: a point
 /// read by `id` or by `name`, the store opened on the node's first read and never at its start, join or
-/// create"; Q227): broker1's row stands in the fabric's nodes storage as its mesh-primary wrote it.
-/// gw1 starts and joins, and its start folds no `nodes.jsonl`. The mesh-primary then writes broker1's
-/// config again, and every primary gw1 could call is gone: gw1 reads broker1's row by separate `path` and `name` and by
-/// id, and both answer the config last written, the whole row; a name no row was written at answers
+/// create"; Q227): broker1's record stands in the fabric's nodes storage as broker1 wrote it (Q356).
+/// gw1 starts and joins, and its start folds no `nodes.jsonl`. broker1 then writes its record again,
+/// and every primary gw1 could call is gone: gw1 reads broker1's record by separate `path` and `name`
+/// and by id, and both answer the record last written, whole; a name no record was written at answers
 /// none. The first read opens the store (one fold of `nodes.jsonl`, under the read's span) and the
 /// second folds nothing again; no read makes a Node RPC call. Must NOT happen: the store opened at the
 /// node's start, a read sent to a primary, or a row older than the one written.
@@ -71,13 +71,13 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let fabric = FabricId::mint();
         let admin = admin_side("127.0.0.1".parse().unwrap(), &fabric).await;
 
-        // broker1's row, as its mesh-primary writes it to the fabric's nodes storage.
+        // broker1's record, as broker1 writes it to the fabric's nodes storage (Q356).
         let root = rdm_node::store_root::StoreRoot::open(&dir, &fabric).unwrap();
-        let writer = rdm_admin::storage::FileNodesStorage::open(&dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.expect("the mesh-primary's nodes storage opens");
+        let writer = rdm_admin::storage::FileNodesStorage::open(&root, &rdm_node::store_log::LogWriter::mint()).await.expect("broker1's nodes storage opens");
         let broker: PathName = rdm_core::PathName::new("mesh1.broker", "1").unwrap();
-        let mut row = NodeRecord::new(broker.clone(), "mesh1", "broker", NodeId::mint(), NodeStatus::Ready);
+        let mut row: NodeRecord = rdm_node::nodes_storage::fixture_record(&broker, "broker", NodeId::mint(), IncarnationId::mint(), NodeStatus::Ready);
         // A (path, name) resolves to the live record standing there (node-identity-and-state.md §2).
-        writer.put_node(&row).await.expect("broker1's row is written");
+        writer.put_node(&row).await.expect("broker1's record is written");
         let written = nodes_folds(&seen).len();
 
         let launch = launch(&dir, &fabric, PathName::new("mesh1.gateway", "1").unwrap(), &admin);
@@ -86,9 +86,9 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts and joins");
         assert_eq!(nodes_folds(&seen).len(), written, "gw1's start folds no nodes.jsonl (Q227)");
 
-        // The mesh-primary writes broker1's row again; then no primary is reachable.
-        row.status = NodeStatus::Leaving;
-        writer.put_node(&row).await.expect("broker1's row is written again");
+        // broker1 writes its record again; then no primary is reachable.
+        row.state = NodeStatus::Leaving;
+        writer.put_node(&row).await.expect("broker1's record is written again");
         drop(admin);
 
         let by_name = gw1.node_row(broker.clone()).await.expect("gw1 reads broker1's row by name").expect("broker1's row stands");

@@ -311,11 +311,12 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         assert!(second.spawned.lock().unwrap().is_empty(), "the re-run spawned a second runtime");
         assert_eq!(created.handle.pid, Some(first_pid));
         assert_eq!(runtimes_of(&created.node.node_id), vec![first_pid], "exactly one runtime runs for the node");
-        // The durable report: the birth's runtime row, the fact made available to it and its data dir.
+        // The durable report: the birth's own record, which the node wrote at its start (Q356): the runtime
+        // made available to it and its data dir.
         let incarnation = created.node.incarnation_id.clone().expect("the created node carries its incarnation");
-        let row = admin.nodes_storage.runtime(&created.node.node_id, &incarnation).await.unwrap().expect("the authority kept the admitted birth's report durable");
-        assert_eq!(Some(row.runtime), created.handle.fact(), "the row carries the runtime the report carried");
-        assert_eq!(row.data_dir, created.node.data_dir, "the row carries the data dir the report carried");
+        let row = rdm_admin::node_rows::birth_record(&*admin.nodes_storage, &created.node.node_id, &incarnation).await.unwrap().expect("the node wrote its own record at its start");
+        assert_eq!(Some(row.runtime), created.handle.fact(), "the record carries the runtime the report carried");
+        assert_eq!(row.storage.data_dir, created.node.data_dir, "the record carries the data dir the report carried");
 
         // Every step Complete exactly once across both runs; WaitForMeshJoin and after are the rerun's.
         let view = builds.read_build(&build_id).await.unwrap();

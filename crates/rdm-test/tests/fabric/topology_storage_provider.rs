@@ -3,8 +3,8 @@
 //!
 //! The fabric's `topology_storage_provider` (storage.md §2; i149): the registered name of the backend
 //! RDM's five record stores (fabric, meshes, nodes, connections, builds) are written to. It is one value
-//! for the fabric, on the Fabric row beside `previous_topology_storage_providers`; the same name on a
-//! node's row is the provider that node writes. Day 0 takes it from `RDM_TOPOLOGY_STORAGE_PROVIDER`,
+//! for the fabric, on the Fabric record beside `previous_topology_storage_providers` (Q361: never a
+//! node's); a node opens the backend the Fabric record names. Day 0 takes it from `RDM_TOPOLOGY_STORAGE_PROVIDER`,
 //! `file` when unset; a change is `fabric.storage.update` to the fabric-primary, its own workflow and
 //! never a Build, recorded as its `rdm.storage.*` events; a Build never changes it.
 //!
@@ -121,26 +121,16 @@ fn fabric_names(fabric: &FabricView, provider: &str, previous: &[&str]) {
     assert_eq!(fabric.previous_topology_storage_providers, previous.iter().map(|p| p.to_string()).collect::<Vec<_>>(), "fabric.get answers the providers the fabric left, in order: {fabric:?}");
 }
 
-/// Every node writes `provider`, as its row records it and `mesh.nodes.get` answers it.
-fn nodes_write(views: &[NodeView], provider: &str) {
-    for v in views {
-        assert_eq!(v.topology_storage_provider.as_deref(), Some(provider), "{:?}: its row records the provider it writes: {v:?}", v.name);
-    }
-}
-
-/// CONTRACT (storage.md §2 "The property": "`topology_storage_provider` is one value for the fabric,
-/// on the Fabric row, beside `previous_topology_storage_providers` ... The same name on a node's row
-/// is the provider that node writes"; "A caller reads the fabric's with `fabric.get` and each node's
-/// with `node.get`"; §1: `storage_persistence` "is a typed property of the node's create spec, carried
-/// on the accepted Build's `NodeSpec` and the node's row"; Day 0: "`RDM_TOPOLOGY_STORAGE_PROVIDER`,
-/// `file` when unset"; i149 R1): on a two-mesh fabric started with no provider named, `fabric.get`
-/// answers `file` with no previous provider, and every node's row, as `mesh.nodes.get` answers it,
-/// carries the provider it writes, `file`, beside its `storage_persistence`, two properties under two
-/// names: a node-admin's `persistent { disposition: preserve }`, a node's `ephemeral`. Must NOT
-/// happen: a node or the fabric naming no provider, or the two properties read as one.
+/// CONTRACT (storage.md §2 "The property": `topology_storage_provider` is one value for the fabric, on
+/// the Fabric record beside `previous_topology_storage_providers` (Q361: a fabric setting, never a
+/// node's); §1: a node's own storage is its record's `storage { persistence, data_dir }` (Q364); Day 0:
+/// "`RDM_TOPOLOGY_STORAGE_PROVIDER`, `file` when unset"; i149 R1): on a two-mesh fabric started with no
+/// provider named, `fabric.get` answers `file` with no previous provider, and `node.get` answers each
+/// node's `storage.persistence`: a node-admin's `persistent { disposition: preserve }`, a node's
+/// `ephemeral`. Must NOT happen: the fabric naming no provider, or a node's storage persistence absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_customer_reads_each_nodes_topology_provider() {
-    let test = "a_customer_reads_each_nodes_topology_provider";
+async fn a_customer_reads_the_fabrics_topology_provider_and_each_nodes_storage() {
+    let test = "a_customer_reads_the_fabrics_topology_provider_and_each_nodes_storage";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
     let fabric = estate.fabric_view().await;
     let views = estate.node_views().await;
@@ -148,14 +138,13 @@ async fn a_customer_reads_each_nodes_topology_provider() {
     estate.artifact("views.json", &json!(Estate::values(&views)));
     fabric_names(&fabric, FILE, &[]);
     assert_eq!(views.iter().map(|v| v.location()).collect::<BTreeSet<_>>(), two_mesh_names(), "the view holds both meshes' nodes");
-    nodes_write(&views, FILE);
     for v in &views {
-        let persistence = serde_json::to_value(&v.storage_persistence).unwrap();
+        let persistence = serde_json::to_value(&v.storage.persistence).unwrap();
         let want = match v.r#type.as_str() {
             "node-admin" => json!({"persistence": "persistent", "disposition": "preserve"}),
             _ => json!({"persistence": "ephemeral"}),
         };
-        assert_eq!(persistence, want, "{:?}: its row records its storage_persistence, a property apart from the provider it writes: {v:?}", v.name);
+        assert_eq!(persistence, want, "{:?}: its record's storage carries its persistence: {v:?}", v.name);
     }
     estate.stop().await;
 }
@@ -193,7 +182,6 @@ async fn an_unsupported_provider_changes_nothing() {
     fabric_names(&estate.fabric_view().await, FILE, &[]);
     let after = estate.node_views().await;
     assert_eq!(births(&after), before, "every node is the same birth");
-    nodes_write(&after, FILE);
     // Every process's evidence is flushed as it leaves: the spans are read once the estate has stopped.
     estate.stop().await;
     let spans = estate.spans();
@@ -239,7 +227,6 @@ async fn not_opened(mut estate: Estate, provider: &str, before: &BTreeMap<PathNa
     fabric_names(&estate.fabric_view().await, FILE, &[]);
     let after = estate.node_views().await;
     assert_eq!(&births(&after), before, "every node is the same birth");
-    nodes_write(&after, FILE);
     estate.stop().await;
     let spans = estate.spans();
     let reject = named(&spans, "rdm.node_admin.storage.update.via-caller");
@@ -295,7 +282,6 @@ async fn an_omitted_provider_preserves_the_current_provider() {
     estate.artifact("fabric.json", &json!(fabric));
     estate.artifact("views.json", &json!(Estate::values(&views)));
     fabric_names(&fabric, TOPOLOGY_STORAGE_TARGET, &[]);
-    nodes_write(&estate.node_views().await, TOPOLOGY_STORAGE_TARGET);
     // Day 0 on the named provider: its place holds the fabric's root, the file provider's store dir none.
     let store_dir = estate.store_dir();
     let file_held: Vec<String> = std::fs::read_dir(&store_dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
@@ -368,7 +354,6 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     let after = estate.node_views().await;
     estate.artifact("views.json", &json!(Estate::values(&after)));
-    nodes_write(&after, TOPOLOGY_STORAGE_TARGET);
     assert_eq!(births(&after), before, "every node is the same birth: none restarted or replaced");
     assert!(after.iter().all(|v| v.state == NodeStatus::Ready), "every node is ready: {after:?}");
     let path: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
@@ -552,9 +537,9 @@ fn foreign_line(target: &Path) {
     std::fs::create_dir_all(target).unwrap();
     std::fs::write(target.join(rdm_admin::store_root::LAYOUT), format!("{}\n", rdm_admin::store_root::LAYOUT_VALUE)).unwrap();
     let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), &rdm_core::IncarnationId::parse("zzzzzzzzzzz2").unwrap(), &rdm_transport::clock::RafkaTime::unadopted());
-    // A whole node record (`node-record/4`), as a writer of that store writes one.
-    let record = serde_json::to_vec(&rdm_admin::storage::NodeRecord::new(rdm_core::PathName::new("mesh9.node", "1").unwrap(), "mesh9", "node", rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
-    let line = rdm_admin::store_log::encode_line(&rdm_admin::store_log::Attributes::of(&writer, "node-record", "node-record/4", "zzzzzzzzzzz1"), &record);
+    // A whole node record (`RECORD_FORMAT`), as a writer of that store writes one.
+    let record = serde_json::to_vec(&rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new("mesh9.node", "1").unwrap(), "node", rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::IncarnationId::parse("zzzzzzzzzzz2").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
+    let line = rdm_admin::store_log::encode_line(&rdm_admin::store_log::Attributes::of(&writer, rdm_node::nodes_storage::RECORD_KIND, rdm_node::nodes_storage::RECORD_FORMAT, "zzzzzzzzzzz1"), &record);
     use std::io::Write;
     std::fs::OpenOptions::new().create(true).append(true).open(target.join(rdm_admin::store_root::NODES_FILE)).unwrap().write_all(&line).unwrap();
 }
@@ -604,7 +589,6 @@ async fn role_node_restart(test: &str, ends: Ends) {
         (_, last) => panic!("the change ends {ends:?}: {last:?}"),
     }
     fabric_names(&estate.fabric_view().await, chosen, previous);
-    assert_eq!(restarted.topology_storage_provider.as_deref(), Some(chosen), "the restarted birth writes the provider its change decided: {restarted:?}");
     let chosen_root = if chosen == FILE { &file_root } else { &target_root };
     assert!(!lines_naming(chosen_root, &new_id).is_empty(), "the restarted birth's records are on {chosen}");
     // Nothing of a birth that started after the change's decision is on the provider not chosen.
@@ -635,8 +619,8 @@ async fn role_node_restart(test: &str, ends: Ends) {
 /// on the old provider"): a role process (mesh2.node.1) is killed while its mesh-primary has replied
 /// `blocked` and the change is held before its copy, and comes back at its `(path, name)` as a new node on a
 /// new data dir (a `node`'s storage is ephemeral, Q359). Run twice: a change that switches, and one whose copy is refused before the switch. Each time the
-/// restarted birth writes only the provider the `commit` record decided: its row names it, every record
-/// of it is on that provider and none on the other, and it only ever moves onto that provider once the
+/// restarted birth writes only the provider the `commit` record decided: every record of it is on that
+/// provider and none on the other, and it only ever moves onto that provider once the
 /// record is read; the Fabric row names that provider. Must NOT happen: a write of the restarted birth on
 /// the provider not chosen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -669,7 +653,7 @@ fn one_mesh() -> FabricDesired {
 /// `test-target` by one Build of its complete topology, which completes; its Day-0 node-admin is lost,
 /// and a person starts a node-admin again on that data dir with no launcher and no
 /// `RDM_TOPOLOGY_STORAGE_PROVIDER` (fabric recovery). The new birth writes `test-target`, the provider
-/// its own row names: its row says so, the Fabric row still names `test-target` with `file` previous,
+/// its own row in its data dir names: the Fabric record still names `test-target` with `file` previous,
 /// its records are on `test-target`, and nothing of it is on `file`. Must NOT happen: the start taking
 /// `file` from its environment's default and opening the provider the fabric left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -696,7 +680,6 @@ async fn a_restart_without_a_launcher_writes_the_provider_its_own_row_names() {
     let admin = views.iter().find(|v| v.location() == bootstrap()).expect("the restarted node-admin");
     let new_id = admin.node_id.to_string();
     assert_ne!(new_id, old_id, "a new birth over the data dir");
-    assert_eq!(admin.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the start with no launcher writes the provider its own row names: {admin:?}");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     assert!(!lines_naming(&target_root, &new_id).is_empty(), "the new birth's records are on {TOPOLOGY_STORAGE_TARGET}");
     assert!(lines_naming(&file_root, &new_id).is_empty(), "nothing of the new birth {new_id} is on {FILE}, the provider the fabric left: {:#?}", lines_naming(&file_root, &new_id));
@@ -736,7 +719,6 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
     assert!(failed_reason(&done).is_some(), "the change fails before its switch: {done}");
     fabric_names(&estate.fabric_view().await, FILE, &[]);
     let after = estate.node_views().await;
-    nodes_write(&after, FILE);
     let after_births = births(&after);
     for (name, birth) in before.iter().filter(|(n, _)| **n != held) {
         assert_eq!(after_births.get(name), Some(birth), "{name:?}: the same birth serves throughout");
@@ -808,7 +790,6 @@ async fn a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old
     }
     fabric_names(&estate.fabric_view().await, FILE, &[]);
     let after = estate.node_views().await;
-    nodes_write(&after, FILE);
     assert_eq!(births(&after), before, "every node is the same birth");
     estate.stop().await;
     let spans = estate.spans();
@@ -910,7 +891,6 @@ async fn an_old_change_cannot_unblock_writes_for_a_new_change() {
         estate.spans().into_iter().find(|sp| sp["name"] == MOVE && attr(sp, "node_id") == role_id && attr(sp, "change_id") == old_change && start_ns(sp) > start_ns(&moved))
     }).await;
     fabric_names(&estate.fabric_view().await, FILE, &[FILE, TOPOLOGY_STORAGE_TARGET]);
-    assert_eq!(estate.node_view(&role()).await.topology_storage_provider.as_deref(), Some(FILE), "the role node writes {FILE}, the second change's provider");
     estate.stop().await;
     let spans = estate.spans();
     let switched = of_change(&spans, SWITCH, &second_id, None).into_iter().find(|sp| sp["attributes"]["outcome"] == "inserted").expect("the second change switched");
@@ -952,7 +932,6 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
     hold.release("switch").await;
     ended(&estate, &run).await;
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
-    nodes_write(&[estate.node_view(&source_view.location()).await], TOPOLOGY_STORAGE_TARGET);
     // The estate's stop deletes every connection: the events it causes are not the change's.
     let stopped_ns = now_ns();
     estate.stop().await;
@@ -993,7 +972,6 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     estate.artifact("ended.json", &done);
     let renewed = estate.until_node(&role(), "the role node re-created at its (path, name)", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.state == NodeStatus::Ready).cloned()).await;
     let new_id = renewed.node_id.to_string();
-    assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     thaw(&silent);
@@ -1012,6 +990,7 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
 async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
     let test = "an_unanswered_storage_block_uses_normal_investigation_before_copy";
     let (mut estate, _) = two_mesh_estate(test, &[]).await;
+    let (file_root, target_root) = roots(&estate);
     let old_id = node_id_of(&estate, &role()).await;
     let own = estate.probe(&["own-config", "--target", &format!("exact:{old_id}"), "--value", "source=before-pause"]);
     assert_eq!(own["own_config"], "config-updated", "{own}");
@@ -1022,7 +1001,8 @@ async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
     let replacement = estate.node_view(&role()).await;
     assert_ne!(replacement.node_id.to_string(), old_id, "the normal investigation/recovery completes before the copy is entered");
     assert_eq!(replacement.config, BTreeMap::from([("source".into(), "before-pause".into())]));
-    assert_eq!(replacement.topology_storage_provider.as_deref(), Some(FILE), "before copy the successor is created on the old provider");
+    let successor = replacement.node_id.to_string();
+    assert!(!lines_naming(&file_root, &successor).is_empty() && lines_naming(&target_root, &successor).is_empty(), "before copy the successor is created on the old provider, {FILE}");
     let blocked = blocked_at(&estate, &change_id, "mesh2").await;
     let before_copy = estate.spans();
     assert!(of_change(&before_copy, SWITCH, &change_id, None).iter().all(|sp| sp["attributes"]["outcome"] != "inserted"), "no switch before the normal lifecycle and all blocks finish");
@@ -1031,12 +1011,12 @@ async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
     let after = estate.node_view(&role()).await;
     assert_eq!(after.node_id, replacement.node_id);
     assert_eq!(after.config, replacement.config);
-    assert_eq!(after.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET));
     thaw(&paused);
     assert_eq!(estate.node_view(&role()).await.node_id, replacement.node_id, "a returning deleted birth cannot become the current node");
     estate.stop().await;
     let spans = estate.spans();
     assert!(named(&spans, "rdm.node_admin.node.update.via-true-offline").iter().any(|sp| attr(sp, "node_id") == old_id), "the existing investigation clock reaches its normal lifecycle verdict");
+    assert!(named(&spans, MOVE).iter().any(|sp| attr(sp, "node_id") == successor && sp["attributes"]["outcome"] == "moved" && attr(sp, "provider") == TOPOLOGY_STORAGE_TARGET), "the successor moves onto {TOPOLOGY_STORAGE_TARGET} under the change");
     estate.record_trace_url(&s(&blocked["trace_id"]));
 }
 
@@ -1072,7 +1052,6 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
     assert_ne!(at_completion.node_id.to_string(), old_id, "mesh2's mesh-primary replied unblocked only once the refusing birth was re-created: {at_completion:?}");
     let renewed = estate.until_node(&role(), "the role node re-created at its (path, name), ready", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.state == NodeStatus::Ready).cloned()).await;
     let new_id = renewed.node_id.to_string();
-    assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     estate.stop().await;
@@ -1271,20 +1250,18 @@ async fn every_node_serves_through_a_change(test: &str, provider: &str) {
     estate.artifact("ended.json", &done);
     serving(&node_gets(&estate, &views).await, &before, "after the change");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
-    // The record: every row of a serving node written from the change's acceptance on, on either
-    // provider, records the same node at its (path, name) with the status its row held before the change
-    // (no node changes state), and the last records its move onto the new provider.
+    // The record: every line of a serving node's record written from the change's acceptance on, on
+    // either provider, records the same node at its (path, name) in the state its record held before the
+    // change (no node changes state). A move writes no line (Q361: the provider is the Fabric record's).
     let (file_after, target_after) = (store_lines(&file_root), store_lines(&target_root));
     history_carried(&file_after, &target_after);
     let held = node_lines_from(&file_before, 0);
     let written: Vec<Value> = node_lines_from(&file_after, file_before[NODES].len()).into_iter().chain(node_lines_from(&target_after, file_after[NODES].len())).collect();
     estate.artifact("rows-written.json", &json!(written));
     for (name, (id, _)) in &before {
-        let status = &held.iter().rev().find(|l| l["subject"] == id.as_str()).unwrap_or_else(|| panic!("{name:?}: its row before the change"))["data"]["status"];
+        let status = &held.iter().rev().find(|l| l["subject"] == id.as_str()).unwrap_or_else(|| panic!("{name:?}: its record before the change"))["data"]["state"];
         let own: Vec<&Value> = written.iter().filter(|l| l["subject"] == id.as_str()).collect();
-        assert!(own.iter().all(|l| l["data"]["status"] == *status && rdm_test::estate::is_location(&l["data"], name)), "{name:?}: every row written during the change records the same node at its (path, name) with the status {status} its row held before: {own:#?}");
-        let last = own.last().unwrap_or_else(|| panic!("{name:?}: its row records its move: no row of it written during the change"));
-        assert_eq!(last["data"]["topology_storage_provider"], TOPOLOGY_STORAGE_TARGET, "{name:?}: its last row records the provider it writes: {last}");
+        assert!(own.iter().all(|l| l["data"]["state"] == *status && rdm_test::estate::is_location(&l["data"], name)), "{name:?}: every line of its record written during the change records the same node at its (path, name) in the state {status} its record held before: {own:#?}");
     }
     let stopped_ns = now_ns();
     estate.stop().await;
@@ -1312,12 +1289,12 @@ async fn every_node_serves_through_a_change(test: &str, provider: &str) {
 /// and every node stay ready, no node restarts, and no node changes state"; i149 R13):
 /// on a two-mesh fabric, `node.get` of every node by its id answers the same birth (node id and
 /// incarnation), ready, before the change to `test-target`, while every mesh-primary has
-/// replied `blocked` and the change is held before its copy, and after the Build completes; every row of a
-/// serving node written during the change, on either provider, records the same node at its (path, name)
-/// with the status its row held before the change, the last naming `test-target`; each birth's process started once, before the
+/// replied `blocked` and the change is held before its copy, and after the Build completes; every line of
+/// a serving node's record written during the change, on either provider, records the same node at its
+/// (path, name) in the state its record held before the change; each birth's process started once, before the
 /// change, and moved onto `test-target` in place; no node is created, started or deleted during the
 /// change. Must NOT happen: a node restarted, re-born or replaced, a read unanswered while blocked, or a
-/// row recording another status. The fast gate's cell of this stem.
+/// record line in another state. The fast gate's cell of this stem.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_serving_node_keeps_its_birth_and_ready_through_a_change() {
     every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_through_a_change", "process").await;
@@ -1328,7 +1305,7 @@ async fn every_serving_node_keeps_its_birth_and_ready_through_a_change() {
 /// line naming the new provider current" on the new provider; i149 R14): after a change to `test-target`
 /// completes, every store on `file` reads whole (every line verified), its Fabric row still names `file`
 /// with no previous provider while `test-target`'s names `test-target` with `file` previous, and every
-/// serving node's row reads there. A Build that omits the provider then creates mesh1.node.2 and that node
+/// serving node's record reads there. A Build that omits the provider then creates mesh1.node.2 and that node
 /// dials mesh1.node-admin.2: its records and its connection event are on `test-target` and none on `file`, and
 /// every line of `file` is the line it held at the cutover. Must NOT happen: a line of the previous
 /// provider changed, added or removed, or a write after the cutover landing there.
@@ -1351,7 +1328,7 @@ async fn a_previous_provider_remains_unchanged_after_cutover() {
     assert_eq!((&old["data"]["topology_storage_provider"], old["data"]["previous_topology_storage_providers"].as_array().map_or(0, Vec::len)), (&json!(FILE), 0), "the Fabric row on {FILE} is the one before the switch: {old}");
     assert_eq!((&new["data"]["topology_storage_provider"], &new["data"]["previous_topology_storage_providers"]), (&json!(TOPOLOGY_STORAGE_TARGET), &json!([FILE])), "the Fabric row on {TOPOLOGY_STORAGE_TARGET} names it, {FILE} previous: {new}");
     for v in &views {
-        assert!(rdm_admin::store_log::read_record(&file_root.join(NODES), "node-record", Some(v.node_id.as_str())).is_some(), "{:?}: its row reads on {FILE}", v.name);
+        assert!(rdm_admin::store_log::read_record(&file_root.join(NODES), "node-record", Some(v.node_id.as_str())).is_some(), "{:?}: its record reads on {FILE}", v.name);
     }
     // Writes after the cutover: a node created by a Build that omits the provider, and its connection event.
     estate.resize(&grown()).await;
@@ -1397,14 +1374,12 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
     let after = estate.node_views().await;
     assert_eq!(births(&after), before, "every node is the same birth through both changes");
     assert!(after.iter().all(|v| v.state == NodeStatus::Ready), "every node is ready: {after:?}");
-    nodes_write(&after, FILE);
     // The fabric serves on `file`: a Build that omits the provider creates a node, written there alone.
     estate.resize(&grown()).await;
     let mut names = two_mesh_names();
     names.insert(grown_location());
     let grown_view = estate.settles_to_named(&names, SETTLE).await.into_iter().find(|v| v.location() == grown_location()).expect("the grown node");
     let grown_id = grown_view.node_id.to_string();
-    assert_eq!(grown_view.topology_storage_provider.as_deref(), Some(FILE), "the grown node writes {FILE}: {grown_view:?}");
     assert!(!lines_naming(&file_root, &grown_id).is_empty() && lines_naming(&target_root, &grown_id).is_empty(), "the grown node's records are on {FILE} and none on {TOPOLOGY_STORAGE_TARGET}");
     assert_eq!(store_lines(&target_root), target_back, "{TOPOLOGY_STORAGE_TARGET} is written no more once the fabric returned to {FILE}");
     estate.stop().await;

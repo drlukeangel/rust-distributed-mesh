@@ -399,12 +399,12 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
         let name = s(&n["node_id"]);
         let location: PathName = rdm_test::estate::location(&n);
         let want: &[&str] = &["Ready"];
-        // A mesh-primary's own Ready has no Applied reply to be durable before (states.md): its
-        // writer records it on its own record after the view shows it, so the cell reads until it is there.
+        // The node writes its own Ready on its own record before it publishes it (Q356): the record's
+        // state, at the birth the view holds.
         let read = || {
             let record: Value = estate.node_record(&s(&n["node_id"])).unwrap_or_else(|| panic!("the record of {name} is in nodes.jsonl"));
-            let birth = record["data"]["births"].as_array().into_iter().flatten().find(|b| b["incarnation_id"] == n["incarnation_id"]).cloned().unwrap_or_default();
-            (birth["declared"].clone(), record)
+            let state = if record["data"]["incarnation"] == n["incarnation"] { record["data"]["state"].clone() } else { Value::Null };
+            (state, record)
         };
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let (declared, record) = loop {
@@ -429,23 +429,17 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     // builds.jsonl's (R-BI6), and no per-role row stands beside them (Part C2).
     let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no primary row stands beside it: {after:#?}");
-    // Each node records its own address in its own part of its record, at the birth its mesh's primary
-    // records on the record's other part (Q333).
+    // Each node records its own bound address on its own record, its first line at its start (Q356).
     let addressed = |mesh: &str, id: &str| {
         let (mesh, id) = (mesh.to_string(), id.to_string());
         let estate = &estate;
         async move {
-            let addressed = || {
-                let record = estate.node_record(&id)?;
-                let birth = record["data"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["incarnation_id"].as_str()).map(str::to_string)?;
-                let own = estate.record(&rdm_core::NodeId::parse(&id).ok()?)?;
-                (own.birth.incarnation_id.as_str() == birth && own.transport_addr.is_some()).then_some(record)
-            };
+            let addressed = || estate.record(&rdm_core::NodeId::parse(&id).ok()?).filter(|own| own.transport_addr.port() != 0);
             let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while addressed().is_none() && std::time::Instant::now() < until {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert!(addressed().is_some(), "{mesh}: {id} recorded its address in its own part of its record at its birth: {:?} {:?}", estate.node_record(&id), rdm_core::NodeId::parse(&id).ok().and_then(|n| estate.record(&n)));
+            assert!(addressed().is_some(), "{mesh}: {id} recorded its bound address on its own record: {:?}", estate.node_record(&id));
         }
     };
     let fp_id = s(&nodes[0]["node_id"]);

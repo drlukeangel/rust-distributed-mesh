@@ -17,32 +17,15 @@ use std::sync::{Arc, Mutex};
 /// The stub admin's separate path and name.
 pub fn admin_location() -> PathName { PathName::new("mesh1.node-admin", "9").unwrap() }
 
-/// One node of a served view: `endpoint`, `addr` and `incarnation` are `None` for a node the admin holds
-/// and that is not born yet.
+/// One node of a served view, ready, of `mesh`, its path's first location (Q366): `endpoint`, `addr` and
+/// `incarnation` are `None` for a node the admin holds and that is not born yet.
 pub fn node(name: PathName, mesh: &str, r#type: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
-    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
-        r#type: r#type.to_string(),
-        mesh: mesh.to_owned(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: node_id.clone(),
-        endpoint_id: endpoint,
-        incarnation_id: incarnation,
-        deployment_id: None,
-        provider: Some(ProviderKind::Process),
-        data_dir: None,
-        status: NodeStatus::Ready,
-        is_primary: false,
-        is_fabric_primary: false,
-        admin_api_base: None,
-        transport_addr: addr,
-        listeners: Vec::new(),
-        declared: None,
-        stopped: false,
-        load: None,
-        gossip: None,
-        tags: Default::default(),
-        config: Default::default(),
-    }
+    let mut view = NodeView::new(&name, r#type, node_id.clone(), NodeStatus::Ready);
+    assert_eq!(view.mesh(), mesh, "a node's mesh is its path's first location: {name:?}");
+    view.endpoint_id = endpoint;
+    view.transport_addr = addr;
+    view.incarnation = incarnation;
+    view
 }
 
 /// The served admin: its birth (what `--admin-birth` names), the reads it decoded, in order.

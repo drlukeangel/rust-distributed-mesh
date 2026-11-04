@@ -373,13 +373,13 @@ pub async fn store_root_nodes(admin: &AdminSide, template: &LaunchTemplate) -> A
     rdm_admin::storage_backend::file_backend(template.store_dir.clone()).open(&scope).await.unwrap_or_else(|e| panic!("the store root {} opens: {e}", template.store_dir.display())).nodes
 }
 
-/// Await the birth `node_id`'s own part of its record on `nodes`, written as it bound at its join
-/// (`NodeRecord` with its transport address): the durable source a rerun reads WaitForBind's value
-/// from (D67). Panics past 10 s.
+/// Await the birth `node_id`'s record on `nodes`, its first line written at its start with its bound
+/// transport address (Q356): the durable source a rerun reads WaitForBind's value from (D67). Panics
+/// past 10 s.
 pub async fn until_bound(nodes: &Arc<dyn rdm_admin::storage::NodesStorage>, node_id: &NodeId) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if nodes.properties(node_id).await.ok().flatten().is_some_and(|p| p.transport_addr.is_some()) {
+        if nodes.node(node_id).await.ok().flatten().is_some() {
             return;
         }
         assert!(tokio::time::Instant::now() < deadline, "{node_id} wrote no bound properties to the store root within 10 s of its join");

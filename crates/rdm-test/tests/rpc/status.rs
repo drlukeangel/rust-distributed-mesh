@@ -54,11 +54,11 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let primary_id = serde_json::from_value(primary["node_id"].clone()).expect("primary ID");
     estate.enter_by_id(&primary_id).await;
 
-    // 0. Born ready, the nodes and the other admin declared by themselves.
+    // 0. Born ready, the nodes and the other admin each wrote its own Ready on its own record (Q356).
     let declared_by_birth = Estate::values(
         &estate
-            .until_view("every birth's own Ready declared at the authority", Duration::from_secs(20), |views| {
-                nodes.iter().all(|before| views.iter().any(|now| now.node_id.as_str() == before["node_id"].as_str().unwrap() && serde_json::to_value(&now.incarnation).unwrap() == before["incarnation_id"] && now.declared.as_deref() == Some("Ready"))).then(|| views.to_vec())
+            .until_view("every birth's own Ready written on its record", Duration::from_secs(20), |views| {
+                nodes.iter().all(|before| views.iter().any(|now| now.node_id.as_str() == before["node_id"].as_str().unwrap() && serde_json::to_value(&now.incarnation).unwrap() == before["incarnation"] && now.state == rdm_client::NodeStatus::Ready)).then(|| views.to_vec())
             })
             .await,
     );

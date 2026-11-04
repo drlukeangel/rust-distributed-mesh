@@ -89,7 +89,7 @@ async fn pending_contract(cell: &str) {
     let provider = estate.owner.provider.clone();
     let mut mesh2_runtimes: Vec<Value> = Vec::new();
     for n in nodes.iter().filter(|n| n.mesh() == "mesh2" && n.r#type != "node-admin") {
-        mesh2_runtimes.push(json!({"node": n.name, "provider": n.provider, "container": estate.container_of(&n.location()).await}));
+        mesh2_runtimes.push(json!({"node": n.name, "provider": n.runtime.as_ref().map(|r| r.provider), "container": estate.container_of(&n.location()).await}));
     }
     for r in &mesh2_runtimes {
         assert_eq!(r["provider"], provider.as_str(), "{r}");

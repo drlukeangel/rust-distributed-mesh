@@ -15,7 +15,6 @@ use rdm_transport::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_admin::model::NodeStatus;
-use rdm_admin::storage::NodeRecord;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_test::node;
 use rdm_test::originate::Seams;
@@ -148,7 +147,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), operation: rdm_core::OperationId::node("node.stop", &renamed.node_id) };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
-        admin.put_row(NodeRecord { mesh: renamed.mesh.clone(), r#type: renamed.r#type.clone(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
+        admin.put_record(rdm_node::nodes_storage::fixture_record(&taken, &renamed.r#type, renamed.node_id.clone(), renamed.incarnation.clone(), NodeStatus::Stopped)).await;
         let key = node::load_or_mint_key(&renamed.data_dir).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(taken.clone()));
         let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), operation: rdm_core::OperationId::node("node.start", &renamed.node_id) };
@@ -356,7 +355,7 @@ fn a_node_renamed_then_stopped_records_its_next_connection_under_the_name_it_hol
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.observations_landed().await;
         let at_stop = kept_log(&store, &fabric, &launch.node_id).len();
-        admin.put_row(NodeRecord { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
+        admin.put_record(rdm_node::nodes_storage::fixture_record(&taken, &launch.r#type, launch.node_id.clone(), launch.incarnation.clone(), NodeStatus::Stopped)).await;
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
         let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), operation: rdm_core::OperationId::node("node.start", &launch.node_id) };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under the name it holds");

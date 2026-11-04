@@ -2,16 +2,16 @@
 //!
 //! Only the mesh-primary runs node investigation on its mesh's births (fabric-node-lifecycle-elections.md
 //! §4.1; node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"), so only it
-//! watches the births a durable runtime row alone names. It reads its mesh's runtime rows once, as it
-//! takes the role, and holds them while it keeps it: a row written later names a birth its own executor
-//! launched (build.md §5.3: the launching admin writes a birth's runtime row; node-recovery.md "Execution":
-//! "The mesh-primary runs the recovery itself"), which its view holds.
-//! An admin that is not its mesh's primary reads no runtime row on any tick.
+//! watches the births a durable node record alone names, by the `runtime` each node wrote on its own
+//! record (Q356, Q366). It reads its mesh's node records once, as it takes the role, and holds them while
+//! it keeps it: a node started later is one its own executor launched (node-recovery.md "Execution": "The
+//! mesh-primary runs the recovery itself"), which its view holds.
+//! An admin that is not its mesh's primary reads no mesh's node records on any tick.
 
 use rdm_admin::admin::{start_on, AdminConfig, Running};
 use rdm_admin::join::Deployed;
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
-use rdm_admin::storage::{NameHeld, NodeRecord, NodesStorage, RuntimeRow};
+use rdm_admin::storage::{NodeRecord, NodesStorage};
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope, TopologyStorageProviders};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::launch::{Launch, Launcher};
@@ -27,12 +27,12 @@ use std::time::Duration;
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 pub(crate) const WRONG: Duration = Duration::from_secs(60);
 
-/// The call sites of every read of every runtime row one admin made on its nodes store: per read,
-/// its first frames in rdm-admin past the store's own (`file:line`).
+/// The call sites of every read of a mesh's node records (`NodesStorage::nodes`) one admin made on its
+/// nodes store: per read, its first frames in rdm-admin past the store's own (`file:line`).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RuntimeReads(Arc<Mutex<Vec<Vec<String>>>>);
+pub(crate) struct RecordReads(Arc<Mutex<Vec<Vec<String>>>>);
 
-impl RuntimeReads {
+impl RecordReads {
     fn push(&self) {
         let trace = std::backtrace::Backtrace::force_capture().to_string();
         let sites = trace.lines().map(str::trim).filter(|l| l.starts_with("at ") && l.contains("crates/rdm-admin/src") && !l.contains("storage_backend.rs")).take(3).map(|l| l.rsplit("crates/rdm-admin/src/").next().unwrap_or(l).to_string()).collect();
@@ -48,18 +48,20 @@ impl RuntimeReads {
     }
 }
 
-/// A nodes store that records every read of every runtime row made on it, then makes each call on `inner`.
+/// A nodes store that records every read of a mesh's node records made on it, then makes each call on
+/// `inner`.
 struct Recorded {
     inner: Arc<dyn NodesStorage>,
-    reads: RuntimeReads,
+    reads: RecordReads,
 }
 
 #[async_trait::async_trait]
 impl NodesStorage for Recorded {
-    async fn node(&self, node_id: &NodeId) -> Result<Option<crate::storage::NodeLine>, StorageError> {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<rdm_admin::storage::NodeLine>, StorageError> {
         self.inner.node(node_id).await
     }
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, StorageError> {
+        self.reads.push();
         self.inner.nodes(mesh).await
     }
     async fn put_node(&self, row: &NodeRecord) -> Result<(), StorageError> {
@@ -70,11 +72,11 @@ impl NodesStorage for Recorded {
     }
 }
 
-/// RDM's file backend whose nodes store (its runtime rows on the store root included) records every
-/// read of every runtime row one admin makes on it.
+/// RDM's file backend whose nodes store records every read of a mesh's node records one admin makes on
+/// it.
 struct Recording {
     inner: Arc<dyn StorageBackend>,
-    reads: RuntimeReads,
+    reads: RecordReads,
 }
 
 #[async_trait::async_trait]
@@ -100,8 +102,8 @@ impl StorageBackend for Recording {
 }
 
 /// The providers an admin of the cell's store dir `store` registers: RDM's file backend as `file`,
-/// recording that admin's reads of the runtime rows into `reads`.
-pub(crate) fn recorded(store: &Path, reads: &RuntimeReads) -> TopologyStorageProviders {
+/// recording that admin's reads of a mesh's node records into `reads`.
+pub(crate) fn recorded(store: &Path, reads: &RecordReads) -> TopologyStorageProviders {
     TopologyStorageProviders::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, Arc::new(Recording { inner: rdm_admin::storage_backend::file_backend(store.to_path_buf()), reads: reads.clone() }))
 }
 
@@ -175,23 +177,23 @@ pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 
 // @feature: node-lifecycle
 /// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "The mesh-primary then runs node investigation";
-/// node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"; build.md §5.3):
-/// a Day-0 node-admin (mesh1.node-admin.1, its mesh's primary) and mesh1.node-admin.2, launched by it, are both
-/// ready and run their offline ticks for six gossip intervals. The mesh-primary's tick read the runtime
-/// rows once, as it took the role; mesh1.node-admin.2's tick, no primary, read none. Must NOT happen: a read
-/// of every runtime row on every tick of every admin (rust-distributed-mesh#99: 12 reads in 3 s on the
-/// mesh-primary, 9 on an admin that is no primary), each a tail read of the nodes store under its one
-/// read lock racing its writer, and on an admin that is no primary the fold of the whole store its
-/// start never needed (Q227).
+/// node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"; Q366: a node's
+/// `runtime` is on its own record): a Day-0 node-admin (mesh1.node-admin.1, its mesh's primary) and
+/// mesh1.node-admin.2, launched by it, are both ready and run their offline ticks for six gossip
+/// intervals. The mesh-primary's tick read mesh1's node records once, as it took the role;
+/// mesh1.node-admin.2's tick, no primary, read none. Must NOT happen: a read of the mesh's records on
+/// every tick of every admin (rust-distributed-mesh#99: 12 reads in 3 s on the mesh-primary, 9 on an admin
+/// that is no primary), each a tail read of the nodes store under its one read lock racing its writers,
+/// and on an admin that is no primary the fold of the whole store its start never needed (Q227).
 #[test]
-fn the_offline_tick_reads_the_runtime_rows_once_on_the_mesh_primary_and_never_on_an_admin_that_is_no_primary() {
-    let cell = "the_offline_tick_reads_the_runtime_rows_once_on_the_mesh_primary_and_never_on_an_admin_that_is_no_primary";
+fn the_offline_tick_reads_its_meshs_node_records_once_on_the_mesh_primary_and_never_on_an_admin_that_is_no_primary() {
+    let cell = "the_offline_tick_reads_its_meshs_node_records_once_on_the_mesh_primary_and_never_on_an_admin_that_is_no_primary";
     let cap = crate::common::capture(cell);
     cap.run(crate::common::Threads::Workers(4), async move {
         let base = std::env::temp_dir().join(format!("offline-tick-store-reads-{}", NodeId::mint()));
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        let (root_reads, admin_reads) = (RuntimeReads::default(), RuntimeReads::default());
+        let (root_reads, admin_reads) = (RecordReads::default(), RecordReads::default());
 
         // The Day-0 admin does not reconcile: its Build names only itself, and mesh1.node-admin.2 is launched here.
         let root = start_on(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &root_reads)).await.expect("the Day-0 admin comes up");
@@ -208,10 +210,10 @@ fn the_offline_tick_reads_the_runtime_rows_once_on_the_mesh_primary_and_never_on
         tokio::time::sleep(6 * rdm_core::cadence::gossip_interval()).await;
 
         let (on_root, on_admin) = (root_reads.by_the_tick(), admin_reads.by_the_tick());
-        eprintln!("mesh1.node-admin.1's tick read the runtime rows {} times: {on_root:#?}", on_root.len());
-        eprintln!("mesh1.node-admin.2's tick read the runtime rows {} times: {on_admin:#?}", on_admin.len());
-        assert_eq!(on_admin.len(), 0, "mesh1.node-admin.2, no primary, reads no runtime row on any tick: {on_admin:#?}");
-        assert_eq!(on_root.len(), 1, "the mesh-primary reads its mesh's runtime rows once, as it takes the role: {on_root:#?}");
+        eprintln!("mesh1.node-admin.1's tick read mesh1's node records {} times: {on_root:#?}", on_root.len());
+        eprintln!("mesh1.node-admin.2's tick read mesh1's node records {} times: {on_admin:#?}", on_admin.len());
+        assert_eq!(on_admin.len(), 0, "mesh1.node-admin.2, no primary, reads no node records on any tick: {on_admin:#?}");
+        assert_eq!(on_root.len(), 1, "the mesh-primary reads its mesh's node records once, as it takes the role: {on_root:#?}");
 
         admin.leave().await;
         root.leave().await;

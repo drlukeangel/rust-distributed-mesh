@@ -1,18 +1,15 @@
-//! What a node-admin reads from and writes to the fabric's nodes store when it takes a mesh's writing,
-//! and what an admin that is no primary writes there.
+//! What node-admins write to and read from the fabric's nodes store at their starts.
 //!
-//! - The mesh-primary is the one writer of its mesh's node records (build.md §5.3, the writer map). It
-//!   reads them whole once, when it takes the mesh's writing, into the copy every later write starts
-//!   from (storage-whole-records.md "The rule"). Its atlas holds the rows its writer holds
-//!   (`WrittenRows::feeds`), and it reads them from the store no second time (Q207, Q227).
-//! - A birth's runtime row is the launching admin's to write (build.md §5.3: "the launching admin a
-//!   birth's runtime row ... no two writers write one key"). An admin that is no primary writes none,
-//!   and reads none back at its start (Q227).
+//! - Each node writes every field of its own node record itself, a node-admin's included (Q356,
+//!   build.md §5.3): its first line at its start, before Ready. Its mesh-primary writes a node's record
+//!   only for a node that is lost, killed or deleted, never a live node's.
+//! - A node reads nothing from the nodes store at its start, join or create (Q227); the launch and
+//!   the join's answer carry what it writes.
 
 use crate::admin_reads_from_atlas::{day0_config, deployed, launch_by, until_ready};
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
-use rdm_admin::storage::{NameHeld, NodeRecord, NodesStorage, RuntimeRow};
+use rdm_admin::storage::{NodeRecord, NodesStorage};
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope, TopologyStorageProviders};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::{IncarnationId, NodeId};
@@ -46,14 +43,6 @@ impl Calls {
     fn of(&self, op: &str) -> Vec<String> {
         self.0.lock().unwrap().iter().filter(|c| c.op == op).map(|c| c.subject.as_str().expect("this operation selects a scalar ID").to_owned()).collect()
     }
-    /// The calls `op` whose sites pass through any of `files`.
-    fn through(&self, op: Option<&str>, files: &[&str]) -> Vec<Call> {
-        self.0.lock().unwrap().iter().filter(|c| op.is_none_or(|o| c.op == o) && c.sites.iter().any(|s| files.iter().any(|f| s.starts_with(f)))).cloned().collect()
-    }
-    /// The calls `op` whose sites pass through none of `files`.
-    fn not_through(&self, op: &str, files: &[&str]) -> Vec<Call> {
-        self.0.lock().unwrap().iter().filter(|c| c.op == op && !c.sites.iter().any(|s| files.iter().any(|f| s.starts_with(f)))).cloned().collect()
-    }
 }
 
 /// A nodes store that records every call made on it, then makes it on `inner`.
@@ -64,7 +53,7 @@ struct Recorded {
 
 #[async_trait::async_trait]
 impl NodesStorage for Recorded {
-    async fn node(&self, node_id: &NodeId) -> Result<Option<crate::storage::NodeLine>, StorageError> {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<rdm_admin::storage::NodeLine>, StorageError> {
         self.calls.push("node", node_id.to_string());
         self.inner.node(node_id).await
     }
@@ -82,8 +71,7 @@ impl NodesStorage for Recorded {
     }
 }
 
-/// RDM's file backend whose nodes store (its runtime rows on the store root included) records every
-/// call one admin makes on it.
+/// RDM's file backend whose nodes store records every call one admin makes on it.
 struct Recording {
     inner: Arc<dyn StorageBackend>,
     calls: Calls,
@@ -118,18 +106,17 @@ fn recorded(store: &Path, calls: &Calls) -> TopologyStorageProviders {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT (build.md §5.3 the writer map; storage-whole-records.md "The rule"; Q207, Q227): a Day-0
-/// node-admin takes mesh1's writing (its mesh-primary, and the fabric-primary) and mesh1.node-admin.2,
-/// launched by it, joins; both ready, and the fabric left to settle. The mesh-primary listed mesh1's
-/// records from the store once: its writer's fill as it took the mesh, which its atlas holds too.
-/// mesh1.node-admin.2, no primary, made no write to the nodes store and read no runtime row at its start;
-/// its runtime row is its launcher's write, at its join. Must NOT happen: a second listing of the
-/// mesh's records by its writer (the writer's copy filled twice, the atlas filled from the store, a
-/// step's completion filling a mesh this admin writes); a runtime row written by an admin that did
-/// not launch the birth; a read of every runtime row at an admin's start.
+/// CONTRACT (node-identity-and-state.md §2.5: "A node writes every field of its own record itself
+/// (Q356). Its mesh-primary, or the fabric-primary for a mesh with no mesh-primary, writes a node's
+/// record only when the node cannot: a node that is lost, killed or deleted"; Q227): a Day-0 node-admin
+/// (mesh1's primary, and the fabric-primary) and mesh1.node-admin.2, launched by it, which joins; both
+/// ready, and the fabric left to settle. Each admin wrote only its own record: mesh1.node-admin.2 its
+/// first line before it was ready, and the mesh-primary no line of mesh1.node-admin.2, a live node.
+/// mesh1.node-admin.2 read nothing from the nodes store before it was ready. Must NOT happen: a node's
+/// record written by another node while it lives; a read of the store at a node's start.
 #[test]
-fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_writes_no_runtime_row() {
-    let cell = "a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_writes_no_runtime_row";
+fn each_node_admin_writes_only_its_own_record_and_reads_nothing_at_its_start() {
+    let cell = "each_node_admin_writes_only_its_own_record_and_reads_nothing_at_its_start";
     let cap = crate::common::capture(cell);
     cap.run(crate::common::Threads::Workers(4), async move {
         let base = std::env::temp_dir().join(format!("primary-store-reads-{}", NodeId::mint()));
@@ -148,32 +135,25 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
         let admin = start_on(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &admin_calls)).await.expect("the launched admin comes up");
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
+        let at_ready: Vec<Call> = admin_calls.0.lock().unwrap().clone();
         // Every heard birth's view change has run: a write that follows a birth heard has been made.
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         eprintln!("mesh1.node-admin.1 calls on the nodes store: {:#?}", root_calls.0.lock().unwrap());
         eprintln!("mesh1.node-admin.2 calls on the nodes store: {:#?}", admin_calls.0.lock().unwrap());
         let root_id = root.digest.lock().unwrap().node.node_id.to_string();
-        // The take of mesh1's writing: the writer's fill (RoleFold's, `WrittenRows::fill`), the install's
-        // arrivals, the atlas. The Day-0 admin's start reads before it are not the take: its contradictory-start
-        // check (no launcher), and the primaries recorded on the rows (`take_recorded_primaries`, an election
-        // input read only at a start with no launcher, Q227).
-        let take = root_calls.through(Some("nodes"), &["node_rows.rs", "status_rpc.rs", "atlas.rs"]);
-        assert_eq!(take.iter().filter(|c| c.subject == "mesh1").count(), 1, "the mesh-primary lists its mesh's records once as it takes the mesh's writing: {take:#?}");
-        let atlas = root_calls.through(None, &["atlas.rs"]);
-        assert!(atlas.is_empty(), "the mesh-primary's atlas reads nothing from the store for the mesh it writes: it holds its writer's rows: {atlas:#?}");
-        // Every runtime row is written once, by the admin that launched its birth (the Day-0 admin its own).
-        let mut runtime_writes = root_calls.of("put_runtime");
-        runtime_writes.sort();
-        let mut launched = vec![root_id.clone(), launch.node_id.to_string()];
-        launched.sort();
-        assert_eq!(runtime_writes, launched, "the launching admin writes each birth's runtime row once: its own (Day 0) and mesh1.node-admin.2's at its join: {:#?}", root_calls.0.lock().unwrap());
-        assert_eq!(admin_calls.of("put_runtime"), Vec::<String>::new(), "mesh1.node-admin.2, no primary and no launcher, writes no runtime row");
-        assert_eq!(admin_calls.of("put_node"), Vec::<String>::new(), "mesh1.node-admin.2, no primary, writes no node record");
-        // The offline tick's read of every runtime row on every admin (`durable_rows`, recovery.rs) is
-        // rust-distributed-mesh#99, not this cell's.
-        let read_back = admin_calls.not_through("runtimes", &["admin/recovery.rs"]);
-        assert!(read_back.is_empty(), "mesh1.node-admin.2 reads no runtime row back at its start: {read_back:#?}");
+        let admin_id = launch.node_id.to_string();
+        // Each admin writes its own record and no other's: mesh1.node-admin.2 is live, so its
+        // mesh-primary writes none of its lines.
+        let root_writes = root_calls.of("put_node");
+        assert!(root_writes.contains(&root_id) && root_writes.iter().all(|id| *id == root_id), "the mesh-primary writes its own record and no live node's: {:#?}", root_calls.0.lock().unwrap());
+        let admin_writes = admin_calls.of("put_node");
+        assert!(admin_writes.contains(&admin_id) && admin_writes.iter().all(|id| *id == admin_id), "mesh1.node-admin.2 writes its own record and no other's: {:#?}", admin_calls.0.lock().unwrap());
+        // Its start: its own record's first line before Ready, and no read of the store (Q227).
+        let start_writes: Vec<&Call> = at_ready.iter().filter(|c| c.op == "put_node").collect();
+        assert!(!start_writes.is_empty(), "mesh1.node-admin.2 writes its record's first line before it is ready: {at_ready:#?}");
+        let start_reads: Vec<&Call> = at_ready.iter().filter(|c| c.op != "put_node").collect();
+        assert!(start_reads.is_empty(), "mesh1.node-admin.2 reads nothing from the nodes store at its start: {start_reads:#?}");
 
         admin.leave().await;
         root.leave().await;

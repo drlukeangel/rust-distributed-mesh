@@ -58,18 +58,16 @@ fn wanted(gateways: u32) -> BTreeSet<PathName> {
 
 /// The latest appended node-owned property record, selected by globally unique node ID.
 fn row_of(estate: &Estate, node: &NodeView) -> Value {
-    serde_json::to_value(estate.record(&node.node_id).expect("node-owned property record"))
-        .expect("properties serialize")
+    serde_json::to_value(estate.record(&node.node_id).expect("the node's record"))
+        .expect("a record serializes")
 }
 
-/// Listeners belong to node-owned properties, not a primary's lifecycle record.
+/// Listeners are on the node's own record, which the node writes itself (Q356).
 fn row_listeners(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)> {
-    let row = row_of(estate, node);
-    let properties: rdm_node::nodes_storage::NodeRecord = serde_json::from_value(row)
-        .expect("complete node-owned properties");
-    assert_eq!(properties.birth.node_id, node.node_id);
-    assert_eq!(Some(properties.birth.incarnation_id), node.incarnation);
-    properties.listeners
+    let record = estate.record(&node.node_id).expect("the node's record");
+    assert_eq!(record.node_id, node.node_id);
+    assert_eq!(Some(record.incarnation), node.incarnation);
+    record.listeners
 }
 
 /// The listeners the join that admitted `node` reported, as the accepting primary's span records them,

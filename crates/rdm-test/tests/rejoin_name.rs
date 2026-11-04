@@ -10,7 +10,6 @@ use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rdm_admin::model::NodeStatus;
-use rdm_admin::storage::NodeRecord;
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
@@ -98,8 +97,9 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), operation: rdm_core::OperationId::node("node.start", &node_id) };
         assert!(matches!(call(&admin, &target, &stop).await, StatusReply::Stopped { .. }));
 
-        // The authority holds the birth under its row's name, and its held stopped digest names it too.
-        admin.put_row(NodeRecord { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None });
+        // The node's record holds the name it took and its stop, as the node wrote them (Q356), and its
+        // held stopped digest names it too.
+        admin.put_record(rdm_node::nodes_storage::fixture_record(&taken, &launch.r#type, node_id.clone(), incarnation.clone(), NodeStatus::Stopped)).await;
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");

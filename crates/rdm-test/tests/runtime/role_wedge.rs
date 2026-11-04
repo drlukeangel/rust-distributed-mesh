@@ -37,9 +37,9 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
     let target = nodes.iter().find(|n| n["type"] == "broker" && n["is_primary"] == false).cloned().expect("a non-primary broker");
     let path: rdm_core::PathName = rdm_test::estate::location(&target);
-    // Born ready, the broker declared its readiness to its mesh primary by itself (the status op). No stream
-    // announces it: the admin's view carries it (`declared`).
-    estate.until_node(&path, &format!("{path:?}'s own Ready declared at the authority"), Duration::from_secs(20), |n| n.filter(|n| n.declared.as_deref() == Some("Ready")).map(|_| ())).await;
+    // Born ready, the broker wrote its own Ready on its own record (Q356). No stream announces it: the
+    // admin's node.get answers it (`state`).
+    estate.until_node(&path, &format!("{path:?}'s own Ready on its record"), Duration::from_secs(20), |n| n.filter(|n| n.state == NodeStatus::Ready).map(|_| ())).await;
 
     // Frozen: pending-reconnect at the floor, then re-created at its (path, name).
     let floor = rdm_transport::topology::staleness_floor();
