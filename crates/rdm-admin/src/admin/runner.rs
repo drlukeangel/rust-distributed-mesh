@@ -555,12 +555,20 @@ impl AdminRunner {
             // every step whose event did not end `complete`), its running runtime adopted, never
             // taken as the create done.
             TargetOutcome::Alive if self.topology.read().await.node(node).is_some_and(|n| n.node_id == *node_id && !n.stopped) => {}
+            // A birth of another node.id holds the path, stopped or live (node recovery re-created the path
+            // after this create's own birth was lost, Q342): this Build's create of the path is complete,
+            // and its `Complete` receipt is what the plan reads, so a create that began is never planned
+            // again in this Build (`accepted::plan_with`).
             TargetOutcome::Alive => {
-                let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
-                if stopped && matches!(launch_of, crate::deployment::pipeline::LaunchOf::Create) {
+                let held = self.topology.read().await.node(node).map(|n| (n.node_id.clone(), n.stopped));
+                if let (Some((held_node_id, stopped)), crate::deployment::pipeline::LaunchOf::Create) = (held, launch_of) {
                     let r = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete };
-                    self.builds.write_step(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: the stopped birth at path {node_path:?}, name {node_name:?} is held, and its Complete could not be recorded: {e}", node_path = &node.path, node_name = &node.name)))?;
-                    tracing::info_span!("rdm.node_admin.node.create.via-stopped-held", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name).in_scope(|| tracing::info!("the path's stopped birth answers: this Build's create of the path is complete and is not planned again"));
+                    self.builds.write_step(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: the birth {held_node_id} at path {node_path:?}, name {node_name:?} is held, and its Complete could not be recorded: {e}", node_path = &node.path, node_name = &node.name)))?;
+                    if stopped {
+                        tracing::info_span!("rdm.node_admin.node.create.via-stopped-held", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name).in_scope(|| tracing::info!("the path's stopped birth answers: this Build's create of the path is complete and is not planned again"));
+                    } else {
+                        tracing::info_span!("rdm.node_admin.node.create.via-live-held", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id, held_node_id = %held_node_id).in_scope(|| tracing::info!("a live birth of another node.id holds the path: this Build's create of the path is complete and is not planned again"));
+                    }
                 }
                 return Ok(());
             }
@@ -760,6 +768,16 @@ impl AdminRunner {
         } else {
             read_exited(&self.delete_unreached_as(&*self.builds, None, node, from, false, backbone, &operation).instrument(delete).await?)
         };
+        // A live node of another node.id already stands at the path and name (an outside caller's launch
+        // at the lost fabric-primary's own path, Q370; a recovery that already re-created it): the lost
+        // birth is deleted and nothing is created over it (node-recovery.md step 1: never a second
+        // recovery).
+        let standing = self.topology.read().await.births().find(|b| b.location() == *node && b.node_id != from.node_id && !b.stopped).map(|b| b.node_id.clone());
+        if let Some(standing) = standing {
+            tracing::info_span!("rdm.node_admin.node.create.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), outcome = "already-recovered", standing_node_id = %standing)
+                .in_scope(|| tracing::info!("a live node stands at the path and name: the lost birth is deleted and nothing is created over it"));
+            return Ok(());
+        }
         // The re-created node is a new node.id at the same path and name (node-recovery.md), minted
         // when the primary decides the re-create.
         let born = crate::model::NodeId::mint();
