@@ -238,6 +238,7 @@ impl RefusedCallers {
         match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, &rdm_core::status::StatusRequest::GetAtlas, crate::node_config::Hop::Root).await {
             crate::node_config::Owed::InProcess(_) => Ok(None),
             crate::node_config::Owed::Answered(rdm_core::status::StatusReply::Atlas { atlas }) => Ok(Some(atlas)),
+            crate::node_config::Owed::Answered(rdm_core::status::StatusReply::RejectedSourceFailed { source, op, cause }) => Err(format!("fabric.atlas.get at the fabric-primary answered rejected-source-failed (source {source}, op {op}: {cause}): nothing acts until the root answers its atlas")),
             crate::node_config::Owed::Answered(other) => Err(format!("fabric.atlas.get at the fabric-primary answered {}: nothing acts until the root answers its atlas", other.name())),
             crate::node_config::Owed::Gone(_) => Err("fabric.atlas.get was withdrawn".into()),
             crate::node_config::Owed::Unanswered(why) => Err(format!("fabric.atlas.get at the fabric-primary ended unanswered: nothing acts until the root answers its atlas ({why})")),
