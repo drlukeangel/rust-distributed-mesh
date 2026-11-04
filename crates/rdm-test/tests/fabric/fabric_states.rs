@@ -398,7 +398,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     for n in &nodes {
         let name = s(&n["node_id"]);
         let location: PathName = rdm_test::estate::location(&n);
-        let want: &[&str] = &["Ready"];
+        let want = "ready";
         // The node writes its own Ready on its own record before it publishes it (Q356): the record's
         // state, at the birth the view holds.
         let read = || {
