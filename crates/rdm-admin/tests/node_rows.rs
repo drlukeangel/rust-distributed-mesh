@@ -268,3 +268,124 @@ fn node_update_of_type_and_an_invalid_type_are_refused_by_name() {
     let contract_msg = type_update_refusal("broker", "node");
     assert!(contract_msg.contains("type") && contract_msg.contains("node.update"), "{contract_msg}");
 }
+
+/// CONTRACT (node-identity-and-state.md §2: "the path and the name are free text set at node.create",
+/// `type` immutable; §2.5, Q356: each node writes every field of its own record; Q366: a node's mesh is
+/// the first location of its `path`; node-recovery.md "Retained": path and name): a node created at the
+/// free-text name `north` under `mesh1.broker`, of type `broker`, keeps its `name`, `path` and `type`
+/// on its record and in `node.get` (its mesh `mesh1`, read from the path) through:
+/// 1. `create`: the mesh-primary checks the pair against its view, writing nothing, and the node writes
+///    its own record at its start;
+/// 2. `get`, by its id;
+/// 3. `stop` and `start`: the node writes each state on its own record (stopped, then ready);
+/// 4. `recovery`: the mesh-primary writes the lost node's record `Deleted`, and the new node at the
+///    same path and name writes its own record there, the predecessor's config and tags its launch's;
+/// 5. `replace`: the recovered node writes its own record under the name `north-old`, and a successor
+///    created at the released name `north` writes its own.
+/// Must NOT happen: a name, path or type changed by any of these, or a record written by a create.
+#[test]
+fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_get_stop_start_recovery_and_replace() {
+    use rdm_core::filter::Filter;
+    use rdm_core::status::StatusReply;
+    use rdm_node::node_records::NodePropertyWriter;
+    use std::collections::BTreeMap;
+    let cap = capture();
+    cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let (mp, view) = admin(&storage, "2");
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        let get = |id: NodeId| {
+            let (view, storage, me) = (view.clone(), storage.clone(), me.clone());
+            async move {
+                let view = view.read().await.clone();
+                let meshes = rdm_admin::storage::MemoryMeshStorage::default();
+                crate::write_meshes(&view, &meshes).await;
+                let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
+                let atlas = rdm_admin::atlas::Atlas::default();
+                let current = rdm_admin::current_record::CurrentRecords { nodes: &*storage };
+                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &view, &loads, &atlas, &Filter::new().eq("id", [id.to_string()]), Some(current)).await else {
+                    panic!("node.get answers Nodes");
+                };
+                assert_eq!(nodes.len(), 1, "node.get by id answers the one node: {nodes:#?}");
+                let n = &nodes[0];
+                ((n.path.clone(), n.name.clone(), n.r#type.clone(), n.mesh()), n.config.clone(), n.tags.clone())
+            }
+        };
+        let kept = |name: &str| ("mesh1.broker".to_string(), name.to_string(), "broker".to_string(), "mesh1".to_string());
+        let set = |id: NodeId, status: NodeStatus, stopped: bool| {
+            let view = view.clone();
+            async move {
+                let mut v = view.write().await;
+                let n = v.nodes.iter_mut().find(|n| n.node_id == id).unwrap();
+                (n.status, n.stopped, n.routable) = (status, stopped, !stopped);
+            }
+        };
+        let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
+        let tags: std::collections::BTreeSet<String> = ["blue".to_string()].into();
+
+        // 1. Create: the free-text name `north` at path `mesh1.broker`, type `broker`.
+        let north_at: PathName = rdm_core::PathName::new("mesh1.broker", "north").expect("a free-text node name parses");
+        let north = node(north_at.clone(), "mesh1", "broker", false, false).with_type("broker").expect("a valid type");
+        mp.check_create(&north_at, "mesh1", "broker", &north.node_id, None, None).await.expect("the free-text pair is free");
+        assert!(storage.nodes("mesh1").await.unwrap().is_empty(), "the create's check writes nothing");
+        view.write().await.nodes.push(north.clone());
+        let writer = NodePropertyWriter::new(storage.clone(), || "memory".into());
+        let mut start = own_record(&north);
+        (start.state, start.config, start.tags) = (NodeStatus::Starting, config.clone(), tags.clone());
+        writer.bound(start, |_| {}).await.expect("the node writes its own record at its start");
+        writer.state(writer.start_record(config.clone()).unwrap(), NodeStatus::Ready).await.unwrap();
+        let record = storage.record_at(&north_at).await.unwrap().expect("the node's own record at mesh1.broker.north");
+        assert_eq!((record.path.clone(), record.name.clone(), record.r#type.clone(), record.mesh(), record.state), ("mesh1.broker".to_string(), "north".to_string(), "broker".to_string(), "mesh1".to_string(), NodeStatus::Ready));
+
+        // 2. Get: name, path and type, the mesh from the path, the node's own config and tags.
+        assert_eq!(get(north.node_id.clone()).await, (kept("north"), config.clone(), tags.clone()));
+
+        // 3. Stop and start: the node writes each state on its own record.
+        for to in [NodeStatus::Stopping, NodeStatus::ConnectionsDeleting, NodeStatus::ConnectionsDeleted, NodeStatus::Leaving, NodeStatus::Left, NodeStatus::Stopped] {
+            writer.state(writer.start_record(config.clone()).unwrap(), to).await.unwrap();
+        }
+        set(north.node_id.clone(), NodeStatus::Leaving, true).await;
+        assert_eq!(storage.node(&north.node_id).await.unwrap().map(|l| l.record.state), Some(NodeStatus::Stopped), "the node wrote stopped on its own record");
+        assert_eq!(get(north.node_id.clone()).await.0, kept("north"), "a stopped node keeps its name, path and type");
+        writer.state(writer.start_record(config.clone()).unwrap(), NodeStatus::Starting).await.unwrap();
+        writer.state(writer.start_record(config.clone()).unwrap(), NodeStatus::Ready).await.unwrap();
+        set(north.node_id.clone(), NodeStatus::Ready, false).await;
+        assert_eq!(storage.node(&north.node_id).await.unwrap().map(|l| l.record.state), Some(NodeStatus::Ready), "the node wrote ready on its own record at its start");
+        assert_eq!(get(north.node_id.clone()).await.0, kept("north"), "a started node keeps its name, path and type");
+
+        // 4. Recovery: the mesh-primary writes the lost node's record Deleted; the new node at the same
+        //    path and name writes its own, the predecessor's config and tags its launch's.
+        mp.deleted(&north, &rdm_core::OperationId::node("node.delete", &north.node_id)).await.expect("the mesh-primary writes the lost node's record Deleted");
+        let lost = storage.node(&north.node_id).await.unwrap().expect("the lost node's record").record;
+        assert_eq!((lost.state, lost.path.clone(), lost.name.clone(), lost.r#type.clone()), (NodeStatus::Deleted, "mesh1.broker".to_string(), "north".to_string(), "broker".to_string()), "the Deleted record keeps name, path and type");
+        view.write().await.nodes.retain(|n| n.node_id != north.node_id);
+        let recovered = node(north_at.clone(), "mesh1", "broker", false, false).with_type("broker").unwrap();
+        mp.check_create(&north_at, "mesh1", "broker", &recovered.node_id, Some(&north.node_id), None).await.expect("the lost birth does not hold the name against its re-create");
+        view.write().await.nodes.push(recovered.clone());
+        let recovered_writer = NodePropertyWriter::new(storage.clone(), || "memory".into());
+        let mut start = own_record(&recovered);
+        (start.state, start.config, start.tags) = (NodeStatus::Starting, lost.config.clone(), lost.tags.clone());
+        recovered_writer.bound(start, |_| {}).await.expect("the recovered node writes its own record at its start");
+        recovered_writer.state(recovered_writer.start_record(config.clone()).unwrap(), NodeStatus::Ready).await.unwrap();
+        let at = storage.record_at(&north_at).await.unwrap().expect("the recovered node's record at mesh1.broker.north");
+        assert_eq!((at.node_id.clone(), at.r#type.clone()), (recovered.node_id.clone(), "broker".to_string()), "the pair resolves to the recovered node, of its type");
+        assert_eq!(get(recovered.node_id.clone()).await, (kept("north"), config.clone(), tags.clone()), "the recovered node keeps name, path and type, and the predecessor's config and tags");
+
+        // 5. Replace: the recovered node writes its own record under `north-old`; a successor created at
+        //    the released name `north` writes its own.
+        recovered_writer.update(recovered_writer.start_record(config.clone()).unwrap(), |r| r.name = "north-old".into(), |_| {}).await.expect("the node writes its record under its new name");
+        view.write().await.nodes.iter_mut().find(|n| n.node_id == recovered.node_id).unwrap().name = "north-old".into();
+        let successor = node(north_at.clone(), "mesh1", "broker", false, false).with_type("broker").unwrap();
+        mp.check_create(&north_at, "mesh1", "broker", &successor.node_id, None, None).await.expect("the released name is free");
+        view.write().await.nodes.push(successor.clone());
+        let successor_writer = NodePropertyWriter::new(storage.clone(), || "memory".into());
+        let mut start = own_record(&successor);
+        start.state = NodeStatus::Starting;
+        successor_writer.bound(start, |_| {}).await.expect("the successor writes its own record at its start");
+        let old_at: PathName = rdm_core::PathName::new("mesh1.broker", "north-old").unwrap();
+        assert_eq!(storage.record_at(&old_at).await.unwrap().map(|r| (r.node_id, r.r#type)), Some((recovered.node_id.clone(), "broker".to_string())), "the renamed node's record at north-old, of its type");
+        assert_eq!(storage.record_at(&north_at).await.unwrap().map(|r| (r.node_id, r.r#type)), Some((successor.node_id.clone(), "broker".to_string())), "the successor's record at north, of its type");
+        assert_eq!(get(recovered.node_id.clone()).await.0, kept("north-old"), "the renamed node keeps its path and type under its new name");
+        assert_eq!(get(successor.node_id.clone()).await.0, kept("north"), "the successor holds the free-text name at the same path, of the same type");
+    });
+}
