@@ -163,12 +163,89 @@ impl AdminRunner {
         result
     }
 
-    /// The roster of `mesh` captured from its node records on the store
-    /// ([`crate::mesh_delete::stored_roster`]): each a birth that wrote its own record (Q356).
+    /// The roster of `mesh`: its node records on the store ([`crate::mesh_delete::stored_roster`]), each a
+    /// birth that wrote its own record (Q356), and the atlas's in-flight creates of the mesh
+    /// ([`Self::in_flight_creates`]): a node the Build record names whose launch has not written its record
+    /// yet. Each is deleted as any node of the roster (fabric.delete deletes everything).
     async fn stored_roster(&self, mesh: &str, _mesh_id: &MeshId, steps: &[crate::build_state::BuildStep]) -> Result<Vec<RosterBirth>, String> {
         let store = self.records.contacts.get().ok_or_else(|| format!("{} holds no nodes.storage to read the node records of {mesh} from", self.node_id))?;
         let rows = store.nodes(mesh).await.map_err(|e| format!("the node records of {mesh} could not be read: {e}"))?;
-        Ok(crate::mesh_delete::stored_roster(&rows, mesh, steps))
+        let mut roster = crate::mesh_delete::stored_roster(&rows, mesh, steps);
+        roster.extend(self.in_flight_creates(mesh, &rows).await?);
+        roster.sort();
+        roster.dedup();
+        Ok(roster)
+    }
+
+    /// The atlas's in-flight creates of `mesh` (the atlas is the Build record's topology and its in-flight
+    /// commands): each node the Build records name created in `mesh` (`topology.created`, the node.id the
+    /// Build composed at acceptance) whose AllocateIdentity is Complete and that has no record in `rows`,
+    /// of the fabric.delete in force and the Builds it interrupted (back to the newest that completed). Its
+    /// birth is the launch identity its create holds ([`crate::deployment::pipeline::launch_of`]), and its
+    /// runtime is the provider's find of that launch, held as its handle so its node.delete adopts it. A
+    /// launch the provider finds exited or never launched has no runtime to delete and is no roster birth.
+    /// One `rdm.node_admin.mesh.resolve.via-in-flight-create` span per create names it (`member`, `found`).
+    async fn in_flight_creates(&self, mesh: &str, rows: &[crate::storage::NodeRecord]) -> Result<Vec<RosterBirth>, String> {
+        use crate::deployment::provider::{Found, ResolvedNodeLaunch};
+        let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(|e| format!("the fabric.delete in force could not be read: {e}"))? else { return Ok(Vec::new()) };
+        let allocate = crate::deployment::pipeline::CreateStep::AllocateIdentity.name();
+        let mut builds = vec![delete.clone()];
+        for id in self.builds.accepted_newest_first().await.map_err(|e| format!("the accepted Builds could not be listed: {e}"))? {
+            if id == delete.build_id {
+                continue;
+            }
+            let p = self.builds.read_build(&id).await.map_err(|e| format!("the Build {id} could not be read for its creates: {e}"))?;
+            if (p.time, &p.build_id) > (delete.time, &delete.build_id) {
+                continue;
+            }
+            let complete = p.state == crate::build_state::BuildState::Complete;
+            builds.push(p);
+            if complete {
+                break;
+            }
+        }
+        let mut out = Vec::new();
+        for p in &builds {
+            for (at, node_id) in &p.topology.created {
+                let operation = rdm_core::OperationId::node("node.create", node_id).to_string();
+                let Some(spec) = p.topology.node_spec(at).filter(|s| s.mesh == mesh) else { continue };
+                if rows.iter().any(|r| r.node_id == *node_id) || !p.steps.iter().any(|s| s.operation == operation && s.step == allocate && s.outcome == StepOutcome::Complete) {
+                    continue;
+                }
+                let (incarnation, deployment_id) = crate::deployment::pipeline::launch_of(&operation);
+                let span = tracing::info_span!("rdm.node_admin.mesh.resolve.via-in-flight-create", node_path = %self.me().path, node_name = %self.me().name, mesh = %mesh, member = %node_id, member_path = %at.path, member_name = %at.name, build_id = %p.build_id.log(), deployment_id = %deployment_id, found = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+                let launch = ResolvedNodeLaunch {
+                    mesh: mesh.to_string(), r#type: spec.r#type.clone(), path: at.path.clone(), name: at.name.clone(),
+                    deployment_id: deployment_id.clone(), executable: Default::default(), args: Vec::new(), env: Default::default(),
+                    secrets: Default::default(), withhold: Vec::new(),
+                    data_dir: crate::deployment::node_data_dir(&self.template.data_root, node_id),
+                    transport: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), listeners: Vec::new(),
+                };
+                let found = self.provider.find(&launch, crate::deployment::deadline::Deadline::step()).instrument(span.clone()).await.map_err(|e| {
+                    span.record("found", "failed").record("detail", e.to_string().as_str());
+                    format!("the in-flight create {operation} of {mesh} (launch {deployment_id}) could not be found: {e}")
+                })?;
+                match found {
+                    Found::Running(handle) => {
+                        let mut node = crate::model::Node::allocated(at.clone(), mesh, &spec.r#type);
+                        node.node_id = node_id.clone();
+                        node.incarnation_id = Some(incarnation.clone());
+                        node.deployment_id = Some(deployment_id.clone());
+                        self.handles.lock().unwrap().insert(node_id.clone(), (node, handle));
+                        out.push(RosterBirth { mesh: mesh.to_string(), r#type: spec.r#type.clone(), node: at.clone(), node_id: node_id.to_string(), incarnation_id: incarnation.as_str().to_string() });
+                        span.record("found", "running");
+                    }
+                    Found::Exited(_) => {
+                        span.record("found", "exited");
+                    }
+                    Found::NeverLaunched => {
+                        span.record("found", "never-launched");
+                    }
+                }
+                span.in_scope(|| tracing::info!("an in-flight create of the atlas, read for the roster"));
+            }
+        }
+        Ok(out)
     }
 
     /// The leaving mesh holds no node-admin primary. Before admission that refuses the leave; after

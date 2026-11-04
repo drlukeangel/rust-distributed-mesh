@@ -408,13 +408,13 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     assert_eq!(estate.live_runtimes().into_iter().filter(|(dir, _)| !of_fabric_primary(dir, &fp)).collect::<Vec<_>>(), vec![], "only the fabric-primary {fp:?} is left, for its separate node.delete");
     estate.stop().await;
     let spans = estate.spans();
-    // The launch never joins (its launcher is lost holding DeployRuntime), and the runtime may end on its
-    // own before mesh1's roster is captured: then the provider's find proves it exited and no runtime is
-    // left for the delete (deployment-provider.md §2, "Find is for the launcher's successor"). The roster is
-    // the mesh's node records at each step (mesh-delete.md "Resume after the primary's loss"), so each
-    // capture of mesh1's delete (AcceptedRoster, LeavingRoster) proves it: one fact of the birth.
-    let gone = named(&spans, "rdm.node_admin.mesh.resolve.via-claimed-birth-gone").into_iter().any(|sp| sp["attributes"]["member"] == rpc2.as_str() && sp["attributes"]["found"] == "exited");
-    assert_eq!(deleted + usize::from(gone), 1, "the outstanding birth of mesh1.node.2, claimed and launched before the acceptance, is either a birth of mesh1's roster whose delete is receipted once ({deleted}) or a launch the provider proves exited at a capture ({gone}): {:?}", listed(&receipts));
+    // The launch never joins (its launcher is lost holding DeployRuntime), so it writes no record. It is in
+    // the Build record and the atlas: each capture of mesh1's roster takes it from the atlas's in-flight
+    // creates, its runtime the provider's find of its launch (deployment-provider.md §2, "Find is for the
+    // launcher's successor"), and deletes it as any node of the roster; a runtime that ended on its own
+    // before the capture is found exited and nothing is left to delete.
+    let gone = named(&spans, "rdm.node_admin.mesh.resolve.via-in-flight-create").into_iter().any(|sp| sp["attributes"]["member"] == rpc2.as_str() && sp["attributes"]["found"] == "exited");
+    assert_eq!(deleted + usize::from(gone), 1, "the outstanding launch of mesh1.node.2, launched before the acceptance and never joined, is either a birth of mesh1's roster whose delete is receipted once ({deleted}) or an in-flight create a roster capture finds exited ({gone}): {:?}", listed(&receipts));
     only_the_fabric_primary_re_created(&spans, accepted_ns, &id_in(&ids, "mesh1.node-admin", "1"), &fp);
 }
 

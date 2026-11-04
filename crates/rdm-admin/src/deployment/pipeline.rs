@@ -1200,16 +1200,21 @@ pub(crate) fn build_span(build_id: Option<&BuildId>) -> String {
 /// record to read it from, Q356); a recovery's re-create is a new operation, with a new incarnation
 /// and deployment id.
 fn identity_of(req: &CreateRequest) -> Identity {
+    let (incarnation, deployment_id) = launch_of(&req.operation.to_string());
+    Identity { node_id: req.node_id.clone(), incarnation, supersedes: None, deployment_id }
+}
+
+/// The incarnation and deployment id of the launch the create `operation` makes ([`identity_of`]):
+/// what a delete finds a launch that never joined by (it wrote no record, Q356).
+pub(crate) fn launch_of(operation: &str) -> (IncarnationId, DeploymentId) {
     let of = |what: &str| {
-        let h = format!("{what}\u{1f}{}", req.operation).bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+        let h = format!("{what}\u{1f}{operation}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
         rdm_core::ids::encode_crockford60(h)
     };
-    Identity {
-        node_id: req.node_id.clone(),
-        incarnation: IncarnationId::parse(&of("incarnation")).expect("a crockford60 encoding is a canonical id"),
-        supersedes: None,
-        deployment_id: DeploymentId::parse(&of("deployment")).expect("a crockford60 encoding is a canonical id"),
-    }
+    (
+        IncarnationId::parse(&of("incarnation")).expect("a crockford60 encoding is a canonical id"),
+        DeploymentId::parse(&of("deployment")).expect("a crockford60 encoding is a canonical id"),
+    )
 }
 
 /// One run of one structured operation: create at a location or delete by node ID.
