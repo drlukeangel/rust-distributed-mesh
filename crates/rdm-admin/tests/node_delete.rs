@@ -319,7 +319,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         let store = Arc::new(MemoryNodesStorage::default());
         let mut initial_row = rdm_node::nodes_storage::fixture_record(&target_name.clone(), "node", target_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
-        store.write_record(&initial_row).await.unwrap();
+        store.put_node(&initial_row).await.unwrap();
 
         let view = Arc::new(RwLock::new(Topology {
             fabric: Fabric {
@@ -452,7 +452,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         );
 
         // Restore the live target row to Ready for the full delete run.
-        store.write_record(&initial_row).await.unwrap();
+        store.put_node(&initial_row).await.unwrap();
         rows.written().hold(&initial_row);
 
         // 2. When the provider reports Exited after terminate, node.delete composes node.stop,
@@ -756,7 +756,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let store = Arc::new(MemoryNodesStorage::default());
         let mut initial_row = rdm_node::nodes_storage::fixture_record(&target_name.clone(), "node", target_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
-        store.write_record(&initial_row).await.unwrap();
+        store.put_node(&initial_row).await.unwrap();
 
         let view = Arc::new(RwLock::new(Topology {
             fabric: Fabric {
@@ -925,7 +925,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         // `delete_node` (`RequiredCompletion::Lenient`), `AwaitNodeLeft` records `Completion::NotAwaited` without
         // fabricating a `stopped` event, and the delete proceeds to `TerminateRuntime`, verifies `Exited`,
         // and completes `NodeDeleted`.
-        store.write_record(&initial_row).await.unwrap();
+        store.put_node(&initial_row).await.unwrap();
         rows.written().hold(&initial_row);
         events.events.lock().unwrap().clear();
 

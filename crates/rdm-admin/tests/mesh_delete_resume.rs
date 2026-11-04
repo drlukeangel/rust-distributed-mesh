@@ -8,7 +8,6 @@
 //! ladder, so the ordinary tier is incomplete and the node-admin tier never starts. The resumed
 //! run sees the view as the first one left it: neither ordinary node is live any more.
 
-use rdm_admin::node_rows::WriteRecord as _;
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildProjection, BuildStateAdapter, BuildStateError};
@@ -289,11 +288,11 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        let mut row = NodeRecord { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let mut row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.location());
         }
-        storage.write_record(&row).await.unwrap();
+        storage.put_node(&row).await.unwrap();
         assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
@@ -1003,7 +1002,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.write_record(&NodeRecord { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+            storage.put_node(&rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready)).await.unwrap();
         }
         for n in &records {
             assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);

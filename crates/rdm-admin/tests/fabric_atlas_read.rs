@@ -156,7 +156,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         // mesh1's mesh-primary, mesh1's Mesh record, and the nodes store bound on the `NodeConfigs`.
         let meshes_storage = Arc::new(MemoryMeshStorage::default());
         rdm_admin::storage::MeshStorage::put_mesh(&*meshes_storage, &rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")).await.unwrap();
-        let configs = crate::bound_configs_over(nodes_storage.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(admin_ep.clone(), Arc::new(LiveNodeResolver::default()))), Default::default())).await;
+        let configs = crate::bound_configs_over(nodes_storage.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(admin_ep.clone(), Arc::new(LiveNodeResolver::default()))))).await;
         let configs_slot: rdm_admin::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs_slot.set(Arc::new(configs));
 

@@ -3,7 +3,6 @@
 //! nothing falls back to its data dir. An admin started on a root prepared through the storage adapters,
 //! with no previous process, boots from its rows (R-SB1).
 
-use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::node_rows::RecordAt as _;
 use std::time::{Duration, Instant};
 
@@ -345,20 +344,8 @@ impl Prepared {
                 .unwrap();
             // The birth's row at its path.name, as its mesh's writer left it: the name is held by this node.id.
             let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.location());
-            let row = rdm_admin::storage::NodeRecord { r#type: "node-admin".into(), mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
-                path: own.path.clone(), name: own.name.clone(),
-                node_id: node_id.clone(),
-                status: rdm_admin::model::NodeStatus::Ready,
-                allocated: None,
-                renamed_from: None,
-                    executable: None,
-                births: vec![birth],
-                predecessor: None,
-                mesh_id: Some(mesh_id.clone()),
-                storage_persistence: None,
-               
-            };
-            nodes.write_record(&row).await.unwrap();
+            let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(own.path.clone(), own.name.clone()).unwrap(), "node-admin", node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Ready);
+            nodes.put_node(&row).await.unwrap();
             // The birth's own part of its record, its address included, as its own writer put it (Q333).
             use rdm_admin::storage::NodesStorage as _;
             nodes.put_properties(&rdm_node::nodes_storage::NodeRecord {
@@ -378,20 +365,8 @@ impl Prepared {
                     config: Default::default(), tags: Default::default(),
                     endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(),
                 }).await.unwrap();
-                let row = rdm_admin::storage::NodeRecord { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), initial_properties: None, topology_storage_provider: None, writer: None,
-                    path: location.path.clone(), name: location.name.clone(),
-                    node_id: node_id.clone(),
-                    status: rdm_admin::model::NodeStatus::Ready,
-                    allocated: None,
-                    renamed_from: None,
-                            executable: None,
-                    births: vec![birth],
-                    predecessor: None,
-                    mesh_id: Some(mesh_id.clone()),
-                    storage_persistence: None,
-                   
-                };
-                nodes.write_record(&row).await.unwrap();
+                let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(location.path.clone(), location.name.clone()).unwrap(), &(*r#type).to_string(), node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Ready);
+                nodes.put_node(&row).await.unwrap();
                 launched.push((location, node_id));
             }
             let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &incarnation, &rdm_transport::clock::RafkaTime::unadopted())).await;
@@ -867,7 +842,7 @@ impl Prepared {
             let mut row = nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap().expect("the lost birth's row");
             let birth = row.births.last_mut().unwrap();
             (birth.is_primary, birth.is_fabric_primary) = (Some(1), Some(1));
-            nodes.write_record(&row).await.unwrap();
+            nodes.put_node(&row).await.unwrap();
             use rdm_admin::fabric_storage::FabricStorage as _;
             let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &rdm_admin::model::NodeId::mint(), &writer, &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap();
             let mut record = fabric.fabric().await.unwrap().expect("the Fabric record");

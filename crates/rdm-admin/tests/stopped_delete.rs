@@ -372,7 +372,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         // The node's record: its birth declared Stopped once it answered a stop-node `Stopped`
         // (node-stop.md step 4), what a resumed stop's completed StopNode hands on (case 4).
         let store = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
-        let mut row = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&node.location(), "node", node.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Stopped);
+        let mut row = rdm_node::nodes_storage::fixture_record(&node.location(), "node", node.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Stopped);
         row.birth_mut(node.incarnation_id.as_ref().unwrap(), &node.location()).declared.insert(rdm_core::status::NodeState::Stopped);
         rdm_admin::node_rows::WriteRecord::write_record(&*store, &row).await.unwrap();
         let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");

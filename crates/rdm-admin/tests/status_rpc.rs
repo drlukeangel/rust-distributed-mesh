@@ -1245,7 +1245,7 @@ async fn carried_connections_delete_ends(capture: &Capture) {
     let others: Vec<&Birth> = members.iter().collect();
     let rig = rig(mp, &others, BTreeMap::new()).await;
     let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
+    let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client))).await));
     let carry = |i: usize| {
         let (service, node_id, incarnation) = (rig.service.clone(), members[i].node.node_id.clone(), members[i].node.incarnation_id.clone().unwrap());
         async move { service.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await }
@@ -1314,8 +1314,8 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         resolver.insert(resolved);
         let rig = rig(mp, &[&member], BTreeMap::new()).await;
         let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
-        let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
-        rig.service.nodes_storage.put_node(&rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&member.node.location(), &member.node.r#type, member.node.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready)).await.unwrap();
+        let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client))).await));
+        rig.service.nodes_storage.put_node(&rdm_node::nodes_storage::fixture_record(&member.node.location(), &member.node.r#type, member.node.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
         let status = || async { rig.service.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 

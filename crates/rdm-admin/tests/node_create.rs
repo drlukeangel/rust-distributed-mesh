@@ -18,7 +18,6 @@ use rdm_admin::model::{
     ScopeStatus,
 };
 use rdm_admin::node_commands::NodeCommand;
-use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::topology::Topology;
 use rdm_core::{MemberStatus, MeshDigest, MeshNode, RuntimeFact, RuntimeLocator};
 use std::collections::BTreeMap;
@@ -276,9 +275,9 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let held_path: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let held_id = NodeId::mint();
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
-        let mut held_row = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&held_path.clone(), "node", held_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
+        let mut held_row = rdm_node::nodes_storage::fixture_record(&held_path.clone(), "node", held_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         held_row.birth_mut(&IncarnationId::mint(), &held_path);
-        store.write_record(&held_row).await.unwrap();
+        store.put_node(&held_row).await.unwrap();
 
         let view = Arc::new(RwLock::new(Topology {
             fabric: Fabric {

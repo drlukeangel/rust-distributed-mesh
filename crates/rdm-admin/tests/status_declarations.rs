@@ -8,7 +8,6 @@
 //! commits is `NotSent` with nothing applied; a reply lost after the apply is `Indeterminate`,
 //! and the same declaration again is `AlreadyApplied` — one logical event.
 
-use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::node_rows::RecordAt as _;
 use iroh::protocol::Router;
 use iroh::SecretKey;
@@ -77,7 +76,7 @@ struct Rows {
 
 #[async_trait::async_trait]
 impl NodesStorage for Rows {
-    async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<crate::storage::NodeLine>, rdm_admin::storage_error::StorageError> {
+    async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_admin::storage::NodeLine>, rdm_admin::storage_error::StorageError> {
         self.inner.node(node_id).await
     }
     async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
@@ -195,10 +194,9 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
         transport_addr: addr,
         incarnation: admin.node.incarnation_id.clone().unwrap(),
     };
-    // Every birth's lifecycle record is claimed, as its create or join claims it before a command reaches it.
+    // Every birth's own record, as it writes it at its start before a command reaches it (Q356).
     for b in std::iter::once(&admin).chain(others.values()) {
-        let row = rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&b.node.location(), &b.node.r#type, b.node.node_id.clone(), rdm_core::IncarnationId::mint(), b.node.status);
-        rdm_admin::node_rows::write_record(&*nodes, &row).await.unwrap().unwrap();
+        rdm_admin::storage::NodesStorage::put_node(&*nodes, &own_record(b, b.node.status, &[])).await.unwrap();
     }
     let records = node_records();
     (Rig { admin, endpoint: ep, server, _router: router, resolved, service, storage, nodes, topology, mesh_ids: rig_mesh_ids, withhold, records, rejoins }, others)
@@ -216,14 +214,21 @@ fn node_records() -> Arc<MemoryNodesStorage> {
 /// none is written).
 async fn props(rig: &Rig, node_id: &NodeId) -> (BTreeMap<String, String>, std::collections::BTreeSet<String>) {
     use rdm_admin::storage::NodesStorage as _;
-    rig.records.properties(node_id).await.unwrap().map(|p| (p.config, p.tags)).unwrap_or_default()
+    rig.records.node(node_id).await.unwrap().map(|l| (l.record.config, l.record.tags)).unwrap_or_default()
+}
+
+/// The record `b` writes of itself in `state` carrying `tags` (Q356).
+fn own_record(b: &Birth, state: NodeStatus, tags: &[&str]) -> rdm_admin::storage::NodeRecord {
+    let mut r = rdm_node::nodes_storage::fixture_record(&b.node.location(), &b.node.r#type, b.node.node_id.clone(), b.node.incarnation_id.clone().unwrap(), state);
+    r.tags = tags.iter().map(|t| t.to_string()).collect();
+    r
 }
 
 /// The config the node property record of `node_id` holds in [`node_records`] (empty when none is
 /// written): what a service other than the rig's wrote.
 async fn config_of(node_id: &NodeId) -> BTreeMap<String, String> {
     use rdm_admin::storage::NodesStorage as _;
-    node_records().properties(node_id).await.unwrap().map(|p| p.config).unwrap_or_default()
+    node_records().node(node_id).await.unwrap().map(|l| l.record.config).unwrap_or_default()
 }
 
 /// A birth's client to the authority, speaking as that birth.
@@ -251,14 +256,10 @@ fn reply(out: &RpcOutcome<StatusReply>) -> StatusReply {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_first() {
+async fn a_node_declares_its_own_state_forward_only() {
     let (rig, b) = rig().await;
     let rpc1 = &b["rpc1"];
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Ready)).await), StatusReply::Applied);
-    // Applied is on the subject's row before it was answered.
-    let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!(row.state, NodeState::Ready);
-    assert_eq!(row.incarnation_id, rpc1.node.incarnation_id.clone().unwrap());
     // The same natural key again: one logical event.
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Ready)).await), StatusReply::AlreadyApplied);
     // Backward is refused naming the current state; a skip forward applies.
@@ -315,10 +316,9 @@ async fn a_declaration_from_an_endpoint_the_mesh_primary_never_heard_of_is_decid
     // A fresh endpoint key, in no birth of the view.
     let stranger = birth(rdm_core::PathName::new("mesh1.node", "9").unwrap(), "node", "mesh1", false, false);
     assert!(rig.topology.read().await.births().all(|n| n.endpoint_id != stranger.node.endpoint_id), "the stranger is in no birth of the view");
-    // A member's declaration is decided for that member: Applied, on its row first.
+    // A member's declaration is decided for that member: Applied, held for the subject.
     assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::Ready)).await), StatusReply::Applied);
-    let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!((row.state, row.name.clone()), (NodeState::Ready, rpc1.node.location()), "the row is the subject's, at its own path.name");
+    assert_eq!(rig.service.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the state held is the subject's");
     // A node-admin's declaration reaches the fabric-primary role this admin holds.
     assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::Ready)).await), StatusReply::Applied);
     // A mesh's declaration reaches the fabric-primary for a mesh it holds.
@@ -380,7 +380,6 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.service.declared.lock().unwrap().nodes.is_empty());
-    assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.service.hold_next_reply.store(true, Ordering::SeqCst);
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
@@ -425,8 +424,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 2, "the lost call and the retry, nothing replayed");
-    let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!(row.state, NodeState::Ready);
+    assert_eq!(rig.service.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready));
 }
 
 /// Connections delete admission never prevents an authority from receiving the upward certainty calls
@@ -529,15 +527,13 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
 /// the config of `ApplyNodeConfig` (`Applied`), the labels of `CreateTags` or `DeleteTags` (their
 /// reply); `None` for any other request.
 async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter, req: &StatusRequest) -> Option<StatusReply> {
-    use rdm_node::node_records::{NodeRecord, RecordBirth, TagChange};
+    use rdm_node::node_records::TagChange;
     let (node_id, incarnation) = match req {
         StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
     };
-    let initial = NodeRecord {
-        birth: RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
-        config: Default::default(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: Vec::new(),
-    };
+    // The record the node holds when it held none before: its own start's, at its birth.
+    let initial = rdm_node::nodes_storage::fixture_record(&PathName::new("mesh1.node", "1").unwrap(), "node", node_id.clone(), incarnation.clone(), NodeStatus::Ready);
     let written = match req {
         StatusRequest::ApplyNodeConfig { config, .. } => {
             let config = config.clone();
@@ -563,14 +559,14 @@ async fn node_configs_for(rig: &Rig, nodes: &[&ServedNode]) {
     }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     // The `NodeConfigs` writes from the one copy of the records this admin holds, its authority's.
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.service.caches.nodes.clone())).await));
+    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await));
 }
 
 /// mesh1's primary's `NodeConfigs`, the one place its record changes take turns at, its client
 /// resolving no node: what a cell whose subject is told nothing (a stopped birth) needs.
 async fn quiet_node_configs(rig: &Rig) {
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await));
+    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")))).await));
 }
 
 fn exact(b: &Birth) -> rdm_client::ExactBirth {
@@ -736,7 +732,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-not-applied answered=not-ready detail={} bytes (reply reason {} bytes, cut)", detail.len(), cut.len());
 }
 
-/// A nodes store that refuses every put of a node's own part, by name; every other call is the memory
+/// A nodes store that refuses every put of a node's record, by name; every other call is the memory
 /// store's.
 #[derive(Default)]
 struct RefusingRecords(MemoryNodesStorage);
@@ -745,14 +741,14 @@ type Answer<T> = Result<T, rdm_node::storage_error::StorageError>;
 
 #[async_trait::async_trait]
 impl rdm_admin::storage::NodesStorage for RefusingRecords {
-    async fn node(&self, node_id: &NodeId) -> Answer<Option<rdm_admin::storage::NodeRecord>> {
+    async fn node(&self, node_id: &NodeId) -> Answer<Option<rdm_admin::storage::NodeLine>> {
         self.0.node(node_id).await
     }
     async fn nodes(&self, mesh: &str) -> Answer<Vec<rdm_admin::storage::NodeRecord>> {
         self.0.nodes(mesh).await
     }
     async fn put_node(&self, row: &rdm_admin::storage::NodeRecord) -> Answer<()> {
-        self.0.put_node(row).await
+        Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes.jsonl ({})", row.node_id), reason: "disk refused the write".into() })
     }
     async fn records_at(&self, name: &PathName) -> Answer<Vec<rdm_admin::storage::NodeRecord>> {
         self.0.records_at(name).await
@@ -772,7 +768,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
         let (rig, _) = rig().await;
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let refusing = Arc::new(RefusingRecords::default());
-        let configs = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await;
+        let configs = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")))).await;
         let view = rig.topology.read().await.clone();
         let me = &rig.admin.node;
         let req = StatusRequest::UpdateNodeConfig { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
@@ -782,7 +778,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
             "the store refused the put: {reply:?}"
         );
         use rdm_admin::storage::NodesStorage as _;
-        assert!(refusing.properties(&me.node_id).await.unwrap().is_none(), "nothing is written");
+        assert!(refusing.node(&me.node_id).await.unwrap().is_none(), "nothing is written");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(spans.len(), 1, "{spans:?}");
@@ -801,7 +797,7 @@ async fn node_configs_at(key: &SecretKey, node: &ServedNode) -> rdm_admin::node_
         resolver.set_primary(Some(node.resolved.mesh.clone()), Some(node.resolved.node_id.clone()));
     }
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())).await
+    crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await
 }
 
 /// CONTRACT (node-config-update.md steps 1-2: "The caller sends `node.config.update` to the
@@ -1055,7 +1051,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let _ = status.atlas.set(atlas.clone());
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = status.configs.set(Arc::new(crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")), status.caches.nodes.clone())).await));
+    let _ = status.configs.set(Arc::new(crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")))).await));
     let slot: Arc<OnceLock<Arc<StatusService>>> = Arc::new(OnceLock::new());
     let _ = slot.set(status.clone());
     let server = rdm_admin::status_rpc::serve(ServerBuilder::new(), slot).build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() }).unwrap();
@@ -1077,7 +1073,7 @@ async fn fabric_primary_atlas(rig: &Rig, resolves: &[ResolvedNode]) -> Arc<rdm_a
     }
     name_primaries(&resolver, &*rig.topology.read().await);
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.service.caches.nodes.clone())).await));
+    let _ = rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))).await));
     atlas
 }
 
@@ -1096,12 +1092,12 @@ fn name_primaries(resolver: &StaticResolver, view: &rdm_admin::topology::Topolog
 
 /// `node.get [id: b]` at the rig's fabric-primary: the config its answer carries.
 async fn config_read_from_the_fabric_primary(rig: &Rig, b: &Birth) -> BTreeMap<String, String> {
-    // The node's own part of its record, as it wrote it ([`node_records`]), beside its mesh-primary's part
-    // in the rig's nodes store: one store in a running fabric (Q333).
+    // The node's record, as it wrote it ([`node_records`]), in the rig's nodes store: one store in a
+    // running fabric (Q356).
     {
         use rdm_admin::storage::NodesStorage as _;
-        if let Some(own) = node_records().properties(&b.node.node_id).await.unwrap() {
-            rig.nodes.put_properties(&own).await.unwrap();
+        if let Some(own) = node_records().node(&b.node.node_id).await.unwrap() {
+            rig.nodes.put_node(&own.record).await.unwrap();
         }
     }
     let read = rdm_core::status::Read { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("id", [b.node.node_id.to_string()]) };
@@ -1476,24 +1472,16 @@ const NAME_SPAN: &str = "rdm.node_admin.name.update.via-writer";
 /// `b`'s own property record in [`node_records`] carrying `tags`, as its own writer put them.
 async fn own_tags(b: &Birth, tags: &[&str]) {
     use rdm_admin::storage::NodesStorage as _;
-    node_records()
-        .put_properties(&rdm_node::nodes_storage::NodeRecord {
-            birth: rdm_node::node_records::RecordBirth { node_id: b.node.node_id.clone(), incarnation_id: b.node.incarnation_id.clone().unwrap() },
-            config: Default::default(), tags: labels(tags), endpoint_id: None, transport_addr: None, listeners: Vec::new(),
-        })
-        .await
-        .unwrap();
+    node_records().put_node(&own_record(b, NodeStatus::Ready, tags)).await.unwrap();
 }
 
-/// `b` stopped in the mesh-primary's view (`Leaving`), its row at its name and its own record
-/// carrying `tags`.
+/// `b` stopped in the mesh-primary's view (`Leaving`), its own record at its name carrying `tags`.
 async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     own_tags(b, tags).await;
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.stopped, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRecord { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
-    rig.nodes.write_record(&row).await.unwrap();
+    rig.nodes.put_node(&own_record(b, NodeStatus::Leaving, tags)).await.unwrap();
 }
 
 /// The mesh-primary holds `b` as a rename needs it (node-name-update.md Precondition): live and
@@ -1506,14 +1494,13 @@ async fn hold_connections_deleted(rig: &Rig, b: &Birth) {
     rig.service.declared.lock().unwrap().connections_deleted.insert(birth, rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![], status_at_cut: NodeStatus::ConnectionsDeleting });
 }
 
-/// `b` live with no connection as a rename needs it ([`hold_connections_deleted`]), its row at its
-/// name carrying `tags`; served, answering every request `Applied`, and mesh1's primary's `NodeConfigs`
+/// `b` live with no connection as a rename needs it ([`hold_connections_deleted`]), its own record at
+/// its name carrying `tags`; served, answering every request `Applied`, and mesh1's primary's `NodeConfigs`
 /// resolving it.
 async fn deleted_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_connections_deleted(rig, b).await;
     own_tags(b, tags).await;
-    let row = rdm_admin::storage::NodeRecord { r#type: b.node.r#type.clone(), mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: b.node.path.clone(), name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
-    rig.nodes.write_record(&row).await.unwrap();
+    rig.nodes.put_node(&own_record(b, NodeStatus::ConnectionsDeleting, tags)).await.unwrap();
     let node = serve_node(b).await;
     node_configs(rig, &node).await;
     node
@@ -1595,9 +1582,6 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied_and_
         assert!(node.seen.lock().unwrap().is_empty(), "and nothing else");
         let applied = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(applied, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.record_at(&taken).await.unwrap().expect("the row at the new name");
-        assert_eq!((row.node_id, row.renamed_from), (succ.node.node_id.clone(), Some(succ.node.name.clone())), "the row at the new name holds the birth and names the key it moved from");
-        assert_eq!(rig.nodes.record_at(&succ.node.location()).await.unwrap(), None, "the old key is released");
         assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(apply_name(&succ, &taken)), "the birth is told its name");
         assert_eq!(rig.rejoins.lock().unwrap().clone(), vec![(succ.node.node_id.clone(), taken.clone())], "the birth is commanded back on its mesh under the new name, once");
 
@@ -1672,7 +1656,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         hold_connections_deleted(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-        rig.nodes.write_record(&rdm_admin::storage::NodeRecord { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: taken.path.clone(), name: taken.name.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+        rig.nodes.put_node(&rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(taken.path.clone(), taken.name.clone()).unwrap(), "node", holder.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Leaving)).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { path: taken.path.clone(), name: taken.name.clone(), by: holder.clone() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -1815,7 +1799,7 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
             let refused = reply(&call(&rig, &b["admin2"], &update_name(left, bad)).await);
             assert!(matches!(&refused, StatusReply::RejectedName { reason } if reason.contains(bad)), "{bad}: {refused:?}");
         }
-        assert_eq!(rig.nodes.node(&left.node.node_id).await.unwrap().map(|r| r.name), Some(left.node.name.clone()), "the node's record stays at its name");
+        assert_eq!(rig.nodes.node(&left.node.node_id).await.unwrap().map(|l| l.record.name), Some(left.node.name.clone()), "the node's record stays at its name");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.location() == left.node.location()), "the view keeps the node at its name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
@@ -1990,8 +1974,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 
         hold_connections_deleted(&rig, rpc2).await;
         own_tags(rpc2, &["red"]).await;
-        let row = rdm_admin::storage::NodeRecord { r#type: rpc2.node.r#type.clone(), mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: rpc2.node.path.clone(), name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
-        rig.nodes.write_record(&row).await.unwrap();
+        rig.nodes.put_node(&own_record(rpc2, NodeStatus::ConnectionsDeleting, &["red"])).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
         assert_eq!(props(&rig, &rpc2.node.node_id).await.1, labels(&["red"]), "the renamed node's own record keeps its tags");
@@ -2301,7 +2284,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
-        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
+        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
         let answer = rig.service.carry_connections_delete(&rpc.node.node_id, rpc.node.incarnation_id.as_ref().unwrap(), &rdm_core::status::ConnectionScope::All).await;
         assert!(matches!(&answer, rdm_admin::status_rpc::CarryEnd::Deleted { .. }), "{answer:?}");
         assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
@@ -2325,8 +2308,6 @@ async fn a_never_sent_stop_or_start_writes_no_lifecycle_state() {
         let ctx = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
         assert!(matches!(rig.service.carry_lifecycle(subject, start, &ctx).await, CommandAdmission::NotSent { .. }));
         assert_eq!(*rig.service.declared.lock().unwrap(), before);
-        assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
-        assert!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
     }
 }
 
@@ -2341,7 +2322,6 @@ async fn status_stop_and_start_positions_are_refused_by_name_without_execution()
         let result = call(&rig, subject, &request).await;
         assert!(matches!(reply(&result), StatusReply::RejectedUnmatchedCompletion { expected, reported, .. } if expected.contains("reserved") && reported.contains(request.op())), "{result:?}");
         assert_eq!(*rig.service.declared.lock().unwrap(), before);
-        assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
     }
 }
 
@@ -2377,12 +2357,12 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         resolver.insert(ResolvedNode { mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), node_id: subject.node_id.clone(), path: subject.path.clone(), name: subject.name.clone(), endpoint_id: births["rpc2"].key.public(), transport_addr: addr, incarnation: subject.incarnation_id.clone().unwrap() });
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
-        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
+        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
         let ctx = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
         let (service, target) = (rig.service.clone(), subject.clone());
         let call = tokio::spawn(async move { service.carry_lifecycle(&target, start, &ctx).await });
         tokio::time::timeout(Duration::from_secs(5), arrived.notified()).await.unwrap();
-        assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty(), "no state before CommandAccepted");
+        assert_eq!(rig.service.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), None, "no state before CommandAccepted");
         admit.notify_one();
         if !fail {
             tokio::time::timeout(Duration::from_secs(5), progressed.notified()).await.unwrap();
@@ -2396,12 +2376,12 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         let result = tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap();
         if fail {
             assert!(matches!(result, A::StartFailed { step, reason, code: rdm_core::outcome::Code::FailedPrecondition } if step == "pre_node_ready" && reason == "app refused"));
-            assert!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
+            assert!(rig.service.declared.lock().unwrap().operations.is_empty());
         } else {
             assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");
             let state = if start { NodeState::Ready } else { NodeState::Stopped };
             assert_eq!(rig.service.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), Some(state), "recorded before the outer Build can complete");
-            assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
+            assert_eq!(rig.service.declared.lock().unwrap().operations.len(), 1);
         }
     }
 }
@@ -2454,11 +2434,11 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
-        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
+        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let answer = rig.service.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
-        assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
+        assert_eq!(rig.service.declared.lock().unwrap().operations.len(), 1);
         assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
     });
     let records: Vec<_> = cap.spans("rdm.node_admin.node.update.via-command-frame").into_iter().filter(|(_, a)| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
@@ -2537,7 +2517,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         resolver.insert(ResolvedNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: incarnation.clone() });
         let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
-        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
+        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b-start".into(), operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let (service, target) = (rig.service.clone(), rpc.node.clone());
         let start = tokio::spawn(async move { service.carry_lifecycle(&target, true, &context).await });
@@ -2655,12 +2635,12 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     // The caller owns and serves one birth on one endpoint: recovered responses arrive
     // through this router and find the invocation in the same Delivery as the call.
     let client = Arc::new(NodeRpcClient::new(rig.endpoint.clone(), resolver).with_delivery(rig.server.delivery().clone()).with_caller_system("rdm"));
-    assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
+    assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
     let context = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &subject.node.node_id) };
     let end = tokio::time::timeout(Duration::from_secs(5), rig.service.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");
     assert!(matches!(end, A::Stopped { .. }), "{end:?}");
     assert_eq!(published.load(Ordering::SeqCst), 1, "the declaration publishes stopped; the recovered terminal publishes nothing twice");
-    assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
+    assert_eq!(rig.service.declared.lock().unwrap().operations.len(), 1);
     assert_eq!(rig.service.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }
 
@@ -2706,7 +2686,7 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         resolver.insert(ResolvedNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: incarnation.clone() });
         let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
-        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
+        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let answer = rig.service.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");

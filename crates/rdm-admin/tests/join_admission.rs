@@ -256,7 +256,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name() {
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Leaving);
         let service = service_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
@@ -292,7 +292,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRecord { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), "node", dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Leaving);
         let service = service_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
@@ -344,18 +344,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
-            path: dep.path.clone(), name: dep.name.clone(),
-            node_id: predecessor.clone(),
-            status: rdm_admin::model::NodeStatus::Deleted, allocated: None,
-            renamed_from: None,
-            executable: None,
-            births: Vec::new(),
-            predecessor: None,
-            mesh_id: None,
-            storage_persistence: None,
-           
-        };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, predecessor.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Deleted);
         let service = JoinService {
             nodes: writer_holding(row),
             me_path: "mesh1.node-admin".into(), me_name: "1".into(),
@@ -414,7 +403,7 @@ fn a_first_start_whose_row_its_own_create_wrote_is_installed_once() {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<String>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Pending);
         let mut service = service_over(joins.clone(), Arc::default(), row);
         service.install = Arc::new(move |d| log.lock().unwrap().push(d.node.node_id.to_string()));
         let _reported = joins.expect(dep.clone());
@@ -447,7 +436,7 @@ fn the_join_service_records_every_accepted_join_reports_pending_before_it_answer
     cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRecord { r#type: "node".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), "node", dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Leaving);
         let mut service = service_over(joins.clone(), installed.clone(), row);
         let order: Arc<Mutex<Vec<String>>> = Arc::default();
         service.pending = {
@@ -502,7 +491,7 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRecord { r#type: "gateway".into(), mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), "gateway", dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Pending);
         let service = service_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let digest = digest_of(&dep, "127.0.0.1:34580");
@@ -561,7 +550,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         std::fs::create_dir_all(&store).unwrap();
         let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted());
         let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_root::StoreRoot::at(&store), "mesh1", &writer).await.unwrap());
-        let row = rdm_admin::storage::NodeRecord { r#type: dep.r#type.clone(), mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: dep.path.clone(), name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
+        let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Leaving);
         let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
         written.put(&*storage, &row).await.unwrap();
         let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");

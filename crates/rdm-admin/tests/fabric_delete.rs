@@ -10,7 +10,6 @@
 //!    is `Dead` in both `status.storage` and `mesh.storage`, and no fabric identity row remains held
 //!    in `fabric.storage`.
 
-use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::node_rows::RecordAt as _;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_admin::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology};
@@ -161,23 +160,11 @@ async fn records_roster(storage: &MemoryNodesStorage, builds: &dyn BuildStateAda
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         // The record a create wrote: the node's row and its birth.
-        let mut row = NodeRecord { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
-                path: n.path.clone(), name: n.name.clone(),
-                node_id: n.node_id.clone(),
-                status: NodeStatus::Ready,
-                allocated: None,
-                renamed_from: None,
-                    executable: None,
-                births: Vec::new(),
-                predecessor: None,
-                mesh_id: None,
-                storage_persistence: None,
-               
-            };
+        let mut row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(n.path.clone(), n.name.clone()).unwrap(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.location());
         }
-        storage.write_record(&row).await.unwrap();
+        storage.put_node(&row).await.unwrap();
         assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         let h = handle(50_000);
         storage

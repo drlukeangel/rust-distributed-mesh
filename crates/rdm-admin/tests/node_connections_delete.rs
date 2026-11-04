@@ -300,10 +300,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let admin_client = Arc::new(
             NodeRpcClient::new(admin_ep.clone(), admin_resolver).with_caller_system("rdm"),
         );
-        let configs = Arc::new(crate::bound_configs(NodeConfigs::new(
-            admin_client,
-            Default::default(),
-        )).await);
+        let configs = Arc::new(crate::bound_configs(NodeConfigs::new(admin_client)).await);
         let configs_slot = Arc::new(OnceLock::new());
         let _ = configs_slot.set(configs);
 
@@ -336,7 +333,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let mut subject_row =
-            rdm_admin::storage::rdm_node::nodes_storage::fixture_record(&subject_name.clone(), "node", subject_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
+            rdm_node::nodes_storage::fixture_record(&subject_name.clone(), "node", subject_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         subject_row.births.push(rdm_admin::storage::BirthFacts::new(
             subject_inc.clone(),
             subject_name.clone(),

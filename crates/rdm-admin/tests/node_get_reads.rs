@@ -7,7 +7,6 @@
 
 use rdm_admin::model::*;
 use rdm_admin::storage::NodeRecord;
-use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::storage::MemoryNodesStorage;
 use rdm_admin::topology::Topology;
 use rdm_core::filter::Filter;
@@ -110,7 +109,7 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (&gw2, &["gold"][..], &[("rack", "7")][..]),
     ] {
         let row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
-        status.write_record(&row).await.unwrap();
+        status.put_node(&row).await.unwrap();
         own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
     let names = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.location()).collect::<Vec<_>>();
@@ -153,7 +152,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
     let configs: rdm_admin::node_config::NodeConfigsSlot = Default::default();
-    let _ = configs.set(Arc::new(crate::bound_configs_over(records, rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await));
+    let _ = configs.set(Arc::new(crate::bound_configs_over(records, rdm_admin::node_config::NodeConfigs::new(client)).await));
     let slot = Arc::new(std::sync::OnceLock::new());
     let _ = slot.set(atlas);
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
@@ -224,7 +223,7 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     for (n, expires_at) in expiries {
         let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location()).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
-        records.write_record(&row).await.unwrap();
+        records.put_node(&row).await.unwrap();
     }
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     atlas.scope(["mesh1".to_string()].into());
@@ -285,11 +284,11 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     }
     let mut row = rdm_node::nodes_storage::fixture_record(&rpc.location(), &rpc.r#type, rpc.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.location()).declared.insert(rdm_core::status::NodeState::Ready);
-    records.write_record(&row).await.unwrap();
+    records.put_node(&row).await.unwrap();
     // mesh2's record as its current writer holds it.
     let mut peer_row = rdm_node::nodes_storage::fixture_record(&peer.location(), &peer.r#type, peer.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Pending);
     peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.location());
-    records.write_record(&peer_row).await.unwrap();
+    records.put_node(&peer_row).await.unwrap();
     use rdm_core::views::NodeStatus as Read;
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Ready, false), "a stop the node has not acknowledged moves its row nowhere: ready");
     let ready: Vec<PathName> = answer(&view, &records, Filter::new().eq("state", ["ready"])).await.into_iter().map(|n| n.location()).collect();
@@ -298,18 +297,18 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     // state it took answers, never the view's.
     assert_eq!(status_of(&view, &records, &peer.node_id).await, (Read::Pending, false), "mesh2's birth: the pending its current record holds, not the view's ready");
     peer_row.status = NodeStatus::Stopped;
-    records.write_record(&peer_row).await.unwrap();
+    records.put_node(&peer_row).await.unwrap();
     assert_eq!(status_of(&view, &records, &peer.node_id).await, (Read::Stopped, true), "mesh2's birth: the stopped its record took");
     peer_row.status = NodeStatus::ConnectionsDeleted;
-    records.write_record(&peer_row).await.unwrap();
+    records.put_node(&peer_row).await.unwrap();
     assert_eq!(status_of(&view, &records, &peer.node_id).await, (Read::ConnectionsDeleted, false), "mesh2's birth: the connections-deleted its record took");
 
     row.status = NodeStatus::Stopping;
-    records.write_record(&row).await.unwrap();
+    records.put_node(&row).await.unwrap();
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Stopping, false), "the node's acknowledgement written on the row: stopping");
 
     row.status = NodeStatus::Stopped;
-    records.write_record(&row).await.unwrap();
+    records.put_node(&row).await.unwrap();
     assert_eq!(status_of(&view, &records, &rpc.node_id).await, (Read::Stopped, true), "the stopped frame written on the row: stopped");
 
     // Silence is the observer's (node-identity-and-state.md §7.3), not a state a command sets: a birth
@@ -317,7 +316,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     // carries is not the answer once the view hears the birth.
     row.status = NodeStatus::Ready;
     row.birth_mut(rpc.incarnation_id.as_ref().unwrap(), &rpc.location()).silence = Some(NodeStatus::PendingReconnect);
-    records.write_record(&row).await.unwrap();
+    records.put_node(&row).await.unwrap();
     let mut silent = view.clone();
     silent.nodes.iter_mut().filter(|n| n.node_id == rpc.node_id).for_each(|n| n.status = NodeStatus::PendingReconnect);
     assert_eq!(status_of(&silent, &records, &rpc.node_id).await, (Read::PendingReconnect, false), "the view holds the birth silent: pending-reconnect");
@@ -356,7 +355,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         n.endpoint_id = Some(EndpointId(format!("key-{}", n.node_id)));
         n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
         let row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), n.status);
-        records.write_record(&row).await.unwrap();
+        records.put_node(&row).await.unwrap();
         own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
             fabric_id: fabric.clone(),
@@ -433,7 +432,7 @@ async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pa
     for n in [&admin, &owned, &bare] {
         let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Ready);
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.location());
-        records.write_record(&row).await.unwrap();
+        records.put_node(&row).await.unwrap();
     }
     // The admin and mesh1.node.1 wrote their own property records; mesh1.node.2 has not yet.
     own(&admin.node_id, BTreeMap::new(), Default::default()).await;
