@@ -1903,7 +1903,7 @@ impl Run {
         // The births seen: pid, node, NodeId, incarnation.
         for a in &st.admins {
             let name = location(&a);
-            let have = self.births.iter().any(|b| b["node"] == a["name"] && b["incarnation_id"] == a["incarnation"]);
+            let have = self.births.iter().any(|b| b["node"] == json!(name) && b["incarnation_id"] == a["incarnation"]);
             if !have {
                 let pid = node_pid(f, &name).await;
                 self.births.push(json!({"label": label, "node": name, "node_id": a["node_id"], "incarnation_id": a["incarnation"], "endpoint_id": a["endpoint_id"], "pid": pid}));
@@ -2226,7 +2226,7 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     assert!(after.admins.iter().all(|n| n["node_id"] != old["node_id"]), "{scenario}: the deleted birth is in no admin's view");
     let ev = json!({
         "event": "authority.hand-off", "scenario": scenario, "old_fabric_primary": old_name, "old_node_id": old["node_id"], "old_incarnation_id": old["incarnation"], "old_pid": old_pid, "old_mesh": mesh,
-        "new_fabric_primary": after.fp["name"], "new_node_id": after.fp["node_id"], "new_mesh": rdm_test::estate::mesh_of(&after.fp), "build_id": build_id, "fabric_build_id_before": st.fabric["build_id"],
+        "new_fabric_primary": after.fp_name(), "new_node_id": after.fp["node_id"], "new_mesh": rdm_test::estate::mesh_of(&after.fp), "build_id": build_id, "fabric_build_id_before": st.fabric["build_id"],
         "request_ns": t0, "old_process_gone_ns": exit_ns, "wall_ms": fin["wall_ms"], "build_state_after": fin["build"]["state"], "build_steps_after": fin["build"]["steps"].as_array().map_or(0, Vec::len),
     });
     a.events.push(ev.clone());
@@ -2237,7 +2237,7 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
 /// Build adds a node-admin to the mesh with a NodeId that was never the deleted one.
 async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, deleted: &Value, scenario: &str, inv: &mut Invariants) -> Stable {
     let mesh = s(&deleted["old_mesh"]);
-    let path = location(&json!({"name": deleted["old_fabric_primary"]}));
+    let path = location(&deleted["old_fabric_primary"]);
     let fabric_build = s(&after_delete.fabric["build_id"]);
     // node.stop is a node command (Q342): the deleted path is refused by name at its caller, nothing sent.
     let v = match rdm_client::Nodes::new(f.estate.carrier_at(&after_delete.fp_name()).await).stop(&path).await {
@@ -2368,7 +2368,7 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     assert_eq!(without_the_role, non_writer_refusals, "every refusal by an admin without the fabric-primary role is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();
     for p in &a.probes {
-        let path = location(&json!({"name": p["path"]}));
+        let path = location(&p["path"]);
         let shown = format!("(path `{}`, name `{}`)", path.path, path.name);
         let (from, to) = (p["from_ns"].as_u64().unwrap(), p["to_ns"].as_u64().unwrap());
         let unknown: Vec<&Value> = named(spans, "rdm.node_admin.build.reject.via-unknown-node").into_iter().filter(|sp| s(&sp["attributes"]["detail"]).contains(&shown)).collect();
@@ -2400,7 +2400,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
     let steps = named(spans, "rdm.node_admin.deployment.update.via-step");
     let mut out = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "authority.hand-off") {
-        let (old_name, old_id, new_id) = (location(&json!({"name": ev["old_fabric_primary"]})), s(&ev["old_node_id"]), s(&ev["new_node_id"]));
+        let (old_name, old_id, new_id) = (location(&ev["old_fabric_primary"]), s(&ev["old_node_id"]), s(&ev["new_node_id"]));
         let (req, gone) = (ev["request_ns"].as_u64().unwrap(), ev["old_process_gone_ns"].as_u64().unwrap());
         let announced: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["winner_node_id"] == new_id.as_str() && sp["attributes"]["previous_node_id"] == old_id.as_str() && start_ns(sp) >= req).collect();
         assert!(!announced.is_empty(), "{}: no admin announced {new_id} succeeding {old_id} after the delete was requested", ev["scenario"]);
@@ -2413,7 +2413,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         // and only then is the old primary stopped). An election's inputs may still list the old
         // fabric-primary Ready after the successor installed: the install's order and the
         // decider's winner decide, never the inputs.
-        let new_name = location(&json!({"name": ev["new_fabric_primary"]}));
+        let new_name = location(&ev["new_fabric_primary"]);
         let installed = named(spans, "rdm.node_admin.primary.update.via-primary-updated")
             .into_iter()
             .filter(|sp| {
@@ -4082,8 +4082,19 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName,
     let fabric_build = s(&st.fabric["build_id"]);
     let (mut held, hold_ack) = Held::hold(node, &rt);
     let hold_ns = now_ns();
-    let opened = a.write(f, st, "C17: node.stop then node.start of a node whose runtime is held", Write::Restart(node.clone())).await;
-    assert_eq!(opened, None, "{node:?}: a restart is node commands and opens no Build (Q342)");
+    // A held runtime admits no stop-node (node-stop.md step 1: "only this admission makes the
+    // mesh-primary record stopping"; a never-sent command writes no state): the stop's call, a node
+    // command and no Build (Q342), ends refused by name, not admitted, or ends on its own stream.
+    let what = "C17: node.stop then node.start of a node whose runtime is held";
+    match rdm_client::Nodes::new(f.estate.carrier_at(&st.fp_name()).await).stop(node).await {
+        Ok(mut stream) => {
+            tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
+        }
+        Err(e) => assert!(e.to_string().contains("was not admitted by the node"), "{what}: node.stop of {node:?} was refused other than not admitted: {e}"),
+    }
+    a.writes.push(json!({"what": what, "op": "node.stop", "subject": node, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": Value::Null, "t_ms": now_ms()}));
+    a.actions.push(json!({"t_ms": now_ms(), "action": what, "via": "node.stop", "subject": node, "accepted_by": st.fp["name"]}));
+    progress(&format!("{what}: node.stop of {node:?} sent through {:?}, a node command: no Build", st.fp_name()));
     // Re-created at its path: a new NodeId ready there, the fabric naming the same Build. The bound is
     // hold_phase's: a staleness floor to the silence, the investigation, the restart's stop ending (its
     // stop-node's send bound) and the recovery's create.

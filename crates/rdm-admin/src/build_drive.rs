@@ -9,7 +9,7 @@
 //!    `rdm.build.step` event ended `complete`;
 //! 3. runs its own section in process (mesh creation and deletion, and the members of any mesh with
 //!    no mesh-primary) and dispatches every other mesh's section to that mesh's primary with
-//!    `build.section.run`, each after its `rdm.build.dispatched` event, all at once (Q250), passing
+//!    `build.section.run`, each section after its `rdm.build.dispatched` event, all at once (Q250), passing
 //!    each section's frames into the Build's [`Drive`];
 //! 4. a section that ends short (a step `failed { reason }`, or its mesh-primary lost mid-section)
 //!    ends its mesh's part of the run, never the Build (Q346): nothing more of that mesh is
@@ -1341,8 +1341,10 @@ impl DriveEnv {
                 *dispatches += 1;
                 let mesh = own.iter().find_map(|op| op.mesh().map(str::to_string)).unwrap_or_else(|| self.me_mesh.clone());
                 let first = own[0].key().to_string();
-                let (env, context) = (self.clone(), context.clone());
+                let (env, context, me) = (self.clone(), context.clone(), me.clone());
                 runs.push(Box::pin(async move {
+                    // Each mesh's dispatch is an event (build.md §5), this admin's own mesh's included.
+                    env.notices.dispatched(&me, &drive.build_id, &mesh).await;
                     let d = env.dispatcher.run_own(turn, &drive.build_id, &mesh, context, own).await;
                     let runs_at = Some(env.birth.node_id.clone());
                     env.follow(drive, &mesh, &first, runs_at, d).await
