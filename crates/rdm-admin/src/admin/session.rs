@@ -286,6 +286,8 @@ pub fn carried_admission(end: crate::status_rpc::CarryEnd) -> (crate::deployment
 /// (`node_self::Session`): its tasks are held at their gate, its gossip channels are left and its
 /// connections are cut; a start joins the commanding admin again, takes the topology and runs its hook.
 pub(crate) struct AdminSession {
+    /// The name this admin holds (its own record's, gossip-by-kind.md §4.3): its join answer's name is set here.
+    pub(crate) held_name: rdm_node::held_name::HeldName,
     pub(crate) gate: crate::stop_gate::StopGate,
     pub(crate) node_id: NodeId,
     pub(crate) incarnation: IncarnationId,
@@ -384,7 +386,7 @@ impl AdminSession {
             {
                 let mut d = s.digest.lock().unwrap();
                 if let Some(n) = &joined.control.name {
-                    s.topology_view.set_name(n.clone());
+                    s.held_name.set(n.clone());
                     { let at = n.clone(); d.node.path = at.path; d.node.name = at.name; }
                 }
             }

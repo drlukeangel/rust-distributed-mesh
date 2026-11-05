@@ -95,13 +95,13 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let fp_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock());
+        let fp_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock(), Default::default());
         let fp_m_channels = rdm_gossip::channel::Channels::new(&fp.gossip, &fp.ep, &fp_m).unwrap();
         fp_m_channels.join(rdm_gossip::channel::ChannelId::mesh(fp_m.fabric_id(), fp_m.mesh_id()), vec![]).await.unwrap();
-        let m2_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock());
+        let m2_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock(), Default::default());
         let m2_m_channels = rdm_gossip::channel::Channels::new(&m2.gossip, &m2.ep, &m2_m).unwrap();
         m2_m_channels.join(rdm_gossip::channel::ChannelId::mesh(m2_m.fabric_id(), m2_m.mesh_id()), vec![]).await.unwrap();
-        let rpc_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node.1", clock());
+        let rpc_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node.1", clock(), Default::default());
         let rpc_m_channels = rdm_gossip::channel::Channels::new(&rpc.gossip, &rpc.ep, &rpc_m).unwrap();
         rpc_m_channels.join(rdm_gossip::channel::ChannelId::mesh(rpc_m.fabric_id(), rpc_m.mesh_id()), vec![m2_addr.clone()]).await.unwrap();
         fp_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() });

@@ -72,10 +72,10 @@ async fn a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_star
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rdm_transport::clock::os_clock;
-    let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock());
+    let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock(), Default::default());
     let ma_channels = rdm_gossip::channel::Channels::new(&a.gossip, &a.ep, &ma).unwrap();
     ma_channels.join(rdm_gossip::channel::ChannelId::mesh(ma.fabric_id(), ma.mesh_id()), vec![]).await.unwrap();
-    let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.2", clock());
+    let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.2", clock(), Default::default());
     let mb_channels = rdm_gossip::channel::Channels::new(&b.gossip, &b.ep, &mb).unwrap();
     mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let db = digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep);

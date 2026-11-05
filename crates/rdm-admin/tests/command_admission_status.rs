@@ -58,7 +58,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()));
+    let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     channels.set_publisher(&rdm_core::PublisherId { incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() });
@@ -108,7 +108,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()));
+    let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     topology_view.set_mesh_primary(true);

@@ -231,7 +231,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
         clock.adopt(1_000_000);
         let gossip = iroh_gossip::net::Gossip::builder().spawn(subject_ep.clone());
-        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, subject_id.as_str(), clock);
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, subject_id.as_str(), clock, Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &subject_ep, &topology_view).expect("join topology view");
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
         .expect("join topology view");

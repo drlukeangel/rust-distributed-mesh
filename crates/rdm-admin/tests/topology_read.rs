@@ -61,7 +61,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: rdm_core::PathName, r#type: &
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time.clone()));
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time.clone()), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());

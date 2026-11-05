@@ -62,7 +62,7 @@ pub async fn bound_configs_on(records: std::sync::Arc<rdm_admin::storage::Memory
 pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_admin::storage::NodesStorage>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let topology_view = rdm_gossip::topology::TopologyView::new(&rdm_core::FabricId::mint(), "mesh1", &rdm_core::MeshId::mint(), rdm_core::NodeId::mint().as_str(), rdm_transport::clock::os_clock());
+    let topology_view = rdm_gossip::topology::TopologyView::new(&rdm_core::FabricId::mint(), "mesh1", &rdm_core::MeshId::mint(), rdm_core::NodeId::mint().as_str(), rdm_transport::clock::os_clock(), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     configs.uses_records(records, || "memory".into(), || None);

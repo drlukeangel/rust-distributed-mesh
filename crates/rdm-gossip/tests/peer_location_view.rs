@@ -157,13 +157,13 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
         let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
         let member = node_with(iroh::SecretKey::generate(), None).await;
-        let m_admin = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node-admin.1", clock());
+        let m_admin = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node-admin.1", clock(), Default::default());
         let m_admin_channels = rdm_gossip::channel::Channels::new(&admin.gossip, &admin.ep, &m_admin).unwrap();
         m_admin_channels.join(rdm_gossip::channel::ChannelId::mesh(m_admin.fabric_id(), m_admin.mesh_id()), vec![]).await.unwrap();
         m_admin_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
         m_admin_channels.join(rdm_gossip::channel::ChannelId::backbone(m_admin.fabric_id()), vec![]).await.unwrap();
         let backbone = m_admin_channels.backbone().expect("the backbone is joined");
-        let m_member = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock());
+        let m_member = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock(), Default::default());
         let m_member_channels = rdm_gossip::channel::Channels::new(&member.gossip, &member.ep, &m_member).unwrap();
         m_member_channels.join(rdm_gossip::channel::ChannelId::mesh(m_member.fabric_id(), m_member.mesh_id()), vec![]).await.unwrap();
 

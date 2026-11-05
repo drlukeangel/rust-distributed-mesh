@@ -323,7 +323,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let gateway = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), NodeId::mint().as_str(), Arc::new(time.clone()));
+    let gateway = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), NodeId::mint().as_str(), Arc::new(time.clone()), Default::default());
     let gateway_channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &gateway).unwrap();
     gateway_channels.join(rdm_gossip::channel::ChannelId::mesh(gateway.fabric_id(), gateway.mesh_id()), vec![]).await.unwrap();
 

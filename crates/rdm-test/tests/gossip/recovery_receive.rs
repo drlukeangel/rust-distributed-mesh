@@ -49,7 +49,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let publisher=PublisherId::from(&own.node);
         let author=rdm_gossip::envelope::Birth::publisher(&fabric,&publisher);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
-        let server_topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, own.node.node_id.as_str(), Arc::new(time.clone()));
+        let server_topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, own.node.node_id.as_str(), Arc::new(time.clone()), Default::default());
         let server_topology_view_channels = rdm_gossip::channel::Channels::new(&server_gossip, &server_ep, &server_topology_view).unwrap();
         server_topology_view_channels.join(rdm_gossip::channel::ChannelId::mesh(server_topology_view.fabric_id(), server_topology_view.mesh_id()), vec![]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());
@@ -61,7 +61,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         learn_addresses(&receiver_ep,&[addr.clone()]).unwrap();
         learn_addresses(&server_ep,&[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap())]).unwrap();
         let mut subscription = server_gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(),vec![]).await.unwrap();
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5),subscription.joined()).await.unwrap().unwrap();

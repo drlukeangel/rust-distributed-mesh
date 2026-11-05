@@ -29,11 +29,11 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
         crate::declare_gossip_probe(&sender_channels);
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         let frame = |status: &str| Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
@@ -80,11 +80,11 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
         crate::declare_gossip_probe(&sender_channels);
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -154,11 +154,11 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
-        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
         crate::declare_gossip_probe(&sender_channels);
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -235,10 +235,10 @@ fn delayed_status_predecessors_lose_by_committed_revision() {
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.2", rdm_transport::clock::os_clock());
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.2", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         let birth = || rdm_gossip::envelope::Birth { fabric: fabric.clone(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };

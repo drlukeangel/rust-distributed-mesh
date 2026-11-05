@@ -111,10 +111,10 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let (p_node, r_node) = (node().await, node().await);
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", clock());
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", clock(), Default::default());
         let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
         p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
-        let reader = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.3", clock());
+        let reader = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.3", clock(), Default::default());
         let reader_channels = rdm_gossip::channel::Channels::new(&r_node.gossip, &r_node.ep, &reader).unwrap();
         reader_channels.join(rdm_gossip::channel::ChannelId::mesh(reader.fabric_id(), reader.mesh_id()), vec![]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
@@ -181,7 +181,7 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
     capture.run(4, async {
         let p_node = node().await;
         let mesh_id = MeshId::mint();
-        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
         p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());

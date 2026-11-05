@@ -72,11 +72,11 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         // Each node joins under its node id, as every node does; its digest names its (path, name).
         let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
         let (a_id, b_id) = (da.node.node_id.clone(), db.node.node_id.clone());
-        let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock());
+        let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let ma_channels = rdm_gossip::channel::Channels::new(&a.gossip, &a.ep, &ma).unwrap();
         ma_channels.join(rdm_gossip::channel::ChannelId::mesh(ma.fabric_id(), ma.mesh_id()), vec![]).await.unwrap();
         let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
-        let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock());
+        let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let mb_channels = rdm_gossip::channel::Channels::new(&b.gossip, &b.ep, &mb).unwrap();
         mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![seed]).await.unwrap();
         let started = std::time::Instant::now();

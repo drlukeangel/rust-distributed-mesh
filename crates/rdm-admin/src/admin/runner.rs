@@ -2015,7 +2015,7 @@ mod tests {
         let node_id = NodeId::mint();
         let incarnation = IncarnationId::mint();
 
-        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, "mesh1.node-admin.1", Arc::new(time.clone()));
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, "mesh1.node-admin.1", Arc::new(time.clone()), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         channels.set_publisher(&rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() });

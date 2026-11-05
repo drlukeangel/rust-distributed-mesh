@@ -203,7 +203,7 @@ mod tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(4_200_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(self.ep.clone());
-            let topology_view = rdm_gossip::topology::TopologyView::new(&self.fabric_id, &self.digest.node.mesh, &self.mesh_id, &node_name, clock);
+            let topology_view = rdm_gossip::topology::TopologyView::new(&self.fabric_id, &self.digest.node.mesh, &self.mesh_id, &node_name, clock, Default::default());
             let channels = rdm_gossip::channel::Channels::new(&g, &self.ep, &topology_view).map_err(|e| StartFailed { step: "node.channel", reason: e.to_string() })?;
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.map(|()| channels)
             .map_err(|e| StartFailed {

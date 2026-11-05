@@ -254,9 +254,9 @@ pub fn install_join_cert(registry: &rdm_transport::connections::ConnectionsRegis
 
 /// Hold the row's name a join answer handed (R-JN1, node-start.md step 2): every digest
 /// `topology_view` publishes from now on carries it.
-fn install_handed(topology_view: &TopologyView, control: &crate::wire::JoinControl) {
+fn install_handed(held_name: &crate::held_name::HeldName, control: &crate::wire::JoinControl) {
     if let Some(name) = &control.name {
-        topology_view.set_name(name.clone());
+        held_name.set(name.clone());
     }
     tracing::info!(path = ?control.name.as_ref().map(|n| &n.path), name = ?control.name.as_ref().map(|n| &n.name), "the row's name the join handed is held");
 }
@@ -675,7 +675,7 @@ async fn start_booted(
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seeds.len());
 
-            let topology_view = TopologyView::new(&launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()));
+            let topology_view = TopologyView::new(&launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), held_name.told());
             let channels = rdm_gossip::channel::Channels::new(&g, &ep0, &topology_view)?;
             channels.set_author(&rdm_core::PublisherId { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
             // Its mesh channel names no launcher of another mesh (gossip-by-kind.md §5.2, Q376): the
@@ -685,14 +685,12 @@ async fn start_booted(
                 _ => seeds,
             };
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await?;
-            // The name this birth holds is its topology view's (R12): its connections rows name it as their
-            // source from here on, and every service names the node by it, whatever name the join hands it
-            // or an `ApplyNodeName` gives it.
+            // The name this birth holds is its own record's (`HeldName`, R12), the one its topology view was
+            // handed: its connections rows name it as their source from here on, and every service names the
+            // node by it, whatever name the join hands it or an `ApplyNodeName` gives it.
             {
                 let (held, birth) = (topology_view.clone(), launch.location());
                 connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
-                let (held, birth) = (topology_view.clone(), launch.location());
-                held_name.follow(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
                 let (held, birth) = (topology_view.clone(), launch.location());
                 property_writer.named_by(move || Some(held.held_name(&birth)));
                 // A node told it is deleted stops writing (S1): its own view holding its birth deleted.
@@ -704,7 +702,7 @@ async fn start_booted(
             }
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).
-            install_handed(&topology_view, &joined.control);
+            install_handed(&held_name, &joined.control);
             let current_name = topology_view.node_name();
             tracing::info_span!(
                 parent: &step,
@@ -787,6 +785,7 @@ async fn start_booted(
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             let pre_node_ready_cell: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>> = Arc::default();
                             own.set_session(Arc::new(NodeSession {
+                                held_name: held_name.clone(),
                                 channels: channels.clone(),
                                 r#type: launch.r#type.clone(),
                                 path: launch.path.clone(), name: launch.name.clone(),
@@ -820,7 +819,7 @@ async fn start_booted(
                                 .map_err(|error| anyhow!("{}: bound properties could not be persisted: {error}", launch.node_id))?;
                             // Its accepted join report's pending, on its own record after the launch's starting (Q356).
                             write_own_state(&property_writer, rdm_core::status::NodeState::Pending).await;
-                            let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), channels: channels.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
+                            let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), held_name: held_name.clone(), channels: channels.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&channels, &digest, &status, &server));
                             // The owed declarations' one sender (Q210): whatever this birth owes its mesh-primary is
@@ -978,6 +977,8 @@ fn spawn_publisher(channels: &rdm_gossip::channel::Channels, digest: &MeshDigest
 /// How a node or role node leaves its mesh when stopped and joins it again when started
 /// (`node_self::Session`): the parts it was born with, kept for the rejoin.
 struct NodeSession {
+    /// The name this birth holds (its own record's, gossip-by-kind.md §4.3): its join answer's name is set here.
+    held_name: crate::held_name::HeldName,
     r#type: String,
     path: String,
     /// The name, beside its path.
@@ -1065,7 +1066,7 @@ impl NodeSession {
             // This is the same running instance. Its node-owned property writer already
             // holds the acknowledged map, including changes made while it was stopped.
             // The primary supplies its lifecycle name and certificate, not a copied map.
-            if let Some(name) = &joined.control.name { self.topology_view.set_name(name.clone()); }
+            if let Some(name) = &joined.control.name { self.held_name.set(name.clone()); }
             install_join_cert(&self.data_connections, &joined.control.member_cert, &self.topology_view.node_name().to_string(), &self.node_id, &self.incarnation);
             // The accepted join report on its own record (Q356): its pending and the installed cert's
             // dates, one line. A refused write is named on the writer's span; the next renewal writes
@@ -1720,6 +1721,8 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
 /// What this node needs to answer a node-admin's status kick about itself.
 pub(crate) struct Kicked {
     topology_view: TopologyView,
+    /// The name this birth holds (its own record's): an `ApplyNodeName` sets it.
+    held_name: crate::held_name::HeldName,
     channels: rdm_gossip::channel::Channels,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
@@ -2113,7 +2116,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     }
                     let published = match decision {
                         crate::node_name::NameApply::Applied => {
-                            me.topology_view.set_name(asked.clone());
+                            me.held_name.set(asked.clone());
                             if *me.status.lock().unwrap() == MemberStatus::Leaving {
                                 "off-mesh"
                             } else {
@@ -2199,7 +2202,7 @@ mod primary_tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(1_000_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock);
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Default::default());
             let channels = rdm_gossip::channel::Channels::new(&g, &endpoint, &topology_view).unwrap();
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.unwrap();
             let digest = MeshDigest {

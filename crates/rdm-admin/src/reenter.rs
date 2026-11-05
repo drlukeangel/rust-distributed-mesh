@@ -482,7 +482,7 @@ mod tests {
             let local_time = rdm_transport::clock::RafkaTime::unadopted();
             local_time.adopt(5_000_000);
             let (local_node_id, local_inc) = (NodeId::mint(), IncarnationId::mint());
-            let local_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()));
+            let local_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()), Default::default());
             let local_view_channels = rdm_gossip::channel::Channels::new(&local_gossip, &local_ep, &local_view).unwrap();
             local_view_channels.join(rdm_gossip::channel::ChannelId::mesh(local_view.fabric_id(), local_view.mesh_id()), vec![]).await.unwrap();
             let (dead_node_id, dead_inc) = (NodeId::mint(), IncarnationId::mint());
@@ -582,7 +582,7 @@ mod tests {
             let fp_time = rdm_transport::clock::RafkaTime::unadopted();
             fp_time.adopt(5_000_000);
             let (fp_node_id, fp_inc) = (NodeId::mint(), IncarnationId::mint());
-            let fp_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()));
+            let fp_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()), Default::default());
             let fp_view_channels = rdm_gossip::channel::Channels::new(&fp_gossip, &fp_ep, &fp_view).unwrap();
             fp_view_channels.join(rdm_gossip::channel::ChannelId::mesh(fp_view.fabric_id(), fp_view.mesh_id()), vec![]).await.unwrap();
             let fp_resolver = Arc::new(LiveNodeResolver::default());

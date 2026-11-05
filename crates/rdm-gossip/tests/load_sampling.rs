@@ -102,13 +102,13 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
 
         let fab = FabricId::parse("fab000000001").unwrap();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock());
+        let src_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let src_m_channels = rdm_gossip::channel::Channels::new(&src_node.gossip, &src_node.ep, &src_m).unwrap();
         src_m_channels.join(rdm_gossip::channel::ChannelId::mesh(src_m.fabric_id(), src_m.mesh_id()), vec![]).await.unwrap();
-        let fwd_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let fwd_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let fwd_m_channels = rdm_gossip::channel::Channels::new(&fwd_node.gossip, &fwd_node.ep, &fwd_m).unwrap();
         fwd_m_channels.join(rdm_gossip::channel::ChannelId::mesh(fwd_m.fabric_id(), fwd_m.mesh_id()), vec![]).await.unwrap();
-        let mem_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let mem_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let mem_m_channels = rdm_gossip::channel::Channels::new(&mem_node.gossip, &mem_node.ep, &mem_m).unwrap();
         mem_m_channels.join(rdm_gossip::channel::ChannelId::mesh(mem_m.fabric_id(), mem_m.mesh_id()), vec![fwd_addr.clone()]).await.unwrap();
 

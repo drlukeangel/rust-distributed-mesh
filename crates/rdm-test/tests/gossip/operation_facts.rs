@@ -28,11 +28,11 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let (sender_id, receiver_id, target_id) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
-        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock());
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
         crate::declare_gossip_probe(&sender_channels);
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "deletion-build".into(), operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };

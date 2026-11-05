@@ -15,7 +15,7 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();

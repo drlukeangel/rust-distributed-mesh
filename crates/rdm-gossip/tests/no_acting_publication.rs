@@ -95,7 +95,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let fp_n = node().await;
         let fab = fabric();
         let fp_own = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 41_001);
-        let fp_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &MeshId::mint(), fp_own.node.node_id.as_str(), rdm_transport::clock::os_clock());
+        let fp_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &MeshId::mint(), fp_own.node.node_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let fp_m_channels = rdm_gossip::channel::Channels::new(&fp_n.gossip, &fp_n.ep, &fp_m).unwrap();
         fp_m_channels.join(rdm_gossip::channel::ChannelId::mesh(fp_m.fabric_id(), fp_m.mesh_id()), vec![]).await.unwrap();
         fp_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() });

@@ -763,7 +763,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
     // and its client and its server share the windows and the open invocations.
     let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() });
-    // The name this admin holds, read per call: its boot name until its topology view holds it. Each
+    // The name this admin holds, read per call: its boot name until its row gives it another; its topology view is handed it (§4.3). Each
     // call of this admin whose attempts are spent is told to its `on_call_failed`, when the app
     // registered one (fabric-node-hooks.md "on_call_failed").
     let held_name = rdm_node::held_name::HeldName::of_birth(name.clone());
@@ -1045,7 +1045,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // gossip, and the view keeps the newer copy.
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seed_addrs.len());
-                let topology_view = rdm_gossip::topology::TopologyView::new(&cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone());
+                let topology_view = rdm_gossip::topology::TopologyView::new(&cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone(), held_name.told());
                 let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).map_err(|e| format!("topology view: {e}"))?;
                 channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_seed_addrs).await
                     .map_err(|e| format!("topology view: {e}"))?;
@@ -1060,7 +1060,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // (R-JN1); at a first start the name is its create spec's, verified by the join.
                 let handed: Option<PathName> = joined.as_ref().and_then(|a| a.control.name.clone());
                 if let Some(n) = &handed {
-                    topology_view.set_name(n.clone());
+                    held_name.set(n.clone());
                 }
                 tracing::info_span!(
                     parent: &step,
@@ -1377,10 +1377,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     .insert(cfg.mesh.clone(), mesh_id.clone());
                                 let digest_view = topology_view.digest_view.clone();
                                 let node_rpc_feed = node_rpc.feed(&digest_view, &node_id.to_string());
-                                {
-                                    let (held, boot_name) = (digest_view.clone(), name.clone());
-                                    let _ = held_name.follow(move || held.held_path_name().unwrap_or_else(|| boot_name.clone()));
-                                }
                                 let control = Arc::new(
                                     ControlPlane::new(
                                         builds_dyn.clone(),
@@ -2321,11 +2317,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                     }
                                     {
-                                        // The name is held on this admin's own digest and by its topology view, taken only while it
+                                        // The name is held on this admin's own digest and by its own record (`HeldName`), taken only while it
                                         // has no connection open (R-CR1), read from what is open now, never from the rows that have
                                         // landed (Q169); a stopped admin holds it and publishes nothing.
                                         let (topology_view, channels, digest, connections, registry, configs) = (topology_view.clone(), channels.clone(), digest.clone(), connections.clone(), data_connections.clone(), configs_slot.clone());
+                                        let held_name = held_name.clone();
                                         let _ = rename.set(Arc::new(move |asked: PathName| {
+                                            let held_name = held_name.clone();
                                             let (topology_view, channels, digest, connections, registry, configs) = (topology_view.clone(), channels.clone(), digest.clone(), connections.clone(), registry.clone(), configs.clone());
                                             Box::pin(async move {
                                                 let held = digest.lock().unwrap().node.location();
@@ -2343,7 +2341,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 if decision == crate::node_name::NameApply::Applied {
-                                                    topology_view.set_name(asked.clone());
+                                                    held_name.set(asked.clone());
                                                     let d = {
                                                         let mut d = digest.lock().unwrap();
                                                         { let at = asked; d.node.path = at.path; d.node.name = at.name; }
@@ -2415,6 +2413,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // is installed on, and what node.connection.delete closes, as on every node.
                                         own.set_data_connections(data_connections.clone());
                                         own.set_session(Arc::new(AdminSession {
+                                            held_name: held_name.clone(),
                                             data_connections: data_connections.clone(),
                                             drives: drives.clone(),
                                             configs: configs_slot.clone(),

@@ -717,7 +717,7 @@ mod tests {
             let ep = self.starting.client.endpoint().clone();
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
-            let topology_view = TopologyView::new(&fabric_id, "mesh1", &mesh_id, &self.starting.name, Arc::new(self.starting.rafka_time.clone()));
+            let topology_view = TopologyView::new(&fabric_id, "mesh1", &mesh_id, &self.starting.name, Arc::new(self.starting.rafka_time.clone()), Default::default());
             let failed = |e: anyhow::Error| StartFailed { step: "node.channel", reason: e.to_string() };
             let channels = rdm_gossip::channel::Channels::new(&g, &ep, &topology_view).map_err(failed)?;
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.map_err(failed)?;

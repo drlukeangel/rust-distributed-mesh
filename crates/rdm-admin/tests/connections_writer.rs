@@ -559,7 +559,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap(), &rdm_transport::clock::RafkaTime::unadopted())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-    // The process's held name, as its topology view holds it: none told yet, so the birth's.
+    // The process's held name, as its topology view is handed it: none told yet, so the birth's.
     let told: Arc<Mutex<Option<PathName>>> = Arc::default();
     let (cell, birth) = (told.clone(), me.location());
     writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();

@@ -485,7 +485,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             vec![seed.clone()]
         }
     };
-    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), admin_node_id.as_str(), Arc::new(rafka_time.clone()));
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), admin_node_id.as_str(), Arc::new(rafka_time.clone()), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &admin_ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seeds).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that

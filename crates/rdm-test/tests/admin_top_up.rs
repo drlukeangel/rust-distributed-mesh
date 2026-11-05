@@ -200,7 +200,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
         let observer_id = NodeId::mint();
-        let topology_view = rdm_gossip::topology::TopologyView::new(&root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock());
+        let topology_view = rdm_gossip::topology::TopologyView::new(&root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&probe.gossip, &probe.ep, &topology_view).expect("the cell joins mesh1's channel");
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channels);

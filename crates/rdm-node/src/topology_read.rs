@@ -581,7 +581,7 @@ mod tests {
         rafka_time.adopt(1_000_000);
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
-        let view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, "mesh1.node-admin.1", Arc::new(rafka_time.clone()));
+        let view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, "mesh1.node-admin.1", Arc::new(rafka_time.clone()), Default::default());
         let view_channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &view).unwrap();
         view_channels.join(rdm_gossip::channel::ChannelId::mesh(view.fabric_id(), view.mesh_id()), Vec::new()).await
         .unwrap();

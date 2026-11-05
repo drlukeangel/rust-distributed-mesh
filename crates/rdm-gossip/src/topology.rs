@@ -54,10 +54,13 @@ pub struct TopologyView {
 impl TopologyView {
     /// The topology view of `node`, of `mesh` (`mesh_id` names its channel) in `fabric`: the cache
     /// every node holds (gossip.md §3), empty until its channels and its topology read fill it.
-    /// `clock` is the Rafka-time the process composes: every timestamp read from it.
-    pub fn new(fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock) -> Self {
-        let view = View::new(mesh, node);
-        let name = view.held_name.clone();
+    /// `clock` is the Rafka-time the process composes: every timestamp read from it. `name` is the name
+    /// the node's row gave it, handed by the node's own record that holds it (rdm-node's `HeldName`,
+    /// gossip-by-kind.md §4.3): every digest this view publishes carries it.
+    pub fn new(fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, name: Arc<Mutex<Option<rdm_core::PathName>>>) -> Self {
+        let mut view = View::new(mesh, node);
+        view.held_name = name.clone();
+        view.digest_view.held_name = name.clone();
         let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
         let me = Self { digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, name, mesh_status_publisher };
         me.watch_meshes();
@@ -245,13 +248,8 @@ impl TopologyView {
         &self.clock
     }
 
-    /// Hold `name` as this birth's name: every digest this topology view publishes from now on carries
-    /// it (R12: the node publishes only the name its row holds).
-    pub fn set_name(&self, name: rdm_core::PathName) {
-        *self.name.lock().unwrap() = Some(name);
-    }
-
-    /// The name this birth publishes: the one it was told ([`Self::set_name`]), else `birth`'s.
+    /// The name this birth publishes: the one its row gave it, as this view was handed it
+    /// ([`Self::new`]), else `birth`'s.
     pub fn held_name(&self, birth: &rdm_core::PathName) -> rdm_core::PathName {
         self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
     }
@@ -2932,7 +2930,7 @@ mod tests {
             replayed_during_stamp: Mutex::new(Vec::new()),
         });
         let clock: SharedClock = racing.clone();
-        let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock);
+        let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock, Default::default());
         let m_channels = crate::channel::Channels::new(&gossip, &ep, &m).unwrap();
         m_channels.join(crate::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![]).await.unwrap();
         m_channels.set_publisher(&rdm_core::PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() });
@@ -2972,7 +2970,7 @@ mod tests {
         let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let m_channels = crate::channel::Channels::new(&gossip, &ep, &m).unwrap();
         m_channels.join(crate::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![]).await.unwrap();
         m_channels.set_publisher(&p.clone());

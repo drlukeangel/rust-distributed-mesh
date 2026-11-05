@@ -220,10 +220,10 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock());
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), Default::default());
         let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
         p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
-        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock());
+        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), Default::default());
         let m_channels = rdm_gossip::channel::Channels::new(&m_node.gossip, &m_node.ep, &m).unwrap();
         m_channels.join(rdm_gossip::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![p_addr]).await.unwrap();
         p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });
@@ -359,10 +359,10 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock());
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), Default::default());
         let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
         p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
-        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock());
+        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), Default::default());
         let m_channels = rdm_gossip::channel::Channels::new(&m_node.gossip, &m_node.ep, &m).unwrap();
         m_channels.join(rdm_gossip::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![p_addr]).await.unwrap();
         p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });

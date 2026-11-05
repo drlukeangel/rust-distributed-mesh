@@ -193,7 +193,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
-    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time));
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     channels.set_publisher(&rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() });
@@ -557,7 +557,7 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
-    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time));
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), Default::default());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());

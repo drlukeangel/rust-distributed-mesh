@@ -38,7 +38,7 @@ fn story(story: Story) {
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();

@@ -170,7 +170,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         };
         let hand = Arc::new(HandClock::default());
         let me = "mesh1.node.1";
-        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, hand.clone());
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, hand.clone(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         let sender_id = NodeId::mint();

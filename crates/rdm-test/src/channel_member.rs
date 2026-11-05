@@ -53,7 +53,7 @@ impl Member {
         let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let node_id = NodeId::mint();
         let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
-        let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock());
+        let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seeds.iter().map(|s| s.0.clone()).collect()).await
             .unwrap_or_else(|e| panic!("{name:?}: the member does not join mesh {mesh_name} ({mesh}): {e}"));

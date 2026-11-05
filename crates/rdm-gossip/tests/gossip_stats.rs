@@ -80,10 +80,10 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rdm_transport::clock::os_clock;
-    let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock());
+    let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock(), Default::default());
     let ma_channels = rdm_gossip::channel::Channels::new(&a.gossip, &a.ep, &ma).unwrap();
     ma_channels.join(rdm_gossip::channel::ChannelId::mesh(ma.fabric_id(), ma.mesh_id()), vec![]).await.unwrap();
-    let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.2", clock());
+    let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.2", clock(), Default::default());
     let mb_channels = rdm_gossip::channel::Channels::new(&b.gossip, &b.ep, &mb).unwrap();
     mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
@@ -103,7 +103,7 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
 
     // Delivery returns: a new node reaches A and A counts it as a neighbour again.
     let c = node().await;
-    let mc = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.3", clock());
+    let mc = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.3", clock(), Default::default());
     let mc_channels = rdm_gossip::channel::Channels::new(&c.gossip, &c.ep, &mc).unwrap();
     mc_channels.join(rdm_gossip::channel::ChannelId::mesh(mc.fabric_id(), mc.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let dc = digest(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", &c.ep);

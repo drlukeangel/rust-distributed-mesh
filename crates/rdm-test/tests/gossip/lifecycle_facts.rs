@@ -30,10 +30,10 @@ fn story(kind: StatusEvent, scenario: Story) {
         let receiver_id = NodeId::mint();
         let successor_id = NodeId::mint();
         let subject_id = NodeId::mint();
-        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock());
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&send_gossip, &send_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
-        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock());
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr]).await.unwrap();
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };

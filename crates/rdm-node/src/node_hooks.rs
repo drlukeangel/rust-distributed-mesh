@@ -728,7 +728,7 @@ mod tests {
             let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
             let _ = rafka_time.adopt(1_000);
             let (fabric_id, mesh_id, name) = (FabricId::mint(), MeshId::mint(), PathName::numbered("mesh1", "node", 1));
-            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &name.name, Arc::new(rafka_time.clone()));
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &name.name, Arc::new(rafka_time.clone()), Default::default());
             let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).expect("join topology view");
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.expect("join topology view");
             let birth = Birth { path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), fabric_id, mesh_id, r#type: "node".into() };
@@ -1009,7 +1009,7 @@ mod tests {
             let _ = rafka_time.adopt(1_000);
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
-            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &expected_name.name, Arc::new(rafka_time.clone()));
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &expected_name.name, Arc::new(rafka_time.clone()), Default::default());
             let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).expect("join topology view");
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
             .expect("join topology view");
