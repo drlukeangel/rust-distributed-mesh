@@ -27,6 +27,7 @@ mod gossip_wire;
 mod nodes_snapshot;
 mod status_reinforcement;
 mod refeed_scheduler;
+mod held_member_repair;
 mod channel_stopped;
 mod peer_location_view;
 mod gossip_stats;

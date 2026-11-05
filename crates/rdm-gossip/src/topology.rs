@@ -1150,6 +1150,36 @@ mod tests {
         assert!(view.digest_view.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
     }
 
+    /// CONTRACT (gossip.md §6): a member held only from its mesh-primary's projection is a repair
+    /// target with its silence since first held; under an open removal, or held `Leaving`, it is none,
+    /// and an open removal's key is one its channels forget. Must NOT happen: an address under removal
+    /// handed to a channel, or a projected member left out of repair because it was never heard.
+    #[test]
+    fn a_projected_member_is_a_repair_target_unless_leaving_or_under_an_open_removal() {
+        let view = View::new("mesh1", "mesh1.node-admin.1");
+        let (id, inc, leaving_id, gone, gone_inc) = (NodeId::mint(), IncarnationId::mint(), NodeId::mint(), NodeId::mint(), IncarnationId::mint());
+        let projected = |id: &NodeId, inc: &IncarnationId, status: MemberStatus| {
+            let mut d = digest(id, inc, None, status, 1);
+            d.node.endpoint_id = EndpointId(iroh::SecretKey::generate().public().to_string());
+            d
+        };
+        let first_held = Instant::now() - Duration::from_secs(60);
+        let member = projected(&id, &inc, MemberStatus::Pending);
+        view.digest_view.hold_projected_at(&member, first_held);
+        let leaving_inc = IncarnationId::mint();
+        view.digest_view.hold_projected_at(&projected(&leaving_id, &leaving_inc, MemberStatus::Leaving), first_held);
+        view.digest_view.member_statuses.lock().unwrap().insert(leaving_id.to_string(), (leaving_inc, MemberStatus::Leaving));
+        let doomed = projected(&gone, &gone_inc, MemberStatus::Ready);
+        view.digest_view.hold_projected_at(&doomed, first_held);
+        assert!(view.digest_view.deleting(op(&gone, &gone_inc, "node.delete")), "the removal opens over the projected birth");
+
+        let held = crate::channel::held_view(&view.digest_view, |_| true);
+        let targets: Vec<&str> = held.targets.iter().map(|t| t.node_id.as_str()).collect();
+        assert_eq!(targets, vec![id.as_str()], "the projected member alone: not the one held Leaving, not the one under removal");
+        assert!(held.targets[0].silent_for >= Duration::from_secs(60), "its silence runs from when it was first held");
+        assert_eq!(held.deleted.iter().map(|k| k.to_string()).collect::<Vec<_>>(), vec![doomed.node.endpoint_id.0.clone()], "the channel forgets the key under removal");
+    }
+
     /// CONTRACT (gossip.md §3.1 `TopologyFull`: the mesh-primary is the author of its own mesh's
     /// statuses): the mesh-primary authors its own mesh's statuses, a rule keyed on the receiver's own
     /// role. A mesh topology of its own mesh from another publisher (a predecessor's last one, arriving

@@ -142,8 +142,10 @@ impl RepairSchedule {
     }
 }
 
-/// The held members of `digest_view` that `pick` selects, each with how long it has gone unheard; a
-/// member held `Leaving` is never a repair target.
+/// The held members of `digest_view` that `pick` selects, each with how long it has gone unheard,
+/// heard or held only from its mesh-primary's projection (gossip.md §6: a held member whose address is
+/// known, never heard being the stalest coverage there is); a member held `Leaving` is never a repair
+/// target.
 pub(crate) fn held_targets(digest_view: &DigestView, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
     let now = Instant::now();
     // A member under an open removal is held through it, but its address is a birth's
@@ -151,6 +153,7 @@ pub(crate) fn held_targets(digest_view: &DigestView, pick: impl Fn(&MeshDigest) 
     let overlaid = overlaid_nodes(digest_view);
     digest_view.silent_held(now)
         .into_iter()
+        .chain(digest_view.projected_unheard_at(now))
         .filter(|(d, _)| pick(d) && d.status != rdm_core::MemberStatus::Leaving && !overlaid.contains(d.node.node_id.as_str()))
         .filter_map(|(d, silent_for)| gossip_addr(&d).map(|addr| RepairTarget { addr, node: d.node.node_id.to_string(), node_id: d.node.node_id.to_string(), silent_for }))
         .collect()
@@ -177,6 +180,7 @@ pub(crate) fn held_view(digest_view: &DigestView, pick: impl Fn(&MeshDigest) -> 
     let deleted = digest_view
         .all()
         .into_iter()
+        .chain(digest_view.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d))
         .filter(|d| pick(d) && overlaid.contains(d.node.node_id.as_str()))
         .filter_map(|d| d.node.endpoint_id.0.parse::<iroh::PublicKey>().ok())
         .collect();
