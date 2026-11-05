@@ -1035,31 +1035,17 @@ mod tests {
         let node_id = NodeId::mint();
         let incarnation = IncarnationId::mint();
 
-        let topology_view = TopologyView::join(
-            &gossip,
-            &ep,
-            &fabric_id,
-            "mesh1",
-            &mesh1_id,
-            "mesh1.node-admin.1",
-            Arc::new(time.clone()),
-            vec![],
-        )
-        .await
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, "mesh1.node-admin.1", Arc::new(time.clone()));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await
         .unwrap();
-        let backbone = Backbone::join(
-            &gossip,
-            &ep,
-            &topology_view,
-            "mesh1",
-            rdm_core::PublisherId {
+        channels.set_publisher(&rdm_core::PublisherId {
                 incarnation: incarnation.clone(),
                 node_id: node_id.clone(),
-            },
-            vec![],
-        )
-        .await
+            });
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await
         .unwrap();
+        let backbone = channels.backbone().expect("the backbone is joined");
 
         let dir = crate::test_support::tempdir(name);
         let providers = crate::storage_backend::TopologyStorageProviders::file(dir.clone());
@@ -1207,7 +1193,7 @@ mod tests {
             endpoint: Some(ep.clone()),
             node_rpc,
             lifecycle_events: Arc::new(GossipLifecycle {
-                topology_view,
+                channels: channels.clone(),
                 backbone,
                 me_path: me.path.clone(), me_name: me.name.clone(),
                 mesh_deleter: Arc::default(),

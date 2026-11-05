@@ -277,8 +277,10 @@ pub struct NodeSelf {
     /// The process's live resolver: an admin that commanded this birth is applied to it at the path
     /// its call came in on, so the completion call goes back there.
     pub resolver: Arc<rdm_transport::LiveNodeResolver>,
-    /// This birth's topology view: the mesh channel its completion frames go out on.
+    /// This birth's topology view.
     pub topology_view: TopologyView,
+    /// This birth's channels: the mesh channel its completion frames go out on.
+    pub channels: rdm_gossip::channel::Channels,
     /// Set this birth's status and answer the digest to publish.
     pub set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
     /// This birth's status now.
@@ -341,14 +343,15 @@ impl NodeSelf {
         server: NodeRpcServer,
         client: Arc<NodeRpcClient>,
         resolver: Arc<rdm_transport::LiveNodeResolver>,
-        topology_view: TopologyView,
+        channels: rdm_gossip::channel::Channels,
         set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
         connections_delete_deadline: Duration,
     ) -> Self {
-        topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
-        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None), records: Mutex::new(None) }
+        channels.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
+        let topology_view = channels.topology_view().clone();
+        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, channels, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None), records: Mutex::new(None) }
     }
 
     /// Hold `records`, this process's writer of its own record.
@@ -942,7 +945,7 @@ impl NodeSelf {
             let report = match &session {
                 Some(session) => session.cut(spare, mesh_primary).await,
                 None => {
-                    leave_channels(&self.topology_view, self.backbone.as_ref(), &self.node_id).await;
+                    leave_channels(&self.channels, self.backbone.as_ref(), &self.node_id).await;
                     CutReport::default()
                 }
             };
@@ -1493,8 +1496,9 @@ impl NodeSelf {
 /// when it is a node-admin's, each left emitting `rdm.node.mesh.update.via-left`. The one place the
 /// channel leave is written: each session's `leave_channels`, a birth that holds no session, and a
 /// commanded `node.mesh.join` whose start failed at a step call it.
-pub async fn leave_channels(topology_view: &TopologyView, backbone: Option<&rdm_gossip::backbone::Backbone>, node_id: &NodeId) {
-    topology_view.stop().await;
+pub async fn leave_channels(channels: &rdm_gossip::channel::Channels, backbone: Option<&rdm_gossip::backbone::Backbone>, node_id: &NodeId) {
+    let topology_view = channels.topology_view();
+    channels.stop().await;
     tracing::info_span!(
         "rdm.node.mesh.update.via-left",
         node = %topology_view.node_name(),
@@ -1766,17 +1770,9 @@ mod tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(1_000_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-            let topology_view = TopologyView::join(
-                &g,
-                &endpoint,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                node_id.as_str(),
-                clock,
-                Vec::new(),
-            )
-            .await
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock);
+            let channels = rdm_gossip::channel::Channels::new(&g, &endpoint, &topology_view).unwrap();
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
             .unwrap();
             let resolver = Arc::new(LiveNodeResolver::default());
             let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm"));
@@ -1819,7 +1815,7 @@ mod tests {
                 server,
                 client,
                 resolver.clone(),
-                topology_view,
+                channels.clone(),
                 Arc::new(move |_| digest.clone()),
                 Arc::new(|| MemberStatus::Ready),
                 None,
@@ -1972,31 +1968,17 @@ mod tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(1_000_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-            let topology_view = TopologyView::join(
-                &g,
-                &endpoint,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                node_id.as_str(),
-                clock,
-                Vec::new(),
-            )
-            .await
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock);
+            let channels = rdm_gossip::channel::Channels::new(&g, &endpoint, &topology_view).unwrap();
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
             .unwrap();
-            let backbone = Backbone::join(
-                &g,
-                &endpoint,
-                &topology_view,
-                "mesh1",
-                rdm_core::PublisherId {
+            channels.set_publisher(&rdm_core::PublisherId {
                     node_id: node_id.clone(),
                     incarnation: incarnation.clone(),
-                },
-                Vec::new(),
-            )
-            .await
+                });
+            channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), Vec::new()).await
             .unwrap();
+            let backbone = channels.backbone().expect("the backbone is joined");
             let resolver = Arc::new(LiveNodeResolver::default());
             let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm"));
             let server = ServerBuilder::new()
@@ -2042,7 +2024,7 @@ mod tests {
                 server,
                 client,
                 resolver,
-                topology_view,
+                channels.clone(),
                 Arc::new(move |_| digest.clone()),
                 Arc::new(|| MemberStatus::Ready),
                 Some(declare),

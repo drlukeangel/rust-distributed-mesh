@@ -163,7 +163,7 @@ pub(crate) enum TopologySource<'a> {
     DurableMap(&'a [MapNode]),
     /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E), which installs
     /// nothing (the map is for reaching nodes, not for holding them), and this admin joins the mesh channel with it as the seed.
-    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, topology_view: &'a TopologyView, me: &'a PathName, me_id: &'a NodeId, time: &'a rdm_transport::clock::RafkaTime, adopt_time: bool },
+    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, channels: &'a rdm_gossip::channel::Channels, me: &'a PathName, me_id: &'a NodeId, time: &'a rdm_transport::clock::RafkaTime, adopt_time: bool },
 }
 
 /// The topology `source` holds, every mesh, as births a Ping can reach. `Err` names what failed.
@@ -172,7 +172,8 @@ pub(crate) enum TopologySource<'a> {
 pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, String> {
     match source {
         TopologySource::DurableMap(rows) => Ok(rows.to_vec()),
-        TopologySource::LocalNode { node, client, topology_view, me, me_id, time, adopt_time } => {
+        TopologySource::LocalNode { node, client, channels, me, me_id, time, adopt_time } => {
+            let topology_view = channels.topology_view();
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.node_id, node.endpoint_id.0))?;
             let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), topology_view.node(), None, None)
                 .await
@@ -183,7 +184,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
             }
             // The roles this node's mesh knows are held: an entering admin computes none before it has them.
             topology_view.learn_primaries(&read.primaries, "entry");
-            topology_view.join_peers_as("admin.reenter", vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.node_id))?;
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.node_id))?;
             let fabric = read.installed.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
             let Some(fabric) = fabric else {
                 return Err(format!("{} answered a topology read that does not name itself", node.node_id));
@@ -203,6 +204,8 @@ pub(crate) struct EntryCtx {
     pub client: Arc<NodeRpcClient>,
     pub resolver: Arc<LiveNodeResolver>,
     pub topology_view: TopologyView,
+    /// This admin's channels: the entry joins the mesh channel through the node it read.
+    pub channels: rdm_gossip::channel::Channels,
     pub time: rdm_transport::clock::RafkaTime,
 }
 
@@ -279,7 +282,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         }
     }
     if let Some(l) = &local {
-        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, topology_view: &ctx.topology_view, me: &ctx.me(), me_id: &ctx.me_id, time: &ctx.time, adopt_time: source != "durable-map" }).await {
+        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, channels: &ctx.channels, me: &ctx.me(), me_id: &ctx.me_id, time: &ctx.time, adopt_time: source != "durable-map" }).await {
             Ok(current) => {
                 // The current read replaces metadata for the same node ID and adds new IDs.
                 let current = own(&current);
@@ -479,7 +482,9 @@ mod tests {
             let local_time = rdm_transport::clock::RafkaTime::unadopted();
             local_time.adopt(5_000_000);
             let (local_node_id, local_inc) = (NodeId::mint(), IncarnationId::mint());
-            let local_view = TopologyView::join(&local_gossip, &local_ep, &fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()), vec![]).await.unwrap();
+            let local_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()));
+            let local_view_channels = rdm_gossip::channel::Channels::new(&local_gossip, &local_ep, &local_view).unwrap();
+            local_view_channels.join(rdm_gossip::channel::ChannelId::mesh(local_view.fabric_id(), local_view.mesh_id()), vec![]).await.unwrap();
             let (dead_node_id, dead_inc) = (NodeId::mint(), IncarnationId::mint());
 
             let local_digest = rdm_core::MeshDigest {
@@ -531,7 +536,7 @@ mod tests {
             };
             for r in crate::topology_read::snapshot_replies(&snap, 1) {
                 if let rdm_core::topology::TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } = r {
-                    let _ = local_view.take_read_chunk(
+                    let _ = local_view_channels.take_read_chunk(
                         rdm_gossip::snapshot::Chunk {
                             mesh,
                             publisher,
@@ -577,7 +582,9 @@ mod tests {
             let fp_time = rdm_transport::clock::RafkaTime::unadopted();
             fp_time.adopt(5_000_000);
             let (fp_node_id, fp_inc) = (NodeId::mint(), IncarnationId::mint());
-            let fp_view = TopologyView::join(&fp_gossip, &fp_ep, &fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()), vec![]).await.unwrap();
+            let fp_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()));
+            let fp_view_channels = rdm_gossip::channel::Channels::new(&fp_gossip, &fp_ep, &fp_view).unwrap();
+            fp_view_channels.join(rdm_gossip::channel::ChannelId::mesh(fp_view.fabric_id(), fp_view.mesh_id()), vec![]).await.unwrap();
             let fp_resolver = Arc::new(LiveNodeResolver::default());
             let fp_client = Arc::new(NodeRpcClient::new(fp_ep.clone(), fp_resolver.clone()));
 
@@ -613,6 +620,7 @@ mod tests {
                 client: fp_client.clone(),
                 resolver: fp_resolver.clone(),
                 topology_view: fp_view.clone(),
+                channels: fp_view_channels.clone(),
                 time: fp_time.clone(),
             };
             let report = enter_existing_mesh(&ctx, "durable-map", durable_rows).await;

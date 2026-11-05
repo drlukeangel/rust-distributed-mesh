@@ -5333,7 +5333,6 @@ impl Observer {
 
     async fn join(fabric: &rdm_core::FabricId, mesh: &rdm_core::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
         use futures_lite::StreamExt as _;
-        use rdm_gossip::channel::{backbone_channel, mesh_channel};
         use rdm_gossip::location::learn_addresses;
         use rdm_gossip::frame::Frame;
         let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
@@ -5347,7 +5346,7 @@ impl Observer {
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Frame)>>> = Default::default();
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
-        for (channel, channel_id) in [("backbone", backbone_channel(fabric)), ("mesh", mesh_channel(fabric, mesh))] {
+        for (channel, channel_id) in [("backbone", rdm_gossip::channel::ChannelId::backbone(fabric).topic()), ("mesh", rdm_gossip::channel::ChannelId::mesh(fabric, mesh).topic())] {
             let (sender, mut receiver) = gossip.subscribe(channel_id, peers.clone()).await.unwrap().split();
             let seen = seen.clone();
             tokio::spawn(async move {

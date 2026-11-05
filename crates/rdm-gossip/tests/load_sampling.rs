@@ -102,9 +102,15 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
 
         let fab = FabricId::parse("fab000000001").unwrap();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let mem_m = TopologyView::join(&mem_node.gossip, &mem_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()]).await.unwrap();
+        let src_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock());
+        let src_m_channels = rdm_gossip::channel::Channels::new(&src_node.gossip, &src_node.ep, &src_m).unwrap();
+        src_m_channels.join(rdm_gossip::channel::ChannelId::mesh(src_m.fabric_id(), src_m.mesh_id()), vec![]).await.unwrap();
+        let fwd_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let fwd_m_channels = rdm_gossip::channel::Channels::new(&fwd_node.gossip, &fwd_node.ep, &fwd_m).unwrap();
+        fwd_m_channels.join(rdm_gossip::channel::ChannelId::mesh(fwd_m.fabric_id(), fwd_m.mesh_id()), vec![]).await.unwrap();
+        let mem_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let mem_m_channels = rdm_gossip::channel::Channels::new(&mem_node.gossip, &mem_node.ep, &mem_m).unwrap();
+        mem_m_channels.join(rdm_gossip::channel::ChannelId::mesh(mem_m.fabric_id(), mem_m.mesh_id()), vec![fwd_addr.clone()]).await.unwrap();
 
         let src_digest = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &src_node.ep);
         let src_pub = PublisherId {
@@ -117,12 +123,16 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
             node_id: fwd_digest.node.node_id.clone(),
         };
 
-        let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", src_pub, vec![]).await.unwrap();
-        let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", fwd_pub, vec![src_addr]).await.unwrap();
+        src_m_channels.set_publisher(&src_pub);
+        src_m_channels.join(rdm_gossip::channel::ChannelId::backbone(src_m.fabric_id()), vec![]).await.unwrap();
+        let src_bb = src_m_channels.backbone().expect("the backbone is joined");
+        fwd_m_channels.set_publisher(&fwd_pub);
+        fwd_m_channels.join(rdm_gossip::channel::ChannelId::backbone(fwd_m.fabric_id()), vec![src_addr]).await.unwrap();
+        let fwd_bb = fwd_m_channels.backbone().expect("the backbone is joined");
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
 
-        src_m.publish(&src_digest).await.unwrap();
+        src_m_channels.publish(&src_digest).await.unwrap();
         let own_held = src_m
             .digest_view
             .get(src_digest.node.node_id.as_str())

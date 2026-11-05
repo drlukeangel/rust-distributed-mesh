@@ -138,9 +138,12 @@ pub struct NodeReadyCtx {
     pub accepting_primary: AcceptingPrimarySource,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
-    /// The topology/gossip handle: the app subscribes its kind channels before it takes its
-    /// snapshot, so what changes during the pull arrives by gossip.
+    /// The node's topology view: the cache of the fabric's topology its channels fill.
     pub topology_view: TopologyView,
+    /// The node's channels: the app joins its application channels through them
+    /// (`Channels::join`, `ChannelId::app`) before it takes its snapshot, so what changes during the
+    /// pull arrives by gossip.
+    pub channels: rdm_gossip::channel::Channels,
     /// Cancelled when the node is stopped or deleted: the hook and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.
@@ -712,6 +715,7 @@ mod tests {
         ep: iroh::Endpoint,
         client: Arc<NodeRpcClient>,
         topology_view: TopologyView,
+        channels: rdm_gossip::channel::Channels,
         rafka_time: rdm_transport::clock::RafkaTime,
         birth: Birth,
     }
@@ -724,9 +728,11 @@ mod tests {
             let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
             let _ = rafka_time.adopt(1_000);
             let (fabric_id, mesh_id, name) = (FabricId::mint(), MeshId::mint(), PathName::numbered("mesh1", "node", 1));
-            let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, &name.name, Arc::new(rafka_time.clone()), Vec::new()).await.expect("join topology view");
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &name.name, Arc::new(rafka_time.clone()));
+            let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).expect("join topology view");
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.expect("join topology view");
             let birth = Birth { path: name.path.clone(), name: name.name.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), fabric_id, mesh_id, r#type: "node".into() };
-            Self { ep, client, topology_view, rafka_time, birth }
+            Self { ep, client, topology_view, channels, rafka_time, birth }
         }
 
         fn ctx(&self, cancel: CancelToken) -> NodeReadyCtx {
@@ -735,7 +741,7 @@ mod tests {
                 birth: self.birth.clone(),
                 accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                 client: self.client.clone(),
-                topology_view: self.topology_view.clone(),
+                topology_view: self.topology_view.clone(), channels: self.channels.clone(),
                 cancel,
                 rafka_time: self.rafka_time.clone(),
                 member_cert: None,
@@ -1003,17 +1009,9 @@ mod tests {
             let _ = rafka_time.adopt(1_000);
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
-            let topology_view = TopologyView::join(
-                &gossip,
-                &ep,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                &expected_name.name,
-                Arc::new(rafka_time.clone()),
-                Vec::new(),
-            )
-            .await
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &expected_name.name, Arc::new(rafka_time.clone()));
+            let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).expect("join topology view");
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
             .expect("join topology view");
 
             let birth = Birth {
@@ -1034,7 +1032,7 @@ mod tests {
                         birth: birth.clone(),
                         accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client: client.clone(),
-                        topology_view: topology_view.clone(),
+                        topology_view: topology_view.clone(), channels: channels.clone(),
                         cancel: CancelToken::new(),
                         rafka_time: rafka_time.clone(),
                         member_cert: None,
@@ -1063,7 +1061,7 @@ mod tests {
                         birth: birth.clone(),
                         accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client: client.clone(),
-                        topology_view: topology_view.clone(),
+                        topology_view: topology_view.clone(), channels: channels.clone(),
                         cancel: CancelToken::new(),
                         rafka_time: rafka_time.clone(),
                         member_cert: None,
@@ -1096,6 +1094,7 @@ mod tests {
                         accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client,
                         topology_view,
+                        channels,
                         cancel: cancel.clone(),
                         rafka_time,
                         member_cert: None,

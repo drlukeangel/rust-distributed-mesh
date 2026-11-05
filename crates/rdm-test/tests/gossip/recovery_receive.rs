@@ -3,7 +3,6 @@ use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId, PrimaryRole, Primary};
 use rdm_gossip::location::learn_addresses;
-use rdm_gossip::channel::mesh_channel;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::status::StatusEvent;
@@ -50,7 +49,9 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let publisher=PublisherId::from(&own.node);
         let author=rdm_gossip::envelope::Birth::publisher(&fabric,&publisher);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
-        let server_topology_view=TopologyView::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,own.node.node_id.as_str(),Arc::new(time.clone()),vec![]).await.unwrap();
+        let server_topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, own.node.node_id.as_str(), Arc::new(time.clone()));
+        let server_topology_view_channels = rdm_gossip::channel::Channels::new(&server_gossip, &server_ep, &server_topology_view).unwrap();
+        server_topology_view_channels.join(rdm_gossip::channel::ChannelId::mesh(server_topology_view.fabric_id(), server_topology_view.mesh_id()), vec![]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());
         let rpc=rdm_node::topology_read::serve(ServerBuilder::new(),slot.clone()).build(ServedBirth{node_id:own.node.node_id.to_string(),incarnation:own.node.incarnation.to_string()}).unwrap();
         let _server_router=iroh::protocol::Router::builder(server_ep.clone()).accept(iroh_gossip::ALPN,server_gossip.clone()).accept(rdm_transport::ALPN,rpc).spawn();
@@ -59,8 +60,10 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let addr=iroh::EndpointAddr::new(server_ep.id()).with_ip_addr(server_addr);
         learn_addresses(&receiver_ep,&[addr.clone()]).unwrap();
         learn_addresses(&server_ep,&[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap())]).unwrap();
-        let mut subscription = server_gossip.subscribe(mesh_channel(&fabric,&mesh),vec![]).await.unwrap();
-        let receiver=TopologyView::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,receiver_id.as_str(),rdm_transport::clock::os_clock(),vec![addr]).await.unwrap();
+        let mut subscription = server_gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(),vec![]).await.unwrap();
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5),subscription.joined()).await.unwrap().unwrap();
         let (sender,_rx)= subscription.split();
         let (restarted,started,deleted,rpc_primary)=(birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 2),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 3),birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", 4));
@@ -68,7 +71,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         // The version the read serves carries the `node` type primary record its publisher put in it:
         // a read serves a version's content as published, never records taken since (gossip.md §3.1).
         let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..rpc_primary.clone()}];
-        assert!(matches!(server_topology_view.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],deleted:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
+        assert!(matches!(server_topology_view_channels.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],deleted:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
         let primary_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
         for (role,d) in [(PrimaryRole::MeshPrimary,&own),(PrimaryRole::FabricPrimary,&own),(PrimaryRole::NodePrimary("node".into()),&rpc_primary)] {server_topology_view.primaries().take(role,&primary_of(d,10));}
         let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyService::new(server_topology_view.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
@@ -80,7 +83,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{ mesh: own.node.mesh.clone(), r#type: own.node.r#type.clone(),node_id:own.node.node_id.clone(),path:own.node.path.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
         let client=NodeRpcClient::new(receiver_ep.clone(),resolver);
-        let read=rdm_node::topology_read::get_topology(&client,&NodeTarget::ExactNode(own.node.node_id.clone()),"mesh1",&receiver,None,None).await.unwrap();
+        let read=rdm_node::topology_read::get_topology(&client,&NodeTarget::ExactNode(own.node.node_id.clone()),"mesh1",&receiver_channels,None,None).await.unwrap();
         assert!(read.installed.iter().any(|s|s.mesh=="mesh1"&&s.topology_version==100));
         assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
         assert!(receiver.digest_view.in_flight().is_empty(),"the read installs the operations' completion/later lifecycle evidence");
@@ -115,7 +118,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
             assert_eq!(receiver.primaries().mesh("mesh1"),Some(primary_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(primary_of(&own,10)));
             assert_eq!((*births.borrow(),*changes.borrow(),*overlays.borrow(),*roles.borrow()),counts);
             assert!(receiver.digest_view.in_flight().is_empty());assert!(receiver.digest_view.is_deleted(deleted.node.node_id.as_str()));assert!(receiver.digest_view.get(deleted.node.node_id.as_str()).is_none());
-            assert!(receiver.desynced_sources().is_empty());assert!(receiver.location_view().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
+            assert!(receiver.desynced_sources().is_empty());assert!(receiver_channels.location_view().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
         }
         server_ep.close().await;receiver_ep.close().await;
         }.instrument(root).await;

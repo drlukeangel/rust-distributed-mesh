@@ -55,17 +55,9 @@ mod tests {
             let server_gossip = iroh_gossip::net::Gossip::builder().spawn(server_ep.clone());
             let server_time = rdm_transport::clock::RafkaTime::unadopted();
             server_time.adopt(7_500_000);
-            let server_view = TopologyView::join(
-                &server_gossip,
-                &server_ep,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                "mesh1.node-admin.1",
-                Arc::new(server_time.clone()),
-                Vec::new(),
-            )
-            .await
+            let server_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, "mesh1.node-admin.1", Arc::new(server_time.clone()));
+            let server_view_channels = rdm_gossip::channel::Channels::new(&server_gossip, &server_ep, &server_view).expect("join server topology view");
+            server_view_channels.join(rdm_gossip::channel::ChannelId::mesh(server_view.fabric_id(), server_view.mesh_id()), Vec::new()).await
             .expect("join server topology view");
 
             let caller_ep = rdm_transport::endpoint::bind(
@@ -76,17 +68,9 @@ mod tests {
             .expect("bind caller ep");
             let caller_gossip = iroh_gossip::net::Gossip::builder().spawn(caller_ep.clone());
             let caller_time = rdm_transport::clock::RafkaTime::unadopted();
-            let caller_view = TopologyView::join(
-                &caller_gossip,
-                &caller_ep,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                "mesh1.node.1",
-                Arc::new(caller_time.clone()),
-                Vec::new(),
-            )
-            .await
+            let caller_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, "mesh1.node.1", Arc::new(caller_time.clone()));
+            let caller_view_channels = rdm_gossip::channel::Channels::new(&caller_gossip, &caller_ep, &caller_view).expect("join caller topology view");
+            caller_view_channels.join(rdm_gossip::channel::ChannelId::mesh(caller_view.fabric_id(), caller_view.mesh_id()), Vec::new()).await
             .expect("join caller topology view");
 
             let server_node_id = NodeId::mint();
@@ -147,7 +131,7 @@ mod tests {
                 else {
                     unreachable!()
                 };
-                let taken = server_view.take_read_chunk(
+                let taken = server_view_channels.take_read_chunk(
                     Chunk {
                         mesh,
                         publisher,
@@ -244,7 +228,7 @@ mod tests {
             let target = NodeTarget::ExactNode(server_node_id.clone());
 
             // 1. Full read installs mesh1 snapshot, carries mesh2 stored map, installs own_row at revision 4, and serves rafka-time.
-            let read = get_topology(&client, &target, "mesh1", &caller_view, None, None)
+            let read = get_topology(&client, &target, "mesh1", &caller_view_channels, None, None)
                 .await
                 .expect("get_topology succeeds");
             assert_eq!(read.installed.len(), 1);
@@ -272,7 +256,7 @@ mod tests {
                 &client,
                 &target,
                 "mesh1",
-                &caller_view,
+                &caller_view_channels,
                 Some("mesh1"),
                 Some(SourceVersion {
                     publisher: pub_id,

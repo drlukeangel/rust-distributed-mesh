@@ -2286,7 +2286,9 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
@@ -2436,7 +2438,9 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
@@ -2504,7 +2508,9 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let digest_view = topology_view.digest_view.clone();
         let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;
@@ -2697,7 +2703,9 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let digest_view = topology_view.digest_view.clone();
         let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;

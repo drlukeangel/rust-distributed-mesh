@@ -285,8 +285,10 @@ mod tests {
             let configs = crate::node_config::NodeConfigs::new(client);
             let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let snapshot = topology.read().await.clone();
-            let channels = rdm_gossip::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-            configs.uses_records(Arc::new(crate::storage::MemoryNodesStorage::default()), || "memory".into(), channels);
+            let topology_view = rdm_gossip::topology::TopologyView::new(&snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock());
+            let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
+            configs.uses_records(Arc::new(crate::storage::MemoryNodesStorage::default()), || "memory".into(), topology_view);
             configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("status-own")).unwrap(), (None, None)).await.unwrap();
             let _ = service.configs.set(Arc::new(configs));
         }

@@ -39,6 +39,7 @@ use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
 use crate::wire::JoinAnswer;
 use rdm_core::MeshDigest;
+use rdm_gossip::channel::Channels;
 use rdm_gossip::topology::TopologyView;
 use rdm_transport::{CancelToken, NodeRpcClient, NodeTarget};
 use std::future::Future;
@@ -237,7 +238,7 @@ pub struct HookParts {
 pub trait AfterHook: Send + 'static {
     /// The topology step's read is installed: the kind takes what it reaches its mesh through (its
     /// gossip peers). Runs inside the topology step's span.
-    async fn topology_installed(&mut self, topology_view: &TopologyView, read: &TopologyRead);
+    async fn topology_installed(&mut self, channels: &Channels, read: &TopologyRead);
 
     /// The topology step is about to make its read of `primary`: the kind may wait here before the read is
     /// made. Runs inside the topology step's span. A kind with nothing to wait on makes the read at once.
@@ -289,7 +290,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
     /// state (a node-admin records the Build floor here, at every start), brings up what it serves
     /// while its hook runs (it is Pending) and hands the hook's parts. `through` is the authority the
     /// join reached and `joined` its answer (both `None` with no authority).
-    async fn joined(&mut self, topology_view: &TopologyView, through: Option<&JoinThrough>, joined: Option<&JoinAnswer>) -> Result<HookParts, Self::Error>;
+    async fn joined(&mut self, channels: &Channels, through: Option<&JoinThrough>, joined: Option<&JoinAnswer>) -> Result<HookParts, Self::Error>;
 
     /// The hook of a [`HookRuns::Spawned`] start, and the steps after it, run in `task`.
     async fn hook_started(&mut self, task: tokio::task::JoinHandle<()>) -> Result<(), Self::Error> {
@@ -309,7 +310,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     //    channel alone.
     // After a stop, the start's reads go to the admin that commanded it last (node-start.md step 2).
     let mut commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>> = None;
-    let (through, joined, topology_view) = match node.joining() {
+    let (through, joined, channels) = match node.joining() {
         Joining::AcceptingPrimary { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_join_to().await?;
@@ -327,7 +328,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
                 JoinTo::Commander(c) => Some(c.clone()),
                 JoinTo::Launcher { .. } => None,
             };
-            (Ok((joined.through, label)), Some(joined.answer), joined.topology_view)
+            (Ok((joined.through, label)), Some(joined.answer), joined.channels)
         }
         Joining::None(why) => {
             let channel = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-joined", node_path = %path.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
@@ -335,7 +336,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         }
     };
     let member_cert = joined.as_ref().map(|a| a.control.member_cert.clone());
-    let parts = node.joined(&topology_view, through.as_ref().ok().map(|(t, _)| t), joined.as_ref()).await?;
+    let parts = node.joined(&channels, through.as_ref().ok().map(|(t, _)| t), joined.as_ref()).await?;
     // 3. The hook, with no topology read.
     let accepting_primary = match &through {
         Ok((t, _)) => AcceptingPrimarySource::Accepted(AcceptingPrimary { node_id: t.node_id.clone(), endpoint: t.endpoint, target: t.target.clone() }),
@@ -345,11 +346,11 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let inherited = matches!(kind, StartKind::AfterStop)
         || matches!(accepting_primary, AcceptingPrimarySource::None(NoAcceptingPrimary::InheritedRoot | NoAcceptingPrimary::Recovery))
         || std::env::var("RDM_INHERITED_DATA_DIR").ok().as_deref() == Some("1");
-    let ctx = NodeReadyCtx { start_kind: kind, birth, accepting_primary, client: client.clone(), topology_view: topology_view.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
+    let ctx = NodeReadyCtx { start_kind: kind, birth, accepting_primary, client: client.clone(), topology_view: channels.topology_view().clone(), channels: channels.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
     let driver = node_hooks.driver(ctx, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.
-    let rest = AfterTheHook { root, name: name.clone(), birth_path: path.path.clone(), birth_name: path.name.clone(), node_id, client, rafka_time, topology_view, through: through.ok(), commander, after };
+    let rest = AfterTheHook { root, name: name.clone(), birth_path: path.path.clone(), birth_name: path.name.clone(), node_id, client, rafka_time, channels, through: through.ok(), commander, after };
     match runs {
         HookRuns::Spawned { spawn } => {
             let task = spawn(Box::pin(async move {
@@ -423,7 +424,7 @@ struct AfterTheHook {
     node_id: NodeId,
     client: Arc<NodeRpcClient>,
     rafka_time: rdm_transport::clock::RafkaTime,
-    topology_view: TopologyView,
+    channels: Channels,
     /// The authority the join reached, and what the step spans name it; `None` with no authority.
     through: Option<(JoinThrough, String)>,
     /// After a stop, the endpoint of the call that commanded the start last: the topology read goes
@@ -470,7 +471,8 @@ impl AfterTheHook {
     }
 
     async fn steps(self, driver: Option<Arc<HookDriver>>) -> Result<(), (StartFailed, Box<dyn AfterHook>)> {
-        let Self { root, name, birth_path, birth_name, node_id, client, rafka_time, topology_view, through, mut commander, mut after } = self;
+        let Self { root, name, birth_path, birth_name, node_id, client, rafka_time, channels, through, mut commander, mut after } = self;
+        let topology_view = channels.topology_view().clone();
         let path = rdm_core::PathName { path: birth_path, name: birth_name };
         // 4. The Build facts the authority's floor requires, on every start: before any topology read.
         let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-build-floor", node_path = %path.path, node_name = %name, node_id = %node_id, owed = tracing::field::Empty, blockers = tracing::field::Empty, outcome = tracing::field::Empty);
@@ -488,8 +490,8 @@ impl AfterTheHook {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, rafka_time = tracing::field::Empty);
             after.before_topology_read(&t.node_id).instrument(step.clone()).await;
             let read = |target: NodeTarget| {
-                let (client, topology_view, mesh) = (&client, &topology_view, topology_view.mesh_name());
-                async move { crate::topology_read::get_topology(client, &target, mesh, topology_view, None, None).await }
+                let (client, channels, mesh) = (&client, &channels, topology_view.mesh_name());
+                async move { crate::topology_read::get_topology(client, &target, mesh, channels, None, None).await }
             };
             let taken = match (commander.as_mut(), own_mesh_primary(&topology_view)) {
                 (None, Some((target, who))) => read(target).instrument(step.clone()).await.map(|r| (r, who.clone())).map_err(|e| (e.to_string(), who)),
@@ -500,7 +502,7 @@ impl AfterTheHook {
                 Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
             };
             step.record("served_by", tracing::field::display(&who));
-            after.topology_installed(&topology_view, &read).instrument(step.clone()).await;
+            after.topology_installed(&channels, &read).instrument(step.clone()).await;
             match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &topology_view, node_id.as_str(), topology_view.mesh_name(), &node_id, &who)) {
                 Ok(_) => {
                     step.record("rafka_time", "adopted");
@@ -526,7 +528,7 @@ impl AfterTheHook {
 
 /// The channel step of a first start's plug: given the step's span and the join answer, it enters
 /// the channel and answers the topology view and the plug's node.joined step.
-pub type EnterSeam<E> = Box<dyn FnOnce(tracing::Span, Option<JoinAnswer>) -> BoxFut<Result<(TopologyView, JoinedSeam<E>), E>> + Send>;
+pub type EnterSeam<E> = Box<dyn FnOnce(tracing::Span, Option<JoinAnswer>) -> BoxFut<Result<(Channels, JoinedSeam<E>), E>> + Send>;
 
 /// The node.joined step of a first start's plug: what the node brings up while its hook runs,
 /// answering the hook's parts and, for a spawned hook, what the start does once the hook's task is
@@ -569,10 +571,10 @@ impl<E: From<StartFailed> + Send + 'static> super::node_mesh_join::MeshJoin for 
         self.digest.clone().expect("a first start that joins presents a digest")
     }
 
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<TopologyView, E> {
-        let (topology_view, next) = (self.enter.take().expect("the channel is entered once"))(step, joined.cloned()).await?;
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Channels, E> {
+        let (channels, next) = (self.enter.take().expect("the channel is entered once"))(step, joined.cloned()).await?;
         self.joined = Some(next);
-        Ok(topology_view)
+        Ok(channels)
     }
 }
 
@@ -595,7 +597,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
         (self.resolve.take().expect("the authority is resolved once"))()
     }
 
-    async fn joined(&mut self, _: &TopologyView, through: Option<&JoinThrough>, _: Option<&JoinAnswer>) -> Result<HookParts, E> {
+    async fn joined(&mut self, _: &Channels, through: Option<&JoinThrough>, _: Option<&JoinAnswer>) -> Result<HookParts, E> {
         let (parts, started) = (self.joined.take().expect("node.joined is taken once"))(through.cloned()).await?;
         self.hook_started = started;
         Ok(parts)
@@ -624,7 +626,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AfterHook for RecordedAfter {
-        async fn topology_installed(&mut self, _: &TopologyView, _: &TopologyRead) {
+        async fn topology_installed(&mut self, _: &Channels, _: &TopologyRead) {
             self.steps.lock().unwrap().push("topology_installed");
         }
 
@@ -710,25 +712,16 @@ mod tests {
             &mut self,
             _step: tracing::Span,
             _joined: Option<&JoinAnswer>,
-        ) -> Result<TopologyView, StartFailed> {
+        ) -> Result<rdm_gossip::channel::Channels, StartFailed> {
             self.steps.lock().unwrap().push("enter_channel");
             let ep = self.starting.client.endpoint().clone();
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-            TopologyView::join(
-                &g,
-                &ep,
-                &FabricId::mint(),
-                "mesh1",
-                &MeshId::mint(),
-                &self.starting.name,
-                Arc::new(self.starting.rafka_time.clone()),
-                Vec::new(),
-            )
-            .await
-            .map_err(|e| StartFailed {
-                step: "node.channel",
-                reason: e.to_string(),
-            })
+            let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
+            let topology_view = TopologyView::new(&fabric_id, "mesh1", &mesh_id, &self.starting.name, Arc::new(self.starting.rafka_time.clone()));
+            let failed = |e: anyhow::Error| StartFailed { step: "node.channel", reason: e.to_string() };
+            let channels = rdm_gossip::channel::Channels::new(&g, &ep, &topology_view).map_err(failed)?;
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.map_err(failed)?;
+            Ok(channels)
         }
     }
 
@@ -755,7 +748,7 @@ mod tests {
 
         async fn joined(
             &mut self,
-            topology_view: &TopologyView,
+            _: &rdm_gossip::channel::Channels,
             _: Option<&JoinThrough>,
             _: Option<&JoinAnswer>,
         ) -> Result<HookParts, StartFailed> {

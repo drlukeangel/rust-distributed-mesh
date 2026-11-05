@@ -281,7 +281,13 @@ impl rdm_node::node_hooks::PreNodeReady for JoinsAppChannel {
             let peers = app_channel_peers(ctx);
             let named: Vec<String> = peers.iter().map(|p| p.0.clone()).collect();
             let span = tracing::info_span!("rdm.testkit.channel.update.via-join", node_id = %ctx.birth.node_id, node_path = %ctx.birth.path, node_name = %ctx.birth.name, channel = APP_CHANNEL, peers = %named.join(","), "otel.kind" = "internal");
-            let joined = ctx.topology_view.join_channel(APP_CHANNEL, &peers).instrument(span.clone()).await;
+            let joined = async {
+                let addrs = peers.iter().map(rdm_gossip::channel::peer).collect::<anyhow::Result<Vec<_>>>()?;
+                ctx.channels.join(rdm_gossip::channel::ChannelId::app(ctx.topology_view.fabric_id(), APP_CHANNEL), addrs).await?;
+                ctx.channels.app(APP_CHANNEL).await.map_err(|e| anyhow::anyhow!("{e}"))
+            }
+            .instrument(span.clone())
+            .await;
             match joined {
                 Ok(channel) => {
                     let (publisher, mut subscriber) = channel.split();

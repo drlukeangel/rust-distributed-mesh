@@ -28,9 +28,13 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let (sender_id, receiver_id, target_id) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
-        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        crate::declare_gossip_probe(&sender);
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock());
+        let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
+        sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
+        crate::declare_gossip_probe(&sender_channels);
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "deletion-build".into(), operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(receiver.digest_view.record(MeshDigest { 
             fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
@@ -42,13 +46,13 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender_channels, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["taken"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("unrelated newer traffic is applied first");
-        crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
+        crate::forward_gossip_probe(&sender_channels, &Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-node-deleted" && s["attributes"]["applied"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -62,7 +66,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
             let before = *changes.borrow();
             // Different forwarding metadata reaches RDM past the transport's byte dedup;
             // the operation and exact birth remain identical.
-            crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: Some(NodeId::mint().to_string()) }).await.unwrap();
+            crate::forward_gossip_probe(&sender_channels, &Frame::NodeDeleted { op: op.clone(), forwarded_by: Some(NodeId::mint().to_string()) }).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-node-deleted").count() < 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;

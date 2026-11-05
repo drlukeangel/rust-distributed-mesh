@@ -20,7 +20,6 @@ use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rdm_core::{FabricId, MeshDigest, MeshId, NodeState};
-use rdm_gossip::channel::{backbone_channel, mesh_channel};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_client::{NodeStatus, NodeView};
@@ -91,7 +90,7 @@ impl Observer {
         let arrivals = Arc::new(tokio::sync::Notify::new());
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         let mut mesh_sender = None;
-        for (channel, channel_id) in [("backbone", backbone_channel(fabric)), ("mesh1", mesh_channel(fabric, mesh_id))] {
+        for (channel, channel_id) in [("backbone", rdm_gossip::channel::ChannelId::backbone(fabric).topic()), ("mesh1", rdm_gossip::channel::ChannelId::mesh(fabric, mesh_id).topic())] {
             let (sender, mut receiver) = gossip.subscribe(channel_id, peers.clone()).await.unwrap().split();
             if channel == "mesh1" {
                 mesh_sender = Some(sender.clone());

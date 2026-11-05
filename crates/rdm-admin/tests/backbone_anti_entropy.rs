@@ -178,8 +178,12 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         learn_addresses(&ep, &[seed.clone()]).unwrap();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(root.emitted_at_rafka_ms);
-        let observer = TopologyView::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", Arc::new(time), vec![]).await.unwrap();
-        let _observer_bb = Backbone::join(&gossip, &ep, &observer, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![seed]).await.unwrap();
+        let observer = rdm_gossip::topology::TopologyView::new(&root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", Arc::new(time));
+        let observer_channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &observer).unwrap();
+        observer_channels.join(rdm_gossip::channel::ChannelId::mesh(observer.fabric_id(), observer.mesh_id()), vec![]).await.unwrap();
+        observer_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        observer_channels.join(rdm_gossip::channel::ChannelId::backbone(observer.fabric_id()), vec![seed]).await.unwrap();
+        let _observer_bb = observer_channels.backbone().expect("the backbone is joined");
         let unheard = || observer.digest_view.mesh_unheard(&root.node.mesh, std::time::Instant::now());
         tokio::time::timeout(NEVER, async {
             while unheard().is_none() {

@@ -552,9 +552,13 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
         let mesh_id = rdm_core::MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let on_acceptor = rdm_gossip::topology::TopologyView::join(&acceptor.gossip, &acceptor.ep, &fabric, "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![]).await.unwrap();
+        let on_acceptor = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh_id, "mesh1.node.2", clock());
+        let on_acceptor_channels = rdm_gossip::channel::Channels::new(&acceptor.gossip, &acceptor.ep, &on_acceptor).unwrap();
+        on_acceptor_channels.join(rdm_gossip::channel::ChannelId::mesh(on_acceptor.fabric_id(), on_acceptor.mesh_id()), vec![]).await.unwrap();
         let seed = iroh::EndpointAddr::new(acceptor.ep.id()).with_ip_addr(acceptor.peer.resolved.transport_addr);
-        let on_dialer = rdm_gossip::topology::TopologyView::join(&dialer.gossip, &dialer.ep, &fabric, "mesh1", &mesh_id, "mesh1.node.1", clock(), vec![seed]).await.unwrap();
+        let on_dialer = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh_id, "mesh1.node.1", clock());
+        let on_dialer_channels = rdm_gossip::channel::Channels::new(&dialer.gossip, &dialer.ep, &on_dialer).unwrap();
+        on_dialer_channels.join(rdm_gossip::channel::ChannelId::mesh(on_dialer.fabric_id(), on_dialer.mesh_id()), vec![seed]).await.unwrap();
         let own = rdm_core::MeshDigest {
             fabric_id: fabric.clone(),
             node: rdm_core::MeshNode { mesh: dialer.peer.birth.mesh.clone(), r#type: dialer.peer.birth.r#type.clone(),
@@ -579,7 +583,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
             is_primary: None,
             is_fabric_primary: None,
         };
-        let publishing = on_dialer.publish_every(Duration::from_millis(100), move || own.clone());
+        let publishing = on_dialer_channels.publish_every(Duration::from_millis(100), move || own.clone());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         let mut heard = false;
         while tokio::time::Instant::now() < deadline && !heard {

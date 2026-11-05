@@ -210,6 +210,7 @@ pub struct NodePrimaryUpdateService {
     r#type: String,
     node_id: NodeId,
     incarnation: IncarnationId,
+    channels: rdm_gossip::channel::Channels,
     topology_view: TopologyView,
     client: Arc<NodeRpcClient>,
     /// What this node answered as the successor, by operation.
@@ -228,8 +229,9 @@ impl NodePrimaryUpdateService {
 impl NodePrimaryUpdateService {
     /// The service of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
     /// through `client`.
-    pub fn new(me: PathName, r#type: &str, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
-        Self { me_path: me.path.clone(), me_name: me.name.clone(), r#type: r#type.to_string(), node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
+    pub fn new(me: PathName, r#type: &str, node_id: NodeId, incarnation: IncarnationId, channels: rdm_gossip::channel::Channels, client: Arc<NodeRpcClient>) -> Self {
+        let topology_view = channels.topology_view().clone();
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), r#type: r#type.to_string(), node_id, incarnation, topology_view, channels, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
     }
 
     fn held_name(&self) -> PathName {
@@ -343,7 +345,7 @@ impl NodePrimaryUpdateService {
     /// primary records the projection carries come with it.
     async fn read_own_mesh(&self, me: &PathName, mesh: &str) {
         let Some(mp) = self.topology_view.primaries().mesh(mesh) else { return };
-        let read = crate::topology_read::get_topology(&self.client, &NodeTarget::ExactNode(mp.node_id.clone()), mesh, &self.topology_view, Some(mesh), None).await;
+        let read = crate::topology_read::get_topology(&self.client, &NodeTarget::ExactNode(mp.node_id.clone()), mesh, &self.channels, Some(mesh), None).await;
         tracing::info_span!("rdm.node_admin.primary.resolve.via-topology-read", node_path = %me.path, node_name = %me.name, mesh, mesh_primary = %mp, outcome = %read.as_ref().map(|_| "installed".to_string()).unwrap_or_else(|e| e.to_string()))
             .in_scope(|| tracing::info!("the commanded primary read its mesh-primary's topology: its own record was not held yet"));
     }

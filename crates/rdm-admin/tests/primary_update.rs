@@ -193,8 +193,12 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
-    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![]).await.unwrap();
-    let backbone = Backbone::join(&gossip, &ep, &topology_view, mesh, rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time));
+    let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+    channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
+    channels.set_publisher(&rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() });
+    channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+    let backbone = channels.backbone().expect("the backbone is joined");
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: PrimaryUpdateSlot = Arc::new(OnceLock::new());
@@ -553,7 +557,9 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
-    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![]).await.unwrap();
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time));
+    let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+    channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: rdm_admin::primary_update::NodePrimaryUpdateSlot = Arc::new(OnceLock::new());
@@ -561,7 +567,7 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { mesh: mesh.into(), r#type: "node".into(), node_id: node_id.clone(), path: path.path.clone(), name: path.name.clone(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
-    let service = Arc::new(rdm_admin::primary_update::NodePrimaryUpdateService::new(path.clone(), "node", node_id, incarnation, topology_view, client));
+    let service = Arc::new(rdm_admin::primary_update::NodePrimaryUpdateService::new(path.clone(), "node", node_id, incarnation, channels, client));
     let _ = slot.set(service.clone());
     Member { service, resolved, resolver, fabric: fabric.clone(), _router: router }
 }

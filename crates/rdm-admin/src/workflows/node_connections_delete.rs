@@ -134,17 +134,9 @@ mod tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(1_000_000);
             let gossip = iroh_gossip::net::Gossip::builder().spawn(node_ep.clone());
-            let topology_view = TopologyView::join(
-                &gossip,
-                &node_ep,
-                &fabric_id,
-                "mesh1",
-                &mesh_id,
-                &node_id.to_string(),
-                clock,
-                Vec::new(),
-            )
-            .await
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, &node_id.to_string(), clock);
+            let channels = rdm_gossip::channel::Channels::new(&gossip, &node_ep, &topology_view).expect("join topology view");
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
             .expect("join topology view");
 
             let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
@@ -183,7 +175,7 @@ mod tests {
             let status_for_get = status_cell.clone();
             let get_status = Arc::new(move || *status_for_get.lock().unwrap());
 
-            let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), node_name.clone(), "node".to_string(), node_server, control_client, resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
+            let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), node_name.clone(), "node".to_string(), node_server, control_client, resolver, channels, set_status, get_status, None, Duration::from_secs(2)));
             own.set_connections(writer.clone());
             own.set_data_plane(data_plane.clone());
 

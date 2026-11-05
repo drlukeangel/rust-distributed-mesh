@@ -106,7 +106,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let left = call(&admin, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
         assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentStopped { .. }), "a stopped node answers CurrentStopped");
-        assert_eq!(running.topology_view.neighbours(), 0, "the node left its gossip channel");
+        assert_eq!(running.channels.neighbours(), 0, "the node left its gossip channel");
         // Stopping a stopped node is done: the same receipt again.
         assert_eq!(call(&admin, &target, &stop).await, left);
 

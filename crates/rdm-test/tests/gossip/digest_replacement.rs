@@ -1,7 +1,6 @@
 //! Digest replacement: exact birth, digest_seq, and the heartbeat's wire content (never status).
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
-use rdm_gossip::channel::mesh_channel;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use std::time::Duration;
@@ -39,8 +38,10 @@ fn story(story: Story) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut subscription = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
+        let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
         let (sender, _rx) = subscription.split();
         let key = iroh::SecretKey::generate().public();
@@ -53,7 +54,7 @@ fn story(story: Story) {
                 forwarded_by: None, topology_version: 5, snapshot_id: 1, chunk_index: 0, chunk_count: 1,
                 digests: vec![digest.clone()], in_flight: vec![], deleted: vec![],
             };
-            assert!(matches!(receiver.take_read_chunk(read, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
+            assert!(matches!(receiver_channels.take_read_chunk(read, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
         } else {
             send(&sender, &receiver, digest.clone(), 1).await;
         }
@@ -69,7 +70,7 @@ fn story(story: Story) {
             Story::Duplicate => {
                 offered.status = MemberStatus::Leaving; // absent from the wire; the held status is Ready.
                 assert_eq!(Frame::Digest { digest: offered.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::Digest { digest: digest.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
-                receiver.location_view().forget(key);
+                receiver_channels.location_view().forget(key);
             }
             Story::Inconsistent => { offered.node.endpoint_id = EndpointId(other_key.to_string()); }
             Story::Newer => { offered.digest_seq = 101; offered.node.transport_addr = "127.0.0.1:12002".parse().unwrap(); offered.data_dir = Some("new=yes".into()); }
@@ -92,8 +93,8 @@ fn story(story: Story) {
         }
         assert!(receiver.digest_view.in_flight().is_empty());
         assert!(!receiver.digest_view.is_deleted(node_id.as_str()));
-        if matches!(story, Story::Duplicate) { assert!(receiver.location_view().addrs(key).is_empty(), "a duplicate cannot fill a forgotten address"); }
-        if matches!(story, Story::Inconsistent) { assert!(receiver.location_view().addrs(other_key).is_empty(), "an inconsistent digest cannot install its offered endpoint"); }
+        if matches!(story, Story::Duplicate) { assert!(receiver_channels.location_view().addrs(key).is_empty(), "a duplicate cannot fill a forgotten address"); }
+        if matches!(story, Story::Inconsistent) { assert!(receiver_channels.location_view().addrs(other_key).is_empty(), "an inconsistent digest cannot install its offered endpoint"); }
         sender_ep.close().await; receiver_ep.close().await;
         (node_id, incarnation)
     });

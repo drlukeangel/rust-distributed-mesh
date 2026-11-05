@@ -292,6 +292,7 @@ pub(crate) struct AdminSession {
     pub(crate) fabric_id: FabricId,
     pub(crate) mesh_id: MeshId,
     pub(crate) topology_view: TopologyView,
+    pub(crate) channels: rdm_gossip::channel::Channels,
     pub(crate) backbone: Backbone,
     pub(crate) client: Arc<rdm_transport::NodeRpcClient>,
     pub(crate) server: rdm_transport::NodeRpcServer,
@@ -336,14 +337,14 @@ impl crate::node_self::Session for AdminSession {
 
     async fn leave_channels(&self) {
         self.node_hooks.gate().close();
-        crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
+        crate::node_self::leave_channels(&self.channels, Some(&self.backbone), &self.node_id).await;
     }
 
     async fn cut(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
         // The stop held this admin's tasks before it (`hold_tasks`): nothing it was doing goes out on
         // the connections cut below.
         let turns_in_progress = self.gate.state().borrow().in_progress();
-        let neighbours = self.topology_view.neighbours();
+        let neighbours = self.channels.neighbours();
         self.leave_channels().await;
         let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connection.delete");
         let accepted = self.server.close_connections_except(spare, "node.connection.delete");
@@ -374,7 +375,7 @@ impl crate::node_self::Session for AdminSession {
 impl AdminSession {
     /// This node-admin's channel entry inside `node.mesh.join`, for its start and its standalone join
     /// alike: its mesh, then the backbone.
-    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>) -> TopologyView {
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>) -> rdm_gossip::channel::Channels {
         let s = self;
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
@@ -392,7 +393,7 @@ impl AdminSession {
             // Only now are its connections recorded: the join's names the handed name.
             drop(rows.take());
         }
-        s.topology_view.start().await;
+        s.channels.start().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %s.topology_view.node_name(),
@@ -413,7 +414,7 @@ impl AdminSession {
         )
         .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
-        s.topology_view.clone()
+        s.channels.clone()
     }
 }
 
@@ -446,7 +447,7 @@ impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
         self.session.digest.lock().unwrap().clone()
     }
 
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<TopologyView, crate::node_self::StartFailed> {
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         Ok(self.session.enter_mesh(step, joined, &mut self.rows).await)
     }
 }
@@ -472,7 +473,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         Some(self.operation.operation.clone())
     }
 
-    async fn joined(&mut self, topology_view: &TopologyView, _: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
+    async fn joined(&mut self, _: &rdm_gossip::channel::Channels, _: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.digest.lock().unwrap().node.location();
@@ -511,7 +512,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 progress: None,
                 held: Some(s.local.clone()),
             },
-            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), node_id: s.node_id.clone(), path: me.path.clone(), name: me.name.clone()}),
+            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { channels: s.channels.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), node_id: s.node_id.clone(), path: me.path.clone(), name: me.name.clone()}),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::node_hooks::Birth { path: me.path.clone(), name: me.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), r#type: "node-admin".into() },
@@ -530,7 +531,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
 /// step after its hook leaves the birth off its channels, Pending, for its authority's next command
 /// (node-recovery.md step 2), as a failure inside the start's own task does.
 pub(crate) struct AdminLeave {
-    topology_view: TopologyView,
+    channels: rdm_gossip::channel::Channels,
     backbone: Backbone,
     node_hooks: crate::node_hooks::NodeHooks,
     node_id: NodeId,
@@ -542,7 +543,7 @@ pub(crate) struct AdminLeave {
 impl AdminLeave {
     async fn run(self, step: &str, reason: &str) {
         self.node_hooks.gate().close();
-        crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
+        crate::node_self::leave_channels(&self.channels, Some(&self.backbone), &self.node_id).await;
         tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node_path = %self.path, node_name = %self.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));
     }
@@ -575,7 +576,8 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
         }
     }
 
-    async fn topology_installed(&mut self, topology_view: &TopologyView, read: &crate::topology_read::TopologyRead) {
+    async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+        let topology_view = channels.topology_view();
         let mesh_peers: Vec<EndpointAddr> = read
             .installed
             .iter()
@@ -583,7 +585,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == topology_view.mesh_name())
             .filter_map(rdm_gossip::location::gossip_addr)
             .collect();
-        let _ = topology_view.join_peers_as("admin.session.mesh", mesh_peers).await;
+        let _ = channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await;
     }
 
     async fn floor(&mut self, step: &tracing::Span) {
@@ -736,7 +738,8 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         }
     }
 
-    async fn topology_installed(&mut self, topology_view: &TopologyView, read: &crate::topology_read::TopologyRead) {
+    async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+        let topology_view = channels.topology_view();
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();
         for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.me_id) {
@@ -749,8 +752,8 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
                 }
             }
         }
-        let _ = topology_view.join_peers_as("admin.session.rejoin", mesh_peers).await;
-        self.backbone.join_admins(admins).await;
+        let _ = channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await;
+        let _ = channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), admins).await;
         // The maker's topology: when the own mesh already has nodes, this admin is entering an existing
         // mesh (recovery); a mesh's first birth finds none. A maker that holds no snapshot of this mesh
         // answers from its stored map: births to reach a local node with, never installed.

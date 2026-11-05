@@ -91,7 +91,7 @@ fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
 
 /// Every chunk of one read, taken by `reader` as the joiner takes a read from its own mesh: the last
 /// answer.
-fn take_read(reader: &TopologyView, s: &SourceSnapshot, snapshot_id: u64) -> Taken {
+fn take_read(reader: &rdm_gossip::channel::Channels, s: &SourceSnapshot, snapshot_id: u64) -> Taken {
     read_chunks(s, snapshot_id).into_iter().map(|c| reader.take_read_chunk(c, "mesh1")).last().expect("a snapshot has at least one chunk")
 }
 
@@ -111,16 +111,22 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let (p_node, r_node) = (node().await, node().await);
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", clock(), vec![]).await.unwrap();
-        let reader = TopologyView::join(&r_node.gossip, &r_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.3", clock(), vec![]).await.unwrap();
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", clock());
+        let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
+        p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
+        let reader = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.3", clock());
+        let reader_channels = rdm_gossip::channel::Channels::new(&r_node.gossip, &r_node.ep, &reader).unwrap();
+        reader_channels.join(rdm_gossip::channel::ChannelId::mesh(reader.fabric_id(), reader.mesh_id()), vec![]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });
+        p_channels.join(rdm_gossip::channel::ChannelId::backbone(p.fabric_id()), vec![]).await.unwrap();
+        let bb = p_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
         let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
         let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
-        p.publish(&p_digest).await.unwrap();
+        p_channels.publish(&p_digest).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
         assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &one, &one_birth, MemberStatus::Ready, 1, 41_111)));
         assert!(p.digest_view.started(&one, &one_birth, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"));
@@ -132,7 +138,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         assert_eq!(published.publisher, publisher);
         let n = published.topology_version;
         assert!(n >= 1, "the publication published a version: {n}");
-        assert!(matches!(take_read(&reader, &published, 1), Taken::Installed(_)), "the joiner installs version {n}");
+        assert!(matches!(take_read(&reader_channels, &published, 1), Taken::Installed(_)), "the joiner installs version {n}");
 
         // A birth joins the view: a material change no publication has published yet.
         let (two, two_birth) = (NodeId::mint(), IncarnationId::mint());
@@ -142,7 +148,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let served = of(p.held_topology(&own()), "mesh1");
         let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>();
         assert_eq!((served.publisher.clone(), served.topology_version), (publisher.clone(), n), "the read serves the version its content was published at");
-        let again = take_read(&reader, &served, 2);
+        let again = take_read(&reader_channels, &served, 2);
         assert!(!matches!(again, Taken::Refused(rdm_gossip::snapshot::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
         assert!(served.digests.iter().all(|d| d.node.node_id != two), "the read serves no member under version {n} that version {n} does not carry: {:?}", names(&served));
         assert_eq!(served.full(), published.full(), "the read serves the version-{n} publication as published: {:?} against {:?}", names(&served), names(&published));
@@ -152,7 +158,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let next = of(p.held_topology(&own()), "mesh1");
         assert!(next.topology_version > n, "the change was material: the publication bumped the version ({} after {n})", next.topology_version);
         assert!(next.digests.iter().any(|d| d.node.node_id == two), "the read serves the new member at the version that carries it: {:?}", names(&next));
-        assert!(matches!(take_read(&reader, &next, 3), Taken::Installed(_)), "the joiner installs version {}", next.topology_version);
+        assert!(matches!(take_read(&reader_channels, &next, 3), Taken::Installed(_)), "the joiner installs version {}", next.topology_version);
 
         let spans: Vec<Value> = capture.spans().expect("the cell's spans reached its evidence file");
         let refused: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.reject.via-inconsistent").collect();
@@ -175,11 +181,15 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
     capture.run(4, async {
         let p_node = node().await;
         let mesh_id = MeshId::mint();
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
+        p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });
+        p_channels.join(rdm_gossip::channel::ChannelId::backbone(p.fabric_id()), vec![]).await.unwrap();
+        let bb = p_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
-        p.publish(&digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
+        p_channels.publish(&digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
         assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &one, &one_birth, MemberStatus::Ready, 1, 41_211)));
         let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;

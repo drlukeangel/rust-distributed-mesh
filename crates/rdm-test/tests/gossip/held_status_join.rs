@@ -22,7 +22,6 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::Event;
 use rdm_core::{FabricId, MeshId};
 use rdm_client::NodeView;
-use rdm_gossip::channel::{backbone_channel, mesh_channel};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_test::estate::{named, Estate, Owner};
@@ -85,7 +84,7 @@ impl Observer {
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
         let arrivals = Arc::new(tokio::sync::Notify::new());
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
-        for (channel, channel_id) in [("backbone", backbone_channel(fabric)), ("mesh1", mesh_channel(fabric, mesh_id))] {
+        for (channel, channel_id) in [("backbone", rdm_gossip::channel::ChannelId::backbone(fabric).topic()), ("mesh1", rdm_gossip::channel::ChannelId::mesh(fabric, mesh_id).topic())] {
             let (_sender, mut receiver) = gossip.subscribe(channel_id, peers.clone()).await.unwrap().split();
             let (seen, arrivals) = (seen.clone(), arrivals.clone());
             tokio::spawn(async move {

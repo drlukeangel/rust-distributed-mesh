@@ -84,10 +84,18 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let src_addr = addr_of(&src_node.ep);
         learn_addresses(&peer_node.ep, &[src_addr.clone()]).unwrap();
         let fab = fabric();
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let peer_m = TopologyView::join(&peer_node.gossip, &peer_node.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let peer_bb = Backbone::join(&peer_node.gossip, &peer_node.ep, &peer_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr]).await.unwrap();
+        let src_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", rdm_transport::clock::os_clock());
+        let src_m_channels = rdm_gossip::channel::Channels::new(&src_node.gossip, &src_node.ep, &src_m).unwrap();
+        src_m_channels.join(rdm_gossip::channel::ChannelId::mesh(src_m.fabric_id(), src_m.mesh_id()), vec![]).await.unwrap();
+        let peer_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let peer_m_channels = rdm_gossip::channel::Channels::new(&peer_node.gossip, &peer_node.ep, &peer_m).unwrap();
+        peer_m_channels.join(rdm_gossip::channel::ChannelId::mesh(peer_m.fabric_id(), peer_m.mesh_id()), vec![]).await.unwrap();
+        src_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        src_m_channels.join(rdm_gossip::channel::ChannelId::backbone(src_m.fabric_id()), vec![]).await.unwrap();
+        let src_bb = src_m_channels.backbone().expect("the backbone is joined");
+        peer_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        peer_m_channels.join(rdm_gossip::channel::ChannelId::backbone(peer_m.fabric_id()), vec![src_addr]).await.unwrap();
+        let peer_bb = peer_m_channels.backbone().expect("the backbone is joined");
         src_bb.set_mesh_primary(true);
         peer_bb.set_mesh_primary(true);
 

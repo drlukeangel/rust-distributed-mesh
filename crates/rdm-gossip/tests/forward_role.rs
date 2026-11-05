@@ -81,14 +81,24 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.1", clock(), vec![]).await.unwrap();
-        let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.2", clock(), vec![]).await.unwrap();
-        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.node.1", clock(), vec![admin_addr.clone()]).await.unwrap();
-        let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
+        let src_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node-admin.1", clock());
+        let src_m_channels = rdm_gossip::channel::Channels::new(&src.gossip, &src.ep, &src_m).unwrap();
+        src_m_channels.join(rdm_gossip::channel::ChannelId::mesh(src_m.fabric_id(), src_m.mesh_id()), vec![]).await.unwrap();
+        let admin_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1, "mesh1.node-admin.2", clock());
+        let admin_m_channels = rdm_gossip::channel::Channels::new(&admin.gossip, &admin.ep, &admin_m).unwrap();
+        admin_m_channels.join(rdm_gossip::channel::ChannelId::mesh(admin_m.fabric_id(), admin_m.mesh_id()), vec![]).await.unwrap();
+        let rpc_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1, "mesh1.node.1", clock());
+        let rpc_m_channels = rdm_gossip::channel::Channels::new(&rpc.gossip, &rpc.ep, &rpc_m).unwrap();
+        rpc_m_channels.join(rdm_gossip::channel::ChannelId::mesh(rpc_m.fabric_id(), rpc_m.mesh_id()), vec![admin_addr.clone()]).await.unwrap();
+        src_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        src_m_channels.join(rdm_gossip::channel::ChannelId::backbone(src_m.fabric_id()), vec![]).await.unwrap();
+        let src_bb = src_m_channels.backbone().expect("the backbone is joined");
+        admin_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        admin_m_channels.join(rdm_gossip::channel::ChannelId::backbone(admin_m.fabric_id()), vec![src_addr.clone()]).await.unwrap();
+        let admin_bb = admin_m_channels.backbone().expect("the backbone is joined");
         src_bb.set_mesh_primary(true);
         assert!(!admin_bb.is_mesh_primary(), "mesh1.node-admin.2 holds no role");
-        rpc_m.wait_for_neighbour().await;
+        rpc_m_channels.wait_for_neighbour().await;
 
         let ids: Vec<(NodeId, IncarnationId)> = (0..3).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
         let at = |seq: u64, moved: bool| -> Vec<MeshDigest> {

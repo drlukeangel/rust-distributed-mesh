@@ -998,7 +998,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let enter: crate::workflows::node_start::EnterSeam<String> = {
         let out = out.clone();
         let own_issuer = issuer.clone();
-        Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(TopologyView, crate::workflows::node_start::JoinedSeam<String>), String>> {
+        Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(rdm_gossip::channel::Channels, crate::workflows::node_start::JoinedSeam<String>), String>> {
             Box::pin(async move {
                 // The member cert the launching admin's signer issued for this birth, carried by the join that
                 // admitted it; none yet for a birth that made no JoinNode (its own maker issues its own below).
@@ -1031,10 +1031,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // gossip, and the view keeps the newer copy.
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seed_addrs.len());
-                let topology_view = TopologyView::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone(), seed_addrs.clone())
-                    .await
+                let topology_view = rdm_gossip::topology::TopologyView::new(&cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone());
+                let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).map_err(|e| format!("topology view: {e}"))?;
+                channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seed_addrs.clone()).await
                     .map_err(|e| format!("topology view: {e}"))?;
-                topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
+                channels.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
                 // The name this admin holds is its topology view's (R12): its connections rows name it as their
                 // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
                 {
@@ -1115,9 +1116,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     }
                     other => other,
                 };
-                let backbone = Backbone::join(&gossip, &endpoint, &topology_view, &cfg.mesh, rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, seed_addrs.clone())
-                    .await
+                channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), seed_addrs.clone()).await
                     .map_err(|e| format!("backbone: {e}"))?;
+                let backbone = channels.backbone().expect("the backbone is joined");
                 tracing::info_span!(
                     parent: &boot,
                     "rdm.node.mesh.update.via-joined",
@@ -1154,7 +1155,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // channel; it tops up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each
                 // such mesh, as every node does. Held behind the gate: a stopped admin tops up nothing, and a
                 // gap signalled while it was stopped is topped up once it runs again.
-                tasks_early.push(stop_gate.spawn(topology_view.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
+                tasks_early.push(stop_gate.spawn(channels.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
                 // The recorded primaries: an election input this admin enters with (elections §3), its own
                 // included. A launched admin reads no store (Q227): its mesh-primary's hydration sync serves
                 // them (`Primaries`, node.topology.get), a lost birth's record marked gone. A start with no
@@ -1194,7 +1195,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // what this admin applied when it becomes its mesh's primary.
                 records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
                 records.set_digest_view(topology_view.digest_view.clone());
-                let builds = Arc::new(FabricBuildStateAdapter::new(journal.clone(), &topology_view.location_view(), node_id.clone(), fabric_primary_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone())));
+                let builds = Arc::new(FabricBuildStateAdapter::new(journal.clone(), &channels.location_view(), node_id.clone(), fabric_primary_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone())));
                 // Only the fabric-primary, fabric recovery's executor in its place, or an admin started with
                 // no launcher while no live birth holds the fabric-primary record reads the Build records
                 // from here on (Q227); a launched admin's start reads none (Q242).
@@ -1218,7 +1219,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The topology this admin enters its mesh from without an authority (its durable map), and
                 // where it came from; a launched admin's comes from node.start's topology step, after its hook.
                 let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
-                let channel = topology_view.clone();
+                let channel = channels.clone();
                 let seam_journal = journal.clone();
                 let joined_seam: crate::workflows::node_start::JoinedSeam<String> = Box::new(
                     move |_: Option<crate::workflows::node_start::JoinThrough>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, Option<crate::workflows::node_start::HookStarted<String>>), String>> {
@@ -1712,7 +1713,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     if let Some(status) = status_service.get() {
                                         let _ = status.stopped.set(super::runner::stopped_publisher(topology_view.clone(), backbone.clone(), project.clone()));
                                     }
-                                    Arc::new(GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: name.path.clone(), me_name: name.name.clone(), mesh_deleter: mesh_deleter.clone(), project, status_service: status_service.clone() })
+                                    Arc::new(GossipLifecycle { channels: channels.clone(), backbone: backbone.clone(), me_path: name.path.clone(), me_name: name.name.clone(), mesh_deleter: mesh_deleter.clone(), project, status_service: status_service.clone() })
                                 }),
                                 leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
                                 mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
@@ -1934,7 +1935,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // The `JoinService`: this admin verifies a node's digest against what it deployed, installs the
                             // address for its key and answers what it holds.
                             {
-                                let (st, resolver, m, topo) = (entry.clone(), node_rpc_resolver.clone(), topology_view.clone(), topology_view.clone());
+                                let (st, resolver, m, topo) = (entry.clone(), node_rpc_resolver.clone(), channels.clone(), topology_view.clone());
                                 let join_service = Arc::new(crate::join::JoinService {
                                     me_path: name.path.clone(), me_name: name.name.clone(),
                                     joins: joins.clone(),
@@ -2095,7 +2096,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
                             // did not answer is unheard, and node recovery's to prove (mesh-recovery.md step 6).
                             let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
-                            let entry_ctx = crate::reenter::EntryCtx { me_path: name.path.clone(), me_name: name.name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), topology_view: topology_view.clone(), time: rafka_time.clone() };
+                            let entry_ctx = crate::reenter::EntryCtx { me_path: name.path.clone(), me_name: name.name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), topology_view: topology_view.clone(), channels: channels.clone(), time: rafka_time.clone() };
                             if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
                                 tasks.push(spawn_entry_sweep(&stop_gate, entry_ctx.clone(), source, map, sweep_slot.clone(), records.clone(), policy.provider));
                             }
@@ -2159,7 +2160,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     tasks.push(hook);
                                     {
                                         let pre_node_ready_state = pre_node_ready_cell.clone();
-                                        let (digest, digest_view, provider, topology_view) = (digest.clone(), digest_view.clone(), provider_dyn.clone(), topology_view.clone());
+                                        let (digest, digest_view, provider, topology_view, channels) = (digest.clone(), digest_view.clone(), provider_dyn.clone(), topology_view.clone(), channels.clone());
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
                                         let rafka_time_at_apply = rafka_time.clone();
                                         // The adoption launch completes once it is Ready (Q156).
@@ -2241,7 +2242,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     if !set {
                                                         break;
                                                     }
-                                                    let _ = topology_view.publish(&d_ready).await;
+                                                    let _ = channels.publish(&d_ready).await;
                                                     let reads = ViewReads::read(&me, &digest_view, &records, &fabric_id).await;
                                                     let decided = incumbency_of(&digest_view, &records);
                                                     let t = project_decided(&fabric_name, &fabric_id, view_provider, &digest_view, &records, &decided, &reads);
@@ -2295,12 +2296,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         // The config is held on this admin's own digest and by its topology view, so every publish and
                                         // every read of its own digest carries it.
-                                        let (topology_view, digest) = (topology_view.clone(), digest.clone());
+                                        let (channels, digest) = (channels.clone(), digest.clone());
                                         let _ = republish.set(Arc::new(move || {
-                                            let (topology_view, digest) = (topology_view.clone(), digest.clone());
+                                            let (channels, digest) = (channels.clone(), digest.clone());
                                             Box::pin(async move {
                                                 let d = digest.lock().unwrap().clone();
-                                                let _ = topology_view.publish(&d).await;
+                                                let _ = channels.publish(&d).await;
                                             })
                                         }));
                                     }
@@ -2308,9 +2309,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // The name is held on this admin's own digest and by its topology view, taken only while it
                                         // has no connection open (R-CR1), read from what is open now, never from the rows that have
                                         // landed (Q169); a stopped admin holds it and publishes nothing.
-                                        let (topology_view, digest, connections, registry, configs) = (topology_view.clone(), digest.clone(), connections.clone(), data_connections.clone(), configs_slot.clone());
+                                        let (topology_view, channels, digest, connections, registry, configs) = (topology_view.clone(), channels.clone(), digest.clone(), connections.clone(), data_connections.clone(), configs_slot.clone());
                                         let _ = rename.set(Arc::new(move |asked: PathName| {
-                                            let (topology_view, digest, connections, registry, configs) = (topology_view.clone(), digest.clone(), connections.clone(), registry.clone(), configs.clone());
+                                            let (topology_view, channels, digest, connections, registry, configs) = (topology_view.clone(), channels.clone(), digest.clone(), connections.clone(), registry.clone(), configs.clone());
                                             Box::pin(async move {
                                                 let held = digest.lock().unwrap().node.location();
                                                 let routes = connections.live_routes(None, Some(&registry));
@@ -2334,7 +2335,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         d.clone()
                                                     };
                                                     if !crate::node_self::process_stop().is_stopped() {
-                                                        let _ = topology_view.publish(&d).await;
+                                                        let _ = channels.publish(&d).await;
                                                     }
                                                 }
                                                 (held, decision)
@@ -2376,7 +2377,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 })
                                             })
                                         };
-                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), "node-admin".to_string(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_cancel(pre_node_ready_cancel.clone()).with_backbone(backbone.clone()));
+                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), "node-admin".to_string(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), channels.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_cancel(pre_node_ready_cancel.clone()).with_backbone(backbone.clone()));
                                         // Each state of its stop and start is on its own record before its frame (Q356).
                                         if let Some(writer) = configs_slot.get().and_then(|c| c.own_writer()) {
                                             own.set_records(writer);
@@ -2408,6 +2409,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             fabric_id: cfg.fabric_id.clone(),
                                             mesh_id: mesh_id.clone(),
                                             topology_view: topology_view.clone(),
+                                            channels: channels.clone(),
                                             backbone: backbone.clone(),
                                             client: node_rpc.client.clone(),
                                             server: rpc_server.clone(),
@@ -2425,7 +2427,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let _ = own_commands.set(own);
                                     }
                                     let d = digest.clone();
-                                    let publisher = topology_view.publish_every(gossip_interval(), move || {
+                                    let publisher = channels.publish_every(gossip_interval(), move || {
                                         d.lock().unwrap().clone()
                                     });
                                     // The declarer (i143.e4.s11, R-S2): what this admin owes its authorities over `Status`, sent
@@ -2900,6 +2902,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             mesh: cfg.mesh.clone(),
                                             incarnation: incarnation.clone(),
                                             topology_view: topology_view.clone(),
+                                            channels: channels.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
                                             looker: crate::primary_watch::Looker { me_path: name.path.clone(), me_name: name.name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
@@ -2941,6 +2944,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let (roles, roles_moved) = (roles.clone(), roles_moved.clone());
                                         let (backbone, topology_view, topology, me, mesh) = (backbone.clone(), topology_view.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
+                                        let channels = channels.clone();
                                         let (view_fabric, view_fabric_id, view_provider, view_digest_view) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone());
                                         let (role_node_id, role_incarnation) = (node_id.clone(), incarnation.clone());
                                         let adapter = runner.builds.clone();
@@ -3137,7 +3141,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 fabric_states.address_changed_mesh_primaries(&t, fabric_primary);
                                                 let addr = rdm_gossip::location::gossip_addr;
                                                 let admins: Vec<_> = heard.iter().filter(|d| rdm_core::is_node_admin(&d.node.r#type) && d.node.location() != me).filter_map(addr).collect();
-                                                backbone.join_admins(admins).await;
+                                                let _ = channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), admins).await;
                                                 // The turn dials no member of its own mesh: a member joins through this admin, and a
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).
                                                 drop(turn);

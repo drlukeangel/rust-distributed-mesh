@@ -132,17 +132,9 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_a
         let _ = rafka_time.adopt(1_000);
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
-        let topology_view = TopologyView::join(
-            &gossip,
-            &server_ep,
-            &fabric_id,
-            "mesh1",
-            &mesh_id,
-            server_id.as_str(),
-            Arc::new(rafka_time.clone()),
-            Vec::new(),
-        )
-        .await
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, server_id.as_str(), Arc::new(rafka_time.clone()));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &server_ep, &topology_view).expect("join topology view");
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
         .expect("join topology view");
 
         let driver = hooks
@@ -160,6 +152,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_a
                     accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                     client: client.clone(),
                     topology_view: topology_view.clone(),
+                    channels: channels.clone(),
                     cancel: CancelToken::new(),
                     rafka_time,
                     member_cert: None,
@@ -436,17 +429,9 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
         let _ = rafka_time.adopt(1_000);
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
-        let topology_view = TopologyView::join(
-            &gossip,
-            &node_ep,
-            &fabric_id,
-            "mesh1",
-            &mesh_id,
-            node_id.as_str(),
-            Arc::new(rafka_time.clone()),
-            Vec::new(),
-        )
-        .await
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), Arc::new(rafka_time.clone()));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &node_ep, &topology_view).expect("join topology view");
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
         .expect("join topology view");
 
         let driver = hooks
@@ -464,6 +449,7 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
                     accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                     client,
                     topology_view: topology_view.clone(),
+                    channels: channels.clone(),
                     cancel: CancelToken::new(),
                     rafka_time,
                     member_cert: None,

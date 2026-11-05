@@ -131,13 +131,23 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
         let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 41_001), digest(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 41_002), digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 41_011), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 41_012), digest(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 41_013), digest(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", 41_014));
-        let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock(), vec![]).await.unwrap();
-        let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock(), vec![a1.clone()]).await.unwrap();
-        let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock(), vec![a1.clone()]).await.unwrap();
-        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
-        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
-        m2.wait_for_neighbour().await;
-        m.wait_for_neighbour().await;
+        let m1 = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock());
+        let m1_channels = rdm_gossip::channel::Channels::new(&n1.gossip, &n1.ep, &m1).unwrap();
+        m1_channels.join(rdm_gossip::channel::ChannelId::mesh(m1.fabric_id(), m1.mesh_id()), vec![]).await.unwrap();
+        let m2 = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock());
+        let m2_channels = rdm_gossip::channel::Channels::new(&n2.gossip, &n2.ep, &m2).unwrap();
+        m2_channels.join(rdm_gossip::channel::ChannelId::mesh(m2.fabric_id(), m2.mesh_id()), vec![a1.clone()]).await.unwrap();
+        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock());
+        let m_channels = rdm_gossip::channel::Channels::new(&nm.gossip, &nm.ep, &m).unwrap();
+        m_channels.join(rdm_gossip::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![a1.clone()]).await.unwrap();
+        m1_channels.set_publisher(&rdm_core::PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() });
+        m1_channels.join(rdm_gossip::channel::ChannelId::backbone(m1.fabric_id()), vec![]).await.unwrap();
+        let bb1 = m1_channels.backbone().expect("the backbone is joined");
+        m2_channels.set_publisher(&rdm_core::PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
+        m2_channels.join(rdm_gossip::channel::ChannelId::backbone(m2.fabric_id()), vec![a1.clone()]).await.unwrap();
+        let bb2 = m2_channels.backbone().expect("the backbone is joined");
+        m2_channels.wait_for_neighbour().await;
+        m_channels.wait_for_neighbour().await;
         let (pub1, pub2) = (PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
         let held_at_member = || m.held_source_version("mesh1");
         let seq_at_member = |d: &MeshDigest| m.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
@@ -174,7 +184,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let (_, deleting_version) = bb2.publish_status_event(StatusEvent::Deleting, &deleting).await;
         until("the member to hold mesh1.node.3's NodeDeleting", || m.digest_view.in_flight().contains(&deleting)).await;
         // mesh1.node.2's heartbeat at digest_seq 7.
-        m2.forward(&Frame::Digest { digest: with_seq(&rpc2, 7) }).await.unwrap();
+        m2_channels.forward(&Frame::Digest { digest: with_seq(&rpc2, 7) }).await.unwrap();
         until("the member to hold mesh1.node.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
 
         // The late frames, each published before what the member holds of its source.
@@ -197,14 +207,14 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         // The cell's story starts here: an ignore before this instant is gossip's own reordering during setup
         // (a resend of a version the member already holds under a later stamp), not one of the late frames.
         let late_from = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-        m1.forward(&late_full).await.unwrap();
-        m1.forward(&late_delta).await.unwrap();
-        m2.forward(&late_stop.clone().authored(&rdm_gossip::envelope::Birth::publisher(&fabric(), &pub2), 0, 1)).await.unwrap();
-        m2.forward(&late_heartbeat).await.unwrap();
+        m1_channels.forward(&late_full).await.unwrap();
+        m1_channels.forward(&late_delta).await.unwrap();
+        m2_channels.forward(&late_stop.clone().authored(&rdm_gossip::envelope::Birth::publisher(&fabric(), &pub2), 0, 1)).await.unwrap();
+        m2_channels.forward(&late_heartbeat).await.unwrap();
         // A newer heartbeat from each sender, after its late frames: once the member holds it, the late
         // frames ahead of it on the same channel were received.
-        m1.forward(&Frame::Digest { digest: with_seq(&p1_d, 5) }).await.unwrap();
-        m2.forward(&Frame::Digest { digest: with_seq(&rpc2, 9) }).await.unwrap();
+        m1_channels.forward(&Frame::Digest { digest: with_seq(&p1_d, 5) }).await.unwrap();
+        m2_channels.forward(&Frame::Digest { digest: with_seq(&rpc2, 9) }).await.unwrap();
         until("the member to hold each sender's newer heartbeat", || seq_at_member(&p1_d) == Some(5) && seq_at_member(&rpc2) == Some(9)).await;
 
         assert_eq!(held_at_member(), Some((pub2.clone(), v2)), "the member keeps the successor's projection at its version");
@@ -264,17 +274,25 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let source_birth = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42001);
         let forwarder_birth = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 42002);
         let author = PublisherId::from(&source_birth.node);
-        let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, source_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, forwarder_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let src = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh2", &source_mesh, source_birth.node.node_id.as_str(), rdm_transport::clock::os_clock());
+        let src_channels = rdm_gossip::channel::Channels::new(&source.gossip, &source.ep, &src).unwrap();
+        src_channels.join(rdm_gossip::channel::ChannelId::mesh(src.fabric_id(), src.mesh_id()), vec![]).await.unwrap();
+        let fwd = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, forwarder_birth.node.node_id.as_str(), rdm_transport::clock::os_clock());
+        let fwd_channels = rdm_gossip::channel::Channels::new(&forwarder.gossip, &forwarder.ep, &fwd).unwrap();
+        fwd_channels.join(rdm_gossip::channel::ChannelId::mesh(fwd.fabric_id(), fwd.mesh_id()), vec![]).await.unwrap();
         // Deliberately a different exact birth at the author's descriptive path.
         let impostor = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42003);
         assert_ne!(impostor.node.node_id, author.node_id);
         fwd.digest_view.record(impostor);
-        let source_bb = Backbone::join(&source.gossip, &source.ep, &src, "mesh2", author.clone(), vec![]).await.unwrap();
-        let fwd_bb = Backbone::join(&forwarder.gossip, &forwarder.ep, &fwd, "mesh1", PublisherId::from(&forwarder_birth.node), vec![source_addr]).await.unwrap();
+        src_channels.set_publisher(&author.clone());
+        src_channels.join(rdm_gossip::channel::ChannelId::backbone(src.fabric_id()), vec![]).await.unwrap();
+        let source_bb = src_channels.backbone().expect("the backbone is joined");
+        fwd_channels.set_publisher(&PublisherId::from(&forwarder_birth.node));
+        fwd_channels.join(rdm_gossip::channel::ChannelId::backbone(fwd.fabric_id()), vec![source_addr]).await.unwrap();
+        let fwd_bb = fwd_channels.backbone().expect("the backbone is joined");
         source_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
-        let mut linked = source.gossip.subscribe(rdm_gossip::channel::backbone_channel(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
+        let mut linked = source.gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric()).topic(), vec![forwarder.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(20), linked.joined()).await.unwrap().unwrap();
         assert!(source_bb.publish(&src, vec![]).await);
         until("the forwarder to install the empty source", || fwd_bb.held_source("mesh2").is_some()).await;
@@ -283,16 +301,20 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
 
         // This neighbour joins after the empty source installed: its baseline is a replayed full.
         let own = digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 42004);
-        let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![forwarder_addr]).await.unwrap();
+        let mem = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock());
+        let mem_channels = rdm_gossip::channel::Channels::new(&member.gossip, &member.ep, &mem).unwrap();
+        mem_channels.join(rdm_gossip::channel::ChannelId::mesh(mem.fabric_id(), mem.mesh_id()), vec![forwarder_addr]).await.unwrap();
         until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
         assert_eq!(served.publisher, author);
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
         let reader_id = NodeId::mint();
-        let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let read = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock());
+        let read_channels = rdm_gossip::channel::Channels::new(&reader.gossip, &reader.ep, &read).unwrap();
+        read_channels.join(rdm_gossip::channel::ChannelId::mesh(read.fabric_id(), read.mesh_id()), vec![]).await.unwrap();
         let chunk = rdm_gossip::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted };
-        assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)));
+        assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
 
         // A subsequent material change uses the same author through the delta path.
@@ -316,11 +338,15 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         let mesh = MeshId::mint();
         let node_id = NodeId::mint();
         let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
-        let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let backbone = Backbone::join(&source.gossip, &source.ep, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock());
+        let channels = rdm_gossip::channel::Channels::new(&source.gossip, &source.ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
+        channels.set_publisher(&author.clone());
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+        let backbone = channels.backbone().expect("the backbone is joined");
         backbone.set_mesh_primary(true);
-        let mut local = probe.gossip.subscribe(rdm_gossip::channel::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
-        let mut remote = probe.gossip.subscribe(rdm_gossip::channel::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
+        let mut local = probe.gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric(), &mesh).topic(), vec![source.ep.id()]).await.unwrap();
+        let mut remote = probe.gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric()).topic(), vec![source.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), local.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), remote.joined()).await.unwrap().unwrap();
         let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();

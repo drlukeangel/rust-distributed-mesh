@@ -1,8 +1,6 @@
 //! Reserved positions are refused before any fact, status or role path runs.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PrimaryRole, Primary, LifecycleOp};
-use rdm_gossip::channel::{backbone_channel, mesh_channel};
 use rdm_gossip::location::learn_addresses;
-use rdm_gossip::backbone::Backbone;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use std::time::Duration;
@@ -33,10 +31,14 @@ fn reserved(kind: Kind) {
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         learn_addresses(&send_ep, &[iroh::EndpointAddr::new(recv_ep.id()).with_ip_addr(recv_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut mesh_channel = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let mut backbone_channel = gossip.subscribe(backbone_channel(&fabric), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![addr.clone()]).await.unwrap();
-        let _backbone = Backbone::join(&recv_gossip, &recv_ep, &receiver, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![addr]).await.unwrap();
+        let mut mesh_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
+        let mut backbone_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric).topic(), vec![]).await.unwrap();
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr.clone()]).await.unwrap();
+        receiver_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        receiver_channels.join(rdm_gossip::channel::ChannelId::backbone(receiver.fabric_id()), vec![addr]).await.unwrap();
+        let _backbone = receiver_channels.backbone().expect("the backbone is joined");
         tokio::time::timeout(Duration::from_secs(5), mesh_channel.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), backbone_channel.joined()).await.unwrap().unwrap();
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
@@ -83,7 +85,7 @@ fn reserved(kind: Kind) {
         assert_eq!(receiver.primaries().fabric(), Some(primary.clone()));
         assert_eq!(receiver.primaries().mesh("mesh1"), Some(primary));
         assert_eq!((*roles.borrow(), *births.borrow(), *overlays.borrow()), before);
-        assert!(receiver.location_view().addrs(unknown).is_empty(), "a reserved address declaration installs no contact");
+        assert!(receiver_channels.location_view().addrs(unknown).is_empty(), "a reserved address declaration installs no contact");
         assert!(!receiver.digest_view.is_deleted(node_id.as_str()));
         assert!(receiver.digest_view.in_flight().is_empty());
         assert!(receiver.digest_view.routable(node_id.as_str()));

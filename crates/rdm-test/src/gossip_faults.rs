@@ -2,9 +2,9 @@
 /// Drop one incoming chunk at `index` on the held app channel, then remove the cut.
 /// The remaining chunks exercise the ordinary assembly expiry and loss watch.
 pub async fn drop_chunk_once(
-    topology_view: &rdm_gossip::topology::TopologyView,
+    channels: &rdm_gossip::channel::Channels,
     kind: &str,
     index: usize,
 ) -> anyhow::Result<()> {
-    topology_view.drop_app_chunk_once(kind, index).await
+    channels.drop_app_chunk_once(kind, index).await
 }

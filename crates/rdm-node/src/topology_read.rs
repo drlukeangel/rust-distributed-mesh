@@ -397,7 +397,8 @@ impl std::fmt::Display for TopologyFailure {
 /// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `topology_view` each mesh whose snapshot arrives
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
-pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, topology_view: &TopologyView, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, channels: &rdm_gossip::channel::Channels, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+    let topology_view = channels.topology_view();
     let node_name = topology_view.node_name();
     // A mesh whose served snapshot is older than the complete one this node already installed of the
     // same source (its publication arrived before the read's answer) is refused `OlderThanHeld`: the
@@ -405,7 +406,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     let mut older_than_held: Vec<String> = Vec::new();
     let mut read = read_with(client, target, &node_name, mesh, since, |c| {
         let mesh = c.mesh.clone();
-        let taken = topology_view.take_read_chunk(c, answerer_mesh);
+        let taken = channels.take_read_chunk(c, answerer_mesh);
         if matches!(taken, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
             older_than_held.push(mesh);
         }
@@ -440,12 +441,12 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// (`crate::rafka_time`), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
 pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFetch {
-    Arc::new(move |topology_view: TopologyView, primary: MeshDigest, meshes: Vec<String>| {
+    Arc::new(move |channels: rdm_gossip::channel::Channels, primary: MeshDigest, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
             let mut done = rdm_gossip::topology::TopUpDone::default();
             for mesh in meshes {
-                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.mesh, &topology_view, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
+                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.mesh, &channels, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)
@@ -584,17 +585,9 @@ mod tests {
         rafka_time.adopt(1_000_000);
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
-        let view = TopologyView::join(
-            &gossip,
-            &ep,
-            &fabric_id,
-            "mesh1",
-            &mesh_id,
-            "mesh1.node-admin.1",
-            Arc::new(rafka_time.clone()),
-            Vec::new(),
-        )
-        .await
+        let view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, "mesh1.node-admin.1", Arc::new(rafka_time.clone()));
+        let view_channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &view).unwrap();
+        view_channels.join(rdm_gossip::channel::ChannelId::mesh(view.fabric_id(), view.mesh_id()), Vec::new()).await
         .unwrap();
 
         let own_digest = MeshDigest {

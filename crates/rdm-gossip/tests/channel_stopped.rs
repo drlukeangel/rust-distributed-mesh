@@ -72,28 +72,32 @@ async fn a_stopped_topology_view_is_no_neighbour_and_sends_nothing_until_it_star
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rdm_transport::clock::os_clock;
-    let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.node.1", clock(), vec![]).await.unwrap();
-    let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![addr_of(&a)]).await.unwrap();
+    let ma = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock());
+    let ma_channels = rdm_gossip::channel::Channels::new(&a.gossip, &a.ep, &ma).unwrap();
+    ma_channels.join(rdm_gossip::channel::ChannelId::mesh(ma.fabric_id(), ma.mesh_id()), vec![]).await.unwrap();
+    let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.2", clock());
+    let mb_channels = rdm_gossip::channel::Channels::new(&b.gossip, &b.ep, &mb).unwrap();
+    mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let db = digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep);
 
     // Joined: each holds the other as a neighbour and A hears B's digest.
-    until("A and B are neighbours", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
-    mb.publish(&db).await.unwrap();
+    until("A and B are neighbours", || ma_channels.neighbours() == 1 && mb_channels.neighbours() == 1).await;
+    mb_channels.publish(&db).await.unwrap();
     until("A hears B", || ma.digest_view.get(db.node.node_id.as_str()).is_some()).await;
     let seq_before = ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq;
 
     // B stops: A no longer counts it a neighbour, and B refuses to send, by name.
-    mb.stop().await;
-    until("A has lost its neighbour", || ma.neighbours() == 0).await;
-    assert_eq!(mb.neighbours(), 0, "a stopped node holds no neighbour");
-    let refused = mb.publish(&db).await.expect_err("a publish on a stopped channel is refused");
+    mb_channels.stop().await;
+    until("A has lost its neighbour", || ma_channels.neighbours() == 0).await;
+    assert_eq!(mb_channels.neighbours(), 0, "a stopped node holds no neighbour");
+    let refused = mb_channels.publish(&db).await.expect_err("a publish on a stopped channel is refused");
     assert!(refused.to_string().contains("stopped"), "the refusal names why: {refused}");
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(ma.digest_view.get(db.node.node_id.as_str()).unwrap().0.digest_seq, seq_before, "nothing B would have said reached A while it was stopped");
 
     // B starts: the channel is joined again, the neighbours return and B's digest sequence continued.
-    mb.start().await;
-    until("A and B are neighbours again", || ma.neighbours() == 1 && mb.neighbours() == 1).await;
-    mb.publish(&db).await.unwrap();
+    mb_channels.start().await;
+    until("A and B are neighbours again", || ma_channels.neighbours() == 1 && mb_channels.neighbours() == 1).await;
+    mb_channels.publish(&db).await.unwrap();
     until("A hears B again", || ma.digest_view.get(db.node.node_id.as_str()).is_some_and(|(d, _)| d.digest_seq > seq_before)).await;
 }

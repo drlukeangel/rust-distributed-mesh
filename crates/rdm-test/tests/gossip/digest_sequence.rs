@@ -170,7 +170,9 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         };
         let hand = Arc::new(HandClock::default());
         let me = "mesh1.node.1";
-        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, hand.clone());
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         let sender_id = NodeId::mint();
         let sender = Birth::first(&fabric, &sender_id);
         let mut stamped: Vec<Value> = Vec::new();
@@ -182,7 +184,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             ("clock back at zero", 0, MemberStatus::Leaving),
         ] {
             hand.0.store(clock_ms, Ordering::SeqCst);
-            topology_view.publish(&sender.digest(0, 0, status)).await.unwrap();
+            channels.publish(&sender.digest(0, 0, status)).await.unwrap();
             let (held, _) = topology_view.digest_view.get(sender_id.as_str()).expect("the sender's own view holds its heartbeat");
             let n = stamped.len() as u64 + 1;
             assert_eq!((held.digest_seq, held.emitted_at_rafka_ms, held.status), (n, clock_ms, status), "{label}: stamped with the next sequence and the clock's reading, and taken");

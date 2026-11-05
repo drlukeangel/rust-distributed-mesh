@@ -35,7 +35,9 @@ struct JoinsMembers {
 impl PreNodeReady for JoinsMembers {
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
         let peers = app_channel_peers(ctx);
-        let channel = ctx.topology_view.join_channel(MEMBERS, &peers).await.expect("the application's channel is joined");
+        let addrs = peers.iter().map(|p| rdm_gossip::channel::peer(p).expect("a peer's endpoint id parses")).collect();
+        ctx.channels.join(rdm_gossip::channel::ChannelId::app(ctx.topology_view.fabric_id(), MEMBERS), addrs).await.expect("the application's channel is joined");
+        let channel = ctx.channels.app(MEMBERS).await.expect("the application's channel's receiver");
         *self.named.lock().unwrap() = Some(peers.iter().map(|p| p.0.clone()).collect());
         *self.channel.lock().unwrap() = Some(channel);
         HookOutcome::Ok

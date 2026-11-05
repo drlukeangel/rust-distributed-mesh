@@ -5,7 +5,8 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use rdm_core::{FabricId, MeshId, NodeId};
 use rdm_test::channel_member::{Member, MemberAddr};
-use rdm_gossip::gossip::{channel_id, Channel, ChannelError, Event};
+use rdm_gossip::channel::ChannelId;
+use rdm_gossip::gossip::{Channel, ChannelError, Event};
 use std::time::Duration;
 
 const TYPE: &str = "rafka.entity.channel-proof";
@@ -27,12 +28,12 @@ async fn pair() -> (
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
     let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", vec![a.addr()]).await;
-    let ca = a.topology_view.join_channel(TYPE, &[]).await.unwrap();
-    let cb = b.topology_view.join_channel(TYPE, &[a.endpoint()]).await.unwrap();
+    let ca = a.app_channel(TYPE, &[]).await.unwrap();
+    let cb = b.app_channel(TYPE, &[a.endpoint()]).await.unwrap();
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
     let mut raw = a
         .gossip()
-        .subscribe(channel_id(&fabric, TYPE), vec![b.endpoint_id()])
+        .subscribe(ChannelId::app(&fabric, TYPE).topic(), vec![b.endpoint_id()])
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), raw.joined())
@@ -41,7 +42,7 @@ async fn pair() -> (
         .unwrap();
     let mut other = b
         .gossip()
-        .subscribe(channel_id(&fabric, TYPE), vec![a.endpoint_id()])
+        .subscribe(ChannelId::app(&fabric, TYPE).topic(), vec![a.endpoint_id()])
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), other.joined())
@@ -69,7 +70,7 @@ async fn receive(channel: &mut Channel) -> rdm_gossip::gossip::Received {
 }
 
 fn encoded(n: &Member, kind: &str, id: &str, subject: &str, data: Vec<u8>, reverse: bool) -> Vec<u8> {
-    let birth = n.topology_view.author_birth().unwrap();
+    let birth = n.channels.author_birth().unwrap();
     let mut attributes = vec![
         ("specversion".to_string(), "1.0".to_string()),
         ("id".into(), id.into()),
@@ -115,8 +116,8 @@ async fn a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped(
 fn the_channel_id_differs_across_fabrics_for_one_type() {
     let a = FabricId::mint();
     let b = FabricId::mint();
-    assert_ne!(channel_id(&a, TYPE), channel_id(&b, TYPE));
-    assert_eq!(channel_id(&a, TYPE), channel_id(&a, TYPE));
+    assert_ne!(ChannelId::app(&a, TYPE).topic(), ChannelId::app(&b, TYPE).topic());
+    assert_eq!(ChannelId::app(&a, TYPE).topic(), ChannelId::app(&a, TYPE).topic());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -340,8 +341,8 @@ fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_join_of_a_channel_is_refused_receiver_held_by_name() {
     let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
-    let _first = n.topology_view.join_channel(TYPE, &[]).await.unwrap();
-    assert!(matches!(n.topology_view.join_channel(TYPE, &[]).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
+    let _first = n.app_channel(TYPE, &[]).await.unwrap();
+    assert!(matches!(n.app_channel(TYPE, &[]).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
 }
 
 /// CONTRACT (an event's `sequence` is 20 decimal digits, gossip.md's app event attributes): a frame
@@ -446,11 +447,11 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", vec![]).await;
     let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", vec![a.addr()]).await;
-    while a.topology_view.neighbours() < 1 || b.topology_view.neighbours() < 1 {
+    while a.channels.neighbours() < 1 || b.channels.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
     let c = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[b.addr()]).await;
-    while b.topology_view.neighbours() < 2 || c.topology_view.neighbours() < 1 {
+    while b.channels.neighbours() < 2 || c.channels.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
     // Establish the member-to-own-admin connection on both sides without giving A any new
@@ -458,12 +459,12 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
     // already holds C when A's Join arrives at B.
     let mut member = c
         .gossip()
-        .subscribe(channel_id(&fabric, LATER), vec![b.endpoint_id()])
+        .subscribe(ChannelId::app(&fabric, LATER).topic(), vec![b.endpoint_id()])
         .await
         .unwrap();
     let mut middle = b
         .gossip()
-        .subscribe(channel_id(&fabric, LATER), vec![])
+        .subscribe(ChannelId::app(&fabric, LATER).topic(), vec![])
         .await
         .unwrap();
     member.joined().await.unwrap();
@@ -482,11 +483,11 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
             .unwrap();
     }
     // A names B, a birth its topology view holds, as the channel's first neighbour, by its endpoint_id.
-    a.topology_view.learn(b.digest(), "peer-probe");
-    let receiver = a.topology_view.join_channel(LATER, &[b.endpoint()]).await.unwrap();
+    a.channels.learn(b.digest(), "peer-probe");
+    let receiver = a.app_channel(LATER, &[b.endpoint()]).await.unwrap();
     let mut observed = a
         .gossip()
-        .subscribe(channel_id(&fabric, LATER), vec![])
+        .subscribe(ChannelId::app(&fabric, LATER).topic(), vec![])
         .await
         .unwrap();
     observed
@@ -510,14 +511,14 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
             .unwrap();
     }
     let mut receiver = receiver;
-    let publisher = c.topology_view.join_channel(LATER, &[b.endpoint()]).await.unwrap();
+    let publisher = c.app_channel(LATER, &[b.endpoint()]).await.unwrap();
     publisher.publish(event(1, vec![7])).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), &[7]);
 
     // Rejoining uses the peers the join named, without acquiring boot seeds.
     drop(receiver);
     drop(observed);
-    a.topology_view.stop().await;
+    a.channels.stop().await;
     while middle.neighbors().any(|p| p == a.endpoint_id()) {
         middle
             .next()
@@ -532,13 +533,13 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
             .expect("the publisher stays subscribed")
             .unwrap();
     }
-    while b.topology_view.neighbours() > 1 || c.topology_view.neighbours() > 1 {
+    while b.channels.neighbours() > 1 || c.channels.neighbours() > 1 {
         tokio::task::yield_now().await;
     }
-    a.topology_view.start().await;
+    a.channels.start().await;
     let mut rejoined = a
         .gossip()
-        .subscribe(channel_id(&fabric, LATER), vec![])
+        .subscribe(ChannelId::app(&fabric, LATER).topic(), vec![])
         .await
         .unwrap();
     rejoined
@@ -562,7 +563,7 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
     // Q72 = b: after a rejoin, gossip is best-effort and an app event is the app's to order by
     // its own `sequence`. B's forwarded copy of event 1, sent before A left, may arrive on A's
     // new subscription; the app skips any event at or below the sequence it already applied.
-    let mut receiver = a.topology_view.join_channel(LATER, &[b.endpoint()]).await.unwrap();
+    let mut receiver = a.app_channel(LATER, &[b.endpoint()]).await.unwrap();
     publisher.publish(event(2, vec![8])).await.unwrap();
     let next = tokio::time::timeout(Duration::from_secs(10), async {
         loop {

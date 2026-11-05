@@ -9,7 +9,7 @@ use crate::model::NodeId;
 use crate::node_self::StartFailed;
 use crate::wire::JoinAnswer;
 use rdm_core::{MemberStatus, MeshDigest};
-use rdm_gossip::topology::TopologyView;
+use rdm_gossip::channel::Channels;
 use rdm_transport::{NodeRpcClient, NodeTarget};
 use tracing::Instrument as _;
 
@@ -31,7 +31,7 @@ pub trait MeshJoin: Send {
     /// Enter the type's channels holding the name the join handed (`None` with no primary), before
     /// anything is published, emitting `rdm.node.mesh.update.via-joined` per channel. `step` is the
     /// channel step's span: the kind drops it when its channel part ends.
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<TopologyView, Self::Error>;
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Channels, Self::Error>;
 }
 
 /// One run of the primitive.
@@ -72,8 +72,8 @@ pub struct MeshJoined {
     pub through: JoinThrough,
     /// The name the birth holds from the answer on.
     pub name: String,
-    /// The birth's topology view, on its channel.
-    pub topology_view: TopologyView,
+    /// The birth's channels, its mesh channel joined, and the topology view they fill.
+    pub channels: Channels,
 }
 
 /// `node.mesh.join` (node-mesh-join.md): `joining` from the report until the channels hold.
@@ -106,9 +106,9 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
         Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
         None => tracing::info_span!("rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
     };
-    let topology_view = node.enter_channel(channel, Some(&answer)).await?;
-    topology_view.learn_statuses(&answer.statuses);
-    Ok(MeshJoined { answer, through, name, topology_view })
+    let channels = node.enter_channel(channel, Some(&answer)).await?;
+    channels.topology_view().learn_statuses(&answer.statuses);
+    Ok(MeshJoined { answer, through, name, channels })
 }
 
 /// `JoinNode` with `digest`, each of its attempts made to whom `to` names then: the launcher, or the
@@ -183,7 +183,7 @@ mod tests {
             &mut self,
             step: tracing::Span,
             joined: Option<&JoinAnswer>,
-        ) -> Result<TopologyView, Self::Error> {
+        ) -> Result<rdm_gossip::channel::Channels, Self::Error> {
             let handed_name = joined.and_then(|j| j.control.name.clone());
             self.entered.lock().unwrap().push(handed_name.clone());
             let node_name = handed_name
@@ -203,17 +203,9 @@ mod tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(4_200_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(self.ep.clone());
-            TopologyView::join(
-                &g,
-                &self.ep,
-                &self.fabric_id,
-                &self.digest.node.mesh,
-                &self.mesh_id,
-                &node_name,
-                clock,
-                Vec::new(),
-            )
-            .await
+            let topology_view = rdm_gossip::topology::TopologyView::new(&self.fabric_id, &self.digest.node.mesh, &self.mesh_id, &node_name, clock);
+            let channels = rdm_gossip::channel::Channels::new(&g, &self.ep, &topology_view).map_err(|e| StartFailed { step: "node.channel", reason: e.to_string() })?;
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.map(|()| channels)
             .map_err(|e| StartFailed {
                 step: "node.channel",
                 reason: e.to_string(),

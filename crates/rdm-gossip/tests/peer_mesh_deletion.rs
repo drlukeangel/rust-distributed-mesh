@@ -95,15 +95,25 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let fp_m = TopologyView::join(&fp.gossip, &fp.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock(), vec![]).await.unwrap();
-        let m2_m = TopologyView::join(&m2.gossip, &m2.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock(), vec![]).await.unwrap();
-        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh2", &mesh2, "mesh2.node.1", clock(), vec![m2_addr.clone()]).await.unwrap();
-        let fp_bb = Backbone::join(&fp.gossip, &fp.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![]).await.unwrap();
-        let m2_bb = Backbone::join(&m2.gossip, &m2.ep, &m2_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![fp_addr.clone()]).await.unwrap();
+        let fp_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock());
+        let fp_m_channels = rdm_gossip::channel::Channels::new(&fp.gossip, &fp.ep, &fp_m).unwrap();
+        fp_m_channels.join(rdm_gossip::channel::ChannelId::mesh(fp_m.fabric_id(), fp_m.mesh_id()), vec![]).await.unwrap();
+        let m2_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock());
+        let m2_m_channels = rdm_gossip::channel::Channels::new(&m2.gossip, &m2.ep, &m2_m).unwrap();
+        m2_m_channels.join(rdm_gossip::channel::ChannelId::mesh(m2_m.fabric_id(), m2_m.mesh_id()), vec![]).await.unwrap();
+        let rpc_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2, "mesh2.node.1", clock());
+        let rpc_m_channels = rdm_gossip::channel::Channels::new(&rpc.gossip, &rpc.ep, &rpc_m).unwrap();
+        rpc_m_channels.join(rdm_gossip::channel::ChannelId::mesh(rpc_m.fabric_id(), rpc_m.mesh_id()), vec![m2_addr.clone()]).await.unwrap();
+        fp_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() });
+        fp_m_channels.join(rdm_gossip::channel::ChannelId::backbone(fp_m.fabric_id()), vec![]).await.unwrap();
+        let fp_bb = fp_m_channels.backbone().expect("the backbone is joined");
+        m2_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() });
+        m2_m_channels.join(rdm_gossip::channel::ChannelId::backbone(m2_m.fabric_id()), vec![fp_addr.clone()]).await.unwrap();
+        let m2_bb = m2_m_channels.backbone().expect("the backbone is joined");
         fp_bb.set_mesh_primary(true);
         fp_bb.set_fabric_primary(true);
         m2_bb.set_mesh_primary(true);
-        rpc_m.wait_for_neighbour().await;
+        rpc_m_channels.wait_for_neighbour().await;
 
         // mesh2.node-admin.1, the previous mesh-primary of mesh2: every view holds it.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -123,7 +133,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
             traceparent: None,
             tracestate: None,
         };
-        fp_m.publish_lifecycle(&Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
+        fp_m_channels.publish_lifecycle(&Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
         assert!(fp_m.digest_view.is_deleted(id.as_str()), "the executor holds its own deletion");
 
         // Each primary publishes as a node-admin's publication does, until mesh2's nodes hold the deletion.

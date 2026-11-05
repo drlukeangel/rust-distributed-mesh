@@ -30,21 +30,25 @@ fn story(kind: StatusEvent, scenario: Story) {
         let receiver_id = NodeId::mint();
         let successor_id = NodeId::mint();
         let subject_id = NodeId::mint();
-        let sender = TopologyView::join(&send_gossip, &send_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![addr]).await.unwrap();
+        let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock());
+        let sender_channels = rdm_gossip::channel::Channels::new(&send_gossip, &send_ep, &sender).unwrap();
+        sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr]).await.unwrap();
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: rdm_core::BuildId::mint().to_string(), operation: rdm_core::OperationId::node(format!("node.{command}"), &subject_id), node_id: subject_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: sender_id.clone() };
         // The publisher that takes the role after it: another birth, which re-publishes the operation its
         // predecessor published under the same identity (a resubmitted Build replays its completed step).
         let successor = PublisherId { incarnation: IncarnationId::mint(), node_id: successor_id };
-        sender.set_author(&publisher, None);
+        sender_channels.set_author(&publisher, None);
         receiver.digest_view.record(MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
         assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.location(), &"mesh1"));
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
-        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender_channels, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         assert!(receiver.digest_view.routable(op.node_id.as_str()));
         if matches!(scenario, Story::Completed) {
@@ -63,7 +67,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         if matches!(scenario, Story::Stale) {
             let mut other = op.clone(); other.node_id = NodeId::mint(); other.incarnation = IncarnationId::mint(); other.path = "mesh1.node".into(); other.name = "3".into(); other.operation = rdm_core::OperationId::node(format!("node.{command}"), &other.node_id);
             let other_id = other.node_id.to_string();
-            crate::forward_gossip_probe(&sender, &frame(other, 20)).await.unwrap();
+            crate::forward_gossip_probe(&sender_channels, &frame(other, 20)).await.unwrap();
             // An open overlay is visible before the same receive finishes its birth notification.
             // Capture the baseline only after that operation's enclosing receipt has closed.
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -77,10 +81,10 @@ fn story(kind: StatusEvent, scenario: Story) {
         for n in 1..=receipts {
             let mut offered = op.clone(); if n == 2 { offered.event_at_rafka_ms = 2; }
             if n == 2 && matches!(scenario, Story::Successor) {
-                sender.set_author(&successor, None);
-                crate::forward_gossip_probe(&sender, &successor_frame(offered, 10)).await.unwrap();
+                sender_channels.set_author(&successor, None);
+                crate::forward_gossip_probe(&sender_channels, &successor_frame(offered, 10)).await.unwrap();
             } else {
-                crate::forward_gossip_probe(&sender, &frame(offered, if n == 2 && matches!(scenario, Story::Stale) { 21 } else { 10 })).await.unwrap();
+                crate::forward_gossip_probe(&sender_channels, &frame(offered, if n == 2 && matches!(scenario, Story::Stale) { 21 } else { 10 })).await.unwrap();
             }
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == op.node_id.to_string()).count() < n { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -90,7 +94,7 @@ fn story(kind: StatusEvent, scenario: Story) {
             // Operation identity was already seen at the refused v10. Its repeat at v21 runs no
             // effect, while that independent projection key still advances the publisher floor.
             let mut third = op.clone(); third.node_id = NodeId::mint(); third.path = "mesh1.node".into(); third.name = "4".into(); third.operation = rdm_core::OperationId::node(format!("node.{command}"), &third.node_id);
-            crate::forward_gossip_probe(&sender, &frame(third.clone(), 20)).await.unwrap();
+            crate::forward_gossip_probe(&sender_channels, &frame(third.clone(), 20)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == third.node_id.to_string()) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();
@@ -100,7 +104,7 @@ fn story(kind: StatusEvent, scenario: Story) {
             // The successor's re-entry ran no effect, and its carried revision still advanced its own
             // floor: its later frame below that revision is refused as stale and never applied.
             let mut below = op.clone(); below.node_id = NodeId::mint(); below.path = "mesh1.node".into(); below.name = "5".into(); below.operation = rdm_core::OperationId::node(format!("node.{command}"), &below.node_id);
-            crate::forward_gossip_probe(&sender, &successor_frame(below.clone(), 9)).await.unwrap();
+            crate::forward_gossip_probe(&sender_channels, &successor_frame(below.clone(), 9)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == below.node_id.to_string()) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();

@@ -157,9 +157,15 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
         let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
         let member = node_with(iroh::SecretKey::generate(), None).await;
-        let m_admin = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.node-admin.1", clock(), vec![]).await.unwrap();
-        let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let m_member = TopologyView::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.node.1", clock(), vec![]).await.unwrap();
+        let m_admin = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node-admin.1", clock());
+        let m_admin_channels = rdm_gossip::channel::Channels::new(&admin.gossip, &admin.ep, &m_admin).unwrap();
+        m_admin_channels.join(rdm_gossip::channel::ChannelId::mesh(m_admin.fabric_id(), m_admin.mesh_id()), vec![]).await.unwrap();
+        m_admin_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        m_admin_channels.join(rdm_gossip::channel::ChannelId::backbone(m_admin.fabric_id()), vec![]).await.unwrap();
+        let backbone = m_admin_channels.backbone().expect("the backbone is joined");
+        let m_member = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, "mesh1.node.1", clock());
+        let m_member_channels = rdm_gossip::channel::Channels::new(&member.gossip, &member.ep, &m_member).unwrap();
+        m_member_channels.join(rdm_gossip::channel::ChannelId::mesh(m_member.fabric_id(), m_member.mesh_id()), vec![]).await.unwrap();
 
         // The peer admin's first birth at X: known to the admin's mesh channel and its backbone, known
         // to the member, and connected to the admin.
@@ -171,9 +177,9 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         let node_id = NodeId::mint();
         let first_birth = IncarnationId::mint();
         let first = birth(&node_id, peer, x, &first_birth, None);
-        m_admin.learn(first.clone(), "join");
-        m_member.learn(first, "join");
-        backbone.join_admins(vec![iroh::EndpointAddr::new(peer).with_ip_addr(x)]).await;
+        m_admin_channels.learn(first.clone(), "join");
+        m_member_channels.learn(first, "join");
+        m_admin_channels.join(rdm_gossip::channel::ChannelId::backbone(m_admin.fabric_id()), vec![iroh::EndpointAddr::new(peer).with_ip_addr(x)]).await.unwrap();
         // The admin's gossip dial to X is registered at the admin and in use: gossip writes on a
         // connection only once its connect returned, and a connect returns only once the endpoint
         // registered the connection.
@@ -195,8 +201,8 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         let y = socket_of(&new.ep);
         assert_ne!(x, y);
         let second = birth(&node_id, peer, y, &IncarnationId::mint(), Some(first_birth));
-        m_admin.learn(second.clone(), "join");
-        m_member.learn(second, "join");
+        m_admin_channels.learn(second.clone(), "join");
+        m_member_channels.learn(second, "join");
 
         let (at_admin, at_member) = (looked_up(&admin.ep, peer).await, looked_up(&member.ep, peer).await);
         assert!(

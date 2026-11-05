@@ -54,7 +54,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         assert!(matches!(reply, StatusReply::ConfigUpdated { ref config, .. } if config.get("listener.data").map(String::as_str) == Some("127.0.0.1:43003")));
         assert!(admin.config_updates.lock().unwrap().is_empty(), "own properties never travel to the mesh-primary");
         assert_eq!(running.topology_view.config(), Some(config.clone()));
-        let addr = running.topology_view.endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the node's address");
+        let addr = running.channels.endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the node's address");
         admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
         let target = rdm_transport::NodeTarget::ExactNode(launch.node_id.clone());
         let caller: BTreeMap<String, String> = [("source".into(), "caller".into())].into();

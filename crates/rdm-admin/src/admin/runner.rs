@@ -143,8 +143,8 @@ impl AdminRunner {
 /// backbone carries them as the open overlays and retained departures of this mesh's topology,
 /// which its mesh primary publishes; a peer mesh's primary forwards them onto its own channel.
 pub struct GossipLifecycle {
-    /// This admin's mesh channel.
-    pub topology_view: TopologyView,
+    /// This admin's channels: its mesh channel, where the lifecycle frames it authors go out.
+    pub channels: rdm_gossip::channel::Channels,
     /// This admin's place on the backbone: the fabric state hooks publish there as well.
     pub backbone: Backbone,
     /// This admin's own path: the publisher of the mesh frames it authors.
@@ -209,14 +209,14 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
 impl GossipLifecycle {
     #[allow(dead_code)]
     pub(crate) fn held_name(&self) -> PathName {
-        self.topology_view.digest_view.held_path_name().unwrap_or_else(|| self.me())
+        self.channels.topology_view().digest_view.held_path_name().unwrap_or_else(|| self.me())
     }
 }
 
 #[async_trait::async_trait]
 impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     fn now_rafka_ms(&self) -> u64 {
-        self.topology_view.clock().now_rafka_ms()
+        self.channels.topology_view().clock().now_rafka_ms()
     }
     async fn deleting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
@@ -236,12 +236,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         }
     }
     async fn joined(&self, op: &rdm_core::LifecycleOp) {
-        let _ = crate::status_rpc::set_member_status(&self.topology_view.digest_view, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });
+        let _ = crate::status_rpc::set_member_status(&self.channels.topology_view().digest_view, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });
     }
     async fn leaving(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         span.in_scope(|| {
-            let _ = crate::status_rpc::set_member_status(&self.topology_view.digest_view, crate::status_rpc::MemberStatusReceipt::StopAdmitted(op));
+            let _ = crate::status_rpc::set_member_status(&self.channels.topology_view().digest_view, crate::status_rpc::MemberStatusReceipt::StopAdmitted(op));
             tracing::info!("the birth admitted stop-node: this mesh-primary sets it stopping and its projection carries that; no frame is published");
         });
     }
@@ -249,7 +249,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rdm_gossip::frame::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
-            if let Err(e) = self.topology_view.publish_lifecycle(&f).await {
+            if let Err(e) = self.channels.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
             tracing::info!("the exact birth is proven terminal: it has left");
@@ -2015,8 +2015,12 @@ mod tests {
         let node_id = NodeId::mint();
         let incarnation = IncarnationId::mint();
 
-        let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.node-admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
-        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh1_id, "mesh1.node-admin.1", Arc::new(time.clone()));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
+        channels.set_publisher(&rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() });
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+        let backbone = channels.backbone().expect("the backbone is joined");
         let providers = crate::storage_backend::TopologyStorageProviders::file(dir.clone());
         let scope = crate::storage_backend::StorageScope { data_dir: dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: incarnation.clone(), node_id: node_id.clone(), time: rdm_transport::clock::RafkaTime::unadopted() };
         let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, "file", scope).await.unwrap();
@@ -2121,7 +2125,7 @@ mod tests {
             endpoint: Some(ep),
             node_rpc,
             lifecycle_events: Arc::new(GossipLifecycle {
-                topology_view,
+                channels: channels.clone(),
                 backbone,
                 me_path: me.path.clone(), me_name: me.name.clone(),
                 mesh_deleter: Arc::default(),

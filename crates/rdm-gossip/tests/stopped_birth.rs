@@ -220,18 +220,24 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![p_addr]).await.unwrap();
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock());
+        let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
+        p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
+        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock());
+        let m_channels = rdm_gossip::channel::Channels::new(&m_node.gossip, &m_node.ep, &m).unwrap();
+        m_channels.join(rdm_gossip::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![p_addr]).await.unwrap();
+        p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });
+        p_channels.join(rdm_gossip::channel::ChannelId::backbone(p.fabric_id()), vec![]).await.unwrap();
+        let bb = p_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
-        m.wait_for_neighbour().await;
+        m_channels.wait_for_neighbour().await;
         let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
         // The mesh-primary's own digest, heard by the member directly.
         let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, None, MemberStatus::Ready, 0, 41_001);
-        p.publish(&p_digest).await.unwrap();
+        p_channels.publish(&p_digest).await.unwrap();
         learn_mesh_primary(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         // mesh1.node.1: its heartbeats as the primary and the member hear them.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -256,7 +262,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         // A read built before the stop, delivered after it, at the version the member holds: it lists the
         // stopped birth from a projection that never carried the stop. Refused by name; the stop stands.
         for c in read_chunks(&before_stop, "mesh1") {
-            let _ = m.take_read_chunk(c, "mesh1");
+            let _ = m_channels.take_read_chunk(c, "mesh1");
         }
         assert!(m.digest_view.get(id.as_str()).is_none() && m.digest_view.in_flight().contains(&stop), "a projection entry from before the stop does not end it");
 
@@ -353,17 +359,23 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![p_addr]).await.unwrap();
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock());
+        let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
+        p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
+        let m = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock());
+        let m_channels = rdm_gossip::channel::Channels::new(&m_node.gossip, &m_node.ep, &m).unwrap();
+        m_channels.join(rdm_gossip::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![p_addr]).await.unwrap();
+        p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });
+        p_channels.join(rdm_gossip::channel::ChannelId::backbone(p.fabric_id()), vec![]).await.unwrap();
+        let bb = p_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
-        m.wait_for_neighbour().await;
+        m_channels.wait_for_neighbour().await;
         let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
         let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, None, MemberStatus::Ready, 0, 41_021);
-        p.publish(&p_digest).await.unwrap();
+        p_channels.publish(&p_digest).await.unwrap();
         learn_mesh_primary(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &id, &inc, None, status, seq, 41_031);
@@ -386,18 +398,18 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         // so the projection listing the birth again reaches it only through its top-up.
         let start = LifecycleOp { operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), ..stop.clone() };
         assert!(p.digest_view.joined(&start), "the mesh-primary ends the stop at node.joined");
-        m.stop().await;
+        m_channels.stop().await;
         publication().await;
         let served = p.held_topology(&p.digest_view.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
         let read_version = served.iter().find(|s| s.mesh == "mesh1").map(|s| s.topology_version).expect("the primary serves its own mesh");
         assert!(read_version > v1, "the primary's publication after node.joined moved its projection");
         for c in read_chunks(&served, "mesh1") {
-            let _ = m.take_read_chunk(c, "mesh1");
+            let _ = m_channels.take_read_chunk(c, "mesh1");
         }
         assert_eq!(version_at_m(), Some(read_version), "the top-up installed the primary's projection");
         assert!(!m.digest_view.in_flight().contains(&stop), "the top-up's projection, past the version the stop changed the birth at, ends the stop");
         assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| (d.node.incarnation.clone(), d.status)), Some((inc.clone(), MemberStatus::Pending)), "the member holds the birth again with the projection's status");
-        m.start().await;
+        m_channels.start().await;
 
         drop(bb);
         for n in [&p_node, &m_node] {

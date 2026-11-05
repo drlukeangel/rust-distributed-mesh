@@ -34,7 +34,7 @@ pub struct Backbone {
     pub(crate) fabric: FabricId,
     pub(crate) publishing: Arc<AtomicBool>,
     pub(crate) status_publishing: Arc<AtomicBool>,
-    pub(crate) topology_view: TopologyView,
+    pub(crate) channels: crate::channel::Channels,
     pub(crate) mesh_status: Arc<Mutex<StatusPublisher>>,
     pub(crate) fabric_status: Arc<Mutex<StatusPublisher>>,
     /// Wakes the status sender when a change starts its reinforcement.
@@ -108,7 +108,7 @@ pub fn status_announcements(
 
 impl Backbone {
     pub(crate) fn current_name(&self) -> String {
-        self.topology_view.node_name()
+        self.channels.topology_view.node_name()
     }
 
     pub(crate) fn current_publisher(&self) -> PublisherId {
@@ -145,24 +145,24 @@ impl Backbone {
 
     /// Join the backbone with the author's exact birth. Every publication retains this supplied
     /// node id and incarnation; no receiver or forwarder reconstructs them from a name.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, topology_view: &TopologyView, mesh: &str, author: PublisherId, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    pub(crate) async fn join(gossip: &Gossip, endpoint: &Endpoint, channels: &crate::channel::Channels, mesh: &str, author: PublisherId, seeds: Vec<EndpointAddr>) -> Result<Self> {
         // The node is named by its node id on its channel and status spans (no name rides with the author, Q309).
         let node = author.node_id.as_str();
-        let birth = crate::envelope::Birth::publisher(&topology_view.fabric, &author);
-        *topology_view.mesh.author.lock().unwrap() = Some(birth.clone());
-        topology_view.view.forwarder.lock().unwrap().set_author(birth);
-        let (m, own) = (topology_view.clone(), mesh.to_string());
+        let birth = crate::envelope::Birth::publisher(&channels.topology_view.fabric, &author);
+        *channels.author.lock().unwrap() = Some(birth.clone());
+        channels.topology_view.view.forwarder.lock().unwrap().set_author(birth);
+        let (m, own) = (channels.clone(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
-            let me = m.view.current_name();
+            let me = m.topology_view.view.current_name();
             if matches!(frame.data(), Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. }) {
-                let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone, order);
+                let taken = m.topology_view.view.take_snapshot(&frame, &m.topology_view.fabric, Side::Backbone, order);
                 // A mesh primary's clock follows its current fabric-primary's mesh topology.
                 if let Some(p) = &taken.publication {
-                    let verdict = crate::discipline::from_fabric_primary_members(&me, m.view.primary.load(Ordering::Relaxed), &m.view.digest_view.primaries, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
-                    crate::discipline::offer(&m.clock, &me, "fabric-primary-mesh-topology", verdict);
+                    let verdict = crate::discipline::from_fabric_primary_members(&me, m.topology_view.view.primary.load(Ordering::Relaxed), &m.topology_view.view.digest_view.primaries, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
+                    crate::discipline::offer(&m.topology_view.clock, &me, "fabric-primary-mesh-topology", verdict);
                 }
                 for d in &taken.carried {
-                    m.mesh.register(d);
+                    m.mesh().register(d);
                 }
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
                 // since it last published that source into its own Mesh. The forward path decides
@@ -175,21 +175,21 @@ impl Backbone {
                             .in_flight()
                             .iter()
                             .any(|op| !op.is_stop() && op.node_id == full.digests()[0].node.node_id);
-                    let _ = m.forward_path.source_with_clock(&me, &source_mesh, &publisher, version, &full, || m.clock.now_rafka_ms());
+                    let _ = m.forward_path.source_with_clock(&me, &source_mesh, &publisher, version, &full, || m.topology_view.clock.now_rafka_ms());
                     if is_final_delete {
-                        m.view.forwarder.lock().unwrap().remove(&source_mesh);
+                        m.topology_view.view.forwarder.lock().unwrap().remove(&source_mesh);
                     }
                 }
                 return;
             }
-            for d in m.view.take(&frame, &m.fabric, "backbone") {
-                m.mesh.register(&d);
+            for d in m.topology_view.view.take(&frame, &m.topology_view.fabric, "backbone") {
+                m.mesh().register(&d);
             }
             if let Some(f) = forward_of(frame, &me, &own) {
                 m.forward_path.carry(&me, f);
             }
         });
-        let (replay_view, replay_fabric, replay_author, replay_clock) = (topology_view.view.clone(), topology_view.fabric.clone(), topology_view.mesh.author.clone(), topology_view.clock.clone());
+        let (replay_view, replay_fabric, replay_author, replay_clock) = (channels.topology_view.view.clone(), channels.topology_view.fabric.clone(), channels.author.clone(), channels.topology_view.clock.clone());
         let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let replay_me = replay_view.current_name();
@@ -199,26 +199,26 @@ impl Backbone {
                 Replayed::default()
             }
         });
-        let (digest_view, own_mesh) = (topology_view.digest_view.clone(), mesh.to_string());
+        let (digest_view, own_mesh) = (channels.topology_view.digest_view.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || held_view(&digest_view, |d| d.node.mesh != own_mesh && rdm_core::is_node_admin(&d.node.r#type)));
-        let channel = Channel::join(gossip, endpoint, backbone_channel(&topology_view.fabric), topology_view.fabric.as_str(), node, "backbone", seeds, topology_view.mesh.location_view.clone(), topology_view.view.order.clone(), on_frame, targets, replay, topology_view.mesh.author.clone(), topology_view.clock.clone()).await?;
-        topology_view.mesh_status_publisher.lock().unwrap().node = node.to_string();
+        let channel = Channel::join(gossip, endpoint, crate::channel::ChannelId::backbone(&channels.topology_view.fabric).topic(), channels.topology_view.fabric.as_str(), node, "backbone", seeds, channels.location.clone(), channels.topology_view.view.order.clone(), on_frame, targets, replay, channels.author.clone(), channels.topology_view.clock.clone()).await?;
+        channels.topology_view.mesh_status_publisher.lock().unwrap().node = node.to_string();
         let me = Self {
             channel,
             mesh: mesh.to_string(),
-            fabric: topology_view.fabric.clone(),
+            fabric: channels.topology_view.fabric.clone(),
             publishing: Arc::default(),
             status_publishing: Arc::default(),
-            topology_view: topology_view.clone(),
-            mesh_status: topology_view.mesh_status_publisher.clone(),
-            fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(topology_view.fabric.clone())))),
+            channels: channels.clone(),
+            mesh_status: channels.topology_view.mesh_status_publisher.clone(),
+            fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(channels.topology_view.fabric.clone())))),
             wake: Arc::default(),
             publisher: author,
-            full_due: topology_view.forward_path.owes_full(),
+            full_due: channels.forward_path.owes_full(),
             published_as_primary: Arc::default(),
             published_wake: Arc::default(),
-            version: Arc::new(Mutex::new(SourceVersion::with_publication_counter(topology_view.view.forwarder.lock().unwrap().publication_counter()))),
+            version: Arc::new(Mutex::new(SourceVersion::with_publication_counter(channels.topology_view.view.forwarder.lock().unwrap().publication_counter()))),
             own: Arc::default(),
             withhold: Arc::default(),
         };
@@ -280,8 +280,8 @@ impl Backbone {
         tracing::info_span!("rdm.mesh.fabric.update.via-status-send", node = %self.current_name(), scope = %scope, status, changed_at_rafka_ms = changed_at, committed_revision = f.context().and_then(|c| c.primary_revision()).unwrap_or(0), sequence = f.context().and_then(|c| c.sequence.as_deref()).unwrap_or(""))
             .in_scope(|| tracing::info!("status sent"));
         let _ = self.channel.broadcast(f).await;
-        let _ = self.topology_view.forward(f).await;
-        let _ = self.topology_view.view.take(f, &self.fabric, "mesh-channel");
+        let _ = self.channels.forward(f).await;
+        let _ = self.channels.topology_view.view.take(f, &self.fabric, "mesh-channel");
     }
 
     /// The statuses as this node's topology states them now. While this node is its mesh's primary
@@ -291,9 +291,9 @@ impl Backbone {
     /// only once that scope's checklist is complete (`mesh_checklist` / `fabric_checklist`), with its old
     /// instant. The answer says which adopted statuses still wait for their checklist.
     pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str, mesh_checklist: bool, fabric_checklist: bool) -> Announced {
-        let (now, now_ms) = (Instant::now(), self.topology_view.clock.now_rafka_ms());
+        let (now, now_ms) = (Instant::now(), self.channels.topology_view.clock.now_rafka_ms());
         let me = self.current_publisher();
-        let digest_view = &self.topology_view.view.digest_view;
+        let digest_view = &self.channels.topology_view.view.digest_view;
         let held_meshes = digest_view.statuses.held_meshes_snapshot();
         let heard_mesh = held_meshes.get(&self.mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
         let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
@@ -329,7 +329,7 @@ impl Backbone {
 
     /// The publisher and version of `mesh`'s complete snapshot this admin holds from the backbone.
     pub fn held_source(&self, mesh: &str) -> Option<(PublisherId, u64)> {
-        self.topology_view.view.backbone_rx.lock().unwrap().held_version(mesh)
+        self.channels.topology_view.view.backbone_rx.lock().unwrap().held_version(mesh)
     }
 
     /// Whether this backbone publishes its mesh's members now (it is the mesh's primary).
@@ -339,11 +339,11 @@ impl Backbone {
 
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
-        self.topology_view.set_mesh_primary(primary);
+        self.channels.topology_view.set_mesh_primary(primary);
         // A forwarder that takes (or loses) the role has published nothing into its Mesh: the
         // first publication of every source after taking it is a full (gossip.md §3.3). The role,
         // its baseline and its term switch together under the forwarder's lock.
-        let forwarder_changed = self.topology_view.forward_path.set_role(primary);
+        let forwarder_changed = self.channels.forward_path.set_role(primary);
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
             self.published_as_primary.store(false, Ordering::Relaxed);
@@ -416,7 +416,7 @@ impl Backbone {
             let version = v.observe(&full);
             // What this primary publishes is its floor for its own source (gossip.md receive rules:
             // "against the installed floor, including a topology read"), moved under the same hold.
-            self.topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
+            self.channels.topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
             let snapshot_id = v.next_snapshot_id();
             *self.own.lock().unwrap() = Some((version, full.clone()));
             // Test seam: the projection withheld from its own mesh's channel ([`Withhold`] `aggregate`,
@@ -426,7 +426,7 @@ impl Backbone {
             } else if self.full_due.swap(false, Ordering::Relaxed) {
                 self.forward_fulls_now()
             } else {
-                self.topology_view.forward_path.source_with_clock(&me_name, &self.mesh, &publisher, version, &full, || topology_view.clock.now_rafka_ms())
+                self.channels.forward_path.source_with_clock(&me_name, &self.mesh, &publisher, version, &full, || topology_view.clock.now_rafka_ms())
             };
             (full, version, snapshot_id, sent, version != before)
         };
@@ -546,13 +546,13 @@ impl Backbone {
         // Every peer source this primary holds as a full: heard on the backbone, or installed from its
         // own topology read before any backbone publication of it reached it (gossip.md §3.3: "The
         // forwarder diffs the fulls it holds"). A source both hold goes out as the backbone's.
-        let mut held: Vec<(String, PublisherId, u64, Full)> = self.topology_view.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
-        let read: Vec<(String, PublisherId, u64, Full)> = self.topology_view.view.mesh_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh && held.iter().all(|(h, ..)| h != m)).collect();
+        let mut held: Vec<(String, PublisherId, u64, Full)> = self.channels.topology_view.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
+        let read: Vec<(String, PublisherId, u64, Full)> = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh && held.iter().all(|(h, ..)| h != m)).collect();
         held.extend(read);
         if let Some((version, full)) = self.own.lock().unwrap().clone() {
             held.push((self.mesh.clone(), publisher, version, full));
         }
-        self.topology_view.forward_path.fulls_with_clock(&me_name, &self.mesh, "full-due", &held, || self.topology_view.clock.now_rafka_ms())
+        self.channels.forward_path.fulls_with_clock(&me_name, &self.mesh, "full-due", &held, || self.channels.topology_view.clock.now_rafka_ms())
     }
 
     /// Publish the status event `kind` of `op`'s birth, which this admin executed (R-HB1 "The version
@@ -577,18 +577,18 @@ impl Backbone {
     ///
     /// Returns the publisher and version stamped.
     pub async fn publish_status_event(&self, kind: StatusEvent, op: &LifecycleOp) -> (PublisherId, u64) {
-        let topology_view = &self.topology_view;
+        let topology_view = &self.channels.topology_view;
         let me_name = self.current_name();
         let publisher = self.current_publisher();
         let (role, version) = if op.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
             let mut v = self.version.lock().unwrap();
-            topology_view.view.apply_status_event(kind, op, None, "executed");
+            self.channels.topology_view.view.apply_status_event(kind, op, None, "executed");
             let full = self.own_full(topology_view, self.own_members(topology_view));
             let version = v.observe(&full);
-            topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
+            self.channels.topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
             ("mesh-primary", version)
         } else {
-            topology_view.view.apply_status_event(kind, op, None, "executed");
+            self.channels.topology_view.view.apply_status_event(kind, op, None, "executed");
             ("executor", self.version.lock().unwrap().version())
         };
         tracing::info_span!(
@@ -605,7 +605,7 @@ impl Backbone {
             role,
         )
         .in_scope(|| tracing::info!("a status event this admin executed: applied to its own view, stamped with the version at which its subject changed, broadcast on its mesh channel"));
-        if let Err(e) = topology_view.mesh.broadcast(&kind.frame(op.clone(), publisher.clone(), version)).await {
+        if let Err(e) = self.channels.mesh().broadcast(&kind.frame(op.clone(), publisher.clone(), version)).await {
             tracing::info!(error = %e, frame = kind.name(), "the status event was not sent on the mesh channel");
         }
         (publisher, version)
@@ -615,13 +615,14 @@ impl Backbone {
     /// primary (R-MT1 Q3): it holds the record. No frame announces it: its next `Digest` carries it,
     /// and the mesh-primary's `MeshTopology` projection.
     pub fn hold_primary(&self, role: PrimaryRole, primary: Primary) {
-        self.topology_view.view.note_primary(role, &primary, "own");
+        self.channels.topology_view.view.note_primary(role, &primary, "own");
     }
 
 
-    /// Join the backbone through every node-admin known, once each.
-    pub async fn join_admins(&self, admins: Vec<EndpointAddr>) {
-        if let Ok(n) = self.channel.join_peers("backbone.join_admins", admins).await {
+    /// Join the backbone through every node-admin known, once each ([`Channels::join`] with
+    /// [`ChannelId::backbone`](crate::channel::ChannelId::backbone) on a held backbone).
+    pub(crate) async fn join_admins(&self, admins: Vec<EndpointAddr>) {
+        if let Ok(n) = self.channel.join_peers(admins).await {
             if n > 0 {
                 tracing::info_span!("rdm.mesh.connection.update.via-backbone-peers-joined", node = %self.current_name(), peers = n)
                     .in_scope(|| tracing::info!("backbone peers joined"));

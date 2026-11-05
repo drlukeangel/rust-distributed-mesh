@@ -23,6 +23,8 @@ use std::time::Duration;
 /// admission closed = no Ping runs any more.
 pub struct LiveMesh {
     pub topology_view: TopologyView,
+    /// The admin side's channels: what it publishes goes out on them.
+    pub channels: rdm_gossip::channel::Channels,
     pub client: NodeRpcClient,
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
@@ -315,7 +317,7 @@ impl AdminSide {
             held.status = status;
             held.clone()
         };
-        self.observer.topology_view.publish(&d).await.expect("the admin's digest publishes");
+        self.observer.channels.publish(&d).await.expect("the admin's digest publishes");
     }
 
     /// Register the birth `launch` describes, as this admin deployed it, before the node starts:
@@ -483,14 +485,16 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             vec![seed.clone()]
         }
     };
-    let topology_view = TopologyView::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), admin_node_id.as_str(), Arc::new(rafka_time.clone()), seeds).await.unwrap();
+    let topology_view = rdm_gossip::topology::TopologyView::new(fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), admin_node_id.as_str(), Arc::new(rafka_time.clone()));
+    let channels = rdm_gossip::channel::Channels::new(&gossip, &admin_ep, &topology_view).unwrap();
+    channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seeds).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let joins = Arc::new(rdm_admin::join::Joins::over(nodes_storage.clone()));
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let join_service = {
-        let learner = topology_view.clone();
+        let learner = channels.clone();
         Arc::new(rdm_admin::join::JoinService { nodes: Some(nodes_storage.clone()),
             me_path: name.path.clone(), me_name: name.name.clone(),
             joins: joins.clone(),
@@ -551,7 +555,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     // A silent admin side holds only what its primary publishes into the mesh.
     if matches!(role, SideRole::Primary) {
-        assert!(matches!(topology_view.take_read_chunk(held, "peer"), rdm_gossip::snapshot::Taken::Installed(_)));
+        assert!(matches!(channels.take_read_chunk(held, "peer"), rdm_gossip::snapshot::Taken::Installed(_)));
     }
     let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
@@ -633,7 +637,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     let primary = matches!(role, SideRole::Primary);
     if primary {
-        topology_view.publish(&admin_digest).await.expect("the admin's digest publishes");
+        channels.publish(&admin_digest).await.expect("the admin's digest publishes");
     }
     // The launcher is its mesh's primary, as a node-admin holding the role is: it executes its
     // members' lifecycle, sets each member's status from what it reports (its node.started, its ConnectionsDeleting and
@@ -643,7 +647,9 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // from that projection.
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
     let (publications, publisher) = if primary {
-        let backbone = Backbone::join(&gossip, &admin_ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
+        channels.set_publisher(&rdm_core::PublisherId { incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() });
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.expect("the launcher joins the backbone");
+        let backbone = channels.backbone().expect("the backbone is joined");
         backbone.set_mesh_primary(true);
         {
             backbone.hold_primary(rdm_core::PrimaryRole::MeshPrimary, rdm_core::Primary { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 });
@@ -658,7 +664,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             }))
         };
         let cell = digest_cell.clone();
-        (Some(publications), Some(AbortOnDrop(topology_view.publish_every(rdm_core::cadence::gossip_interval(), move || cell.lock().unwrap().clone()))))
+        (Some(publications), Some(AbortOnDrop(channels.publish_every(rdm_core::cadence::gossip_interval(), move || cell.lock().unwrap().clone()))))
     } else {
         (None, None)
     };
@@ -667,7 +673,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyService::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, path: name.path.clone(), name: name.name.clone()},
+        observer: LiveMesh { topology_view, channels: channels.clone(), client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, path: name.path.clone(), name: name.name.clone()},
         seed: (admin_ep.id().to_string(), addr),
         fabric: fabric.clone(),
         joins,

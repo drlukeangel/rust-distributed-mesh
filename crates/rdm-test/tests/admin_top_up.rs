@@ -200,18 +200,20 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
         let observer_id = NodeId::mint();
-        let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock(), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
-        crate::declare_gossip_probe(&channel);
-        until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
+        let topology_view = rdm_gossip::topology::TopologyView::new(&root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock());
+        let channels = rdm_gossip::channel::Channels::new(&probe.gossip, &probe.ep, &topology_view).expect("the cell joins mesh1's channel");
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
+        crate::declare_gossip_probe(&channels);
+        until("the cell's endpoint to hold the primary's replayed full", WRONG, || topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         // mesh1.node-admin.2's own Ready moves the primary's projection, which the primary then
         // publishes on the backbone and on mesh1's channel. A top-up read older than a full installed on
         // another channel is refused, so the gap waits for mesh1.node-admin.2 to hold, on mesh1's channel,
         // the publication that carries its Ready: the cell's endpoint shows which version that is.
         until("the primary to publish mesh1.node-admin.2's Ready on mesh1's channel", WRONG, || {
-            channel.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == MemberStatus::Ready)
+            topology_view.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == MemberStatus::Ready)
         })
         .await;
-        let (_, ready_at) = channel.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");
+        let (_, ready_at) = topology_view.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");
         until("mesh1.node-admin.2 to hold the primary's publication of its Ready", WRONG, || {
             admin.topology_view.held_source_version("mesh1").is_some_and(|(p, v)| p == root_publisher && v >= ready_at)
         })
@@ -231,7 +233,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
             in_flight: vec![],
             deleted: vec![],
         };
-        channel.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
+        channels.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
         let base_s = gap_base.to_string();
         let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
         tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.topology.update.via-gap", gap)).await.expect("mesh1.node-admin.2 took the delta as a version gap");
@@ -269,7 +271,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         assert!(root_topped.is_empty(), "the primary tops up from nobody: {root_topped:?}");
 
         let _ = std::fs::write(dir.join("facts.txt"), format!("held={held} gap_base={gap_base} gap_version={gap_version}\ntop_up={top_up:?}\n"));
-        drop(channel);
+        drop((channels, topology_view));
         probe.ep.close().await;
         admin.leave().await;
         root.leave().await;

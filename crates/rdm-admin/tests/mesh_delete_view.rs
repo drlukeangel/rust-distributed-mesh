@@ -85,8 +85,12 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let own = digest(&fabric, PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", &mesh3);
         let last = digest(&fabric, PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &mesh1);
-        let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()), vec![]).await.unwrap();
-        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh3", rdm_core::PublisherId { incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()));
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
+        channels.set_publisher(&rdm_core::PublisherId { incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() });
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+        let backbone = channels.backbone().expect("the backbone is joined");
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         assert!(topology_view.digest_view.record(own.clone()) && topology_view.digest_view.record(last.clone()), "the view holds both admins");
@@ -101,7 +105,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
         let live_before = status_of(&*view.read().await);
         records.set_backbone(backbone.clone(), &*view.read().await);
-        let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: me.path.clone(), me_name: me.name.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: None, status_service: Default::default() };
+        let lifecycle = GossipLifecycle { channels: channels.clone(), backbone: backbone.clone(), me_path: me.path.clone(), me_name: me.name.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: None, status_service: Default::default() };
 
         let root = tracing::info_span!("cell.mesh-delete-view", cell);
         let trace_id = trace_id(&root);

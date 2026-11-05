@@ -25,28 +25,6 @@ const PARTS: usize = 16;
 const MAX: usize = crate::frame::MAX_FRAME;
 const CHUNK: &str = crate::envelope::CHUNK_TYPE;
 
-/// X1 of docs/plans/proposal/gossip-neighbour-drop-at-join.md: RDM hands `peers` to iroh-gossip on
-/// `channel` at `caller`, a dial when no connection to a peer exists yet. One span per site, so a join's
-/// dials are named by the RDM code that asked for them. `named` is the list the caller named and `peers`
-/// the ones handed to iroh-gossip: a peer already asked is named and not dialled again, and the span
-/// says so (`named` beside `peers`), never only the dialled ones.
-pub fn dial_span(caller: &'static str, node: &str, channel: &str, channel_id: &TopicId, named: &[iroh::EndpointId], peers: &[iroh::EndpointId]) {
-    if named.is_empty() && peers.is_empty() {
-        return;
-    }
-    let channel_id: String = channel_id.as_bytes()[..4].iter().map(|b| format!("{b:02x}")).collect();
-    let short = |list: &[iroh::EndpointId]| list.iter().map(|p| p.fmt_short().to_string()).collect::<Vec<_>>().join(",");
-    let (named, peers) = (short(named), short(peers));
-    tracing::info_span!("rdm.mesh.connection.update.via-join-peers", caller, node, channel, channel_id = %channel_id, named = %named, peers = %peers)
-        .in_scope(|| tracing::info!("peers handed to iroh-gossip"));
-}
-
-/// The fabric-scoped channel identity of one application channel, by its name.
-pub fn channel_id(fabric: &rdm_core::FabricId, kind: &str) -> TopicId {
-    let bytes = postcard::to_allocvec(&("rdm.app", fabric, kind)).expect("strings encode");
-    TopicId::from(*blake3::hash(&bytes).as_bytes())
-}
-
 /// One application event; RDM does not interpret its data or compare its sequence.
 #[derive(Debug, Clone)]
 pub struct Event {
@@ -458,29 +436,26 @@ impl Hub {
         entry.state.chunk_cut.store(index, Ordering::Release);
         Ok(())
     }
-    /// Join the channel `kind` with `peers`, its first neighbours as the application names them: one
-    /// owned receiver per channel. A channel already subscribed hands `peers` to its gossip.
-    pub(crate) async fn join(&self, kind: &str, peers: Vec<iroh::EndpointId>) -> Result<Channel, ChannelError> {
+    /// Join the channel `kind` with `peers`, its first neighbours as the application names them. A
+    /// channel already subscribed hands `peers` to its gossip.
+    pub(crate) async fn join(&self, kind: &str, peers: Vec<iroh::EndpointId>) -> Result<(), ChannelError> {
         let subscribe = |e: anyhow::Error| ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() };
         let (e, created) = self.ensure_created(kind, &peers).await.map_err(subscribe)?;
-        let rx = e
-            .receiver
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| ChannelError::ReceiverHeld { r#type: kind.into() })?;
         if !created && !peers.is_empty() {
             let sender = e.state.sender.lock().unwrap().clone();
             if let Some(sender) = sender {
-                dial_span("apps.join", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers, &peers);
+                crate::channel::dial_span(&self.node_name(), kind, &crate::channel::ChannelId::app(&self.fabric, kind).topic(), &peers, &peers);
                 sender.join_peers(peers.clone()).await.map_err(|e| subscribe(e.into()))?;
             }
         }
         self.peers.lock().unwrap().insert(kind.into(), peers);
-        Ok(Channel {
-            state: e.state.clone(),
-            rx: Some(rx),
-        })
+        Ok(())
+    }
+    /// The joined channel `kind`'s one owned receiver, handed over once.
+    pub(crate) async fn receiver(&self, kind: &str) -> Result<Channel, ChannelError> {
+        let e = self.entries.lock().await.get(kind).cloned().ok_or_else(|| ChannelError::Subscribe { r#type: kind.into(), detail: "the channel is not joined".into() })?;
+        let rx = e.receiver.lock().unwrap().take().ok_or_else(|| ChannelError::ReceiverHeld { r#type: kind.into() })?;
+        Ok(Channel { state: e.state.clone(), rx: Some(rx) })
     }
     async fn ensure(&self, kind: &str, peers: &[iroh::EndpointId]) -> anyhow::Result<Arc<Entry>> {
         Ok(self.ensure_created(kind, peers).await?.0)
@@ -497,10 +472,10 @@ impl Hub {
         let mut peers = peers.to_vec();
         peers.sort_unstable();
         peers.dedup();
-        dial_span("apps.subscribe", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers, &peers);
+        crate::channel::dial_span(&self.node_name(), kind, &crate::channel::ChannelId::app(&self.fabric, kind).topic(), &peers, &peers);
         let channel = self
             .gossip
-            .subscribe(channel_id(&self.fabric, kind), peers)
+            .subscribe(crate::channel::ChannelId::app(&self.fabric, kind).topic(), peers)
             .await?;
         let (sender, mut stream) = channel.split();
         let (tx, rx) = mpsc::channel(QUEUE);

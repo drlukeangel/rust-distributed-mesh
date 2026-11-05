@@ -231,17 +231,9 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
         clock.adopt(1_000_000);
         let gossip = iroh_gossip::net::Gossip::builder().spawn(subject_ep.clone());
-        let topology_view = TopologyView::join(
-            &gossip,
-            &subject_ep,
-            &fabric_id,
-            "mesh1",
-            &mesh_id,
-            subject_id.as_str(),
-            clock,
-            Vec::new(),
-        )
-        .await
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, subject_id.as_str(), clock);
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &subject_ep, &topology_view).expect("join topology view");
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
         .expect("join topology view");
 
         let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
@@ -280,7 +272,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let status_for_get = status_cell.clone();
         let get_status = Arc::new(move || *status_for_get.lock().unwrap());
 
-        let subject_own = Arc::new(NodeSelf::new(subject_id.clone(), subject_inc.clone(), subject_name.clone(), "node".to_string(), subject_server, subject_control, subject_resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
+        let subject_own = Arc::new(NodeSelf::new(subject_id.clone(), subject_inc.clone(), subject_name.clone(), "node".to_string(), subject_server, subject_control, subject_resolver, channels, set_status, get_status, None, Duration::from_secs(2)));
         subject_own.set_connections(subject_writer.clone());
         subject_own.set_data_plane(subject_data_plane.clone());
         let _ = subject_own_slot.set(subject_own.clone());

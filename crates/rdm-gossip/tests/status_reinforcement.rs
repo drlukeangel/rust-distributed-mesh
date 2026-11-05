@@ -203,9 +203,13 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock());
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
+        channels.set_publisher(&author.clone());
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+        let backbone = channels.backbone().expect("the backbone is joined");
         backbone.announce_statuses("pending", "pending", true, true).await;
         assert!(topology_view.mesh_status("mesh1").is_none() && topology_view.fabric_status().is_none(), "a node holding no role publishes no status");
         let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
@@ -361,9 +365,13 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock());
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
+        channels.set_publisher(&author.clone());
+        channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+        let backbone = channels.backbone().expect("the backbone is joined");
 
         let primary1 = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
         let lost_node = NodeId::parse("0123456789aa").unwrap();

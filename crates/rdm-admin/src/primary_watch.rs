@@ -217,6 +217,8 @@ pub struct Watch {
     pub incarnation: IncarnationId,
     /// Its mesh topology.
     pub topology_view: TopologyView,
+    /// Its channels: iroh's local view of a suspect is read from their endpoint.
+    pub channels: rdm_gossip::channel::Channels,
     /// Its view of the topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// Its records of births and exits.
@@ -332,7 +334,7 @@ pub async fn run(w: Watch) {
             // One read of iroh's local view of the suspect, recorded beside the investigation;
             // the finding is the provider's and the Node RPC's, never this.
             let key = node.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-            let seen = rdm_transport::iroh_obs::observe_remote(&w.topology_view.endpoint(), key).await;
+            let seen = rdm_transport::iroh_obs::observe_remote(&w.channels.endpoint(), key).await;
             span.record("iroh_known_addrs", seen.known_addrs.as_str());
             span.record("iroh_active_addrs", seen.active_addrs.as_str());
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;

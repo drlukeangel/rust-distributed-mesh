@@ -58,10 +58,14 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![]).await.unwrap();
-    let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() }, vec![]).await.unwrap();
+    let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()));
+    let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+    channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
+    channels.set_publisher(&rdm_core::PublisherId { incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() });
+    channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+    let backbone = channels.backbone().expect("the backbone is joined");
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: "mesh1.node-admin".into(), me_name: "1".into(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_service: Default::default() };
+    let lifecycle = GossipLifecycle { channels: channels.clone(), backbone: backbone.clone(), me_path: "mesh1.node-admin".into(), me_name: "1".into(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_service: Default::default() };
 
     let rpc = member(&fabric, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 10);
     assert!(topology_view.digest_view.record(rpc.clone()), "the member's heartbeat is held");
@@ -104,7 +108,9 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![]).await.unwrap();
+    let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()));
+    let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
+    channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
     topology_view.set_mesh_primary(true);
 
     let member = member(&fabric, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 10);
@@ -169,7 +175,9 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     assert_eq!(status(), Some(MemberStatus::Ready), "its node.started sets it ready");
     assert_eq!(status_service.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported ConnectionsDeleting sets it ConnectionsDeleting");
-    let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
+    channels.set_publisher(&rdm_core::PublisherId { incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() });
+    channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
+    let backbone = channels.backbone().expect("the backbone is joined");
     assert_eq!(backbone.own_members(&topology_view).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::ConnectionsDeleting), "its projection carries it");
     assert!(matches!(status_service.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "and sets nothing");

@@ -2,7 +2,6 @@
 use rdm_core::{FabricId, MeshId};
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::channel::mesh_channel;
 use rdm_gossip::location::learn_addresses;
 use std::time::Duration;
 
@@ -24,8 +23,10 @@ fn run(malformed: bool) {
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(send_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut subscription = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![addr]).await.unwrap();
+        let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
         let (sender, _rx) = subscription.split();
         let author = crate::gossip_author(&fabric);

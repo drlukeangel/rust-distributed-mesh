@@ -1,8 +1,9 @@
 //! A member of a mesh's gossip topology, standing alone: one endpoint bound on loopback, the gossip
 //! protocol on it, a router accepting gossip, and the topology view joined under a publisher identity
 //! of its own. It is what an app-channel cell needs and nothing else: no Node RPC, no admin, no
-//! launch. A cell opens a channel with `member.topology_view.join_channel(name, &[other.endpoint()])`,
-//! naming its first neighbours by `endpoint_id`. The member owns its endpoint, its gossip and its router; dropping it
+//! launch. A cell opens an application channel with `member.app_channel(name, &[other.endpoint()])`
+//! (`Channels::join` with `ChannelId::app`, then the channel's one receiver), naming its first
+//! neighbours by `endpoint_id`. The member owns its endpoint, its gossip and its router; dropping it
 //! drops them.
 //!
 //! An embedding names no iroh crate: a member is reached through another's [`MemberAddr`].
@@ -23,8 +24,10 @@ pub struct Member {
     pub name: String,
     /// Explicit declared node type.
     pub r#type: String,
-    /// Its topology view: the mesh channel joined.
+    /// Its topology view: the cache its channels fill.
     pub topology_view: TopologyView,
+    /// Its channels: the mesh channel joined, and the application channels it joins.
+    pub channels: rdm_gossip::channel::Channels,
     /// The publisher identity its app events are sourced from.
     pub author: PublisherId,
     endpoint: iroh::Endpoint,
@@ -50,11 +53,12 @@ impl Member {
         let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let node_id = NodeId::mint();
         let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
-        let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect())
-            .await
+        let topology_view = rdm_gossip::topology::TopologyView::new(fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock());
+        let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seeds.iter().map(|s| s.0.clone()).collect()).await
             .unwrap_or_else(|e| panic!("{name:?}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
-        topology_view.set_author(&author, None);
-        Member { path: name.path.clone(), name: name.name.clone(), r#type: r#type.to_string(), topology_view, author, endpoint, gossip, _router: router }
+        channels.set_author(&author, None);
+        Member { path: name.path.clone(), name: name.name.clone(), r#type: r#type.to_string(), topology_view, channels, author, endpoint, gossip, _router: router }
     }
 
     /// Where this member is reached: its endpoint and the loopback address it bound.
@@ -108,6 +112,14 @@ impl Member {
     /// Its `endpoint_id`: how a channel join names it as a peer.
     pub fn endpoint(&self) -> rdm_core::EndpointId {
         rdm_core::EndpointId(self.endpoint_id().to_string())
+    }
+
+    /// Join the application channel `kind` through `peers` and take its one receiver: a second
+    /// receiver of one channel is refused `ReceiverHeld`.
+    pub async fn app_channel(&self, kind: &str, peers: &[rdm_core::EndpointId]) -> Result<rdm_gossip::gossip::Channel, rdm_gossip::gossip::ChannelError> {
+        let addrs = peers.iter().map(|p| rdm_gossip::channel::peer(p).expect("a peer's endpoint id parses")).collect();
+        self.channels.join(rdm_gossip::channel::ChannelId::app(self.topology_view.fabric_id(), kind), addrs).await.map_err(|e| rdm_gossip::gossip::ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() })?;
+        self.channels.app(kind).await
     }
 
     /// Its gossip protocol: RDM's own transport cells subscribe to a channel's iroh-gossip `TopicId` directly on it.

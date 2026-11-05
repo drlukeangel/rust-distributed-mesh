@@ -1,8 +1,6 @@
 //! Snapshot/delta receiver contracts, through the live channel and real `TopologyService`.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
-use rdm_gossip::channel::{mesh_channel, backbone_channel};
-use rdm_gossip::backbone::Backbone;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{Chunk, PublisherId, Taken};
@@ -39,8 +37,10 @@ fn story(story: Story) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut subscription = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
+        let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
+        let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
+        receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
         let (sender, _rx) = subscription.split();
 
@@ -49,8 +49,10 @@ fn story(story: Story) {
         let mut backbone_sender = None;
         if matches!(story, Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat) {
             let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
-            let mut backbone_channel = gossip.subscribe(backbone_channel(&fabric), vec![]).await.unwrap();
-            role = Some(Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![address]).await.unwrap());
+            let mut backbone_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric).topic(), vec![]).await.unwrap();
+            receiver_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+            receiver_channels.join(rdm_gossip::channel::ChannelId::backbone(&fabric), vec![address]).await.unwrap();
+            role = Some(receiver_channels.backbone().expect("the backbone is joined"));
             tokio::time::timeout(Duration::from_secs(5), backbone_channel.joined()).await.unwrap().unwrap();
             backbone_sender = Some(backbone_channel.split().0);
         }
@@ -61,7 +63,7 @@ fn story(story: Story) {
         let read = |digests| Chunk { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![] };
         let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], deleted: vec![] };
         let baseline = snapshot(10, 1, 0, 1, vec![digest.clone()], 100);
-        if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
+        if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
         else { send(&sender, &receiver, baseline.clone(), 1).await; }
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)));
         let heard_before = receiver.digest_view.get(id.as_str()).unwrap().1;
@@ -116,7 +118,7 @@ fn story(story: Story) {
                     // A gossip publication is half assembled at this same version. Its snapshot
                     // ordinal belongs to the author, whereas the read's chunks belong to its answer.
                     send(&sender, &receiver, snapshot(10, 99, 0, 2, vec![digest.clone()], 100), 4).await;
-                    assert!(matches!(receiver.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_)), "the directed repair read installs the held version despite unfinished gossip and resumes the source");
+                    assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_)), "the directed repair read installs the held version despite unfinished gossip and resumes the source");
                     assert!(receiver.desynced_sources().is_empty());
                     send(&sender, &receiver, delta(10, 11, vec![changed.clone()], 102), 5).await; expected=11;
                 }

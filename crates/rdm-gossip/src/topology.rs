@@ -33,11 +33,10 @@ use crate::{frame::*, location::*, status::*, primary::*, channel::*, view::*, d
 /// every gossip interval).
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
-/// A node's topology view: its mesh channel and what it holds.
+/// A node's topology view: the cache of the fabric's topology every node holds (gossip.md §3),
+/// filled by the channels it joins ([`crate::channel::Channels`]) and its topology read.
 #[derive(Clone)]
 pub struct TopologyView {
-    pub(crate) apps: Arc<crate::gossip::Hub>,
-    pub(crate) mesh: Channel,
     pub(crate) view: View,
     pub(crate) fabric: FabricId,
     pub(crate) mesh_id: MeshId,
@@ -45,12 +44,6 @@ pub struct TopologyView {
     pub digest_view: DigestView,
     /// The Rafka-time this process composes; every gossip stamp on this topology view reads it.
     pub(crate) clock: SharedClock,
-    /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
-    pub(crate) digest_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// This process's CPU and RAM, sampled into every digest it publishes.
-    pub(crate) load: Arc<rdm_transport::load::LoadSampler>,
-    /// What the forwarder decides and where it goes: this mesh's channel.
-    pub(crate) forward_path: ForwardPath,
     /// This birth's own config (node-config-update.md; Q203): the map the application reads
     /// ([`Self::config`]); never gossiped (Q203).
     pub(crate) config: Arc<Mutex<OwnConfig>>,
@@ -109,92 +102,18 @@ mod own_config_tests {
 }
 
 impl TopologyView {
-    /// The process's iroh endpoint this topology view rides: for read-only observations
-    /// (`rdm_transport::iroh_obs`), never for sending.
-    pub fn endpoint(&self) -> Endpoint {
-        self.mesh.endpoint.clone()
-    }
-
-    /// The endpoint's peer-location view: every other channel this process joins on the endpoint
-    /// installs its peers' addresses through it.
-    pub fn location_view(&self) -> LocationView {
-        self.mesh.location_view.clone()
-    }
-
-    /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
-    /// Rafka-time the process composes: every timestamp this topology view and its backbone put on a
-    /// frame reads it.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    /// The topology view of `node`, of `mesh` (`mesh_id` names its channel) in `fabric`: the cache
+    /// every node holds (gossip.md §3), empty until its channels and its topology read fill it.
+    /// `clock` is the Rafka-time the process composes: every timestamp read from it.
+    pub fn new(fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock) -> Self {
         let view = View::new(mesh, node);
-        let (forward_path, forward_rx) = ForwardPath::pair(view.forwarder.clone(), Arc::default());
-        let (replay_view, replay_fabric, replay_clock, replay_forward_path) = (view.clone(), fabric.clone(), clock.clone(), forward_path.clone());
-        // A neighbour coming up on this channel (a join, a heal, a refeed) hears what the primary
-        // holds: the statuses, and the forwarded full of every source it has published (gossip.md
-        // §3.1, §3.3), queued under the forwarder's lock so no delta decided after the replay can
-        // pass it on the channel.
-        let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
-            if replay_view.primary.load(Ordering::Relaxed) {
-                let replay_me = replay_view.current_name();
-                let prefix = replay_view.digest_view.statuses.held_frames(&replay_fabric, &replay_me);
-                let (frames, full_chunks, bytes) = replay_forward_path.replay(&replay_me, prefix, || replay_clock.now_rafka_ms());
-                Replayed { direct: Vec::new(), frames, full_chunks, bytes }
-            } else {
-                Replayed::default()
-            }
-        });
-        let location = LocationView::new(endpoint, node)?.with_held_name(view.held_name.clone());
-        let (v, f, ls, observing) = (view.clone(), fabric.clone(), location.clone(), clock.clone());
-        let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
-            let mut digest_fresh = false;
-            let carried = match frame.data() {
-                Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel, order).carried,
-                _ => {
-                    let (carried, fresh) = v.take_with(&frame, &f, "mesh-channel");
-                    digest_fresh = fresh;
-                    // A member's clock follows its current mesh primary's heartbeat, judged on the
-                    // digest as its view holds it: the primary's status is its own word, in its
-                    // projection, never on its heartbeat.
-                    if let (Frame::Digest { .. }, Some(held)) = (frame.data(), carried.first()) {
-                        let me_now = v.current_name();
-                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &me_now, v.primary.load(Ordering::Relaxed), &v.digest_view.primaries, held, fresh);
-                        crate::discipline::offer(&observing, &me_now, "mesh-primary-digest", verdict);
-                    }
-                    carried
-                }
-            };
-            for d in &carried {
-                ls.register(d);
-            }
-            if let Frame::Digest { digest } = frame.data() {
-                tracing::info_span!(
-                    "rdm.mesh.topology.update.via-digest-receipt",
-                    node = %v.current_name(), node_id = %digest.node.node_id,
-                    incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq,
-                    endpoint_id = %digest.node.endpoint_id.0, applied = digest_fresh,
-                    addresses_registered = carried.len(),
-                ).in_scope(|| tracing::info!("digest receipt finished classification and address registration"));
-            }
-        });
-        let (digest_view, own_mesh, target_view) = (view.digest_view.clone(), mesh.to_string(), view.clone());
-        let targets: Arc<dyn Fn() -> Held + Send + Sync> =
-            Arc::new(move || {
-                let me_name = target_view.current_name();
-                held_view(&digest_view, |d| d.node.mesh == own_mesh && d.node.node_id.to_string() != me_name)
-            });
-        let channel = Channel::join(gossip, endpoint, mesh_channel(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, view.order.clone(), on_frame, targets, replay, Arc::default(), clock.clone()).await?;
-        let sink_channel = channel.clone();
-        let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
-            let channel = sink_channel.clone();
-            Box::pin(async move { channel.broadcast(&f).await })
-        });
-        forward_path.spawn_sender(forward_rx, sink);
         let name = view.held_name.clone();
-        let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone());
         let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
-        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(rdm_transport::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
+        let me = Self { digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
         me.watch_meshes();
-        Ok(me)
+        me
     }
+
 
     /// Hand `fact` straight to this admin's own mesh [`StatusPublisher`] as its adopted held fact
     /// (Q272; node-create.md "A node-admin created into a live mesh" step 4), never through the gossip receive view.
@@ -206,23 +125,6 @@ impl TopologyView {
     pub fn adopted_mesh_status(&self) -> Option<StatusFact> {
         self.mesh_status_publisher.lock().unwrap().held()
     }
-
-    /// Join the application channel `name` with `peers`, its first neighbours, each by its
-    /// `endpoint_id` (gossip.md §8, Q362): nodes the application names from its topology view, or, in
-    /// `pre_node_ready`, its mesh-primary from the context. They are handed to iroh-gossip as the
-    /// channel's bootstrap peers. The channel's one receiver is handed over once; a peer whose
-    /// `endpoint_id` is not an endpoint key refuses the join by name.
-    pub async fn join_channel(&self, name: &str, peers: &[rdm_core::EndpointId]) -> Result<crate::gossip::Channel, crate::gossip::ChannelError> {
-        let mut ids = Vec::new();
-        for p in peers {
-            let key = p.0.parse::<iroh::PublicKey>().map_err(|e| crate::gossip::ChannelError::Subscribe { r#type: name.into(), detail: format!("peer endpoint_id {:?} is not an endpoint key: {e}", p.0) })?;
-            ids.push(key);
-        }
-        self.apps.join(name, ids).await
-    }
-    /// Testkit-only one-shot incoming chunk loss, absent from production.
-    #[cfg(feature = "testkit-gossip")]
-    pub async fn drop_app_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> { self.apps.drop_chunk_once(kind, index).await }
 
     /// This topology view's fabric identity.
     pub fn fabric_id(&self) -> &FabricId { &self.fabric }
@@ -253,19 +155,6 @@ impl TopologyView {
         let mut nodes: Vec<MeshDigest> = self.digest_view.current(self.digest_view.staleness_floor()).into_iter().filter(|d| filter.matches(d)).collect();
         nodes.sort_by(|a, b| a.node.location().cmp(&b.node.location()));
         Ok(nodes)
-    }
-
-    /// The exact author birth supplied by this process, when publication has bound it.
-    pub fn author_birth(&self) -> Option<crate::envelope::Birth> { self.mesh.author.lock().unwrap().clone() }
-
-    /// Supply this process's owned author birth; never resolve it from a descriptive name.
-    pub fn set_author(&self, author: &PublisherId, predecessor: Option<IncarnationId>) {
-        *self.digest_view.own.lock().unwrap() = Some(author.node_id.to_string());
-        *self.digest_view.own_predecessor.lock().unwrap() = predecessor;
-        *self.digest_view.observer_name.lock().unwrap() = author.node_id.to_string();
-        let birth = crate::envelope::Birth::publisher(&self.fabric, author);
-        *self.mesh.author.lock().unwrap() = Some(birth.clone());
-        self.view.forwarder.lock().unwrap().set_author(birth);
     }
 
     /// Evidence of what this node holds: a mesh it first hears, or hears
@@ -310,26 +199,6 @@ impl TopologyView {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         });
-    }
-
-    /// Hold the digest a birth presented at its join (`JoinNode`), and register where it is. A join
-    /// digest carries no status: an own-mesh member is held as heard, with the status this view holds
-    /// for it and none authored from the digest ([`DigestView::record_joined`]); a peer mesh's member
-    /// is topology, its held status kept.
-    pub fn learn(&self, d: MeshDigest, via: &'static str) {
-        if d.fabric_id != self.fabric {
-            return;
-        }
-        self.mesh.register(&d);
-        let taken = if d.node.mesh == self.view.mesh {
-            self.digest_view.record_joined(d.clone())
-        } else {
-            let held = self.digest_view.get(d.node.node_id.as_str()).filter(|(h, _)| h.node.incarnation == d.node.incarnation).map(|(h, _)| h.status);
-            self.digest_view.record_topology(MeshDigest { status: held.unwrap_or(rdm_core::MemberStatus::Pending), ..d.clone() })
-        };
-        if taken {
-            self.view.note(&d, via);
-        }
     }
 
     /// This node's launch path name.
@@ -426,39 +295,6 @@ impl TopologyView {
         &self.clock
     }
 
-    /// Broadcast this member's digest on its mesh channel (and record it). The heartbeat is
-    /// stamped here, once, for every caller: `digest_seq` is the next of this birth's own
-    /// sequence (from 1), `emitted_at_rafka_ms` is the composed clock's reading, and `node_state` is
-    /// the liveness it self-publishes. The order a receiver acts on is the sequence, whatever the
-    /// clock reads.
-    pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
-        {
-            let birth = crate::envelope::Birth { fabric: d.fabric_id.clone(), node: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() };
-            let mut author = self.mesh.author.lock().unwrap();
-            anyhow::ensure!(author.as_ref().is_none_or(|held| held == &birth), "digest birth differs from the supplied author birth");
-            *author = Some(birth);
-        }
-        *self.digest_view.own.lock().unwrap() = Some(d.node.node_id.to_string());
-        let mut d = self.reported(d);
-        d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
-        // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
-        // about itself; its status never travels on its heartbeat.
-        d.node_state = rdm_core::NodeState::self_published(d.status);
-        d.load = Some(self.load.sample());
-        // The primaries this birth is, as its view holds their records: its digest is their normal
-        // announcement (gossip.md "A primary change on gossip").
-        self.digest_view.recorded_primaries(&mut d);
-        d.gossip = Some(rdm_core::GossipStats {
-            heard: self.digest_view.current(self.digest_view.staleness_floor()).len() as u32,
-            neighbours: self.mesh.neighbors.lock().unwrap().len() as u32,
-            frames_sent: self.mesh.frames_sent.load(Ordering::Relaxed),
-            frames_received: self.mesh.frames_received.load(Ordering::Relaxed),
-        });
-        self.digest_view.record(d.clone());
-        self.mesh.broadcast(&Frame::Digest { digest: d }).await
-    }
-
     /// Hold `config`, the map its property writer published, as the row's map: the map the
     /// application reads from now on ([`Self::config`]). No digest carries it (Q203).
     pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
@@ -525,67 +361,6 @@ impl TopologyView {
         d
     }
 
-    /// Broadcast a frame onto this mesh's channel (a forward).
-    pub async fn forward(&self, f: &Frame) -> Result<()> {
-        self.mesh.broadcast(f).await
-    }
-
-    /// Leave this mesh's gossip channel: this node is a neighbour of no one on it and sends and hears
-    /// nothing there until [`TopologyView::start`]. Resolves once the channel is left.
-    pub async fn stop(&self) {
-        self.apps.suspend().await;
-        self.mesh.stop().await;
-    }
-
-    /// Join this mesh's gossip channel again through the peers it knows. Resolves once the channel is
-    /// re-subscribed.
-    pub async fn start(&self) {
-        self.mesh.start().await;
-        // Back on the channel, this node heard nothing while it was off it: every member's silence is
-        // measured from now, never from before the stop (node-recovery.md step 1: the window already
-        // running is the durable silence rows', which the tick reads). On the channel again it hears its
-        // members at once: the reopen dialled them (Q88).
-        self.digest_view.restart_silence();
-        if let Err(error) = self.apps.resume().await {
-            tracing::info_span!("rdm.mesh.channel.reject.via-subscribe", error = %error).in_scope(|| tracing::warn!("application channels could not rejoin"));
-        }
-    }
-
-    /// Resolves once this node's mesh channel has a gossip neighbour (at once when it has one). For a
-    /// test of gossip itself, which needs neighbours before it sends: no start or other step waits on
-    /// gossip, which is eventual and unordered.
-    pub async fn wait_for_neighbour(&self) {
-        let mut changed = self.mesh.neighbors_changed.subscribe();
-        loop {
-            changed.borrow_and_update();
-            if !self.mesh.neighbors.lock().unwrap().is_empty() {
-                return;
-            }
-            if changed.changed().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    /// The active gossip neighbours on this node's mesh channel.
-    pub fn neighbours(&self) -> usize {
-        self.mesh.neighbors.lock().unwrap().len()
-    }
-
-    /// Publish a lifecycle event this node authored on its own mesh channel,
-    /// applying it to its own view first. A `NodeDeleted` it authored is a deletion it executed: its
-    /// mesh's topology carries it on the backbone for the retention, so the deleted birth's own mesh
-    /// takes it when the birth was in a peer mesh (gossip.md §6.1).
-    pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
-        if let Frame::NodeDeleted { op, forwarded_by: None } = f {
-            self.digest_view.note_executed_deletion(op);
-        }
-        let authored = self.mesh.authored(f)?;
-        let f = &authored;
-        let _ = self.view.take(f, &self.fabric, "mesh-channel");
-        self.mesh.broadcast(f).await
-    }
-
     /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it), each at
     /// the publisher and version it holds it at and with the content that version was published
     /// with: this node's own mesh too, as its primary last put it into the mesh (gossip.md §3.1: a
@@ -626,40 +401,6 @@ impl TopologyView {
         held
     }
 
-    /// One chunk of a topology read from another node. The mesh installs atomically once every
-    /// chunk of its snapshot is held, through the same receiver the Mesh channel's snapshots
-    /// install into; a source it ends the desynchronization of is resumed. Every member the
-    /// snapshot carries is held as heard and its location registered.
-    pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
-        let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
-        let own_digests = (side == Side::Read && chunk.mesh == self.view.mesh).then(|| chunk.digests.clone());
-        let taken = self.view.take_read_chunk(chunk, side, &self.fabric);
-        if let Taken::Installed(i) = &taken {
-            for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
-                self.mesh.register(&d);
-            }
-            // A peer source installed from a topology read is a full this node holds: while it holds
-            // its Mesh's forwarder role, it goes into the Mesh as a backbone install would (gossip.md
-            // §3.3); without the role, its first full carries it (`Backbone::forward_fulls`).
-            if side == Side::ReadPeer && i.mesh != self.view.mesh {
-                let me = self.view.current_name();
-                let _ = self.forward_path.source_with_clock(&me, &i.mesh, &i.publisher, i.topology_version, &i.full, || self.clock.now_rafka_ms());
-            }
-            // A peer source installed from a topology read is a full this node holds: while it holds
-            // its Mesh's forwarder role, it goes into the Mesh as a backbone install would (gossip.md
-            // §3.3); without the role, its first full carries it (`Backbone::forward_fulls`).
-            if side == Side::ReadPeer && i.mesh != self.view.mesh {
-                let me = self.view.current_name();
-                let _ = self.forward_path.source_with_clock(&me, &i.mesh, &i.publisher, i.topology_version, &i.full, || self.clock.now_rafka_ms());
-            }
-        } else if let Some(digests) = own_digests {
-            for d in digests.into_iter().filter(|d| d.fabric_id == self.fabric && d.node.mesh == self.view.mesh && self.digest_view.get(d.node.node_id.as_str()).is_some()) {
-                self.mesh.register(&d);
-            }
-        }
-        taken
-    }
-
     /// The sources of the Mesh channel that are desynchronized now, with the gap that did it.
     pub fn desynced_sources(&self) -> Vec<(String, Gap)> {
         self.view.mesh_rx.lock().unwrap().desynced()
@@ -691,141 +432,6 @@ impl TopologyView {
     /// ([`DigestView::mesh_primary`]). The node tops up from it and from no other.
     pub fn mesh_primary(&self) -> Result<MeshDigest, NoMeshPrimary> {
         self.digest_view.mesh_primary(&self.view.mesh)
-    }
-
-    /// Resume desynchronized sources from this Mesh's own primary (gossip.md §3.3): when a delta
-    /// did not follow what is held, the node reads the current topology of each desynchronized
-    /// mesh from its own mesh-primary (Node RPC op `0x1E`), installs it atomically, and resumes.
-    /// Never the remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or
-    /// held for later; the next delta or full from the primary signals or resumes it again.
-    pub fn spawn_top_up(&self, fetch: TopUpFetch) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(self.top_ups(fetch))
-    }
-
-    /// The top-up of [`Self::spawn_top_up`] as a task for the caller to run: a node-admin runs it
-    /// behind its stop gate, so a stopped admin tops up nothing and a gap signalled while it was stopped
-    /// is topped up once it runs again.
-    pub fn top_ups(&self, fetch: TopUpFetch) -> impl std::future::Future<Output = ()> + Send + 'static {
-        let me = self.clone();
-        async move {
-            let pacing = rdm_transport::delivery::Pacing::from_cadences();
-            let mut again = 0u32;
-            loop {
-                // One attempt per signal: a delta heard on a desynchronized source signals again,
-                // so a top-up that failed is attempted when the primary next speaks. A pull that
-                // installed a copy older than a delta dropped while it was in flight pulls again
-                // (gossip.md §3.3, Q130), on the one backoff rule.
-                if again == 0 {
-                    me.view.desync.notified().await;
-                } else {
-                    tokio::time::sleep(pacing.after(again)).await;
-                }
-                let gaps = me.desynced_sources();
-                again = if !gaps.is_empty() && me.top_up(&fetch, gaps).await { again + 1 } else { 0 };
-            }
-        }
-    }
-
-    /// One pull of `gaps`: `true` when it installed a copy of a source older than a delta that
-    /// source dropped while the pull was in flight, so the source is still behind.
-    pub(crate) async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) -> bool {
-        let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
-        let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
-        let node = self.view.current_name();
-        let primary = match self.mesh_primary() {
-            Ok(primary) => primary,
-            Err(no) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), primary = %no.primary().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
-                    .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
-                return false;
-            }
-        };
-        // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
-        // publishes and every peer mesh from the backbone, never from its mesh-channel sources.
-        if self.digest_view.own.lock().unwrap().as_deref() == Some(primary.node.node_id.as_str()) {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = "this-node-is-the-mesh-primary")
-                .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
-            return false;
-        }
-        let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
-        match fetch(self.clone(), primary.clone(), names).await {
-            Ok(done) => {
-                let still: Vec<String> = self.desynced_sources().into_iter().map(|(m, _)| m).collect();
-                let behind = done.installed.iter().any(|(m, _)| still.contains(m));
-                tracing::info_span!(
-                    "rdm.mesh.entry.update.via-top-up",
-                    node = %node,
-                    meshes = %meshes,
-                    reasons = %reasons,
-                    mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name,
-                    served_by_path = %primary.node.path, served_by_name = %primary.node.name,
-                    installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
-                    still_desynced = still.join(","),
-                    pulls_again = behind,
-                )
-                .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));
-                behind
-            }
-            Err(e) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = "pull-refused", error = %e)
-                    .in_scope(|| tracing::info!("the Mesh's primary did not answer the top-up"));
-                false
-            }
-        }
-    }
-
-    /// Re-broadcast `digest()` every `every` until the returned handle is aborted.
-    pub fn publish_every<F>(&self, every: Duration, digest: F) -> tokio::task::JoinHandle<()>
-    where
-        F: Fn() -> MeshDigest + Send + 'static,
-    {
-        let me = self.clone();
-        tokio::spawn(async move {
-            let mut last_heartbeat: Option<Instant> = None;
-            loop {
-                if !*me.mesh.stopped.borrow() {
-                    let d = digest();
-                    let _ = me.publish(&d).await;
-                    if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
-                        last_heartbeat = Some(Instant::now());
-                        me.heartbeat(&d);
-                    }
-                }
-                tokio::time::sleep(every).await;
-            }
-        })
-    }
-
-    /// One heartbeat span, a root of its own: this node is alive and publishing, how many other
-    /// members its view holds as heard, and what its clock reads against the host's wall clock.
-    pub(crate) fn heartbeat(&self, d: &MeshDigest) {
-        let name = self.held_name(&d.node.location());
-        let peer_count = self.digest_view.current(self.digest_view.staleness_floor()).iter().filter(|m| m.node.node_id != d.node.node_id).count() as u64;
-        let wall_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_millis() as i64).unwrap_or(0);
-        let rafka_time_ms = self.clock.now_rafka_ms() as i64;
-        tracing::info_span!(
-            parent: None,
-            "rdm.mesh.node.update.via-heartbeat",
-            node_path = %name.path, node_name = %name.name,
-            node_id = %d.node.node_id,
-            mesh = %d.node.mesh,
-            peer_count,
-            wall_time_ms,
-            rafka_time_ms,
-            clock_skew_ms = rafka_time_ms - wall_time_ms,
-            digest_seq = self.digest_seq.load(Ordering::SeqCst),
-        )
-        .in_scope(|| tracing::info!("heartbeat"));
-    }
-
-    /// Join this mesh channel through more peers (its members, once known).
-    pub async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
-        self.mesh.join_peers("topology.join_peers", peers).await
-    }
-
-    /// [`Self::join_peers`], its dials named by `caller` (X1 telemetry).
-    pub async fn join_peers_as(&self, caller: &'static str, peers: Vec<EndpointAddr>) -> Result<usize> {
-        self.mesh.join_peers(caller, peers).await
     }
 }
 
@@ -893,7 +499,7 @@ pub struct TopUpDone {
 /// Reads the topology of `meshes` from a mesh primary and installs it into the given topology view
 /// (the topology read, over Node RPC): the topology view holds no Node RPC client, the process
 /// composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(TopologyView, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -3422,8 +3028,12 @@ mod tests {
             replayed_during_stamp: Mutex::new(Vec::new()),
         });
         let clock: SharedClock = racing.clone();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock, vec![]).await.unwrap();
-        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
+        let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock);
+        let m_channels = crate::channel::Channels::new(&gossip, &ep, &m).unwrap();
+        m_channels.join(crate::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![]).await.unwrap();
+        m_channels.set_publisher(&rdm_core::PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() });
+        m_channels.join(crate::channel::ChannelId::backbone(&fabric), vec![]).await.unwrap();
+        let bb = m_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
         // Clear `full_due` after initial role take so publication 1 is a normal source full and publication 2 is a delta.
         bb.full_due.store(false, Ordering::Relaxed);
@@ -3458,8 +3068,12 @@ mod tests {
         let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", p.clone(), vec![]).await.unwrap();
+        let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let m_channels = crate::channel::Channels::new(&gossip, &ep, &m).unwrap();
+        m_channels.join(crate::channel::ChannelId::mesh(m.fabric_id(), m.mesh_id()), vec![]).await.unwrap();
+        m_channels.set_publisher(&p.clone());
+        m_channels.join(crate::channel::ChannelId::backbone(&fabric), vec![]).await.unwrap();
+        let bb = m_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone()]).await);
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone()]).await);
@@ -3467,7 +3081,7 @@ mod tests {
         let published = bb.own.lock().unwrap().as_ref().map(|(v, _)| *v).expect("published");
         assert!(published >= 3, "three material changes bump the version three times: {published}");
         let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("topology-read".into()), topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone()], in_flight: vec![], deleted: vec![] };
-        let taken = m.take_read_chunk(read(1), "mesh1");
+        let taken = m_channels.take_read_chunk(read(1), "mesh1");
         assert!(
             matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: 1 }) if held_version == published),
             "a read of its own v1 below its published v{published} is refused: {taken:?}"

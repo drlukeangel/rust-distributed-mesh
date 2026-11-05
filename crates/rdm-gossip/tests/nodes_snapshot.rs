@@ -18,9 +18,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_gossip::channel::backbone_channel;
 use rdm_gossip::location::learn_addresses;
-use rdm_gossip::backbone::Backbone;
 use rdm_gossip::frame::{Frame, MAX_FRAME};
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
@@ -450,13 +448,23 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
         let fab = fabric();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()]).await.unwrap();
+        let src_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock());
+        let src_m_channels = rdm_gossip::channel::Channels::new(&src_node.gossip, &src_node.ep, &src_m).unwrap();
+        src_m_channels.join(rdm_gossip::channel::ChannelId::mesh(src_m.fabric_id(), src_m.mesh_id()), vec![]).await.unwrap();
+        let fwd_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let fwd_m_channels = rdm_gossip::channel::Channels::new(&fwd_node.gossip, &fwd_node.ep, &fwd_m).unwrap();
+        fwd_m_channels.join(rdm_gossip::channel::ChannelId::mesh(fwd_m.fabric_id(), fwd_m.mesh_id()), vec![]).await.unwrap();
+        let mem_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let mem_m_channels = rdm_gossip::channel::Channels::new(&member_node.gossip, &member_node.ep, &mem_m).unwrap();
+        mem_m_channels.join(rdm_gossip::channel::ChannelId::mesh(mem_m.fabric_id(), mem_m.mesh_id()), vec![fwd_addr.clone()]).await.unwrap();
         let src_birth = IncarnationId::mint();
-        let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
-        let _ = backbone_channel(&fab);
+        src_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() });
+        src_m_channels.join(rdm_gossip::channel::ChannelId::backbone(src_m.fabric_id()), vec![]).await.unwrap();
+        let src_bb = src_m_channels.backbone().expect("the backbone is joined");
+        fwd_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        fwd_m_channels.join(rdm_gossip::channel::ChannelId::backbone(fwd_m.fabric_id()), vec![src_addr.clone()]).await.unwrap();
+        let fwd_bb = fwd_m_channels.backbone().expect("the backbone is joined");
+        let _ = rdm_gossip::channel::ChannelId::backbone(&fab).topic();
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
         let remote = Mesh::new("mesh2", 40);
@@ -578,9 +586,15 @@ fn a_primary_puts_a_peer_source_it_installed_from_a_topology_read_into_its_mesh(
         learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
         let fab = fabric();
         let mesh1_id = MeshId::mint();
-        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()]).await.unwrap();
-        let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+        let fwd_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock());
+        let fwd_m_channels = rdm_gossip::channel::Channels::new(&fwd_node.gossip, &fwd_node.ep, &fwd_m).unwrap();
+        fwd_m_channels.join(rdm_gossip::channel::ChannelId::mesh(&fab, &mesh1_id), vec![]).await.unwrap();
+        let mem_m = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock());
+        let mem_m_channels = rdm_gossip::channel::Channels::new(&member_node.gossip, &member_node.ep, &mem_m).unwrap();
+        mem_m_channels.join(rdm_gossip::channel::ChannelId::mesh(&fab, &mesh1_id), vec![fwd_addr.clone()]).await.unwrap();
+        fwd_m_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        fwd_m_channels.join(rdm_gossip::channel::ChannelId::backbone(&fab), vec![]).await.unwrap();
+        let fwd_bb = fwd_m_channels.backbone().expect("the backbone is joined");
         // The peer Mesh's complete snapshot, as the fabric-primary's topology read answers it: no
         // backbone publication of mesh2 ever reaches this node-admin.
         let src = publisher("mesh2.node-admin.1");
@@ -588,7 +602,7 @@ fn a_primary_puts_a_peer_source_it_installed_from_a_topology_read_into_its_mesh(
         let full = Full::new(remote.digests(1), vec![], vec![]);
         let mut taken = None;
         for f in mesh_topology_chunks(&full, &src, 3, 0, Some("topology-read")) {
-            taken = Some(fwd_m.take_read_chunk(chunk_of(&f), "mesh2"));
+            taken = Some(fwd_m_channels.take_read_chunk(chunk_of(&f), "mesh2"));
         }
         assert!(matches!(taken, Some(Taken::Installed(_))), "the read installs the peer source: {taken:?}");
         // The node-admin takes its Mesh's primary role and publishes its own Mesh.
