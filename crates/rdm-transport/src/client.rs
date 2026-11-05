@@ -1042,18 +1042,29 @@ impl NodeRpcClient {
                         span.in_scope(|| self.tell_call_end(opts, None, &out));
                         return Err((out, None));
                     }
+                    // The next attempt at its delay (node-rpc.md §43), or sooner when a change names
+                    // the receiver: a change that does not spends no attempt.
+                    let next_attempt = tokio::time::sleep_until(started + pacing.after(spent));
+                    tokio::pin!(next_attempt);
                     let mut changes = self.resolver.changes();
-                    let moved = async {
-                        match changes.as_mut() {
-                            Some(c) => {
-                                let _ = c.changed().await;
+                    loop {
+                        let moved = async {
+                            let changed = match changes.as_mut() {
+                                Some(c) => c.changed().await.is_ok(),
+                                None => false,
+                            };
+                            if !changed {
+                                std::future::pending::<()>().await;
                             }
-                            None => std::future::pending::<()>().await,
+                        };
+                        tokio::select! {
+                            () = &mut next_attempt => break,
+                            () = moved => {
+                                if !matches!(self.resolver.resolve(target), Err(ResolveFailure::Unknown)) {
+                                    break;
+                                }
+                            }
                         }
-                    };
-                    tokio::select! {
-                        () = tokio::time::sleep_until(started + pacing.after(spent)) => {}
-                        () = moved => {}
                     }
                 }
                 Err(r) => return Err((PreCommit::begin(op).not_sent(r), None)),

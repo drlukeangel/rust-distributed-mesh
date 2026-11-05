@@ -478,7 +478,7 @@ async fn read_with(
     let mut stream = match client.call_stream::<Topology>(target, &req, &opts).await {
         Ok((s, _)) => s,
         Err((RpcOutcome::Reply(r), _)) => return Err(refusal_of(r.value().clone())),
-        Err((other, _)) => return Err(TopologyFailure::Unreached(format!("the call ended {}", other.name()))),
+        Err((other, _)) => return Err(TopologyFailure::Unreached(format!("the call ended {}: {other:?}", other.name()))),
     };
     let mut read = TopologyRead::default();
     let mut served_meshes = None;

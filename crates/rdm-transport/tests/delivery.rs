@@ -1532,6 +1532,32 @@ async fn an_unresolved_receiver_spends_an_attempt_never_a_wait() {
     assert!(started.elapsed() < CADENCE, "at once: {:?}", started.elapsed());
 }
 
+/// Cell 24g (node-rpc.md §43: "the next attempt at the publish cadence, then doubling"). CONTRACT:
+/// attempts on a receiver this caller's view does not hold are spent at their delays, however often
+/// the view changes meanwhile: a change that names other nodes spends none, so the call is still
+/// open when its receiver arrives and is delivered once. Must NOT happen: three changes spending
+/// the three attempts at once, the call ending `NotSent`/`Resolve(Unknown)` in milliseconds.
+#[tokio::test]
+async fn a_resolver_change_that_does_not_name_the_receiver_spends_no_attempt() {
+    let s = served().await;
+    let (client, resolver) = client_of(&[]).await;
+    let mut others = Vec::new();
+    for _ in 0..6 {
+        others.push(unreachable().await.2);
+    }
+    let (c, t) = (client.clone(), s.target());
+    let call = tokio::spawn(async move { c.call::<Command>(&t, &run(249, Mode::Apply), &CallOptions::default()).await.0 });
+    for other in others {
+        tokio::time::sleep(CADENCE / 20).await;
+        resolver.insert(other);
+    }
+    assert!(!call.is_finished(), "six changes naming other nodes left the call's attempts unspent");
+    resolver.insert(s.node.clone());
+    let out = tokio::time::timeout(FLOOR * 2, call).await.expect("delivered once the receiver resolved").unwrap();
+    assert_eq!(ran(&out), Some((249, 1)), "{out:?}");
+    assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
+}
+
 /// Cell 25 (Q311). CONTRACT: one attempt's resolve, dial and send are bounded by its time limit,
 /// and once acked its reply is: to a receiver that cannot be reached a call ends
 /// `NotSent`/`Deadline` after its three attempts, each cut at its limit; to a receiver that accepts
