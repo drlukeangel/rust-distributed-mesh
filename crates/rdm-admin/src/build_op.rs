@@ -700,7 +700,7 @@ fn build_id_of(id: &str) -> Result<BuildId, BuildReply> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accepted::{FabricTopology, TopologyFull};
+    use crate::accepted::{FabricTopology, MeshTopology};
     use crate::build::MeshDesired;
     use crate::build_state::{BuildAccepted, BuildStateAdapter as _, MemoryBuildStateAdapter};
     use crate::control_plane::InProgress;

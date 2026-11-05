@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 /// One Mesh of the accepted topology: every node it should have, by `(path, name)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TopologyFull {
+pub struct MeshTopology {
     /// The mesh's name.
     pub name: String,
     /// The mesh's id (node-identity-and-state.md §2.7, "Who mints it"): minted once, when the mesh
@@ -64,7 +64,7 @@ pub fn root_storage() -> rdm_core::meta::StoragePersistence {
     rdm_core::meta::StoragePersistence::of_type(rdm_core::NODE_ADMIN)
 }
 
-impl TopologyFull {
+impl MeshTopology {
     /// A new mesh from its counts, entering the accepted topology: its id minted, and every path
     /// minted with its type's default create spec (ingress normalization; the Build is
     /// explicit from here).
@@ -134,7 +134,7 @@ pub struct FabricTopology {
     /// The fabric's name.
     pub fabric: String,
     /// The accepted meshes, by name.
-    pub meshes: BTreeMap<String, TopologyFull>,
+    pub meshes: BTreeMap<String, MeshTopology>,
     /// The fabric's `topology_storage_provider` at the Build's acceptance (storage.md §2), the Fabric
     /// row's: a Build never changes it. The journal's record of the accepted Build carries it.
     pub topology_storage_provider: Option<String>,
@@ -161,7 +161,7 @@ impl FabricTopology {
     /// (`RDM_TOPOLOGY_STORAGE_PROVIDER`, storage.md §2 Day 0).
     pub fn root_on(fabric: &str, mesh: &str, mesh_id: MeshId, topology_storage_provider: &str) -> Self {
         let mut meshes = BTreeMap::new();
-        meshes.insert(mesh.to_string(), TopologyFull::with_id(&MeshDesired::of(mesh, [("node-admin", 1), ("node", 0)]), mesh_id));
+        meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [("node-admin", 1), ("node", 0)]), mesh_id));
         Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()), pinned: Vec::new(), created: Vec::new() }
     }
 
@@ -196,7 +196,7 @@ impl FabricTopology {
     }
 
     /// The accepted mesh named `name`.
-    pub fn mesh(&self, name: &str) -> Option<&TopologyFull> {
+    pub fn mesh(&self, name: &str) -> Option<&MeshTopology> {
         self.meshes.get(name)
     }
 
@@ -258,8 +258,8 @@ impl FabricTopology {
     /// fixtures and Day-0 adoption, never planning: a mesh whose id no member of the view has stated
     /// takes a fresh id, as a fixture's new mesh does.
     pub fn of_observed(observed: &Topology) -> Self {
-        let empty = |name: &str, mesh_id: Option<MeshId>| TopologyFull { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
-        let mut meshes: BTreeMap<String, TopologyFull> = observed.meshes.iter().map(|m| (m.name.clone(), empty(&m.name, m.id.clone()))).collect();
+        let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
+        let mut meshes: BTreeMap<String, MeshTopology> = observed.meshes.iter().map(|m| (m.name.clone(), empty(&m.name, m.id.clone()))).collect();
         for n in observed.births().filter(|n| n.status.is_live()) {
             let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| empty(&n.mesh, None));
             mesh.spec_by_path.insert(n.location(), NodeSpec::default_for(n.location(), &n.mesh, &n.r#type));
@@ -277,9 +277,9 @@ impl FabricTopology {
     /// its type's defaults.
     pub fn of_records(observed: &Topology, accepted: &FabricTopology) -> Self {
         let held_id = |name: &str, id: Option<&MeshId>| id.cloned().or_else(|| accepted.meshes.get(name).map(|m| m.mesh_id.clone())).unwrap_or_else(MeshId::mint);
-        let empty = |name: &str, mesh_id: MeshId| TopologyFull { name: name.to_string(), mesh_id, nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
+        let empty = |name: &str, mesh_id: MeshId| MeshTopology { name: name.to_string(), mesh_id, nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() };
         let standing: Vec<&crate::model::Node> = observed.births().filter(|n| observed.node(&n.location()).is_some_and(|current| current.node_id == n.node_id)).collect();
-        let mut meshes: BTreeMap<String, TopologyFull> = observed
+        let mut meshes: BTreeMap<String, MeshTopology> = observed
             .meshes
             .iter()
             .filter(|m| m.status != crate::model::ScopeStatus::Dead || standing.iter().any(|n| n.mesh == m.name))
@@ -299,7 +299,7 @@ impl FabricTopology {
     pub fn desired(&self) -> FabricDesired {
         FabricDesired {
             fabric: self.fabric.clone(),
-            meshes: self.meshes.values().map(TopologyFull::desired).collect(),
+            meshes: self.meshes.values().map(MeshTopology::desired).collect(),
         }
     }
 }
@@ -374,7 +374,7 @@ fn created(next: &mut FabricTopology, meshes: &[rdm_core::build::Meshes], nodes:
         if !added.insert(m.name.clone()) {
             return Err(BuildReject::DuplicateMesh { mesh: m.name.clone() });
         }
-        next.meshes.insert(m.name.clone(), TopologyFull { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() });
+        next.meshes.insert(m.name.clone(), MeshTopology { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), spec_by_path: BTreeMap::new() });
     }
     let mut named = BTreeSet::new();
     for n in nodes {
@@ -866,7 +866,7 @@ mod tests {
 
     /// A Build of the whole topology `meshes`: it creates every node, each under its fixture node.id.
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        creating(FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), TopologyFull::of(&MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])))).collect() })
+        creating(FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [("node-admin", *a), ("node", *r)])))).collect() })
     }
 
     /// `topology` as a Build that creates every node it names, each under its fixture node.id (D58: the
@@ -876,7 +876,7 @@ mod tests {
         topology
     }
 
-    fn paths(m: &TopologyFull) -> Vec<PathName> {
+    fn paths(m: &MeshTopology) -> Vec<PathName> {
         let mut all: Vec<PathName> = m.nodes.iter().cloned().collect();
         all.sort_by_key(|p| !m.spec(p).is_some_and(|s| rdm_core::is_node_admin(&s.r#type)));
         all
@@ -1223,7 +1223,7 @@ mod tests {
     #[test]
     fn every_materialized_path_carries_exactly_one_create_spec() {
         use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
-        let mut m = TopologyFull::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1), ("node", 1)]));
+        let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("broker", 2), ("gateway", 1), ("node", 1)]));
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
         let preserve = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
@@ -1284,7 +1284,7 @@ mod tests {
     fn a_complete_topology_preserves_explicit_ownership_independently_of_the_path() {
         let path: PathName = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
         let spec = NodeSpec { executable: Some(exe("worker", "compute")), ..NodeSpec::default_for(path.clone(), "mesh2", "compute") };
-        let mut mesh = TopologyFull::of(&MeshDesired::of("mesh2", [("node-admin", 1)]));
+        let mut mesh = MeshTopology::of(&MeshDesired::of("mesh2", [("node-admin", 1)]));
         mesh.nodes.insert(path.clone());
         mesh.spec_by_path.insert(path.clone(), spec.clone());
         assert_eq!(mesh.nodes_of_type("compute").collect::<Vec<_>>(), vec![&path]);

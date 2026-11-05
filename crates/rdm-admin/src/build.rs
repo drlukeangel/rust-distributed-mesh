@@ -95,7 +95,7 @@ pub enum BuildOperation {
         /// The mesh to create.
         mesh: String,
         /// The mesh's id, minted once when the mesh entered the accepted topology
-        /// ([`crate::accepted::TopologyFull::mesh_id`]): every run of the operation, by any executor,
+        /// ([`crate::accepted::MeshTopology::mesh_id`]): every run of the operation, by any executor,
         /// claims the mesh's name with it, so a re-run finds the mesh's own row.
         mesh_id: rdm_core::MeshId,
     },

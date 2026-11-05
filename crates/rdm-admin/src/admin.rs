@@ -1577,12 +1577,12 @@ mod tests {
         let desired = |mesh: &str, rpc: u32| crate::build::MeshDesired::of(mesh, [("node-admin", 1), ("node", rpc)]);
         let records = Records::default();
         let mut plan = crate::accepted::FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        plan.meshes.insert("mesh1".into(), crate::accepted::TopologyFull::of(&desired("mesh1", 1)));
+        plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 1)));
         records.set_planned(&plan);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Ready, "every planned birth of mesh1 is heard and ready");
-        plan.meshes.insert("mesh1".into(), crate::accepted::TopologyFull::of(&desired("mesh1", 2)));
-        plan.meshes.insert("mesh2".into(), crate::accepted::TopologyFull::of(&desired("mesh2", 1)));
+        plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 2)));
+        plan.meshes.insert("mesh2".into(), crate::accepted::MeshTopology::of(&desired("mesh2", 1)));
         records.set_planned(&plan);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Pending, "mesh1.node.2 is planned and not heard");
@@ -3158,7 +3158,7 @@ mod tests {
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
-    /// node's digest, only the stop overlay the mesh topology carries (`TopologyFull.in_flight`, read
+    /// node's digest, only the stop overlay the mesh topology carries (`MeshTopology.in_flight`, read
     /// by `GetTopology`). Its view lists the node `Leaving` and stopped from that overlay.
     #[test]
     fn a_successor_admin_lists_a_stopped_node_from_the_stop_overlay_it_read() {
