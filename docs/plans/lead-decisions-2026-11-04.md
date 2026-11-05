@@ -29,3 +29,29 @@ Each row is a decision the lead made under that order, with its reason.
 | D21 | §5.3's one Rust `Status` type waits for Q374's one wire frame (D1); this refactor folds no status shape | over today's five frames it is five shapes under one name (four order keys, three recovery paths, two send counts: §5.3's table) kept in step with `Frame`, an adapter between spellings (Q331); `NodeDeleted` carries no publisher or version, so building it with `StatusEvent`'s other two node frames needs an `Option` the frame does not have |
 | D22 | The node's name stays on its topology view, its one holder (`set_name`, `held_name`); §4.3's move of the name is not made | the view's receive rules name the node by it (`View::current_name`, the digest view, the location view), and rdm-node's `HeldName`, the connections writer and the property writer already read it from the view; a holder in rdm-node would hand the view a closure back, a second path for the one name |
 | D23 | The one `Channel` of any kind (§4.2's `channel` row) is not built: `Channels::join` is the one join over the topology channel and the application channel; gossip.rs, the application channels' delivery, is §4.2's `app` module | the two share a sender and a stop only; one struct would carry the other kind's parts as options (repair, refeed and replay; the bounded queue, loss generation and chunk assembly), and their stop and reopen differ (a reopen through the held members; a resubscribe through the peers the application named) |
+| D24 | D21 and D22 are withdrawn: §5.3's one `Status` type (960d83863) and §4.3's move of the name to the node's own record (4ca97c0ac) are built | Luke's order was to build the proposal without coming back; a Q331 flag is told to him, never a reason to leave an approved step out |
+| D25 | D23 is revised: §7 step 4's deletions are built, the application channels' `Channel` and `Hub` (6fed93b6e: `Channels` holds the subscriptions, `Channels::app` hands the publisher and the receiver); the receive loop stays per kind | §6: step 4 changes no behaviour and no dial; one loop would have an application channel re-subscribe on `Lagged` and refeed its known peers, which it does not do today |
+
+## The red team's 19 findings (gossip-by-kind.md), as folded into the proposal
+
+| finding | folded into |
+|---|---|
+| H1 the start/join seed is not always of the node's own mesh | §2.5 (the commander can be the fabric-primary); §5.2 table; D8 |
+| H2 the first-listener rule has no input for most node-admin starts | §5.2 rows Day-0, recovery, inherited or lost root, adoption ("as today"); D8 |
+| H3 `vec![seed]` removes dials | §5.2 rows after the read, repair, refeed, reopen; §6 marks the dial; D8 |
+| H4 role flags from the view change the election | §4.2 `backbone` row; D9 |
+| H5 §5.3 misstates the receive rules | §5.3 table, each type keeps its own rule |
+| H6 one RDM version contradicts the upgrade path | D1 |
+| H7 `chunking` serves Node RPC | D2, D5; §3.7 |
+| H8 one iroh-gossip per process is false | D7; §5.1 (one `Channels` per node) |
+| M1 the shared pieces | §3.1 |
+| M2 step 2's callers | §7 step 2 |
+| M3 repair and refeed have no named span | §5.1; D19 |
+| M4 the seed credited to Q376 | §2.5 |
+| M5 one derivation merges namespaces | D1 (channel ids keep their bytes) |
+| M6 the §8 text leaves the next sentence wrong | §8 |
+| L1 §3.2 counts | §3.2 |
+| L2 build.md's rows | §3.1 |
+| L3 §3.6 misses Day-0 and recovery seeds | §3.6 |
+| L4 §2.2 the delta's author | §2.2 |
+| L5 §4.2 `location` row | §4.2 |
