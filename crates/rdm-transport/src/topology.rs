@@ -3280,6 +3280,13 @@ impl TopologyView {
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
                 self.mesh.register(&d);
             }
+            // A peer source installed from a topology read is a full this node holds: while it holds
+            // its Mesh's forwarder role, it goes into the Mesh as a backbone install would (gossip.md
+            // §3.3); without the role, its first full carries it (`Backbone::forward_fulls`).
+            if side == Side::ReadPeer && i.mesh != self.view.mesh {
+                let me = self.view.current_name();
+                let _ = self.forward_path.source_with_clock(&me, &i.mesh, &i.publisher, i.topology_version, &i.full, || self.clock.now_rafka_ms());
+            }
         } else if let Some(digests) = own_digests {
             for d in digests.into_iter().filter(|d| d.fabric_id == self.fabric && d.node.mesh == self.view.mesh && self.digest_view.get(d.node.node_id.as_str()).is_some()) {
                 self.mesh.register(&d);
@@ -4052,7 +4059,12 @@ impl Backbone {
     fn forward_fulls_now(&self) -> u64 {
         let me_name = self.current_name();
         let publisher = self.current_publisher();
+        // Every peer source this primary holds as a full: heard on the backbone, or installed from its
+        // own topology read before any backbone publication of it reached it (gossip.md §3.3: "The
+        // forwarder diffs the fulls it holds"). A source both hold goes out as the backbone's.
         let mut held: Vec<(String, PublisherId, u64, Full)> = self.topology_view.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
+        let read: Vec<(String, PublisherId, u64, Full)> = self.topology_view.view.mesh_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh && held.iter().all(|(h, ..)| h != m)).collect();
+        held.extend(read);
         if let Some((version, full)) = self.own.lock().unwrap().clone() {
             held.push((self.mesh.clone(), publisher, version, full));
         }

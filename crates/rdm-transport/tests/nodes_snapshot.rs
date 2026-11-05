@@ -555,3 +555,55 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&Value::Object(result)).unwrap()).unwrap();
     });
 }
+
+/// CONTRACT (gossip.md §3.3: "The forwarder diffs the fulls it holds"; "A forwarder that becomes the
+/// primary publishes a full first"; §5: the joiner "reads complete source snapshots"): a node-admin
+/// that installed a peer Mesh's complete snapshot from its topology read (the fabric-primary's answer,
+/// before any backbone publication of that Mesh reached it) holds that source as a full, and on taking
+/// its Mesh's primary role puts it into its own Mesh: an ordinary member of the Mesh installs the peer
+/// source with no backbone publication of it. Must NOT happen: the read-installed source left out of
+/// the primary's first full, so the members hold a peer Mesh's primary records but none of its births
+/// until that Mesh's next backbone publication (lane 4's post-land-gate at 2109cdf0c,
+/// primary_spent_call_report: the member's view named no fabric-primary to report to).
+#[test]
+fn a_primary_puts_a_peer_source_it_installed_from_a_topology_read_into_its_mesh() {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    rt.block_on(async {
+        let (fwd_node, member_node) = (node().await, node().await);
+        let fwd_addr = addr_of(&fwd_node.ep);
+        learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
+        let fab = fabric();
+        let mesh1_id = MeshId::mint();
+        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()]).await.unwrap();
+        let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+        // The peer Mesh's complete snapshot, as the fabric-primary's topology read answers it: no
+        // backbone publication of mesh2 ever reaches this node-admin.
+        let src = publisher("mesh2.node-admin.1");
+        let remote = Mesh::new("mesh2", 5);
+        let full = Full::new(remote.digests(1), vec![], vec![]);
+        let mut taken = None;
+        for f in mesh_topology_chunks(&full, &src, 3, 0, Some("topology-read")) {
+            taken = Some(fwd_m.take_read_chunk(chunk_of(&f), "mesh2"));
+        }
+        assert!(matches!(taken, Some(Taken::Installed(_))), "the read installs the peer source: {taken:?}");
+        // The node-admin takes its Mesh's primary role and publishes its own Mesh.
+        fwd_bb.set_mesh_primary(true);
+        let own = Mesh::new("mesh1", 2);
+        let at_member = {
+            let mut n = 0u64;
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                n += 1;
+                fwd_bb.publish(&fwd_m, own.digests(n)).await;
+                if let Some(held) = mem_m.held_source_version("mesh2") {
+                    break held;
+                }
+                assert!(std::time::Instant::now() < deadline, "the ordinary member never installed the peer source its primary read: its primary put only its own Mesh into it");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        };
+        assert_eq!(at_member, (src.clone(), 3), "the member holds the peer source as the primary read it");
+        drop(fwd_bb);
+    });
+}
