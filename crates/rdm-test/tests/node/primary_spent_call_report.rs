@@ -117,7 +117,11 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     );
     assert_eq!(s(&report["attributes"]["primary_above"]), fp_id, "reported to the fabric-primary, the primary above a mesh-primary: {report}");
     assert_eq!(s(&report["attributes"]["outcome"]), "answered", "the fabric-primary answered the report: {report}");
-    assert_eq!(s(&mark["attributes"]["outcome"]), "marked", "{mark}");
+    // The fabric-primary's own call to the held mesh-primary can run out first and mark it (`own-call`);
+    // the member's report then finds the mark standing. Either way the report is taken and the mesh-primary
+    // is marked (6 of 225 runs, read from their spans).
+    let outcome = s(&mark["attributes"]["outcome"]);
+    assert!(outcome == "marked" || outcome == "already-marked", "the report is taken and the mesh-primary is marked: {mark}");
     assert_eq!(s(&investigation["attributes"]["trigger"]), "call-failed", "investigated from the spent call's mark: {investigation}");
     assert!(at(&investigation) >= at(&mark), "the investigation follows the mark");
     assert!(at(&investigation) >= held_at + earliest.as_nanos() as u64, "not investigated before the mesh's aggregate is unheard for twice the floor (Q349): hold {held_at}, investigation {}", at(&investigation));
