@@ -48,9 +48,10 @@
 //! receipt never starts a second one. Every other step is idempotent.
 //!
 //! Each receipt records the executing admin (its endpoint, the seed every launch it makes
-//! carries). A birth launched by another executor that never joined is stopped and decided afresh
-//! under this executor's endpoint (`rdm.node_admin.deployment.reject.via-lost-executor`); a birth
-//! that joined, and an identity no runtime was made under, stand.
+//! carries). A birth launched by another executor that never joined is stopped
+//! (`rdm.node_admin.deployment.reject.via-lost-executor`) and the path takes a new node.id under this
+//! executor's endpoint; a birth that joined and still runs, and an identity no runtime was made
+//! under, stand.
 
 use super::endpoint::TypeSpec;
 use crate::join::{Deployed, Joins};
@@ -1624,7 +1625,7 @@ impl DeploymentPipeline<'_> {
 
     /// A runtime launched by an executor that is not this one and never joined this one (`recorded`:
     /// the executor that launched it, as far as this run knows): stopped through its exact handle,
-    /// so the birth can be decided afresh under this executor's endpoint. One `via-lost-executor`
+    /// so the path can take a new node.id under this executor's endpoint. One `via-lost-executor`
     /// span; a stop that fails ends the run by name.
     async fn stop_lost_launch(&self, req: &CreateRequest, stranded: &DeploymentHandle, recorded: Option<&rdm_core::framing::Birth>) -> Result<(), PipelineError> {
         use tracing::Instrument;
@@ -1644,6 +1645,26 @@ impl DeploymentPipeline<'_> {
             .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the earlier run's runtime was launched by another executor and never joined; stopping it failed: {e}", &req.path, &req.name) , code: rdm_core::outcome::Code::FailedPrecondition })
     }
 
+    /// The create of a birth lost before Ready, `why`: the one rule for every such birth. This
+    /// operation's completed steps stand (build.md §1: never run again) and a deleted node never returns,
+    /// so the lost birth is deleted, which releases its name (R-MN1), and the new birth is a new operation
+    /// under a new node.id, minted here (node-recovery.md, Q110), naming the lost birth its predecessor.
+    /// The caller's operation ends complete on that birth's Ready ([`Self::create_steps`]). `runtime`:
+    /// the lost birth's runtime where it is known; a launch nothing locates has none to terminate.
+    async fn create_new_birth(&self, req: &CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, why: &'static str, runtime: Option<DeploymentHandle>) -> Result<Created, PipelineError> {
+        let lost = identity_of(req);
+        let handle = runtime.unwrap_or_else(|| DeploymentHandle { deployment_id: lost.deployment_id.clone(), provider: self.provider.kind(), pid: None, start: None, container: None, domain: Some(self.provider.control_domain()) });
+        let mut node = Node::allocated(req.location(), &req.mesh, &req.r#type);
+        node.node_id = req.node_id.clone();
+        node.incarnation_id = Some(lost.incarnation.clone());
+        self.delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &req.node_id), build_id: req.build_id.clone(), node, handle, unreached: true }).await?;
+        let new_node_id = NodeId::mint();
+        tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_span(req.build_id.as_ref()), node_path = %req.path, node_name = %req.name, node_id = %req.node_id, new_node_id = %new_node_id, why)
+            .in_scope(|| tracing::info!("the lost birth is deleted: the path takes a new node.id"));
+        let new_req = CreateRequest { predecessor: Some(crate::storage::BirthRef { node_id: req.node_id.clone(), incarnation_id: lost.incarnation }), operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id, ..req.clone() };
+        self.create_with_launch_of(&new_req, of, pre_node_ready, before_launch).await
+    }
+
     async fn create_to_ready_written_body(&self, run: &mut Run<'_>, req: &CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let (run_build, run_operation) = (req.build_id.as_ref(), run.operation.clone());
         // A receipt names a runtime; its birth is reused only while that
@@ -1655,14 +1676,13 @@ impl DeploymentPipeline<'_> {
         self.give_create_values(run, req).await;
         // A launch whose runtime no node record names (its birth never joined, so it wrote none, Q356)
         // runs again from DeployRuntime, whose find adopts the runtime by the launch's deployment id (a
-        // function of this create's operation, [`identity_of`]). One another executor launched is
-        // decided afresh: its runtime, seeded with that executor, is stopped first, in DeployRuntime.
+        // function of this create's operation, [`identity_of`]). One another executor launched is a
+        // lost birth: its runtime, seeded with that executor, is stopped, and the path takes a new
+        // node.id, before DeployRuntime.
         let unjoined = run.done.get(CreateStep::DeployRuntime.name()).is_some_and(|v| v.as_ref().is_none_or(serde_json::Value::is_null));
         let lost_launch = unjoined && recorded_by_another(run, CreateStep::DeployRuntime);
         let lost_owner = run.owner.get(CreateStep::DeployRuntime.name()).cloned().flatten();
-        if lost_launch {
-            run.done.clear();
-        } else if unjoined {
+        if unjoined {
             for step in CreateStep::ORDER.iter().skip_while(|s| **s != CreateStep::DeployRuntime) {
                 run.done.remove(step.name());
             }
@@ -1679,24 +1699,16 @@ impl DeploymentPipeline<'_> {
                 None => false,
             };
             if !alive {
-                // The birth joined and its runtime is gone. This operation's completed steps stand
-                // (build.md §1: never run again), so a new birth is a new operation under a new node.id;
-                // this operation ends complete on that birth's Ready ([`Self::create_steps`]). Recovery
-                // finds the lost birth with a live node at its path, and deletes it.
-                let new_node_id = NodeId::mint();
-                tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_span(run_build), node_path = %req.path, node_name = %req.name, node_id = %req.node_id, new_node_id = %new_node_id)
-                    .in_scope(|| tracing::info!("the earlier run's runtime is gone: the path takes a new node.id"));
-                let new_req = CreateRequest { operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id, ..req.clone() };
-                return self.create_with_launch_of(&new_req, of, pre_node_ready, before_launch).await;
+                return self.create_new_birth(req, of, pre_node_ready, before_launch, "the earlier run's runtime is gone", earlier).await;
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
                 // Launched by an executor that is not this one and never joined: its only seed is
                 // that executor's endpoint, which this birth can no longer rely on (the lost admin's
-                // address may answer as another process). The birth is stopped and decided afresh
-                // under this executor's endpoint; a birth that joined has used its seed and stands.
+                // address may answer as another process). The birth is stopped and the path takes a new
+                // node.id under this executor's endpoint; a birth that joined has used its seed and stands.
                 let stranded = earlier.expect("alive implies a decoded handle");
                 let recorded = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.as_ref());
                 self.stop_lost_launch(req, &stranded, recorded).await?;
-                run.done.clear();
+                return self.create_new_birth(req, of, pre_node_ready, before_launch, "the lost executor's launch never finished its join", Some(stranded)).await;
             }
         }
         let rows = self.sink.node_rows();
@@ -1814,6 +1826,17 @@ impl DeploymentPipeline<'_> {
                 listeners: bind_listeners.clone(),
             }
         };
+        // Launched by another executor and never joined: its runtime, if it still runs, is stopped, and
+        // the path takes a new node.id under this executor's endpoint. This operation's DeployRuntime stands.
+        if lost_launch {
+            let found = self.provider.find(&spec_for(None), super::deadline::Deadline::step()).await;
+            let found = found.map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("path {:?}, name {:?}: the lost executor's launch could not be looked up: {e}", req.path, req.name), code: rdm_core::outcome::Code::Unavailable })?;
+            let stranded = found.running();
+            if let Some(h) = &stranded {
+                self.stop_lost_launch(req, h, lost_owner.as_ref()).await?;
+            }
+            return self.create_new_birth(req, of, pre_node_ready, before_launch, "the lost executor's launch never joined", stranded).await;
+        }
         let handle: DeploymentHandle = self
             .step_with(run, CreateStep::DeployRuntime.name(), async {
                 let spec = spec_for(rdm_transport::current_traceparent());
@@ -1822,13 +1845,8 @@ impl DeploymentPipeline<'_> {
                 // name, its outcome unknown.
                 let deadline = super::deadline::Deadline::step();
                 if let Some(h) = self.provider.find(&spec, deadline).await.map_err(StepFailure::from)?.running() {
-                    if !lost_launch {
-                        tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
-                        return Ok(h);
-                    }
-                    // Launched by another executor and never joined: stopped, then launched afresh
-                    // under this executor's endpoint.
-                    self.stop_lost_launch(req, &h, lost_owner.as_ref()).await.map_err(|e| StepFailure::from(e.reason))?;
+                    tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
+                    return Ok(h);
                 }
                 if let Some(before) = before_launch {
                     before.await;

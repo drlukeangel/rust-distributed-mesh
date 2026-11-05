@@ -384,10 +384,11 @@ fn complete_steps(view: &rdm_admin::build_state::BuildProjection, step: CreateSt
 
 /// CONTRACT (build.md §1: "A step whose `rdm.build.step` event ended `complete` is not run again";
 /// live.rs: "A deleted node never returns"; node-recovery.md: "a new node.id"): a birth that joined and
-/// whose runtime is gone before Ready is not launched again under its node.id. The successor's create
-/// takes the path under a new node.id, as a new operation, and the Build's operation ends complete on
-/// that birth's Ready. Must NOT happen: a completed step of the Build's operation run again, or the lost
-/// birth's identity launched a second time.
+/// whose runtime is gone before Ready is not launched again under its node.id. The successor deletes it,
+/// since its record holds the name until a delete releases it (R-MN1), and takes the path under a new
+/// node.id, as a new operation; the Build's operation ends complete on that birth's Ready. Must NOT
+/// happen: a completed step of the Build's operation run again, the lost birth's identity launched a
+/// second time, or the new birth refused at the name.
 #[test]
 fn a_joined_birth_whose_runtime_is_gone_takes_a_new_node_id_and_no_completed_step_runs_again() {
     let cell = "a_joined_birth_whose_runtime_is_gone_takes_a_new_node_id_and_no_completed_step_runs_again";
@@ -418,6 +419,8 @@ fn a_joined_birth_whose_runtime_is_gone_takes_a_new_node_id_and_no_completed_ste
             assert_eq!(complete_steps(&view, step, &node), 1, "{} of the Build's operation is not run again", step.name());
         }
         assert_eq!(complete_steps(&view, CreateStep::Complete, &node), 1, "the Build's operation ends complete on the new birth's Ready");
+        let delete = rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&node)).to_string();
+        assert!(view.steps.iter().any(|r| r.operation == delete && r.step == "NodeDeleted" && r.outcome == rdm_admin::build_state::StepOutcome::Complete), "the lost birth is deleted first: only a delete releases its name");
     });
     let spans = cap.spans();
     let lost_births: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-birth-lost-before-ready").collect();
@@ -429,9 +432,9 @@ fn a_joined_birth_whose_runtime_is_gone_takes_a_new_node_id_and_no_completed_ste
 /// another endpoint) does not hand on a birth that was launched by the lost executor and never
 /// joined: that runtime's only seed is the lost admin's endpoint, where a dial can reach another
 /// process (UnknownIssuer) and the birth never joins. The successor refuses it by name, stops it,
-/// and decides the birth afresh: a new birth of the Build's node.id (D58), launched under its own endpoint. The same birth
-/// handed on after it joined (the seed did its work) is kept; an executor re-running its own work
-/// reuses it.
+/// and the path takes a new node.id under the successor's endpoint, as a new operation (build.md §1:
+/// the Build's operation's completed steps are not run again). The same birth handed on after it
+/// joined (the seed did its work) is kept; an executor re-running its own work reuses it.
 #[test]
 fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     let cell = "successor_executor_redecides_outputs_owned_by_lost_incarnation";
@@ -480,15 +483,16 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert_eq!(spawns.len(), spawns_before + 1, "the successor launches the birth afresh");
         let fresh = spawns.last().unwrap();
         assert!(!fresh.seeds.contains("lostadminkey") && fresh.seeds.contains("successoradminkey"), "the new birth is seeded with the successor only: {}", fresh.seeds);
-        // The node.id is the Build's own for the create (D58), and the deployment id its create operation's
-        // (A1): a birth decided afresh is a new runtime of the same launch.
-        assert_eq!(fresh.handle.deployment_id, dead.handle.deployment_id, "the same create's launch, by its deployment id");
+        // A new node.id and its own deployment id: the lost birth's identity is not launched again.
+        assert_ne!(fresh.handle.deployment_id, dead.handle.deployment_id, "a new launch, by its deployment id");
+        assert_ne!(fresh.node_id, dead.node_id, "a new node.id");
         assert_ne!(fresh.pid, dead.pid, "a fresh birth: the stranded runtime is not this birth's");
         assert_eq!(redone.node.node_id, fresh.node_id);
         assert!(!fleet.running(dead.pid), "the stranded runtime that names the lost admin is stopped");
         assert!(fleet.running(fresh.pid));
 
         let view = builds.read_build(&build_stranded).await.unwrap();
+        assert_eq!(complete_steps(&view, CreateStep::DeployRuntime, &stranded), 1, "the Build's operation's DeployRuntime is not run again");
         json!({
             "cell": cell,
             "lost_executor_seed": dead.seeds,
