@@ -375,7 +375,7 @@ impl crate::node_self::Session for AdminSession {
 impl AdminSession {
     /// This node-admin's channel entry inside `node.mesh.join`, for its start and its standalone join
     /// alike: its mesh, then the backbone.
-    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>) -> rdm_gossip::channel::Channels {
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>, commander: iroh::PublicKey) -> rdm_gossip::channel::Channels {
         let s = self;
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
@@ -394,6 +394,12 @@ impl AdminSession {
             drop(rows.take());
         }
         s.channels.start().await;
+        // The start names its commander beside the peers each channel already knows, which the reopen
+        // dialled (gossip-by-kind.md §5.2, Q376): on the mesh channel when it is a node of this mesh.
+        let mesh = rdm_gossip::channel::ChannelId::mesh(s.topology_view.fabric_id(), s.topology_view.mesh_id());
+        if let Some(peers) = s.channels.with_commander(&mesh, &commander) {
+            let _ = s.channels.join(mesh, peers).await;
+        }
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %s.topology_view.node_name(),
@@ -404,6 +410,11 @@ impl AdminSession {
         )
         .in_scope(|| tracing::info!("joined the mesh channel"));
         s.backbone.start().await;
+        // On the backbone the commander is named always: the fabric-primary or a mesh-primary.
+        let backbone = rdm_gossip::channel::ChannelId::backbone(s.topology_view.fabric_id());
+        if let Some(peers) = s.channels.with_commander(&backbone, &commander) {
+            let _ = s.channels.join(backbone, peers).await;
+        }
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %s.topology_view.node_name(),
@@ -448,7 +459,8 @@ impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
     }
 
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
-        Ok(self.session.enter_mesh(step, joined, &mut self.rows).await)
+        let commander = *self.commander.borrow();
+        Ok(self.session.enter_mesh(step, joined, &mut self.rows, commander).await)
     }
 }
 

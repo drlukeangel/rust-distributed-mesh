@@ -672,7 +672,13 @@ async fn start_booted(
             let topology_view = TopologyView::new(&launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()));
             let channels = rdm_gossip::channel::Channels::new(&g, &ep0, &topology_view)?;
             channels.set_author(&rdm_core::PublisherId { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
-            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seeds).await?;
+            // Its mesh channel names no launcher of another mesh (gossip-by-kind.md §5.2, Q376): the
+            // launcher is its launch's first seed.
+            let mesh_peers = match (launch.launcher.as_ref(), seeds.first()) {
+                (Some(launcher), Some(anchor)) => rdm_gossip::channel::mesh_seeds(&seeds, &anchor.id, &launcher.mesh, &launch.mesh),
+                _ => seeds,
+            };
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await?;
             // The name this birth holds is its topology view's (R12): its connections rows name it as their
             // source from here on, and every service names the node by it, whatever name the join hands it
             // or an `ApplyNodeName` gives it.
@@ -1047,7 +1053,7 @@ impl NodeSession {
     /// alike: the row's name and config the join answer handed are held before the node re-enters its
     /// channel or says anything (a node renamed while stopped publishes its row's name, R-JN1), and only
     /// then are its connections recorded (`rows`), under the handed name.
-    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: Option<crate::connections_writer::RowsHeld>) -> rdm_gossip::channel::Channels {
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: Option<crate::connections_writer::RowsHeld>, commander: iroh::PublicKey) -> rdm_gossip::channel::Channels {
         step.record("mesh_id", tracing::field::display(&self.mesh_id));
         if let Some(joined) = joined {
             // This is the same running instance. Its node-owned property writer already
@@ -1073,6 +1079,12 @@ impl NodeSession {
         }
         drop(rows);
         self.channels.start().await;
+        // The start names its commander beside the peers the channel already knows, which the reopen
+        // dialled (gossip-by-kind.md §5.2, Q376): when the view holds it as a node of this mesh.
+        let mesh = rdm_gossip::channel::ChannelId::mesh(self.topology_view.fabric_id(), self.topology_view.mesh_id());
+        if let Some(peers) = self.channels.with_commander(&mesh, &commander) {
+            let _ = self.channels.join(mesh, peers).await;
+        }
         tracing::info_span!(
             "rdm.node.mesh.update.via-joined",
             node = %self.topology_view.node_name(),
@@ -1123,7 +1135,8 @@ impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
     }
 
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
-        Ok(self.session.enter_mesh(step, joined, self.rows.take()).await)
+        let commander = *self.commander.borrow();
+        Ok(self.session.enter_mesh(step, joined, self.rows.take(), commander).await)
     }
 }
 

@@ -942,6 +942,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (Some(anchor), Some(launcher), Some(runtime)) => Some((anchor.clone(), launcher.clone(), runtime.clone())),
         _ => None,
     };
+    // The peers its mesh channel names (gossip-by-kind.md §5.2, Q376): a launched admin's seeds, less
+    // a launcher of another mesh (the fabric-primary launching a mesh's node-admin), which is never on
+    // this mesh's channel; a start that makes no `JoinNode` names its seeds as before. The backbone
+    // names every seed.
+    let mesh_seed_addrs: Vec<EndpointAddr> = match &joins_through {
+        Some((anchor, launcher, _)) => rdm_gossip::channel::mesh_seeds(&seed_addrs, &anchor.id, &launcher.mesh, &cfg.mesh),
+        None => seed_addrs.clone(),
+    };
     // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
     // addresses it really bound, to the admin that deployed it.
     let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest {
@@ -1033,7 +1041,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 step.record("seeds", seed_addrs.len());
                 let topology_view = rdm_gossip::topology::TopologyView::new(&cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone());
                 let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).map_err(|e| format!("topology view: {e}"))?;
-                channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), seed_addrs.clone()).await
+                channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_seed_addrs).await
                     .map_err(|e| format!("topology view: {e}"))?;
                 channels.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
                 // The name this admin holds is its topology view's (R12): its connections rows name it as their

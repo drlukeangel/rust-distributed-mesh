@@ -743,6 +743,14 @@ impl ChannelId {
     }
 }
 
+/// The peers a created node names on its mesh channel (gossip-by-kind.md §5.2, Q376): its launch's
+/// seeds, less its launcher when the launcher is of another mesh. A node of another mesh is never on
+/// this channel, so a node launched from another mesh is its mesh's first listener, or names the
+/// nodes of its own mesh its launch carries. Its backbone and application channels keep every seed.
+pub fn mesh_seeds(seeds: &[EndpointAddr], launcher: &iroh::EndpointId, launcher_mesh: &str, mesh: &str) -> Vec<EndpointAddr> {
+    seeds.iter().filter(|s| launcher_mesh == mesh || &s.id != launcher).cloned().collect()
+}
+
 /// A peer named by its endpoint id alone (`rdm_core::EndpointId`, an endpoint key): its addresses come
 /// from what the node holds (`LocationView`). A value that is not an endpoint key is refused by name.
 pub fn peer(id: &rdm_core::EndpointId) -> Result<EndpointAddr> {
@@ -818,6 +826,24 @@ impl Channels {
     /// The backbone, once this node-admin joined it.
     pub fn backbone(&self) -> Option<Backbone> {
         self.backbone.get().cloned()
+    }
+
+    /// The peers a commanded start or join names on `id` (gossip-by-kind.md §5.2, Q376): the
+    /// commander, and the peers the channel already knows. The mesh channel names the commander only
+    /// when this node's view holds it as a node of its own mesh: a commander the view does not hold
+    /// is of another mesh, and a node of another mesh is never on this channel. `None` when `id` does
+    /// not name the commander (the mesh channel, a commander of another mesh; an application channel,
+    /// whose peers the application names). The commander's address is the one its digest in the view
+    /// names, else its key alone, reached over the connection its call came on.
+    pub fn with_commander(&self, id: &ChannelId, commander: &iroh::PublicKey) -> Option<Vec<EndpointAddr>> {
+        let held = self.topology_view.projected_member_at(&commander.to_string());
+        let known: Vec<iroh::EndpointId> = match id {
+            ChannelId::Mesh { .. } if held.as_ref().is_some_and(|d| d.node.mesh == self.topology_view.mesh_name()) => self.mesh().peers.lock().unwrap().iter().copied().collect(),
+            ChannelId::Backbone { .. } => self.backbone.get()?.channel.peers.lock().unwrap().iter().copied().collect(),
+            _ => return None,
+        };
+        let commander_addr = held.as_ref().and_then(crate::location::gossip_addr).filter(|a| &a.id == commander).unwrap_or_else(|| EndpointAddr::new(*commander));
+        Some(std::iter::once(commander_addr).chain(known.into_iter().filter(|k| k != commander).map(EndpointAddr::new)).collect())
     }
 
     /// Join the channel `id` through `peers` (Q376: `Channel.join(id, peers)`): the first join of an id
