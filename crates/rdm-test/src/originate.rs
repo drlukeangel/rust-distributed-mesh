@@ -556,7 +556,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::Publish { subject, sequence, data } => match crate::test_app::app_channel_publisher() {
                     None => OriginateReply::NotReady { reason: format!("{own:?}: this node joined no {} channel", crate::test_app::APP_CHANNEL) },
                     Some(publisher) => {
-                        let event = rdm_gossip::gossip::Event { subject, sequence: Some(sequence), dataschema: Some("testkit.app.v1".into()), data: data.into() };
+                        let event = rdm_gossip::app::Event { subject, sequence: Some(sequence), dataschema: Some("testkit.app.v1".into()), data: data.into() };
                         let outcome = match publisher.publish(event).await {
                             Ok(()) => "handed-to-gossip".to_string(),
                             Err(e) => e.to_string(),
@@ -570,7 +570,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                         let started = std::time::Instant::now();
                         let (mut published, mut refused, mut first_refusal) = (0u32, 0u32, String::new());
                         for i in 0..count {
-                            let event = rdm_gossip::gossip::Event { subject: format!("{prefix}/{i}"), sequence: Some(i as u64), dataschema: Some("testkit.app.v1".into()), data: vec![b'x'; size as usize].into() };
+                            let event = rdm_gossip::app::Event { subject: format!("{prefix}/{i}"), sequence: Some(i as u64), dataschema: Some("testkit.app.v1".into()), data: vec![b'x'; size as usize].into() };
                             match publisher.publish(event).await {
                                 Ok(()) => published += 1,
                                 Err(e) => {

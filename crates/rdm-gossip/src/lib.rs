@@ -15,7 +15,7 @@
 #![deny(missing_docs)]
 
 pub mod envelope;
-pub mod gossip;
+pub mod app;
 pub(crate) mod forward_path;
 pub(crate) mod discipline;
 pub mod topology;

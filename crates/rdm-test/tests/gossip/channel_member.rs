@@ -6,7 +6,7 @@ use bytes::Bytes;
 use rdm_core::{FabricId, MeshId};
 use rdm_test::channel_member::Member;
 use rdm_gossip::channel::ChannelId;
-use rdm_gossip::gossip::Event;
+use rdm_gossip::app::Event;
 use std::time::Duration;
 
 const TYPE: &str = "testkit.channel-member";

@@ -776,7 +776,7 @@ pub struct Channels {
     /// The node-admin backbone, once joined.
     pub(crate) backbone: Arc<OnceLock<Backbone>>,
     /// The application channels.
-    pub(crate) apps: Arc<crate::gossip::Hub>,
+    pub(crate) apps: Arc<crate::app::Hub>,
     /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
     pub(crate) digest_seq: Arc<std::sync::atomic::AtomicU64>,
     /// This process's CPU and RAM, sampled into every digest it publishes.
@@ -795,7 +795,7 @@ impl Channels {
         let location = LocationView::new(endpoint, &view.view.current_name())?.with_held_name(view.view.held_name.clone());
         let author: Arc<Mutex<Option<crate::envelope::Birth>>> = Arc::default();
         let (forward_path, forward_rx) = ForwardPath::pair(view.view.forwarder.clone(), Arc::default());
-        let apps = crate::gossip::Hub::new(gossip, &view.fabric, author.clone(), view.clock.clone());
+        let apps = crate::app::Hub::new(gossip, &view.fabric, author.clone(), view.clock.clone());
         Ok(Self {
             gossip: gossip.clone(),
             endpoint: endpoint.clone(),
@@ -879,7 +879,7 @@ impl Channels {
 
     /// The application channel `name` this node joined ([`Self::join`] with [`ChannelId::App`]): its
     /// one receiver, handed over once.
-    pub async fn app(&self, name: &str) -> Result<crate::gossip::Channel, crate::gossip::ChannelError> {
+    pub async fn app(&self, name: &str) -> Result<crate::app::Channel, crate::app::ChannelError> {
         self.apps.receiver(name).await
     }
 

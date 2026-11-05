@@ -750,7 +750,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         Ratchet::GossipEnvelopeWireIsAtomic => {
             require(root, "crates/rdm-gossip/src/envelope.rs", &["pub const TYPES: [&str; 19]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace", "pub const CHUNK_TYPE: &str = \"rdm.gossip.chunk\""], ratchet, &mut out);
             require(root, "crates/rdm-gossip/src/channel.rs", &["rdm.mesh.topology.update.via-context-dropped", "rdm_transport::set_remote_parent"], ratchet, &mut out);
-            require(root, "crates/rdm-gossip/src/gossip.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.topology.reject.via-chunk-incomplete"], ratchet, &mut out);
+            require(root, "crates/rdm-gossip/src/app.rs", &["crate::envelope::decode_header", "crate::envelope::encode_data", "crate::envelope::CHUNK_TYPE", "rdm.mesh.channel.reject.via-queue-full", "rdm.mesh.topology.reject.via-chunk-incomplete"], ratchet, &mut out);
             require(root, "crates/rdm-gossip/tests/digest_frames_wire.rs", &["fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
             require(root, "crates/rdm-test/tests/gossip/trace_context.rs", &["fn a_received_frames_span_shares_its_authors_trace_id", "fn a_malformed_traceparent_is_dropped_by_name_and_the_frame_applies"], ratchet, &mut out);
         }

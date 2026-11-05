@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use rdm_core::{FabricId, MeshId, NodeId};
 use rdm_test::channel_member::{Member, MemberAddr};
 use rdm_gossip::channel::ChannelId;
-use rdm_gossip::gossip::{Channel, ChannelError, Event};
+use rdm_gossip::app::{Channel, ChannelError, Event};
 use std::time::Duration;
 
 const TYPE: &str = "rafka.entity.channel-proof";
@@ -62,7 +62,7 @@ fn event(sequence: u64, data: Vec<u8>) -> Event {
     }
 }
 
-async fn receive(channel: &mut Channel) -> rdm_gossip::gossip::Received {
+async fn receive(channel: &mut Channel) -> rdm_gossip::app::Received {
     tokio::time::timeout(Duration::from_secs(10), channel.recv())
         .await
         .expect("the event arrives within the cell's bound")
@@ -270,10 +270,10 @@ async fn the_channel_surface_has_one_owned_receiver(mut channel: Channel, event:
     let _: u64 = channel.dropped();
     let _: tokio::sync::watch::Receiver<u64> = channel.lost();
     channel.publish(event).await.unwrap();
-    let _: Option<rdm_gossip::gossip::Received> = channel.recv().await;
+    let _: Option<rdm_gossip::app::Received> = channel.recv().await;
     let (publisher, mut subscriber) = channel.split();
-    let _: rdm_gossip::gossip::Publisher = publisher;
-    let _: Option<rdm_gossip::gossip::Received> = subscriber.recv().await;
+    let _: rdm_gossip::app::Publisher = publisher;
+    let _: Option<rdm_gossip::app::Received> = subscriber.recv().await;
 }
 
 #[test]
@@ -400,7 +400,7 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
         let source = dir.join("ownership.rs");
         std::fs::write(
             &source,
-            format!("use rdm_gossip::gossip::Channel; {body}"),
+            format!("use rdm_gossip::app::Channel; {body}"),
         )
         .unwrap();
         std::process::Command::new("rustc")
