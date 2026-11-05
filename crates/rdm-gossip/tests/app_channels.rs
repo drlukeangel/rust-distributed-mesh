@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use rdm_core::{FabricId, MeshId, NodeId};
 use rdm_test::channel_member::{Member, MemberAddr};
 use rdm_gossip::channel::ChannelId;
-use rdm_gossip::app::{Channel, ChannelError, Event};
+use rdm_gossip::app::{ChannelError, Event, Publisher, Subscriber};
 use std::time::Duration;
 
 const TYPE: &str = "rafka.entity.channel-proof";
@@ -19,8 +19,8 @@ async fn node(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_n
 async fn pair() -> (
     Member,
     Member,
-    Channel,
-    Channel,
+    (Publisher, Subscriber),
+    (Publisher, Subscriber),
     iroh_gossip::api::GossipSender,
     iroh_gossip::api::GossipReceiver,
 ) {
@@ -62,7 +62,7 @@ fn event(sequence: u64, data: Vec<u8>) -> Event {
     }
 }
 
-async fn receive(channel: &mut Channel) -> rdm_gossip::app::Received {
+async fn receive(channel: &mut Subscriber) -> rdm_gossip::app::Received {
     tokio::time::timeout(Duration::from_secs(10), channel.recv())
         .await
         .expect("the event arrives within the cell's bound")
@@ -97,7 +97,7 @@ fn encoded(n: &Member, kind: &str, id: &str, subject: &str, data: Vec<u8>, rever
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped() {
-    let (a, b, mut receiver, sender, _raw, _events) = pair().await;
+    let (a, b, (_a_publisher, mut receiver), (sender, _b_subscriber), _raw, _events) = pair().await;
     sender.publish(event(10, vec![10])).await.unwrap();
     let newer = receive(&mut receiver).await;
     assert_eq!(newer.sequence, Some(10));
@@ -122,7 +122,7 @@ fn the_channel_id_differs_across_fabrics_for_one_type() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked() {
-    let (_a, _b, mut receiver, sender, _raw, mut events) = pair().await;
+    let (_a, _b, (_a_publisher, mut receiver), (sender, _b_subscriber), _raw, mut events) = pair().await;
     let data = vec![0x5a; 3900];
     assert!(data.len() < rdm_gossip::frame::MAX_FRAME);
     sender.publish(event(1, data.clone())).await.unwrap();
@@ -151,7 +151,7 @@ async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chunked_event_arrives_whole_when_its_chunks_are_reordered_and_one_is_duplicated() {
-    let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
+    let (a, _b, _unused, (_b_publisher, mut receiver), raw, _events) = pair().await;
     let data = vec![0x6b; 7000];
     let whole = encoded(&a, TYPE, "reordered", "org/proof/row", data.clone(), false);
     let chunks: Vec<_> = whole.chunks(1800).map(Vec::from).collect();
@@ -211,7 +211,7 @@ async fn a_chunked_event_arrives_whole_when_its_chunks_are_reordered_and_one_is_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chunked_event_with_a_missing_chunk_advances_lost_after_the_staleness_floor() {
-    let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
+    let (a, _b, _unused, (_b_publisher, mut receiver), raw, _events) = pair().await;
     let mut lost = receiver.lost();
     let first = *lost.borrow();
     let whole = encoded(
@@ -266,13 +266,11 @@ async fn a_chunked_event_with_a_missing_chunk_advances_lost_after_the_staleness_
 }
 
 #[allow(dead_code)]
-async fn the_channel_surface_has_one_owned_receiver(mut channel: Channel, event: Event) {
-    let _: u64 = channel.dropped();
-    let _: tokio::sync::watch::Receiver<u64> = channel.lost();
-    channel.publish(event).await.unwrap();
-    let _: Option<rdm_gossip::app::Received> = channel.recv().await;
-    let (publisher, mut subscriber) = channel.split();
-    let _: rdm_gossip::app::Publisher = publisher;
+async fn the_channel_surface_has_one_owned_receiver(channel: (Publisher, Subscriber), event: Event) {
+    let (publisher, mut subscriber) = channel;
+    let _: u64 = subscriber.dropped();
+    let _: tokio::sync::watch::Receiver<u64> = subscriber.lost();
+    publisher.publish(event).await.unwrap();
     let _: Option<rdm_gossip::app::Received> = subscriber.recv().await;
 }
 
@@ -288,7 +286,7 @@ fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
     let capture =
         rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "app-channel-trace").unwrap();
     capture.run(4, async {
-        let (_a, _b, mut receiver, mut sender, raw, _events) = pair().await;
+        let (_a, _b, (_a_publisher, mut receiver), (sender, mut b_receiver), raw, _events) = pair().await;
         let author = tracing::info_span!("rdm.mesh.channel.update.via-author");
         let context = author
             .in_scope(rdm_transport::current_traceparent)
@@ -316,7 +314,7 @@ fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
         raw.broadcast(postcard::to_allocvec(&attrs).unwrap().into())
             .await
             .unwrap();
-        assert_eq!(receive(&mut sender).await.data.as_ref(), &[42]);
+        assert_eq!(receive(&mut b_receiver).await.data.as_ref(), &[42]);
         let spans = capture.spans().unwrap();
         let received = spans
             .iter()
@@ -360,7 +358,7 @@ fn a_malformed_sequence_is_dropped_by_name_and_the_next_event_applies() {
     let capture =
         rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "app-channel-sequence").unwrap();
     capture.run(4, async {
-        let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
+        let (a, _b, _unused, (_b_publisher, mut receiver), raw, _events) = pair().await;
         let mut bad: (Vec<(String, String)>, Vec<u8>) = postcard::from_bytes(&encoded(&a, TYPE, "bad", "bad", vec![1], false)).unwrap();
         for (k, v) in bad.0.iter_mut() {
             if k == "sequence" {
@@ -380,7 +378,7 @@ fn a_malformed_sequence_is_dropped_by_name_and_the_next_event_applies() {
 
 /// Compile a positive control first, then reject each forbidden receiver ownership shape.
 #[test]
-fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
+fn a_second_recv_owner_is_refused_by_the_type_system() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let artifacts = std::env::var_os("I143_PREBUILT_ARTIFACTS")
         .map(std::path::PathBuf::from)
@@ -400,7 +398,7 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
         let source = dir.join("ownership.rs");
         std::fs::write(
             &source,
-            format!("use rdm_gossip::app::Channel; {body}"),
+            format!("use rdm_gossip::app::Subscriber; {body}"),
         )
         .unwrap();
         std::process::Command::new("rustc")
@@ -423,16 +421,15 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
             .output()
             .unwrap()
     };
-    let good=compile("pub async fn valid(mut channel: Channel) { let _ = channel.recv().await; let (_, mut subscriber) = channel.split(); let _ = subscriber.recv().await; }");
+    let good=compile("pub async fn valid(mut subscriber: Subscriber) { let _ = subscriber.recv().await; }");
     assert!(
         good.status.success(),
         "{}",
         String::from_utf8_lossy(&good.stderr)
     );
     for (body,code) in [
-        ("pub fn invalid(channel: Channel) { let _other = channel.clone(); }","E0599"),
-        ("pub async fn invalid(channel: &Channel) { let _ = channel.recv().await; }","E0596"),
-        ("pub fn invalid(channel: Channel) { let _ = channel.split(); let _ = channel.split(); }","E0382"),
+        ("pub fn invalid(subscriber: Subscriber) { let _other = subscriber.clone(); }","E0599"),
+        ("pub async fn invalid(subscriber: &Subscriber) { let _ = subscriber.recv().await; }","E0596"),
     ] {let result=compile(body);let error=String::from_utf8_lossy(&result.stderr);assert!(!result.status.success()&&error.contains(code),"{code}: {error}");}
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -484,7 +481,7 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
     }
     // A names B, a birth its topology view holds, as the channel's first neighbour, by its endpoint_id.
     a.channels.learn(b.digest(), "peer-probe");
-    let receiver = a.app_channel(LATER, &[b.endpoint()]).await.unwrap();
+    let (_a_publisher, receiver) = a.app_channel(LATER, &[b.endpoint()]).await.unwrap();
     let mut observed = a
         .gossip()
         .subscribe(ChannelId::app(&fabric, LATER).topic(), vec![])
@@ -511,7 +508,7 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
             .unwrap();
     }
     let mut receiver = receiver;
-    let publisher = c.app_channel(LATER, &[b.endpoint()]).await.unwrap();
+    let (publisher, _c_subscriber) = c.app_channel(LATER, &[b.endpoint()]).await.unwrap();
     publisher.publish(event(1, vec![7])).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), &[7]);
 
@@ -563,7 +560,7 @@ async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after
     // Q72 = b: after a rejoin, gossip is best-effort and an app event is the app's to order by
     // its own `sequence`. B's forwarded copy of event 1, sent before A left, may arrive on A's
     // new subscription; the app skips any event at or below the sequence it already applied.
-    let mut receiver = a.app_channel(LATER, &[b.endpoint()]).await.unwrap();
+    let (_a_publisher_again, mut receiver) = a.app_channel(LATER, &[b.endpoint()]).await.unwrap();
     publisher.publish(event(2, vec![8])).await.unwrap();
     let next = tokio::time::timeout(Duration::from_secs(10), async {
         loop {

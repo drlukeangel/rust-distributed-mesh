@@ -289,8 +289,7 @@ impl rdm_node::node_hooks::PreNodeReady for JoinsAppChannel {
             .instrument(span.clone())
             .await;
             match joined {
-                Ok(channel) => {
-                    let (publisher, mut subscriber) = channel.split();
+                Ok((publisher, mut subscriber)) => {
                     if APP_CHANNEL_PUBLISHER.set(publisher).is_ok() {
                         let node_id = ctx.birth.node_id.clone();
                         tokio::spawn(async move {

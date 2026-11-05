@@ -29,8 +29,8 @@ fn two_members_publish_and_receive_one_event() {
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let a = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[]).await;
         let b = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &[a.addr()]).await;
-        let (to_b, mut from_b) = a.app_channel(TYPE, &[]).await.expect("a joins the channel").split();
-        let (to_a, mut from_a) = b.app_channel(TYPE, &[a.endpoint()]).await.expect("b joins the channel, naming a its first neighbour").split();
+        let (to_b, mut from_b) = a.app_channel(TYPE, &[]).await.expect("a joins the channel");
+        let (to_a, mut from_a) = b.app_channel(TYPE, &[a.endpoint()]).await.expect("b joins the channel, naming a its first neighbour");
         for (on, other) in [(&a, &b), (&b, &a)] {
             let mut raw = on.gossip().subscribe(ChannelId::app(&fabric, TYPE).topic(), vec![other.endpoint_id()]).await.unwrap();
             tokio::time::timeout(BOUND, raw.joined()).await.expect("the channel's neighbour is up").unwrap();

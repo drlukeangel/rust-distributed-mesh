@@ -13,7 +13,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use rdm_core::cadence::{backbone_gossip_interval, staleness_floor};
@@ -758,6 +758,13 @@ pub fn peer(id: &rdm_core::EndpointId) -> Result<EndpointAddr> {
     Ok(EndpointAddr::new(key))
 }
 
+/// One application channel this node joined: its delivery state and its one receiver until the
+/// application takes it.
+pub(crate) struct AppChannel {
+    state: Arc<crate::app::State>,
+    receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::app::Received>>>,
+}
+
 /// One node's channels: its iroh-gossip handle and endpoint, the topology view its channels fill, the
 /// channels it joined and what it publishes on them.
 #[derive(Clone)]
@@ -776,7 +783,15 @@ pub struct Channels {
     /// The node-admin backbone, once joined.
     pub(crate) backbone: Arc<OnceLock<Backbone>>,
     /// The application channels.
-    pub(crate) apps: Arc<crate::app::Hub>,
+    /// The application channels this node joined, by name: each one's delivery state and its one
+    /// receiver until the application takes it ([`Self::app`]).
+    apps: Arc<tokio::sync::Mutex<HashMap<String, Arc<AppChannel>>>>,
+    /// Each joined application channel's first neighbours, as its application named them at its join:
+    /// a start after a stop subscribes with them again.
+    app_peers: Arc<Mutex<HashMap<String, Vec<iroh::EndpointId>>>>,
+    /// This node's application event ids: a counter, and a nonce that keeps them apart across births.
+    app_ids: Arc<std::sync::atomic::AtomicU64>,
+    app_id_nonce: [u8; 32],
     /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
     pub(crate) digest_seq: Arc<std::sync::atomic::AtomicU64>,
     /// This process's CPU and RAM, sampled into every digest it publishes.
@@ -795,7 +810,6 @@ impl Channels {
         let location = LocationView::new(endpoint, &view.view.current_name())?.with_held_name(view.view.held_name.clone());
         let author: Arc<Mutex<Option<crate::envelope::Birth>>> = Arc::default();
         let (forward_path, forward_rx) = ForwardPath::pair(view.view.forwarder.clone(), Arc::default());
-        let apps = crate::app::Hub::new(gossip, &view.fabric, author.clone(), view.clock.clone());
         Ok(Self {
             gossip: gossip.clone(),
             endpoint: endpoint.clone(),
@@ -805,7 +819,10 @@ impl Channels {
             publisher: Arc::default(),
             mesh_channel: Arc::default(),
             backbone: Arc::default(),
-            apps,
+            apps: Arc::default(),
+            app_peers: Arc::default(),
+            app_ids: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            app_id_nonce: *iroh::SecretKey::generate().public().as_bytes(),
             digest_seq: Arc::default(),
             load: Arc::new(rdm_transport::load::LoadSampler::for_this_process()),
             forward_path,
@@ -872,15 +889,58 @@ impl Channels {
             }
             ChannelId::App { name, .. } => {
                 let ids = peers.iter().map(|p| p.id).collect();
-                self.apps.join(name, ids).await.map_err(|e| anyhow::anyhow!("{e}"))
+                self.join_app(name, ids).await.map_err(|e| anyhow::anyhow!("{e}"))
             }
         }
     }
 
     /// The application channel `name` this node joined ([`Self::join`] with [`ChannelId::App`]): its
-    /// one receiver, handed over once.
-    pub async fn app(&self, name: &str) -> Result<crate::app::Channel, crate::app::ChannelError> {
-        self.apps.receiver(name).await
+    /// publisher and its one receiver, handed over once.
+    pub async fn app(&self, name: &str) -> Result<(crate::app::Publisher, crate::app::Subscriber), crate::app::ChannelError> {
+        let e = self.apps.lock().await.get(name).cloned().ok_or_else(|| crate::app::ChannelError::Subscribe { r#type: name.into(), detail: "the channel is not joined".into() })?;
+        let rx = e.receiver.lock().unwrap().take().ok_or_else(|| crate::app::ChannelError::ReceiverHeld { r#type: name.into() })?;
+        Ok(crate::app::pair(e.state.clone(), rx))
+    }
+
+    /// Join the application channel `kind` with `peers`, its first neighbours as the application
+    /// names them; a channel already subscribed hands `peers` to its gossip.
+    async fn join_app(&self, kind: &str, peers: Vec<iroh::EndpointId>) -> Result<(), crate::app::ChannelError> {
+        let subscribe = |e: anyhow::Error| crate::app::ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() };
+        let (e, created) = self.subscribe_app(kind, &peers).await.map_err(subscribe)?;
+        if !created && !peers.is_empty() {
+            if let Some(sender) = e.state.sender() {
+                dial_span(&self.app_node_name(), kind, &ChannelId::app(&self.topology_view.fabric, kind).topic(), &peers, &peers);
+                sender.join_peers(peers.clone()).await.map_err(|e| subscribe(e.into()))?;
+            }
+        }
+        self.app_peers.lock().unwrap().insert(kind.into(), peers);
+        Ok(())
+    }
+
+    /// The live subscription of the application channel `kind`, or a new one with `peers`; whether it
+    /// is new. Its delivery is the `app` module's (`app::deliver_from`).
+    async fn subscribe_app(&self, kind: &str, peers: &[iroh::EndpointId]) -> anyhow::Result<(Arc<AppChannel>, bool)> {
+        let mut entries = self.apps.lock().await;
+        if let Some(e) = entries.get(kind).filter(|e| !e.state.is_left()) {
+            return Ok((e.clone(), false));
+        }
+        let mut peers = peers.to_vec();
+        peers.sort_unstable();
+        peers.dedup();
+        let topic = ChannelId::app(&self.topology_view.fabric, kind).topic();
+        dial_span(&self.app_node_name(), kind, &topic, &peers, &peers);
+        let (sender, stream) = self.gossip.subscribe(topic, peers).await?.split();
+        let (tx, rx) = tokio::sync::mpsc::channel(crate::app::QUEUE);
+        let state = crate::app::State::new(kind, sender, self.author.clone(), self.topology_view.clock.clone(), self.app_ids.clone(), self.app_id_nonce);
+        let e = Arc::new(AppChannel { state: state.clone(), receiver: Mutex::new(Some(rx)) });
+        entries.insert(kind.into(), e.clone());
+        crate::app::deliver_from(state, stream, tx, self.topology_view.fabric.clone());
+        Ok((e, true))
+    }
+
+    /// The node an application channel's dial spans name: its author's node id.
+    fn app_node_name(&self) -> String {
+        self.author.lock().unwrap().as_ref().map(|b| b.node.to_string()).unwrap_or_default()
     }
 
     async fn join_mesh(&self, topic: TopicId, peers: Vec<EndpointAddr>) -> Result<()> {
@@ -966,7 +1026,10 @@ impl Channels {
 
     /// Testkit-only one-shot incoming chunk loss, absent from production.
     #[cfg(feature = "testkit-gossip")]
-    pub async fn drop_app_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> { self.apps.drop_chunk_once(kind, index).await }
+    pub async fn drop_app_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> {
+        let e = self.apps.lock().await.get(kind).cloned().ok_or_else(|| anyhow::anyhow!("the channel is not joined"))?;
+        e.state.cut_chunk_once(index)
+    }
 
     /// The exact author birth supplied by this process, when publication has bound it.
     pub fn author_birth(&self) -> Option<crate::envelope::Birth> { self.author.lock().unwrap().clone() }
@@ -1051,7 +1114,10 @@ impl Channels {
     /// Leave this mesh's gossip channel: this node is a neighbour of no one on it and sends and hears
     /// nothing there until [`TopologyView::start`]. Resolves once the channel is left.
     pub async fn stop(&self) {
-        self.apps.suspend().await;
+        let joined: Vec<_> = self.apps.lock().await.values().map(|e| e.state.clone()).collect();
+        for state in joined {
+            state.leave().await;
+        }
         self.mesh().stop().await;
     }
 
@@ -1064,7 +1130,16 @@ impl Channels {
         // running is the durable silence rows', which the tick reads). On the channel again it hears its
         // members at once: the reopen dialled them (Q88).
         self.topology_view.digest_view.restart_silence();
-        if let Err(error) = self.apps.resume().await {
+        // Every application channel this birth joined is subscribed again, each with the peers its join named.
+        let joined: Vec<_> = self.app_peers.lock().unwrap().iter().map(|(k, p)| (k.clone(), p.clone())).collect();
+        let mut resumed = Ok(());
+        for (kind, peers) in joined {
+            if let Err(e) = self.subscribe_app(&kind, &peers).await {
+                resumed = Err(e);
+                break;
+            }
+        }
+        if let Err(error) = resumed {
             tracing::info_span!("rdm.mesh.channel.reject.via-subscribe", error = %error).in_scope(|| tracing::warn!("application channels could not rejoin"));
         }
     }

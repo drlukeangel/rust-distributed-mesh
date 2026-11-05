@@ -114,9 +114,9 @@ impl Member {
         rdm_core::EndpointId(self.endpoint_id().to_string())
     }
 
-    /// Join the application channel `kind` through `peers` and take its one receiver: a second
-    /// receiver of one channel is refused `ReceiverHeld`.
-    pub async fn app_channel(&self, kind: &str, peers: &[rdm_core::EndpointId]) -> Result<rdm_gossip::app::Channel, rdm_gossip::app::ChannelError> {
+    /// Join the application channel `kind` through `peers` and take its publisher and its one receiver:
+    /// a second receiver of one channel is refused `ReceiverHeld`.
+    pub async fn app_channel(&self, kind: &str, peers: &[rdm_core::EndpointId]) -> Result<(rdm_gossip::app::Publisher, rdm_gossip::app::Subscriber), rdm_gossip::app::ChannelError> {
         let addrs = peers.iter().map(|p| rdm_gossip::channel::peer(p).expect("a peer's endpoint id parses")).collect();
         self.channels.join(rdm_gossip::channel::ChannelId::app(self.topology_view.fabric_id(), kind), addrs).await.map_err(|e| rdm_gossip::app::ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() })?;
         self.channels.app(kind).await

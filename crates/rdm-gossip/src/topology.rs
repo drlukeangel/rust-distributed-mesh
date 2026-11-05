@@ -15,19 +15,16 @@
 //! (its one endpoint), so HyParView reaches a peer it learned by id.
 
 use rdm_transport::clock::SharedClock;
-use crate::forward_path::ForwardPath;
-use crate::snapshot::{Chunk, Gap, PublisherId, SourceSnapshot, Taken};
+use crate::snapshot::{Gap, PublisherId, SourceSnapshot};
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr};
-use iroh_gossip::net::Gossip;
 use rdm_core::{FabricId, IncarnationId, MeshDigest, MeshId, Primary, PrimaryRole};
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 
-use crate::{frame::*, location::*, status::*, primary::*, channel::*, view::*, digest_view::*};
+use crate::{frame::*, status::*, primary::*, view::*, digest_view::*};
 
 /// How often a node's publish loop marks its heartbeat in the trace (the digest itself goes out
 /// every gossip interval).

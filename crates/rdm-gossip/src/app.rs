@@ -5,11 +5,7 @@ pub use crate::envelope::Birth;
 use rdm_transport::{clock::SharedClock, wire};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use iroh_gossip::{
-    api::{Event as GossipEvent, GossipSender},
-    net::Gossip,
-    proto::TopicId,
-};
+use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use std::{
     collections::HashMap,
     sync::{
@@ -20,7 +16,7 @@ use std::{
 };
 use tokio::sync::{mpsc, watch, Notify};
 
-const QUEUE: usize = 1024;
+pub(crate) const QUEUE: usize = 1024;
 const PARTS: usize = 16;
 const MAX: usize = crate::frame::MAX_FRAME;
 const CHUNK: &str = crate::envelope::CHUNK_TYPE;
@@ -103,7 +99,7 @@ pub enum ChannelError {
     },
 }
 
-struct State {
+pub(crate) struct State {
     sender: Mutex<Option<GossipSender>>,
     left: AtomicBool,
     stop: Notify,
@@ -122,11 +118,48 @@ struct State {
     chunk_cut: std::sync::atomic::AtomicUsize,
 }
 impl State {
+    /// The delivery state of the application channel `kind`, sending through `sender`.
+    pub(crate) fn new(kind: &str, sender: GossipSender, author: Arc<Mutex<Option<Birth>>>, clock: SharedClock, ids: Arc<AtomicU64>, id_nonce: [u8; 32]) -> Arc<Self> {
+        Arc::new(Self {
+            sender: Mutex::new(Some(sender)),
+            left: AtomicBool::new(false),
+            stop: Notify::new(),
+            dropped: AtomicU64::new(0),
+            lost: watch::channel(0).0,
+            kind: kind.into(),
+            author,
+            clock,
+            ids,
+            id_nonce,
+            finished: watch::channel(false).0,
+            neighbours: AtomicUsize::new(0),
+            #[cfg(feature = "testkit-gossip")]
+            chunk_cut: std::sync::atomic::AtomicUsize::new(usize::MAX),
+        })
+    }
+
+    /// Whether the channel was left (its receive loop ended or it was stopped).
+    pub(crate) fn is_left(&self) -> bool {
+        self.left.load(Ordering::Acquire)
+    }
+
+    /// The channel's sender while it is joined.
+    pub(crate) fn sender(&self) -> Option<GossipSender> {
+        self.sender.lock().unwrap().clone()
+    }
+
+    /// The testkit cut: drop the chunk at `index` of the next multi-chunk event once.
+    #[cfg(feature = "testkit-gossip")]
+    pub(crate) fn cut_chunk_once(&self, index: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(index < PARTS, "chunk index exceeds the sixteen-part limit");
+        self.chunk_cut.store(index, Ordering::Release);
+        Ok(())
+    }
     fn close(&self) {
         self.left.store(true, Ordering::Release);
         self.stop.notify_one();
     }
-    async fn leave(&self) {
+    pub(crate) async fn leave(&self) {
         let mut finished = self.finished.subscribe();
         self.close();
         while !*finished.borrow_and_update() {
@@ -241,53 +274,6 @@ impl State {
     }
 }
 
-/// One owned app-channel receiver and its publisher. This value is not Clone.
-pub struct Channel {
-    state: Arc<State>,
-    rx: Option<mpsc::Receiver<Received>>,
-}
-impl Channel {
-    /// Publish one event using the current span's context.
-    pub async fn publish(&self, event: Event) -> Result<(), ChannelError> {
-        self.state.publish(event).await
-    }
-    /// Receive a whole event; None after leaving.
-    pub async fn recv(&mut self) -> Option<Received> {
-        self.rx.as_mut()?.recv().await
-    }
-    /// Transfer the receiver once and separate its publisher.
-    pub fn split(mut self) -> (Publisher, Subscriber) {
-        let rx = self.rx.take().expect("an owned channel has its receiver");
-        (
-            Publisher {
-                state: self.state.clone(),
-            },
-            Subscriber {
-                state: self.state.clone(),
-                rx,
-            },
-        )
-    }
-    /// Events refused because this receiver's queue was full.
-    pub fn dropped(&self) -> u64 {
-        self.state.dropped.load(Ordering::Relaxed)
-    }
-    /// Local-loss generation: queue overflow or incomplete assembly eviction.
-    pub fn lost(&self) -> watch::Receiver<u64> {
-        self.state.lost.subscribe()
-    }
-    /// Leave this channel and end its receiver.
-    pub async fn leave(self) {
-        self.state.leave().await;
-    }
-}
-impl Drop for Channel {
-    fn drop(&mut self) {
-        if self.rx.is_some() {
-            self.state.close();
-        }
-    }
-}
 /// The publishing half of an owned channel.
 pub struct Publisher {
     state: Arc<State>,
@@ -366,305 +352,183 @@ impl Attributes {
         }
     }
 }
-struct Entry {
-    state: Arc<State>,
-    receiver: Mutex<Option<mpsc::Receiver<Received>>>,
-}
 struct Assembly {
     parts: Vec<Option<Vec<u8>>>,
     deadline: Instant,
 }
 
-pub(crate) struct Hub {
-    gossip: Gossip,
-    fabric: rdm_core::FabricId,
-    /// Each joined channel's first neighbours, as its application named them at its join: a rejoin
-    /// after a stop subscribes with them again.
-    peers: Mutex<HashMap<String, Vec<iroh::EndpointId>>>,
-    entries: tokio::sync::Mutex<HashMap<String, Arc<Entry>>>,
-    author: Arc<Mutex<Option<Birth>>>,
-    clock: SharedClock,
-    ids: Arc<AtomicU64>,
-    id_nonce: [u8; 32],
+/// The publisher and the one receiver of an application channel joined through `Channels::join`,
+/// handed once (`Channels::app`).
+pub(crate) fn pair(state: Arc<State>, rx: mpsc::Receiver<Received>) -> (Publisher, Subscriber) {
+    (Publisher { state: state.clone() }, Subscriber { state, rx })
 }
-impl Hub {
-    pub(crate) fn new(
-        gossip: &Gossip,
-        fabric: &rdm_core::FabricId,
-        author: Arc<Mutex<Option<Birth>>>,
-        clock: SharedClock,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            gossip: gossip.clone(),
-            fabric: fabric.clone(),
-            peers: Default::default(),
-            entries: Default::default(),
-            author,
-            clock,
-            ids: Arc::new(AtomicU64::new(1)),
-            id_nonce: *iroh::SecretKey::generate().public().as_bytes(),
-        })
-    }
-    pub(crate) async fn suspend(&self) {
-        let states: Vec<_> = self
-            .entries
-            .lock()
-            .await
-            .values()
-            .map(|e| e.state.clone())
-            .collect();
-        for state in states {
-            state.leave().await;
-        }
-    }
-    /// Subscribe every channel this birth joined again, each with the peers its join named.
-    pub(crate) async fn resume(&self) -> anyhow::Result<()> {
-        let joined: Vec<_> = self.peers.lock().unwrap().iter().map(|(k, p)| (k.clone(), p.clone())).collect();
-        for (kind, peers) in joined {
-            self.ensure(&kind, &peers).await?;
-        }
-        Ok(())
-    }
-    fn node_name(&self) -> String {
-        self.author.lock().unwrap().as_ref().map(|b| b.node.to_string()).unwrap_or_default()
-    }
-    #[cfg(feature = "testkit-gossip")]
-    pub(crate) async fn drop_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> {
-        anyhow::ensure!(index < PARTS, "chunk index exceeds the sixteen-part limit");
-        let entry = self.entries.lock().await.get(kind).cloned();
-        let entry = entry.ok_or_else(|| anyhow::anyhow!("the channel is not joined"))?;
-        entry.state.chunk_cut.store(index, Ordering::Release);
-        Ok(())
-    }
-    /// Join the channel `kind` with `peers`, its first neighbours as the application names them. A
-    /// channel already subscribed hands `peers` to its gossip.
-    pub(crate) async fn join(&self, kind: &str, peers: Vec<iroh::EndpointId>) -> Result<(), ChannelError> {
-        let subscribe = |e: anyhow::Error| ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() };
-        let (e, created) = self.ensure_created(kind, &peers).await.map_err(subscribe)?;
-        if !created && !peers.is_empty() {
-            let sender = e.state.sender.lock().unwrap().clone();
-            if let Some(sender) = sender {
-                crate::channel::dial_span(&self.node_name(), kind, &crate::channel::ChannelId::app(&self.fabric, kind).topic(), &peers, &peers);
-                sender.join_peers(peers.clone()).await.map_err(|e| subscribe(e.into()))?;
+
+/// The application channel's delivery (gossip.md §8): each whole event received on `stream` into
+/// `tx`, its chunks assembled and an unfinished one evicted after the staleness floor; the channel
+/// left when `stream` ends.
+pub(crate) fn deliver_from(state: Arc<State>, mut stream: iroh_gossip::api::GossipReceiver, tx: mpsc::Sender<Received>, fabric: rdm_core::FabricId) {
+    tokio::spawn(async move {
+        let mut assemblies: HashMap<(Birth, String), Assembly> = HashMap::new();
+        // Use the substrate's message-id retention, rather than retaining every app write
+        // for the receiver's lifetime. Only complete event identities enter this hold.
+        let retention = iroh_gossip::proto::PlumtreeConfig::default().message_id_retention;
+        let mut seen = iroh_gossip::proto::util::TimeBoundCache::default();
+        loop {
+            let next = assemblies.values().map(|a| a.deadline).min();
+            let expiry = async {
+                match next {
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let item = tokio::select! {
+                _ = state.stop.notified() => break,
+                _ = expiry => {
+                    let now = Instant::now();
+                    assemblies.retain(|(source, id), a| {
+                        if a.deadline > now { return true; }
+                        tracing::info_span!("rdm.mesh.topology.reject.via-chunk-incomplete", source = %source.uri(), event_id = id, event_type = %state.kind).in_scope(|| tracing::info!("unfinished event evicted after the staleness floor"));
+                        state.loss(); false
+                    });
+                    continue;
+                },
+                item = stream.next() => item,
+            };
+            seen.expire_until(Instant::now().into());
+            if let Some(Ok(GossipEvent::NeighborUp(peer))) = &item {
+                let neighbours = state.neighbours.fetch_add(1, Ordering::AcqRel) + 1;
+                tracing::info_span!("rdm.mesh.channel.update.via-neighbour", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour joined"));
+                continue;
             }
-        }
-        self.peers.lock().unwrap().insert(kind.into(), peers);
-        Ok(())
-    }
-    /// The joined channel `kind`'s one owned receiver, handed over once.
-    pub(crate) async fn receiver(&self, kind: &str) -> Result<Channel, ChannelError> {
-        let e = self.entries.lock().await.get(kind).cloned().ok_or_else(|| ChannelError::Subscribe { r#type: kind.into(), detail: "the channel is not joined".into() })?;
-        let rx = e.receiver.lock().unwrap().take().ok_or_else(|| ChannelError::ReceiverHeld { r#type: kind.into() })?;
-        Ok(Channel { state: e.state.clone(), rx: Some(rx) })
-    }
-    async fn ensure(&self, kind: &str, peers: &[iroh::EndpointId]) -> anyhow::Result<Arc<Entry>> {
-        Ok(self.ensure_created(kind, peers).await?.0)
-    }
-    /// The live subscription of `kind`, or a new one with `peers`; whether it is new.
-    async fn ensure_created(&self, kind: &str, peers: &[iroh::EndpointId]) -> anyhow::Result<(Arc<Entry>, bool)> {
-        let mut entries = self.entries.lock().await;
-        if let Some(e) = entries
-            .get(kind)
-            .filter(|e| !e.state.left.load(Ordering::Acquire))
-        {
-            return Ok((e.clone(), false));
-        }
-        let mut peers = peers.to_vec();
-        peers.sort_unstable();
-        peers.dedup();
-        crate::channel::dial_span(&self.node_name(), kind, &crate::channel::ChannelId::app(&self.fabric, kind).topic(), &peers, &peers);
-        let channel = self
-            .gossip
-            .subscribe(crate::channel::ChannelId::app(&self.fabric, kind).topic(), peers)
-            .await?;
-        let (sender, mut stream) = channel.split();
-        let (tx, rx) = mpsc::channel(QUEUE);
-        let state = Arc::new(State {
-            sender: Mutex::new(Some(sender)),
-            left: AtomicBool::new(false),
-            stop: Notify::new(),
-            dropped: AtomicU64::new(0),
-            lost: watch::channel(0).0,
-            kind: kind.into(),
-            author: self.author.clone(),
-            clock: self.clock.clone(),
-            ids: self.ids.clone(),
-            id_nonce: self.id_nonce,
-            finished: watch::channel(false).0,
-            neighbours: AtomicUsize::new(0),
-            #[cfg(feature = "testkit-gossip")]
-            chunk_cut: std::sync::atomic::AtomicUsize::new(usize::MAX),
-        });
-        let e = Arc::new(Entry {
-            state: state.clone(),
-            receiver: Mutex::new(Some(rx)),
-        });
-        entries.insert(kind.into(), e.clone());
-        let fabric = self.fabric.clone();
-        tokio::spawn(async move {
-            let mut assemblies: HashMap<(Birth, String), Assembly> = HashMap::new();
-            // Use the substrate's message-id retention, rather than retaining every app write
-            // for the receiver's lifetime. Only complete event identities enter this hold.
-            let retention = iroh_gossip::proto::PlumtreeConfig::default().message_id_retention;
-            let mut seen = iroh_gossip::proto::util::TimeBoundCache::default();
-            loop {
-                let next = assemblies.values().map(|a| a.deadline).min();
-                let expiry = async {
-                    match next {
-                        Some(at) => tokio::time::sleep_until(at.into()).await,
-                        None => std::future::pending().await,
-                    }
-                };
-                let item = tokio::select! {
-                    _ = state.stop.notified() => break,
-                    _ = expiry => {
-                        let now = Instant::now();
-                        assemblies.retain(|(source, id), a| {
-                            if a.deadline > now { return true; }
-                            tracing::info_span!("rdm.mesh.topology.reject.via-chunk-incomplete", source = %source.uri(), event_id = id, event_type = %state.kind).in_scope(|| tracing::info!("unfinished event evicted after the staleness floor"));
-                            state.loss(); false
-                        });
-                        continue;
-                    },
-                    item = stream.next() => item,
-                };
-                seen.expire_until(Instant::now().into());
-                if let Some(Ok(GossipEvent::NeighborUp(peer))) = &item {
-                    let neighbours = state.neighbours.fetch_add(1, Ordering::AcqRel) + 1;
-                    tracing::info_span!("rdm.mesh.channel.update.via-neighbour", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour joined"));
+            if let Some(Ok(GossipEvent::NeighborDown(peer))) = &item {
+                let neighbours = state.neighbours.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))).map_or(0, |n| n.saturating_sub(1));
+                tracing::info_span!("rdm.mesh.channel.update.via-neighbour-down", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour left"));
+                continue;
+            }
+            let Some(Ok(GossipEvent::Received(message))) = item else {
+                if item.is_none() {
+                    break;
+                }
+                continue;
+            };
+            let mut trace = Default::default();
+            let mut dropped = Vec::new();
+            let header =
+                crate::envelope::decode_header(&message.content, &mut trace, &mut dropped, MAX);
+            if let Err(error) = &header {
+                tracing::info_span!("rdm.mesh.topology.reject.via-undecodable-frame", event_type = %state.kind, bytes = message.content.len(), error = ?error).in_scope(|| tracing::info!("application envelope refused"));
+            }
+            if let Ok(mut h) = header {
+                if h.source.fabric != fabric {
+                    tracing::info_span!("rdm.mesh.topology.reject.via-undecodable-frame", event_type = %state.kind, error = "source fabric differs from the channel").in_scope(|| tracing::info!("application envelope refused"));
                     continue;
                 }
-                if let Some(Ok(GossipEvent::NeighborDown(peer))) = &item {
-                    let neighbours = state.neighbours.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))).map_or(0, |n| n.saturating_sub(1));
-                    tracing::info_span!("rdm.mesh.channel.update.via-neighbour-down", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour left"));
-                    continue;
-                }
-                let Some(Ok(GossipEvent::Received(message))) = item else {
-                    if item.is_none() {
-                        break;
-                    }
-                    continue;
-                };
-                let mut trace = Default::default();
-                let mut dropped = Vec::new();
-                let header =
-                    crate::envelope::decode_header(&message.content, &mut trace, &mut dropped, MAX);
-                if let Err(error) = &header {
-                    tracing::info_span!("rdm.mesh.topology.reject.via-undecodable-frame", event_type = %state.kind, bytes = message.content.len(), error = ?error).in_scope(|| tracing::info!("application envelope refused"));
-                }
-                if let Ok(mut h) = header {
-                    if h.source.fabric != fabric {
-                        tracing::info_span!("rdm.mesh.topology.reject.via-undecodable-frame", event_type = %state.kind, error = "source fabric differs from the channel").in_scope(|| tracing::info!("application envelope refused"));
+                if h.kind == CHUNK {
+                    if h.sequence.is_some() || h.dataschema.is_some() {
                         continue;
                     }
-                    if h.kind == CHUNK {
-                        if h.sequence.is_some() || h.dataschema.is_some() {
-                            continue;
-                        }
-                        let Ok((i, n, bytes)) = wire::decode::<(u16, u16, Vec<u8>)>(&h.data) else {
-                            continue;
-                        };
-                        if n == 0
-                            || n as usize > PARTS
-                            || i >= n
-                            || h.id != format!("{}/{i}", h.subject)
-                        {
-                            continue;
-                        }
-                        #[cfg(feature = "testkit-gossip")]
-                        if state
-                            .chunk_cut
-                            .compare_exchange(
-                                i as usize,
-                                usize::MAX,
-                                Ordering::AcqRel,
-                                Ordering::Acquire,
-                            )
-                            .is_ok()
-                        {
-                            tracing::info_span!("rdm.testkit.channel.reject.via-chunk-cut", event_type = %state.kind, event_id = %h.subject, chunk_index = i).in_scope(|| tracing::info!("the armed testkit cut drops this one chunk"));
-                            continue;
-                        }
-                        let key = (h.source.clone(), h.subject.clone());
-                        if seen.contains_key(&event_identity(&key.0, &key.1)) {
-                            continue;
-                        }
-                        let a = assemblies.entry(key.clone()).or_insert_with(|| Assembly {
-                            parts: vec![None; n as usize],
-                            deadline: Instant::now() + rdm_core::cadence::staleness_floor(),
-                        });
-                        if a.parts.len() != n as usize
-                            || a.parts[i as usize]
-                                .as_ref()
-                                .is_some_and(|old| *old != bytes)
-                        {
-                            continue;
-                        }
-                        a.parts[i as usize] = Some(bytes);
-                        if a.parts.iter().any(Option::is_none) {
-                            continue;
-                        }
-                        let a = assemblies.remove(&key).unwrap();
-                        let full: Vec<u8> = a.parts.into_iter().flatten().flatten().collect();
-                        let Ok(whole) = crate::envelope::decode_header(
-                            &full,
-                            &mut trace,
-                            &mut dropped,
-                            MAX * PARTS,
-                        ) else {
-                            continue;
-                        };
-                        if whole.source != key.0 || whole.id != key.1 {
-                            continue;
-                        }
-                        h = whole;
-                    }
-                    let sequence = match &h.sequence {
-                        None => None,
-                        Some(s) => match Some(s).filter(|s| s.len() == 20 && s.bytes().all(|b| b.is_ascii_digit())).and_then(|s| s.parse().ok()) {
-                            Some(v) => Some(v),
-                            None => {
-                                tracing::info_span!("rdm.mesh.channel.reject.via-malformed-sequence", event_type = %h.kind, event_id = %h.id, sequence_len = s.len()).in_scope(|| tracing::info!("an event's sequence is 20 decimal digits: the frame is dropped"));
-                                continue;
-                            }
-                        },
+                    let Ok((i, n, bytes)) = wire::decode::<(u16, u16, Vec<u8>)>(&h.data) else {
+                        continue;
                     };
-                    let identity = event_identity(&h.source, &h.id);
-                    if seen.contains_key(&identity) {
+                    if n == 0
+                        || n as usize > PARTS
+                        || i >= n
+                        || h.id != format!("{}/{i}", h.subject)
+                    {
                         continue;
                     }
-                    seen.insert(identity, (), (Instant::now() + retention).into());
-                    // `delivered_from`: the neighbour that handed this node the event, its carrier (iroh-gossip's
-                    // `delivered_from`); `source` is its author.
-                    let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), delivered_from = %message.delivered_from, bytes = h.data.len());
-                    if let Some(parent) = trace.traceparent.as_deref() {
-                        rdm_transport::set_remote_parent(&span, parent, trace.tracestate.as_deref());
+                    #[cfg(feature = "testkit-gossip")]
+                    if state
+                        .chunk_cut
+                        .compare_exchange(
+                            i as usize,
+                            usize::MAX,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        tracing::info_span!("rdm.testkit.channel.reject.via-chunk-cut", event_type = %state.kind, event_id = %h.subject, chunk_index = i).in_scope(|| tracing::info!("the armed testkit cut drops this one chunk"));
+                        continue;
                     }
-                    if !dropped.is_empty() {
-                        span.in_scope(|| tracing::info_span!("rdm.mesh.topology.update.via-context-dropped", context_dropped = %rdm_core::context::dropped_as_str(&dropped)).in_scope(|| tracing::info!("malformed tracing metadata dropped; the event continues")));
+                    let key = (h.source.clone(), h.subject.clone());
+                    if seen.contains_key(&event_identity(&key.0, &key.1)) {
+                        continue;
                     }
-                    deliver(
-                        &state,
-                        &tx,
-                        Received {
-                            source: h.source,
-                            subject: h.subject,
-                            sequence,
-                            time_ms: h.time_ms,
-                            dataschema: h.dataschema,
-                            data: h.data.into(),
-                            span,
-                        },
-                    );
+                    let a = assemblies.entry(key.clone()).or_insert_with(|| Assembly {
+                        parts: vec![None; n as usize],
+                        deadline: Instant::now() + rdm_core::cadence::staleness_floor(),
+                    });
+                    if a.parts.len() != n as usize
+                        || a.parts[i as usize]
+                            .as_ref()
+                            .is_some_and(|old| *old != bytes)
+                    {
+                        continue;
+                    }
+                    a.parts[i as usize] = Some(bytes);
+                    if a.parts.iter().any(Option::is_none) {
+                        continue;
+                    }
+                    let a = assemblies.remove(&key).unwrap();
+                    let full: Vec<u8> = a.parts.into_iter().flatten().flatten().collect();
+                    let Ok(whole) = crate::envelope::decode_header(
+                        &full,
+                        &mut trace,
+                        &mut dropped,
+                        MAX * PARTS,
+                    ) else {
+                        continue;
+                    };
+                    if whole.source != key.0 || whole.id != key.1 {
+                        continue;
+                    }
+                    h = whole;
                 }
+                let sequence = match &h.sequence {
+                    None => None,
+                    Some(s) => match Some(s).filter(|s| s.len() == 20 && s.bytes().all(|b| b.is_ascii_digit())).and_then(|s| s.parse().ok()) {
+                        Some(v) => Some(v),
+                        None => {
+                            tracing::info_span!("rdm.mesh.channel.reject.via-malformed-sequence", event_type = %h.kind, event_id = %h.id, sequence_len = s.len()).in_scope(|| tracing::info!("an event's sequence is 20 decimal digits: the frame is dropped"));
+                            continue;
+                        }
+                    },
+                };
+                let identity = event_identity(&h.source, &h.id);
+                if seen.contains_key(&identity) {
+                    continue;
+                }
+                seen.insert(identity, (), (Instant::now() + retention).into());
+                // `delivered_from`: the neighbour that handed this node the event, its carrier (iroh-gossip's
+                // `delivered_from`); `source` is its author.
+                let span = tracing::info_span!("rdm.mesh.topology.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), delivered_from = %message.delivered_from, bytes = h.data.len());
+                if let Some(parent) = trace.traceparent.as_deref() {
+                    rdm_transport::set_remote_parent(&span, parent, trace.tracestate.as_deref());
+                }
+                if !dropped.is_empty() {
+                    span.in_scope(|| tracing::info_span!("rdm.mesh.topology.update.via-context-dropped", context_dropped = %rdm_core::context::dropped_as_str(&dropped)).in_scope(|| tracing::info!("malformed tracing metadata dropped; the event continues")));
+                }
+                deliver(
+                    &state,
+                    &tx,
+                    Received {
+                        source: h.source,
+                        subject: h.subject,
+                        sequence,
+                        time_ms: h.time_ms,
+                        dataschema: h.dataschema,
+                        data: h.data.into(),
+                        span,
+                    },
+                );
             }
-            state.left.store(true, Ordering::Release);
-            state.sender.lock().unwrap().take();
-            drop(stream);
-            state.finished.send_replace(true);
-        });
-        Ok((e, true))
-    }
+        }
+        state.left.store(true, Ordering::Release);
+        state.sender.lock().unwrap().take();
+        drop(stream);
+        state.finished.send_replace(true);
+    });
 }
 fn event_identity(source: &Birth, id: &str) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
