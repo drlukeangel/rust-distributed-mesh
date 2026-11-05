@@ -94,7 +94,8 @@ fn a_member_held_only_from_the_projection_and_never_heard_is_repaired() {
         holder_view.digest_view.hold_projected_at(&held, Instant::now());
         assert_eq!(member_channels.neighbours(), 0, "the member knows of no one to dial");
 
-        let deadline = Instant::now() + BOUND;
+        // The repair window is the staleness floor (30 s at the default cadence): the bound runs past it.
+        let deadline = Instant::now() + rdm_core::cadence::staleness_floor() + BOUND;
         loop {
             member_channels.publish(&held).await.unwrap();
             if holder_view.digest_view.get(held.node.node_id.as_str()).is_some() {
