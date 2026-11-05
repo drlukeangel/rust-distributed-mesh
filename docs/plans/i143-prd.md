@@ -3616,3 +3616,5 @@ Q258 (Build notices and a member's self-heal) ruled A by the lead with arch-1, d
 own recovery attempt reopens nothing and sends no notice; item G withdrawn; build.md:289 conforms to R-BI7's approved line, in
 rdm#173 (lane 7, note 0005). Found: R-BI7's page text never landed on node-recovery.md:22, :72-80 and node-rpc-envelope.md:993,
 rdm#174 with the lead's conforming text.
+
+- 2026-11-05 (Luke away, lead-decisions-2026-11-04.md D26 to D37): fast, release, soaks and load L1 to L4 are green at c14f1d0c4, the pin Rafka landed on. Landed for it: held-member repair for a member held only from the projection (D27), a replacement holds the fabric pending until its new node is ready (D29), a resolver change that does not name the receiver spends no attempt (D30), a create whose own birth is lost before Ready takes a new node.id (D33). Remaining: D33's branch in `create` has not run live; D35, a launch that never joined re-running completed steps against build.md §1, is Luke's; the one `cert_renewal` red under load L3 has no established cause.
