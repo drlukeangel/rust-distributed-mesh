@@ -1,11 +1,11 @@
 //! `app-gossip-channels`: application channels over the CloudEvents gossip envelope (gossip.md §8,
 //! Q362): RDM provides the channels, and an application's nodes join the channels its own code names.
 //!
-//! `topology_view.join_channel(name, peers)` joins the channel `name` with `peers`, its first
+//! `channels.join(ChannelId::app(fabric_id, name), peers)` joins the channel `name` with `peers`, its first
 //! neighbours by `endpoint_id`: here the node-admin joins first, naming none, and the broker joins
 //! naming the node-admin. Nothing is declared to RDM. Events carry `subject`, `sequence`, `dataschema`,
 //! and opaque `data` bytes; RDM delivers them with their original author's
-//! [`rdm_node::gossip::Birth`] and a receive span parented to the author's span.
+//! [`rdm_node::app::Birth`] and a receive span parented to the author's span.
 //!
 //! Build: `cargo build --example app_gossip_channels` in `demo/`.
 //! Run against a live estate (`scripts/demo-estate.sh up`):
@@ -18,7 +18,7 @@ use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_client::{Filter, MeshNode, Nodes, Peers};
 use rdm_core::{IncarnationId, NodeId};
-use rdm_node::gossip::Event;
+use rdm_node::app::Event;
 use std::time::Duration;
 
 const KIND: &str = "demo.records";
@@ -115,8 +115,11 @@ fn main() -> Result<()> {
         .await?;
 
         // The node-admin joins first; the broker names it, by its endpoint_id, as its first neighbour.
-        let mut receiver = root.topology_view.join_channel(KIND, &[]).await?;
-        let sender = node.topology_view.join_channel(KIND, &[d.node.endpoint_id.clone()]).await?;
+        let fabric = root.topology_view.fabric_id().clone();
+        root.channels.join(rdm_gossip::channel::ChannelId::app(&fabric, KIND), vec![]).await?;
+        let mut receiver = root.channels.app(KIND).await?;
+        node.channels.join(rdm_gossip::channel::ChannelId::app(&fabric, KIND), vec![rdm_gossip::channel::peer(&d.node.endpoint_id)?]).await?;
+        let sender = node.channels.app(KIND).await?;
         tokio::time::timeout(BOUND, async {
             while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.channel.update.via-neighbour" && s["attributes"]["event_type"] == KIND).count() < 2 {
                 tokio::task::yield_now().await;
@@ -143,7 +146,7 @@ fn main() -> Result<()> {
             String::from_utf8_lossy(&received.data)
         );
         node.stop().await;
-        root.topology_view.stop().await;
+        root.channels.stop().await;
         Ok(())
     });
     let _ = std::fs::remove_dir_all(&dir);

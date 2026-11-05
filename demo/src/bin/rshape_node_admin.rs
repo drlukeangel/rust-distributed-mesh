@@ -82,7 +82,7 @@ async fn ask_gateway(started: &Started, gateway: rdm_core::NodeId, request: &Rec
 /// The started admin's handles the notices use.
 struct Started {
     client: Arc<rdm_transport::NodeRpcClient>,
-    view: rdm_transport::topology::TopologyView,
+    view: rdm_gossip::topology::TopologyView,
     mesh: String,
     node_id: String,
     /// Its dialer on the shape's data protocol.

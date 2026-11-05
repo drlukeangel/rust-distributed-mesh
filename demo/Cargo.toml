@@ -17,14 +17,15 @@ description = "Business-empty R-shape consumer: four node entry points composed 
 members = ["admin-ui"]
 
 [dependencies]
-rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
-rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
-rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
+rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
+rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
+rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
+rdm-gossip = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
 # The carrier policy this shape declares for the originate service (a gateway carries).
-rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
+rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
 # Qualification-only: the testkit protocols 0x70-0x73 (testkit store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
+rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
@@ -73,7 +74,7 @@ path = "src/bin/rshape_example.rs"
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }
 # The state-sync cell's desired shape (FabricDesired, MeshDesired) on the testkit's process estate.
-rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "1766eb22931b4f47405055a2b40503e17b77d29a" }
+rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "6c761109ea2d486879e80db721412f7cc90a78ae" }
 # The consumer's own tracing subscriber (the one-trace primer): RDM's spans through the consumer's
 # OpenTelemetry layer, at the versions RDM's own lock holds.
 opentelemetry = "0.33"

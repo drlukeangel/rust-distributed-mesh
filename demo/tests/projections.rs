@@ -10,13 +10,22 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
-use rdm_node::gossip::{Channel, Event};
+use rdm_node::app::{Channel, Event};
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use std::{
+
     collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+/// `kind`'s application channel, joined through `peers` (`Channels::join`, gossip.md §8), and its one
+/// receiver (`Channels::app`).
+async fn open(channels: &rdm_gossip::channel::Channels, fabric: &rdm_core::FabricId, kind: &str, peers: &[rdm_core::EndpointId]) -> anyhow::Result<Channel> {
+    let addrs = peers.iter().map(rdm_gossip::channel::peer).collect::<anyhow::Result<Vec<_>>>()?;
+    channels.join(rdm_gossip::channel::ChannelId::app(fabric, kind), addrs).await?;
+    channels.app(kind).await.map_err(|e| anyhow::anyhow!("{e}"))
+}
 
 const BOUND: Duration = Duration::from_secs(60);
 /// The gateway's three kinds and the compute's two; `SHARED` is held by both.
@@ -216,7 +225,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         .unwrap();
         root.stop_reconciling().await;
         for kind in ALL_KINDS {
-            feed(&cache, root.topology_view.join_channel(kind, &[]).await.unwrap());
+            feed(&cache, open(&root.channels, root.topology_view.fabric_id(), kind, &[]).await.unwrap());
         }
         // Every member names the node-admin, by its endpoint_id, as each channel's first neighbour.
         let root_endpoint = root.digest.lock().unwrap().node.endpoint_id.clone();
@@ -230,11 +239,11 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         assert!(g1_held.lock().unwrap().is_empty() && c1_held.lock().unwrap().is_empty(), "nothing was published yet");
         let mut g1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
         for kind in GATEWAY_KINDS {
-            g1_channels.insert(kind, g1.topology_view.join_channel(kind, admin).await.unwrap());
+            g1_channels.insert(kind, open(&g1.channels, g1.topology_view.fabric_id(), kind, admin).await.unwrap());
         }
         let mut c1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
         for kind in COMPUTE_KINDS {
-            c1_channels.insert(kind, c1.topology_view.join_channel(kind, admin).await.unwrap());
+            c1_channels.insert(kind, open(&c1.channels, c1.topology_view.fabric_id(), kind, admin).await.unwrap());
         }
         // Each channel has node-admin as a neighbour before anything is published: the admin's
         // channel count of the kind reaches one.
@@ -303,8 +312,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         assert!(!c2_rows.contains_key("demo.principal/alice") && !c2_rows.contains_key("demo.path-config/root"), "a compute holds no gateway-only kind");
 
         // What is published after the pull arrives live on both, and node-admin's cache follows.
-        let mut g2_topic = g2.topology_view.join_channel(SHARED, admin).await.unwrap();
-        let mut c2_topic = c2.topology_view.join_channel(SHARED, admin).await.unwrap();
+        let mut g2_topic = open(&g2.channels, g2.topology_view.fabric_id(), SHARED, admin).await.unwrap();
+        let mut c2_topic = open(&c2.channels, c2.topology_view.fabric_id(), SHARED, admin).await.unwrap();
         tokio::time::timeout(BOUND, async {
             loop {
                 let spans = capture.spans().unwrap();

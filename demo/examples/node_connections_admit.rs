@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
     println!("admitted demo/echo dial to path {:?}, name {:?} ({:?}): {reply}", srv.peer().path, srv.peer().name, conn.kind());
     drop((conn, srv));
     gw.stop().await;
-    root.topology_view.stop().await;
+    root.channels.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

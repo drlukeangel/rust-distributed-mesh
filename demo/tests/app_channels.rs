@@ -3,12 +3,20 @@ use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_node::gossip::{Channel, Event};
+use rdm_node::app::{Channel, Event};
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+/// `kind`'s application channel, joined through `peers` (`Channels::join`, gossip.md §8), and its one
+/// receiver (`Channels::app`).
+async fn open(channels: &rdm_gossip::channel::Channels, fabric: &rdm_core::FabricId, kind: &str, peers: &[rdm_core::EndpointId]) -> anyhow::Result<Channel> {
+    let addrs = peers.iter().map(rdm_gossip::channel::peer).collect::<anyhow::Result<Vec<_>>>()?;
+    channels.join(rdm_gossip::channel::ChannelId::app(fabric, kind), addrs).await?;
+    channels.app(kind).await.map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 const KIND: &str = "demo.records";
 const LARGE: &str = "demo.large-records";
 const BOUND: Duration = Duration::from_secs(60);
@@ -173,10 +181,10 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         // joins each first, and the broker joins each naming the node-admin, by its endpoint_id, as its
         // first neighbour.
         let root_endpoint = root.digest.lock().unwrap().node.endpoint_id.clone();
-        let mut receiver = root.topology_view.join_channel(KIND, &[]).await.unwrap();
-        let mut large_receiver = root.topology_view.join_channel(LARGE, &[]).await.unwrap();
-        let sender = node.topology_view.join_channel(KIND, std::slice::from_ref(&root_endpoint)).await.unwrap();
-        let large_sender = node.topology_view.join_channel(LARGE, std::slice::from_ref(&root_endpoint)).await.unwrap();
+        let mut receiver = open(&root.channels, root.topology_view.fabric_id(), KIND, &[]).await.unwrap();
+        let mut large_receiver = open(&root.channels, root.topology_view.fabric_id(), LARGE, &[]).await.unwrap();
+        let sender = open(&node.channels, node.topology_view.fabric_id(), KIND, std::slice::from_ref(&root_endpoint)).await.unwrap();
+        let large_sender = open(&node.channels, node.topology_view.fabric_id(), LARGE, std::slice::from_ref(&root_endpoint)).await.unwrap();
         // Observe actual per-channel neighbour establishment; elapsed boot time proves nothing.
         tokio::time::timeout(BOUND, async {
             loop {
@@ -243,7 +251,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         // a record published into the draining queue would be lost for a reason the shape does not
         // measure (the :313 reds of 2026-10-19, read in i143-prd.md).
         // The testkit drops one incoming part; publishing, assembly expiry and recovery stay public.
-        rdm_test::gossip_faults::drop_chunk_once(&root.topology_view, LARGE, 1)
+        rdm_test::gossip_faults::drop_chunk_once(&root.channels, LARGE, 1)
             .await
             .unwrap();
         let mut incomplete = large_receiver.lost();

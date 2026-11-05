@@ -25,7 +25,7 @@ use rdm_core::filter::Filter;
 use rdm_core::{IncarnationId, MemberStatus, NodeId, PathName};
 use rdm_node::node_hooks::{CallFailedCtx, OnCallFailed};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
-use rdm_transport::topology::TopologyView;
+use rdm_gossip::topology::TopologyView;
 use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
