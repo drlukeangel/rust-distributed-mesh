@@ -139,7 +139,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         let admin = start_with(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         // Its start's hydration sync carried its own whole row from its mesh-primary's atlas (Q234).
-        let own = admin.topology_view.own_row().expect("mesh1.node-admin.2 holds its own row from its hydration sync");
+        let own = admin.own_writer.as_ref().and_then(|w| w.own_row()).expect("mesh1.node-admin.2 holds its own row from its hydration sync");
         assert_eq!((own.node_id.clone(), own.name.clone()), (launch.node_id.clone(), launch.name.clone()), "the row held is the node's own: {own:?}");
         let target = rdm_transport::NodeTarget::ExactNode(root_digest.node.node_id.clone());
         // While the nodes store reads, its mesh-primary answers the reader its own row, read from its record.
@@ -270,7 +270,7 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
 
         let admin = start_launched(&launch).await.unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts with its fabric store unreadable: {e}"));
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
-        let own = admin.topology_view.own_row().expect("mesh1.node-admin.2 holds its own row from its hydration sync");
+        let own = admin.own_writer.as_ref().and_then(|w| w.own_row()).expect("mesh1.node-admin.2 holds its own row from its hydration sync");
         assert_eq!(own.node_id, launch.node_id, "the row held is the node's own: {own:?}");
         let since = start_folds(&spans, folds_before);
         assert!(since.is_empty(), "the start folds none of the stores it takes from its pulls: {since:?}");
@@ -328,7 +328,7 @@ fn a_launched_admin_is_ready_with_its_fabric_and_meshes_stores_unreadable() {
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let since = start_folds(&spans, folds_before);
 
-        let own = admin.topology_view.own_row().expect("mesh1.node-admin.2 holds its own row from its hydration sync");
+        let own = admin.own_writer.as_ref().and_then(|w| w.own_row()).expect("mesh1.node-admin.2 holds its own row from its hydration sync");
         assert_eq!(own.node_id, launch.node_id, "the row held is the node's own: {own:?}");
         let fabric = admin.topology_view.primaries().fabric().expect("mesh1.node-admin.2 holds the fabric-primary's record from its hydration sync");
         assert_eq!((fabric.node_id.clone(), fabric.incarnation.clone()), (root_birth.node_id.clone(), root_birth.incarnation.clone()), "the record names the Day-0 admin's birth: {fabric:?}");

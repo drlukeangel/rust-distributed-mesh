@@ -365,7 +365,7 @@ impl NodeSelf {
     async fn write_state(&self, to: crate::model::NodeStatus) {
         let writer = self.records.lock().unwrap().clone();
         let Some(writer) = writer else { return };
-        let Some(initial) = writer.start_record(self.topology_view.config().unwrap_or_default()) else { return };
+        let Some(initial) = writer.start_record() else { return };
         let _ = writer.state(initial, to).await;
     }
 
@@ -767,7 +767,7 @@ impl NodeSelf {
         let (node, node_id, incarnation) = (self.node_id.clone(), self.node_id.clone(), self.incarnation.clone());
         let commander_name = named(commander);
         let all = matches!(scope, ConnectionScope::All);
-        let own = self.records.lock().unwrap().clone().and_then(|w| w.start_record(self.topology_view.config().unwrap_or_default()).map(|r| (w, r)));
+        let own = self.records.lock().unwrap().clone().and_then(|w| w.start_record().map(|r| (w, r)));
         let report = {
             let sink = sink.clone();
             let own = own.clone();

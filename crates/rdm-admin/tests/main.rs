@@ -65,7 +65,7 @@ pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_admin::storage::
     let topology_view = rdm_gossip::topology::TopologyView::new(&rdm_core::FabricId::mint(), "mesh1", &rdm_core::MeshId::mint(), rdm_core::NodeId::mint().as_str(), rdm_transport::clock::os_clock());
     let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
     channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
-    configs.uses_records(records, || "memory".into(), topology_view);
+    configs.uses_records(records, || "memory".into(), || None);
     configs
 }
 

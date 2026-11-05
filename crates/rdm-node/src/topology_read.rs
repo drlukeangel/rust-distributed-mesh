@@ -422,10 +422,6 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     // The primary records the target holds are this node's too, wherever they supersede its own: it
     // computes no primary before it has them.
     topology_view.learn_primaries(&read.primaries, "entry");
-    // The reader's own whole row its mesh-primary's atlas holds: held on its own entry (Q234).
-    if let Some(row) = &read.own_row {
-        topology_view.set_own_row(row.clone());
-    }
     Ok(read)
 }
 

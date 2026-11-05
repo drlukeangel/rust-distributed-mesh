@@ -21,6 +21,9 @@ pub struct Running {
     pub topology_view: TopologyView,
     /// The admin's own digest.
     pub digest: Arc<Mutex<MeshDigest>>,
+    /// The admin's own property writer, once bound: its own record, the config it holds and the own
+    /// row its hydration sync carried (Q234, Q356).
+    pub own_writer: Option<rdm_node::node_records::NodePropertyWriter>,
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
@@ -1474,7 +1477,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let configs_slot: crate::node_config::NodeConfigsSlot =
                                     Arc::new(std::sync::OnceLock::new());
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone());
-                                configs.uses_records(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() }, topology_view.clone());
+                                configs.uses_records(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() }, { let (held, birth) = (topology_view.clone(), name.clone()); move || Some(held.held_name(&birth)) });
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
                                 // An owed push of a node's row up to the fabric-primary reads the view again on each send (Q235 P3).
@@ -2127,6 +2130,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // entering an existing mesh): ended with this admin's other tasks.
                             let start_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
                             let after = AdminFirstStart {
+                                configs: configs_slot.clone(),
                                 me_path: name.path.clone(), me_name: name.name.clone(),
                                 me_id: node_id.clone(),
                                 fabric_id: cfg.fabric_id.clone(),
@@ -3326,7 +3330,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), status_service: status_service.clone(), status_service_set: status_service_set.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, own_writer: configs_slot.get().and_then(|c| c.own_writer()), node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), status_service: status_service.clone(), status_service_set: status_service_set.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });

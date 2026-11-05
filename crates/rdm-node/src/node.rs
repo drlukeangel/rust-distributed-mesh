@@ -128,9 +128,15 @@ impl RunningNode {
         NodeRowRead { rows: self.node_rows.clone(), topology_view: self.topology_view.clone() }
     }
 
+    /// The config this node holds ([`crate::node_records::NodePropertyWriter::config`]): the map the
+    /// application reads; never gossiped (Q203).
+    pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        self.property_writer.config()
+    }
+
     /// [`Self::config_update`] as a handle that outlives the borrow: what an application task holds.
     pub fn own_config(&self) -> OwnConfig {
-        OwnConfig { topology_view: self.topology_view.clone(), writer: self.property_writer.clone(), digest: self.digest.clone() }
+        OwnConfig { writer: self.property_writer.clone(), digest: self.digest.clone() }
     }
 
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`), by name, held open for its
@@ -808,13 +814,12 @@ async fn start_booted(
                             // The retained config and tags of this node ID are its own row as the hydration sync
                             // handed it (Q234), when that row carries the node's own part; else the launch
                             // snapshot. The start reads nothing from the store (Q227).
-                            let mut initial = start_record(&launch, &topology_view, &digest, &runtime, listener_addrs.clone());
+                            let mut initial = start_record(&launch, &topology_view, &property_writer, &digest, &runtime, listener_addrs.clone());
                             initial.cert = member_cert_dates.clone();
-                            let properties_view = topology_view.clone();
-                            property_writer.bound(initial, move |record| { properties_view.set_config(record.config.clone()); properties_view.set_tags(record.tags.clone()); }).await
+                            property_writer.bound(initial, |_| {}).await
                                 .map_err(|error| anyhow!("{}: bound properties could not be persisted: {error}", launch.node_id))?;
                             // Its accepted join report's pending, on its own record after the launch's starting (Q356).
-                            write_own_state(&property_writer, &topology_view, rdm_core::status::NodeState::Pending).await;
+                            write_own_state(&property_writer, rdm_core::status::NodeState::Pending).await;
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), channels: channels.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&channels, &digest, &status, &server));
@@ -841,7 +846,7 @@ async fn start_booted(
                                     loop {
                                         primaries.borrow_and_update();
                                         // A role this birth takes or gives up is on its own record (Q356).
-                                        crate::node_records::write_own_roles(&records, topology_view.primaries(), &birth, &node.mesh, &node.r#type, topology_view.config().unwrap_or_default(), &mut roles_written).await;
+                                        crate::node_records::write_own_roles(&records, topology_view.primaries(), &birth, &node.mesh, &node.r#type, &mut roles_written).await;
                                         let mut primary = topology_view.primaries().mesh(&node.mesh);
                                         if mesh_primary_moved(told.as_ref(), primary.as_ref()) && owed.is_empty() {
                                             let state = node_state_of(*status.lock().unwrap());
@@ -854,7 +859,7 @@ async fn start_booted(
                                             // record before its mesh-primary hears it.
                                             if written != Some(at) {
                                                 written = Some(at);
-                                                write_own_state(&records, &topology_view, declaration.0).await;
+                                                write_own_state(&records, declaration.0).await;
                                             }
                                             match declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, at, &declaration).await {
                                                 Declared::Answered => {}
@@ -922,6 +927,7 @@ async fn start_booted(
                                     ends: Some(out.clone()),
                                     knob: knob_fn.and_then(|f| f(&launch, &rafka_time, &boot)),
                                     leave: None,
+                                    property_writer: property_writer.clone(),
                                 }),
                             };
                             *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, channels: channels.clone(), server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, reconciler, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone(), property_writer: property_writer.clone() });
@@ -1065,7 +1071,7 @@ impl NodeSession {
             // dates, one line. A refused write is named on the writer's span; the next renewal writes
             // the dates again.
             let dates = joined.control.member_cert_dates.clone();
-            if let Some(initial) = self.property_writer.start_record(self.topology_view.config().unwrap_or_default()) {
+            if let Some(initial) = self.property_writer.start_record() {
                 let _ = self
                     .property_writer
                     .update(initial, move |record| {
@@ -1210,6 +1216,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
                 ends: None,
                 knob: None,
                 leave: (self.operation.operation.action == "node.mesh.join").then(|| Leave { channels: channels.clone(), node_hooks: s.node_hooks.clone(), publisher: s.publisher.clone(), node_id: s.node_id.clone(), name: s.node_id.to_string() }),
+                property_writer: s.property_writer.clone(),
             }),
         })
     }
@@ -1235,6 +1242,8 @@ struct RpcAfterHook {
     /// channels, Pending, for its authority's next command (node-recovery.md step 2), as a failure
     /// inside the start's own task does; a Build's start after a stop leaves nothing (its process stays stopped).
     leave: Option<Leave>,
+    /// The node's property writer: it holds the own row the topology read carries (Q234).
+    property_writer: crate::node_records::NodePropertyWriter,
 }
 
 /// What a birth does to leave its channels from a task that is not the session's: the parts
@@ -1263,6 +1272,10 @@ impl Leave {
 #[async_trait::async_trait]
 impl crate::workflows::node_start::AfterHook for RpcAfterHook {
     async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+        // Its own whole row its mesh-primary's atlas holds, held by its property writer (Q234).
+        if let Some(row) = &read.own_row {
+            self.property_writer.set_own_row(row.clone());
+        }
         let topology_view = channels.topology_view();
         let mesh_peers: Vec<EndpointAddr> = read
             .installed
@@ -1347,7 +1360,7 @@ impl Becoming {
         // Its Ready on its own record first (Q356; node-start.md: "the caller's node.start completes only
         // after the Ready record"): node.started, and the start's completion, follow it. The owed
         // declaration below then finds its state already written.
-        write_own_state(&self.records, &self.topology_view, rdm_core::status::NodeState::Ready).await;
+        write_own_state(&self.records, rdm_core::status::NodeState::Ready).await;
         // The node also declares Ready to its mesh-primary as an owed message, as it declares Stopped
         // (node-start.md step 5; Q36, Q87), with or without a start stream reporting it: frame and
         // declaration apply once (Q49). Owed before anything that follows it can be (Q210): a stop's
@@ -1402,7 +1415,6 @@ impl NodeRowRead {
 /// puts the node's own config.
 #[derive(Clone)]
 pub struct OwnConfig {
-    topology_view: TopologyView,
     writer: crate::node_records::NodePropertyWriter,
     digest: MeshDigest,
 }
@@ -1411,10 +1423,9 @@ impl OwnConfig {
     /// [`RunningNode::config_update`].
     /// The writer's one span records the write (`rdm.node.record.update.via-properties`).
     pub async fn update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
-        let record = property_snapshot(&self.writer, config.clone());
-        let (changed, topology) = (config.clone(), self.topology_view.clone());
-        if let Err(e) = self.writer.update(record, move |record| record.config = changed,
-            move |record| topology.set_config(record.config.clone())).await {
+        let record = property_snapshot(&self.writer);
+        let changed = config.clone();
+        if let Err(e) = self.writer.update(record, move |record| record.config = changed, |_| {}).await {
             return Err(rdm_client::CallEnd::Rejected { reason: "properties-unwritten".into(), detail: e.to_string() });
         }
         Ok(rdm_core::status::StatusReply::ConfigUpdated {
@@ -1425,8 +1436,8 @@ impl OwnConfig {
 
 /// The config and tags a start of `node_id` holds as its own: its own record from the hydration sync
 /// (Q234), else `launch`, the create's values.
-pub fn retained_properties(topology: &TopologyView, node_id: &rdm_core::NodeId, launch: &rdm_core::launch::InitialProperties) -> (std::collections::BTreeMap<String, String>, std::collections::BTreeSet<String>) {
-    match topology.own_row().filter(|row| row.node_id == *node_id) {
+pub fn retained_properties(writer: &crate::node_records::NodePropertyWriter, node_id: &rdm_core::NodeId, launch: &rdm_core::launch::InitialProperties) -> (std::collections::BTreeMap<String, String>, std::collections::BTreeSet<String>) {
+    match writer.own_row().filter(|row| row.node_id == *node_id) {
         Some(row) => (row.config, row.tags),
         None => (launch.config.clone(), launch.tags.clone()),
     }
@@ -1435,10 +1446,10 @@ pub fn retained_properties(topology: &TopologyView, node_id: &rdm_core::NodeId, 
 /// The node's record as its start writes it (Q356): its identity, bound addresses and runtime as this
 /// start holds them, state `starting`; its config and tags `retained_properties`'; its storage
 /// persistence and executable its own record's from the hydration sync (Q234), else the launch's.
-fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, digest: &MeshDigest, runtime: &rdm_core::RuntimeFact, listeners: Vec<(String, std::net::SocketAddr)>) -> crate::nodes_storage::NodeRecord {
+fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, writer: &crate::node_records::NodePropertyWriter, digest: &MeshDigest, runtime: &rdm_core::RuntimeFact, listeners: Vec<(String, std::net::SocketAddr)>) -> crate::nodes_storage::NodeRecord {
     let digest = topology.reported(digest);
-    let own = topology.own_row().filter(|row| row.node_id == launch.node_id);
-    let (config, tags) = retained_properties(topology, &launch.node_id, &launch.initial_properties);
+    let own = writer.own_row().filter(|row| row.node_id == launch.node_id);
+    let (config, tags) = retained_properties(writer, &launch.node_id, &launch.initial_properties);
     crate::nodes_storage::NodeRecord {
         node_id: digest.node.node_id.clone(),
         path: digest.node.path.clone(),
@@ -1468,8 +1479,8 @@ fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, dige
 /// Write the state `declared` on this node's own record (Q356), through `writer`, before the declaration
 /// that reports it is sent. A write the store refuses is named on the writer's span; the declaration is
 /// still owed.
-pub async fn write_own_state(writer: &crate::node_records::NodePropertyWriter, topology: &TopologyView, declared: rdm_core::status::NodeState) {
-    let Some(initial) = writer.start_record(topology.config().unwrap_or_default()) else { return };
+pub async fn write_own_state(writer: &crate::node_records::NodePropertyWriter, declared: rdm_core::status::NodeState) {
+    let Some(initial) = writer.start_record() else { return };
     let _ = writer.state(initial, status_of_declared(declared)).await;
 }
 
@@ -1485,8 +1496,8 @@ pub fn status_of_declared(declared: rdm_core::status::NodeState) -> crate::model
 }
 
 /// The record a command after the start hands `writer` (its start's record, with `config`).
-fn property_snapshot(writer: &crate::node_records::NodePropertyWriter, config: std::collections::BTreeMap<String, String>) -> crate::nodes_storage::NodeRecord {
-    writer.start_record(config).expect("a command reaches the node after its start wrote its record")
+fn property_snapshot(writer: &crate::node_records::NodePropertyWriter) -> crate::nodes_storage::NodeRecord {
+    writer.start_record().expect("a command reaches the node after its start wrote its record")
 }
 
 /// What this birth owes its mesh-primary (Q210): its declarations still to be answered by name,
@@ -1981,7 +1992,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // The installed cert's dates on its own record (Q356); a refused write is answered
                     // by name, and the renewer's next tick renews again.
                     if let (StatusReply::CertRenewed { .. }, Some(dates)) = (&reply, cert_dates) {
-                        let initial = property_snapshot(&me.property_writer, me.topology_view.config().unwrap_or_default());
+                        let initial = property_snapshot(&me.property_writer);
                         if let Err(error) = me.property_writer.update(initial, move |record| record.cert = Some(dates), |_| {}).await {
                             return Ok(rdm_core::reply::status::bounded_node_record_refused(&me.digest.node.node_id.to_string(), &error.to_string()));
                         }
@@ -2036,12 +2047,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         return Ok(crate::node_self::request_not_handled(
                             &me.topology_view.node_name().to_string(), &StatusRequest::ApplyNodeProperties { node_id, incarnation: me.digest.node.incarnation.clone(), entry }));
                     }
-                    let initial = property_snapshot(&me.property_writer, entry.config.clone());
-                    let topology = me.topology_view.clone();
-                    match me.property_writer.entry(initial, entry, move |record| {
-                        topology.set_config(record.config.clone());
-                        topology.set_tags(record.tags.clone());
-                    }).await {
+                    let initial = property_snapshot(&me.property_writer);
+                    match me.property_writer.entry(initial, entry, |_| {}).await {
                         Ok(_) => Ok(rdm_core::reply::applied()),
                         Err(error) => Ok(rdm_core::reply::status::bounded_node_record_refused(
                             &me.topology_view.node_name().to_string(), &error.to_string())),
@@ -2050,12 +2057,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ApplyNodeConfig { config, .. } => {
                     // node-config-update.md, a caller's update, steps 2 and 3: the node's property writer
                     // puts the whole map and answers once the put is durable, held for the application
-                    // (`TopologyView::config`); no digest carries it (Q203).
-                    let initial = property_snapshot(&me.property_writer, config.clone());
-                    let (changed, topology) = (config.clone(), me.topology_view.clone());
-                    if let Err(error) = me.property_writer.update(initial,
-                        move |record| record.config = changed,
-                        move |record| topology.set_config(record.config.clone())).await {
+                    // (`NodePropertyWriter::config`); no digest carries it (Q203).
+                    let initial = property_snapshot(&me.property_writer);
+                    let changed = config.clone();
+                    if let Err(error) = me.property_writer.update(initial, move |record| record.config = changed, |_| {}).await {
                         return Ok(rdm_core::reply::status::bounded_config_row_refused(
                             &me.topology_view.node_name().to_string(), &error.to_string()));
                     }
@@ -2069,9 +2074,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         StatusRequest::DeleteTags { scope, .. } => crate::node_records::TagChange::Delete(scope),
                         _ => unreachable!("tag requests only"),
                     };
-                    let initial = property_snapshot(&me.property_writer, me.topology_view.config().unwrap_or_default());
-                    let topology = me.topology_view.clone();
-                    match me.property_writer.tags(initial, change, move |record| topology.set_tags(record.tags.clone())).await {
+                    let initial = property_snapshot(&me.property_writer);
+                    match me.property_writer.tags(initial, change, |_| {}).await {
                         Ok(reply) => Ok(reply),
                         Err(error) => Ok(rdm_core::reply::status::bounded_node_record_refused(&me.topology_view.node_name().to_string(), &error.to_string())),
                     }
@@ -2101,7 +2105,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // The node writes its record first; only once that write is acked does it publish the
                     // name (record first, mesh second; Q356).
                     if decision == crate::node_name::NameApply::Applied {
-                        let initial = property_snapshot(&me.property_writer, me.topology_view.config().unwrap_or_default());
+                        let initial = property_snapshot(&me.property_writer);
                         let to = asked.clone();
                         if let Err(error) = me.property_writer.update(initial, move |record| { record.path = to.path; record.name = to.name; }, |_| {}).await {
                             decision = crate::node_name::NameApply::Unwritten { node: me.digest.node.node_id.to_string(), reason: error.to_string() };

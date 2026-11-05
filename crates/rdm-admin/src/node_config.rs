@@ -14,7 +14,6 @@ use std::sync::Arc;
 pub struct NodeConfigs {
     records: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
     own_properties: std::sync::OnceLock<rdm_node::node_records::NodePropertyWriter>,
-    own_topology_view: std::sync::OnceLock<rdm_gossip::topology::TopologyView>,
     client: Arc<NodeRpcClient>,
     one_at_a_time: tokio::sync::Mutex<()>,
     /// The tick of this admin's installed view ([`Self::watch_views`]).
@@ -108,16 +107,15 @@ pub type NodeConfigsSlot = Arc<std::sync::OnceLock<Arc<NodeConfigs>>>;
 impl NodeConfigs {
     /// The `NodeConfigs` over `client`.
     pub fn new(client: Arc<NodeRpcClient>) -> Self {
-        Self { own_topology_view: Default::default(), records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), views: Default::default() }
+        Self { records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), views: Default::default() }
     }
 
     /// Bind the configured provider's nodes store, where each node's record is, both its parts (Q333);
     /// `provider` answers the provider it is written to now. Every access follows provider migration.
-    pub fn uses_records(&self, records: Arc<dyn crate::storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static, topology_view: rdm_gossip::topology::TopologyView) {
+    /// `named` answers the admin's current path and name, what each write's span names it by.
+    pub fn uses_records(&self, records: Arc<dyn crate::storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static, named: impl Fn() -> Option<rdm_core::PathName> + Send + Sync + 'static) {
         let writer = rdm_node::node_records::NodePropertyWriter::new(records.clone(), provider);
-        let held = topology_view.clone();
-        writer.named_by(move || held.own_row().map(|row| row.location()));
-        let _ = self.own_topology_view.set(topology_view);
+        writer.named_by(named);
         let _ = self.own_properties.set(writer);
         let _ = self.records.set(records);
     }
@@ -132,9 +130,10 @@ impl NodeConfigs {
         self.own_properties.get()
     }
 
-    /// The record this admin's own commands hand its writer: the record its start wrote, with `config`.
-    fn own_snapshot(&self, _subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<rdm_node::nodes_storage::NodeRecord> {
-        self.own_properties.get()?.start_record(config)
+    /// The record this admin's own commands hand its writer: the record its start wrote, with the config
+    /// it holds.
+    fn own_snapshot(&self) -> Option<rdm_node::nodes_storage::NodeRecord> {
+        self.own_properties.get()?.start_record()
     }
 
     /// Write this admin's own record at its start (Q356), before it may become Ready: `subject` its
@@ -143,10 +142,8 @@ impl NodeConfigs {
     /// from its hydration sync (Q234) when it read one, else `properties`, the launch's; its storage
     /// persistence and executable `properties`'. Nothing is read from the store at this start (Q227).
     pub async fn bound_own(&self, subject: &crate::model::Node, properties: rdm_core::launch::InitialProperties, runtime: rdm_core::RuntimeFact, cert: (Option<rdm_core::certs::CertDates>, Option<rdm_core::certs::SigningCertDates>)) -> Result<(), String> {
-        let (config, tags) = match self.own_topology_view.get() {
-            Some(topology_view) => rdm_node::node::retained_properties(topology_view, &subject.node_id, &properties),
-            None => (properties.config.clone(), properties.tags.clone()),
-        };
+        let writer = self.own_properties.get().ok_or_else(|| format!("{}: own property writer is not bound", subject.node_id))?;
+        let (config, tags) = rdm_node::node::retained_properties(writer, &subject.node_id, &properties);
         let (Some(incarnation), Some(endpoint_id), Some(transport_addr)) = (subject.incarnation_id.clone(), subject.endpoint_id.clone(), subject.transport_addr) else {
             return Err(format!("{}: its own record needs its incarnation, endpoint and transport address", subject.node_id));
         };
@@ -157,19 +154,16 @@ impl NodeConfigs {
             storage: rdm_core::meta::Storage { persistence: properties.persistence.or_else(|| Some(rdm_core::meta::StoragePersistence::of_type(&subject.r#type))), data_dir: subject.data_dir.clone() },
             executable: properties.executable.clone(), config, tags,
         };
-        let topology_view = self.own_topology_view.get().ok_or_else(|| format!("{}: own property writer is not bound", subject.node_id))?.clone();
-        self.own_properties.get().expect("production own writer is bound").bound(initial,
-            move |record| { topology_view.set_config(record.config.clone()); topology_view.set_tags(record.tags.clone()); })
-            .await.map(|_| ()).map_err(|e| e.to_string())
+        writer.bound(initial, |_| {}).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
     /// Write `change` on this admin's own record (Q356), through its own property writer. Nothing is
     /// written before its start's record.
     pub async fn own_update(&self, change: impl FnOnce(&mut rdm_node::nodes_storage::NodeRecord) + Send + 'static) -> Result<(), String> {
-        let (Some(topology_view), Some(writer)) = (self.own_topology_view.get(), self.own_properties.get()) else {
+        let Some(writer) = self.own_properties.get() else {
             return Err("its own property writer is not bound".into());
         };
-        let initial = writer.start_record(topology_view.config().unwrap_or_default()).ok_or("its start has not written its record yet")?;
+        let initial = writer.start_record().ok_or("its start has not written its record yet")?;
         writer.update(initial, change, |_| {}).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -177,10 +171,10 @@ impl NodeConfigs {
     /// before it publishes or declares it. A state its record holds already, or one its order refuses,
     /// writes nothing.
     pub async fn own_state(&self, to: crate::model::NodeStatus) -> Result<(), String> {
-        let (Some(topology_view), Some(writer)) = (self.own_topology_view.get(), self.own_properties.get()) else {
+        let Some(writer) = self.own_properties.get() else {
             return Err("its own property writer is not bound".into());
         };
-        let initial = writer.start_record(topology_view.config().unwrap_or_default()).ok_or("its start has not written its record yet")?;
+        let initial = writer.start_record().ok_or("its start has not written its record yet")?;
         writer.state(initial, to).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -201,12 +195,12 @@ impl NodeConfigs {
     /// roles `primaries` names its birth `birth` in `mesh` ([`rdm_node::node_records::write_own_roles`]),
     /// written at each change of the view, from its start's record on, until the view is dropped.
     pub async fn record_own_roles(&self, primaries: rdm_gossip::primary::PrimaryView, birth: crate::storage::BirthRef, mesh: String) {
-        let (Some(topology_view), Some(writer)) = (self.own_topology_view.get().cloned(), self.own_properties.get().cloned()) else { return };
+        let Some(writer) = self.own_properties.get().cloned() else { return };
         let mut changed = primaries.subscribe();
         let mut written = (None, None);
         loop {
             changed.borrow_and_update();
-            rdm_node::node_records::write_own_roles(&writer, &primaries, &birth, &mesh, "node-admin", topology_view.config().unwrap_or_default(), &mut written).await;
+            rdm_node::node_records::write_own_roles(&writer, &primaries, &birth, &mesh, "node-admin", &mut written).await;
             if changed.changed().await.is_err() {
                 return;
             }
@@ -214,32 +208,25 @@ impl NodeConfigs {
     }
 
     /// An admin writes its own map locally through the same writer as downward commands.
-    pub async fn own_config(&self, subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
-        let initial = self.own_snapshot(subject, config.clone())?;
+    pub async fn own_config(&self, _subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
+        let initial = self.own_snapshot()?;
         let writer = self.own_properties.get()?;
-        let topology_view = self.own_topology_view.get()?.clone();
-        Some(writer.update(initial, move |record| record.config = config,
-            move |record| topology_view.set_config(record.config.clone())).await.map(|written| StatusReply::ConfigUpdated {
+        Some(writer.update(initial, move |record| record.config = config, |_| {}).await.map(|written| StatusReply::ConfigUpdated {
                 node_id: written.record.node_id, incarnation: written.record.incarnation,
                 config: written.record.config,
             }))
     }
 
     /// A Build's complete entry uses this admin's ordinary property writer.
-    pub async fn own_entry(&self, subject: &crate::model::Node, entry: rdm_core::properties::EntryProperties) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
-        let initial = self.own_snapshot(subject, entry.config.clone())?;
-        let topology_view = self.own_topology_view.get()?.clone();
-        Some(self.own_properties.get()?.entry(initial, entry,
-            move |record| { topology_view.set_config(record.config.clone()); topology_view.set_tags(record.tags.clone()); })
-            .await.map(|_| rdm_core::reply::applied()))
+    pub async fn own_entry(&self, _subject: &crate::model::Node, entry: rdm_core::properties::EntryProperties) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
+        let initial = self.own_snapshot()?;
+        Some(self.own_properties.get()?.entry(initial, entry, |_| {}).await.map(|_| rdm_core::reply::applied()))
     }
 
     /// A downward tag command to this admin is a local write, with no command to its primary.
-    pub async fn own_tags(&self, subject: &crate::model::Node, change: rdm_node::node_records::TagChange) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
-        let topology_view = self.own_topology_view.get()?.clone();
-        let initial = self.own_snapshot(subject, topology_view.config().unwrap_or_default())?;
-        Some(self.own_properties.get()?.tags(initial, change,
-            move |record| topology_view.set_tags(record.tags.clone())).await)
+    pub async fn own_tags(&self, _subject: &crate::model::Node, change: rdm_node::node_records::TagChange) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
+        let initial = self.own_snapshot()?;
+        Some(self.own_properties.get()?.tags(initial, change, |_| {}).await)
     }
 
     /// Carry a Build's entry from its mesh-primary to the pinned node, which writes it on its own record
@@ -774,7 +761,7 @@ mod tests {
         };
         assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
         assert!(storage.record_at(&admin.location()).await.unwrap().is_none());
-        configs.uses_records(records.clone(), || "memory".into(), topology_view.clone());
+        configs.uses_records(records.clone(), || "memory".into(), || None);
         configs.bound_own(&crate::model::Node { endpoint_id: Some(crate::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..admin.clone() }, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("config-own")).unwrap(), (None, None)).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
         assert!(matches!(configs.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));

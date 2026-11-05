@@ -25,6 +25,75 @@ pub struct NodePropertyWriter {
     /// Whether this birth's own view holds it deleted ([`Self::deleted_by`]): a node told it is deleted
     /// stops writing (S1). Unset: never.
     deleted: std::sync::Arc<std::sync::OnceLock<DeletedOf>>,
+    /// The node's own record as this process holds it ([`OwnRecord`]): what the node reads its own
+    /// properties from (Q234), kept by each write this writer makes.
+    own: std::sync::Arc<std::sync::Mutex<OwnRecord>>,
+}
+
+/// A node's own record as the node holds it (Q234, Q356): the config its writer last wrote, else the
+/// one its hydration sync's row carried, and that whole row (`node.topology.get`'s `OwnRow`), kept
+/// current by every write. No digest carries the config (Q203).
+#[derive(Debug, Default)]
+pub(crate) struct OwnRecord {
+    /// The config held, once written or installed.
+    pub(crate) config: Option<std::collections::BTreeMap<String, String>>,
+    /// The whole row the last hydration sync carried; `None` until a sync carried it.
+    pub(crate) row: Option<rdm_core::views::NodeView>,
+}
+
+impl OwnRecord {
+    /// The hydration sync's `row`; its config is taken only while no config is held. Whether it was.
+    pub(crate) fn install(&mut self, row: rdm_core::views::NodeView) -> bool {
+        let first = self.take(row.config.clone());
+        self.row = Some(row);
+        self.show();
+        first
+    }
+
+    /// A hydration sync's `config`, taken only while no config is held; whether it was.
+    fn take(&mut self, config: std::collections::BTreeMap<String, String>) -> bool {
+        let first = self.config.is_none();
+        if first {
+            self.config = Some(config);
+        }
+        first
+    }
+
+    /// `record`, written: its config and tags held, on the row too.
+    pub(crate) fn written(&mut self, record: &NodeRecord) {
+        self.config = Some(record.config.clone());
+        if let Some(row) = self.row.as_mut() {
+            row.tags = record.tags.clone();
+        }
+        self.show();
+    }
+
+    /// The config held, written to the row too.
+    fn show(&mut self) {
+        if let (Some(row), Some(config)) = (self.row.as_mut(), self.config.as_ref()) {
+            row.config = config.clone();
+        }
+    }
+}
+
+#[cfg(test)]
+mod own_record_tests {
+    use super::OwnRecord;
+    use std::collections::BTreeMap;
+
+    fn map(v: &str) -> BTreeMap<String, String> {
+        [("k".to_string(), v.to_string())].into()
+    }
+
+    /// CONTRACT: a hydration sync's map is installed only while no map is held. Must NOT happen: a
+    /// delayed hydration sync overwriting the map already held.
+    #[test]
+    fn a_sync_map_installs_only_while_no_map_is_held() {
+        let mut held = OwnRecord::default();
+        assert!(held.take(map("joined")), "the first map installs");
+        assert!(!held.take(map("old")), "a later sync's map installs nothing");
+        assert_eq!(held.config, Some(map("joined")));
+    }
 }
 
 /// Where a writer reads whether its own birth is held deleted.
@@ -54,12 +123,12 @@ pub fn own_roles(primaries: &rdm_gossip::primary::PrimaryView, birth: &crate::no
 /// wrote; a role given up is cleared the same way. The write records the role; it does not grant it. A
 /// write the store refuses leaves `written` as it was, so the view's next change writes again. Nothing is
 /// written before the start's record ([`NodePropertyWriter::bound`]).
-pub async fn write_own_roles(writer: &NodePropertyWriter, primaries: &rdm_gossip::primary::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str, config: std::collections::BTreeMap<String, String>, written: &mut (Option<u64>, Option<u64>)) {
+pub async fn write_own_roles(writer: &NodePropertyWriter, primaries: &rdm_gossip::primary::PrimaryView, birth: &crate::nodes_storage::BirthRef, mesh: &str, r#type: &str, written: &mut (Option<u64>, Option<u64>)) {
     let roles = own_roles(primaries, birth, mesh, r#type);
     if roles == *written {
         return;
     }
-    let Some(initial) = writer.start_record(config) else { return };
+    let Some(initial) = writer.start_record() else { return };
     if writer.update(initial, move |record| { record.is_primary = roles.0; record.is_fabric_primary = roles.1; }, |_| {}).await.is_ok() {
         *written = roles;
     }
@@ -93,6 +162,7 @@ impl NodePropertyWriter {
             name: Default::default(),
             start: Default::default(),
             deleted: Default::default(),
+            own: Default::default(),
         }
     }
 
@@ -109,10 +179,30 @@ impl NodePropertyWriter {
         let _ = self.name.set(std::sync::Arc::new(name));
     }
 
-    /// The record this process's start wrote, with `config` as its config: what a command after the
-    /// start hands the writer as its `initial` record. `None` before the start wrote one.
-    pub fn start_record(&self, config: std::collections::BTreeMap<String, String>) -> Option<NodeRecord> {
+    /// The record this process's start wrote, with the config this node holds ([`Self::config`]): what
+    /// a command after the start hands the writer as its `initial` record. `None` before the start
+    /// wrote one.
+    pub fn start_record(&self) -> Option<NodeRecord> {
+        let config = self.config().unwrap_or_default();
         self.start.get().cloned().map(|mut record| { record.config = config; record })
+    }
+
+    /// Hold `row` as this node's own whole row, the one its mesh-primary's hydration sync carried
+    /// (Q234); its config is taken only while this node holds none yet.
+    pub fn set_own_row(&self, row: rdm_core::views::NodeView) {
+        self.own.lock().unwrap().install(row);
+    }
+
+    /// This node's own whole row as its last hydration sync carried it and its writes since kept it
+    /// (Q234); `None` until a sync carried it.
+    pub fn own_row(&self) -> Option<rdm_core::views::NodeView> {
+        self.own.lock().unwrap().row.clone()
+    }
+
+    /// The config this node holds, as this writer last wrote it or its hydration sync installed it;
+    /// `None` until either: the map the application reads.
+    pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        self.own.lock().unwrap().config.clone()
     }
 
     /// Close property admission and finish every earlier admitted put. The storage transition
@@ -306,7 +396,7 @@ impl NodePropertyWriter {
         publish: impl FnOnce(&NodeRecord) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
         use tracing::Instrument;
-        let (records, current) = (self.records.clone(), self.current.clone());
+        let (records, current, own) = (self.records.clone(), self.current.clone(), self.own.clone());
         let backend = (self.provider)();
         let at = self.name.get().and_then(|name| name());
         let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
@@ -349,6 +439,7 @@ impl NodePropertyWriter {
                     write.record("outcome", "durable");
                 }
                 *held = Some(next.clone());
+                own.lock().unwrap().written(&next);
                 publish(&next);
                 Ok(PropertyWritten { record: next })
             }

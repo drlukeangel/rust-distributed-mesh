@@ -44,61 +44,11 @@ pub struct TopologyView {
     pub digest_view: DigestView,
     /// The Rafka-time this process composes; every gossip stamp on this topology view reads it.
     pub(crate) clock: SharedClock,
-    /// This birth's own config (node-config-update.md; Q203): the map the application reads
-    /// ([`Self::config`]); never gossiped (Q203).
-    pub(crate) config: Arc<Mutex<OwnConfig>>,
-    /// This birth's own whole row as its mesh-primary's atlas held it at its last hydration sync
-    /// (Q234, `node.topology.get`'s `OwnRow`), kept current by `ApplyNodeConfig` and `ApplyNodeName`:
-    /// what the node reads its own properties from. `None` until a sync carried it.
-    pub(crate) own_row: Arc<Mutex<Option<rdm_core::views::NodeView>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
     /// digest this topology view publishes from then on. `None` while the birth holds its launch name.
     pub(crate) name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// This node's own mesh [`StatusPublisher`], shared with its [`Backbone`].
     pub(crate) mesh_status_publisher: Arc<Mutex<StatusPublisher>>,
-}
-
-/// A birth's own config as its topology view holds it.
-#[derive(Debug, Default)]
-pub(crate) struct OwnConfig {
-    /// The row's map, once one was published or installed.
-    pub(crate) row: Option<std::collections::BTreeMap<String, String>>,
-}
-
-impl OwnConfig {
-    /// The map shown: the row's.
-    pub(crate) fn shown(&self) -> Option<&std::collections::BTreeMap<String, String>> {
-        self.row.as_ref()
-    }
-
-    /// The hydration sync's `config`, taken only while no map is held; whether it was.
-    pub(crate) fn install(&mut self, config: std::collections::BTreeMap<String, String>) -> bool {
-        let first = self.row.is_none();
-        if first {
-            self.row = Some(config);
-        }
-        first
-    }
-}
-
-#[cfg(test)]
-mod own_config_tests {
-    use super::OwnConfig;
-    use std::collections::BTreeMap;
-
-    fn map(v: &str) -> BTreeMap<String, String> {
-        [("k".to_string(), v.to_string())].into()
-    }
-
-    /// CONTRACT: a hydration sync's map is installed only while no map is held. Must NOT happen: a
-    /// delayed hydration sync overwriting the map already held.
-    #[test]
-    fn a_sync_map_installs_only_while_no_map_is_held() {
-        let mut held = OwnConfig::default();
-        assert!(held.install(map("joined")), "the first map installs");
-        assert!(!held.install(map("old")), "a later sync's map installs nothing");
-        assert_eq!(held.shown(), Some(&map("joined")));
-    }
 }
 
 impl TopologyView {
@@ -109,7 +59,7 @@ impl TopologyView {
         let view = View::new(mesh, node);
         let name = view.held_name.clone();
         let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
-        let me = Self { digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
+        let me = Self { digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, name, mesh_status_publisher };
         me.watch_meshes();
         me
     }
@@ -295,55 +245,9 @@ impl TopologyView {
         &self.clock
     }
 
-    /// Hold `config`, the map its property writer published, as the row's map: the map the
-    /// application reads from now on ([`Self::config`]). No digest carries it (Q203).
-    pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
-        let mut held = self.config.lock().unwrap();
-        held.row = Some(config);
-        self.show_config(&held);
-    }
-
-    /// Install this node's durable tags locally. Tags are read from its record, never carried
-    /// on gossip; the property writer serializes this publication with every property command.
-    pub fn set_tags(&self, tags: std::collections::BTreeSet<String>) {
-        if let Some(row) = self.own_row.lock().unwrap().as_mut() { row.tags = tags; }
-    }
-
-    /// The map shown, written to the own entry too.
-    pub(crate) fn show_config(&self, held: &OwnConfig) {
-        if let (Some(row), Some(shown)) = (self.own_row.lock().unwrap().as_mut(), held.shown()) {
-            row.config = shown.clone();
-        }
-    }
-
-    /// Hold `row` as this birth's own whole row, the one its mesh-primary's hydration sync carried
-    /// (Q234); its config is installed only while this birth holds no map yet.
-    pub fn set_own_row(&self, row: rdm_core::views::NodeView) {
-        let config = row.config.clone();
-        *self.own_row.lock().unwrap() = Some(row);
-        let mut held = self.config.lock().unwrap();
-        held.install(config);
-        self.show_config(&held);
-    }
-
-    /// This birth's own whole row as its last hydration sync carried it and the commands since kept it
-    /// (Q234); `None` until a sync carried it.
-    pub fn own_row(&self) -> Option<rdm_core::views::NodeView> {
-        self.own_row.lock().unwrap().clone()
-    }
-
-    /// The config this birth holds, as its property writer last published it or its hydration sync
-    /// installed it; `None` until either.
-    pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
-        self.config.lock().unwrap().shown().cloned()
-    }
-
     /// Hold `name` as this birth's name: every digest this topology view publishes from now on carries
     /// it (R12: the node publishes only the name its row holds).
     pub fn set_name(&self, name: rdm_core::PathName) {
-        if let Some(row) = self.own_row.lock().unwrap().as_mut() {
-            { let at = name.clone(); row.path = at.path; row.name = at.name; }
-        }
         *self.name.lock().unwrap() = Some(name);
     }
 

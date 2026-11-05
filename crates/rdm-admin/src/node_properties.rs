@@ -258,7 +258,7 @@ mod tests {
         let topology_view = rdm_gossip::topology::TopologyView::new(&snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
-        configs.uses_records(records.clone(), || "memory".into(), topology_view.clone());
+        configs.uses_records(records.clone(), || "memory".into(), || None);
         configs.bound_own(&crate::model::Node { endpoint_id: Some(crate::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..admin1.clone() }, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("tags-own")).unwrap(), (None, None)).await.unwrap();
         let own = || async { records.node(&admin1.node_id).await.unwrap().unwrap().record };
 

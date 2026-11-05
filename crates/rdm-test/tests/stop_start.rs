@@ -118,7 +118,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
 
         let stopped_map = std::collections::BTreeMap::from([("source".into(), "written-while-stopped".into())]);
         running.config_update(stopped_map.clone()).await.expect("a stopped live node persists its own update");
-        assert_eq!(running.topology_view.config(), Some(stopped_map.clone()));
+        assert_eq!(running.config(), Some(stopped_map.clone()));
 
         // Stopped means the application is stopped, with its Node RPC endpoint still bound.
         // Exercise the actual storage command on that endpoint, not an in-process writer call.
@@ -128,7 +128,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let stopped_map = std::collections::BTreeMap::from([("source".into(), "written-after-rollback".into())]);
         let mut queued = Box::pin(running.config_update(stopped_map.clone()));
         assert!(futures_lite::future::poll_once(&mut queued).await.is_none(), "an own write waits while frozen");
-        assert_eq!(running.topology_view.config().unwrap()["source"], "written-while-stopped");
+        assert_eq!(running.config().unwrap()["source"], "written-while-stopped");
         let rollback = rdm_core::node_command::NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), change_id, provider: "file".into() };
         assert_eq!(storage_command(&admin, &target, &rollback).await, rdm_core::node_command::NodeCommandReply::StorageStepped { provider: "file".into() });
         queued.await.expect("rollback releases the stopped node's own write");
@@ -161,7 +161,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
         assert!(!running.own.is_stopped(), "the birth is live again");
-        assert_eq!(running.topology_view.config(), Some(stopped_map), "the application keeps its acknowledged map through rejoin");
+        assert_eq!(running.config(), Some(stopped_map), "the application keeps its acknowledged map through rejoin");
         // The same start reissued by a later run of its Build (a successor executor whose
         // predecessor was lost after the node started) settles as AlreadyApplied: the command is
         // keyed by its operation (node-rpc-envelope.md: "Reissuing a

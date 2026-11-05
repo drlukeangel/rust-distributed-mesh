@@ -589,6 +589,10 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
     }
 
     async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+        // Its own whole row its mesh-primary's atlas holds, held by its property writer (Q234).
+        if let (Some(row), Some(writer)) = (&read.own_row, self.configs.get().and_then(|c| c.own_writer())) {
+            writer.set_own_row(row.clone());
+        }
         let topology_view = channels.topology_view();
         let mesh_peers: Vec<EndpointAddr> = read
             .installed
@@ -740,6 +744,8 @@ pub(crate) struct AdminFirstStart {
     pub(crate) floor: AdminFloor,
     pub(crate) progress: StartProgress,
     pub(crate) read_seam: Option<Arc<dyn crate::wiring::ReadSeam>>,
+    /// This admin's own property writer's holder: it holds the own row the topology read carries (Q234).
+    pub(crate) configs: crate::node_config::NodeConfigsSlot,
 }
 
 #[async_trait::async_trait]
@@ -751,6 +757,10 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
     }
 
     async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+        // Its own whole row its mesh-primary's atlas holds, held by its property writer (Q234).
+        if let (Some(row), Some(writer)) = (&read.own_row, self.configs.get().and_then(|c| c.own_writer())) {
+            writer.set_own_row(row.clone());
+        }
         let topology_view = channels.topology_view();
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();

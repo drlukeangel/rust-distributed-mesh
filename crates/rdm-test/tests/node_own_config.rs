@@ -53,7 +53,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         let reply = running.config_update(config.clone()).await.expect("a local durable write answers");
         assert!(matches!(reply, StatusReply::ConfigUpdated { ref config, .. } if config.get("listener.data").map(String::as_str) == Some("127.0.0.1:43003")));
         assert!(admin.config_updates.lock().unwrap().is_empty(), "own properties never travel to the mesh-primary");
-        assert_eq!(running.topology_view.config(), Some(config.clone()));
+        assert_eq!(running.config(), Some(config.clone()));
         let addr = running.channels.endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the node's address");
         admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
         let target = rdm_transport::NodeTarget::ExactNode(launch.node_id.clone());
@@ -61,10 +61,10 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         let apply = StatusRequest::ApplyNodeConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone() };
         let (out, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &apply, &rdm_transport::CallOptions::default()).await;
         assert!(matches!(out, rdm_core::outcome::RpcOutcome::Reply(ref r) if *r.value() == StatusReply::Applied), "{out:?}");
-        assert_eq!(running.topology_view.config(), Some(caller));
+        assert_eq!(running.config(), Some(caller));
         let later: BTreeMap<String, String> = [("source".into(), "own".into())].into();
         running.config_update(later.clone()).await.expect("the later own write answers");
-        assert_eq!(running.topology_view.config(), Some(later.clone()));
+        assert_eq!(running.config(), Some(later.clone()));
         // The same wire endpoint applies config and tags atomically for one Build entry.
         let entry = rdm_core::properties::EntryProperties {
             config: [("source".into(), "build".into())].into(), tags: ["build".into()].into() };
@@ -76,7 +76,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         let tags = StatusRequest::CreateTags { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), labels: ["node".into()].into() };
         let (ack, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &tags, &rdm_transport::CallOptions::default()).await;
         assert!(matches!(ack, rdm_core::outcome::RpcOutcome::Reply(ref r) if matches!(r.value(), StatusReply::TagsCreated { .. })), "{ack:?}");
-        assert_eq!(running.topology_view.config(), Some(later.clone()));
+        assert_eq!(running.config(), Some(later.clone()));
         use rdm_node::nodes_storage::NodesStorage;
         // The node's own record, read back from the fabric's nodes.jsonl (Q356).
         let root = rdm_node::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).unwrap();
