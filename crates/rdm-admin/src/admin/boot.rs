@@ -19,6 +19,9 @@ pub struct Running {
     pub runner: Arc<AdminRunner>,
     /// The admin's topology view.
     pub topology_view: TopologyView,
+    /// The admin's channels: its mesh channel and the backbone joined, and the application channels
+    /// its code joins (`Channels::join`, gossip.md §8).
+    pub channels: rdm_gossip::channel::Channels,
     /// The admin's own digest.
     pub digest: Arc<Mutex<MeshDigest>>,
     /// The admin's own property writer, once bound: its own record, the config it holds and the own
@@ -3330,7 +3333,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, digest, own_writer: configs_slot.get().and_then(|c| c.own_writer()), node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), status_service: status_service.clone(), status_service_set: status_service_set.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, channels: channels.clone(), digest, own_writer: configs_slot.get().and_then(|c| c.own_writer()), node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), status_service: status_service.clone(), status_service_set: status_service_set.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });
