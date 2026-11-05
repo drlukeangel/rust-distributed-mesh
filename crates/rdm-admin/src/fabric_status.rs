@@ -417,6 +417,9 @@ impl FabricStates {
             None => (view.meshes.iter().map(|m| m.name.clone()).collect(), self.env.records.planned()),
         };
         let mut out = mesh_blockers(view, &meshes, &planned);
+        if let Some(t) = accepted {
+            out.extend(replacements_open(view, t));
+        }
         let primaries: Vec<(String, Option<rdm_core::framing::Birth>, bool)> =
             meshes.iter().map(|m| { let p = view.node_type_primary(m, "node-admin"); (m.clone(), p.and_then(|n| n.birth()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
         let reports = reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
@@ -660,6 +663,20 @@ fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections:
         }
     }
     out
+}
+
+/// The paths the accepted Build replaces whose pinned birth still stands there (build-deployment.md
+/// §3): that birth is not the Build's planned node, so its mesh's ready does not cover it. states.md
+/// "Resize and a new executable": "the fabric cannot change, until the Build's last planned node is
+/// ready". Once the pinned birth is gone, the path's new node is `mesh_blockers`' to wait on.
+fn replacements_open(view: &Topology, accepted: &FabricTopology) -> Vec<Missing> {
+    accepted
+        .pinned
+        .iter()
+        .filter(|(at, _)| accepted.replaced(at).is_some())
+        .filter(|(at, birth)| view.node(at).is_some_and(|n| birth.is(n)))
+        .map(|(at, _)| Missing { who: crate::checklist::MissingSubject::Location(at.clone()), why: "replacement-open" })
+        .collect()
 }
 
 fn unreadable(e: &crate::build_state::BuildStateError) -> Missing {

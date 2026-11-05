@@ -188,6 +188,44 @@ async fn two_brokers_are_replaced_one_at_a_time_the_primary_last_its_role_moved_
 }
 
 // @feature: fabric-build
+/// CONTRACT (states.md "Resize and a new executable": "The mesh cannot report ready, and the fabric
+/// cannot change, until the Build's last planned node is ready"; "the fabric's ready": "When every mesh
+/// the accepted Build names is ready, the fabric-primary sets the fabric ready"): a Build replacing a
+/// node's executable sets the fabric ready, and sends `on_fabric_ready`, only after the path's new node
+/// is Ready. Must NOT happen: the held birth, still standing at acceptance, counted as the Build's
+/// planned node, so the notice fires before the replacement runs (Rafka's Build tdvaw00axcxm: the notice
+/// at +0.2 s, the last new node at +12 s).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replacement_builds_fabric_ready_comes_after_its_new_node_is_ready() {
+    let cell = "a_replacement_builds_fabric_ready_comes_after_its_new_node_is_ready";
+    let mut estate = estate_with(cell, "mesh1", &[("broker", 1)]).await;
+    let path = at("mesh1.broker", "1");
+    let before = estate.node_view(&path).await;
+    let stream = estate.submit_change(create(vec![entry_of(&before, another_executable(&estate, "broker"), persistent())])).await;
+    let done = estate.follow(stream).await;
+    let after = new_birth(&estate, &path, &before.node_id).await;
+    assert_ne!(after.node_id, before.node_id, "a new node stands at the path");
+    estate.stop().await;
+    let spans = estate.spans();
+    let build_id = done.build_id.to_string();
+    let of_build = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id).cloned().collect() };
+    let ready = of_build("rdm.node_admin.fabric.update.via-every-mesh-ready");
+    assert_eq!(ready.len(), 1, "one fabric ready for the Build: {ready:?}");
+    // The new node's Ready: its declaration, as its mesh-primary took it.
+    let new_node_ready: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == after.node_id.as_str() && s(&sp["attributes"]["state"]).eq_ignore_ascii_case("ready")).collect();
+    assert_eq!(new_node_ready.len(), 1, "the new node's one Ready: {new_node_ready:?}");
+    assert!(
+        ready[0]["start_unix_nano"].as_u64() >= new_node_ready[0]["start_unix_nano"].as_u64(),
+        "the fabric is set ready only after the new node is Ready: fabric ready at {}, the new node Ready at {}",
+        ready[0]["start_unix_nano"],
+        new_node_ready[0]["start_unix_nano"]
+    );
+    let notice = of_build("rdm.node_admin.fabric.update.via-on-fabric-ready");
+    assert_eq!(notice.len(), 1, "one notice: {notice:?}");
+    estate.record_trace_url(ready[0]["trace_id"].as_str().unwrap());
+}
+
+// @feature: fabric-build
 /// CONTRACT (build-deployment.md §3; node-primary-update.md "No-successor cases": a type's only node
 /// skips the role move): mesh1's one broker, its type's only node and so its primary, is named again with
 /// another executable. It is deleted and created again with no node.primary.update, and its new node
