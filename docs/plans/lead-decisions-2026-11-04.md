@@ -55,3 +55,9 @@ Each row is a decision the lead made under that order, with its reason.
 | L3 §3.6 misses Day-0 and recovery seeds | §3.6 |
 | L4 §2.2 the delta's author | §2.2 |
 | L5 §4.2 `location` row | §4.2 |
+
+## 2026-11-05, Luke away ("annotate your decisions in a decision log i can review later; do not stop and ask me; consult the advisor")
+
+| # | decision | why |
+|---|---|---|
+| D26 | 402f01758 (Q382's first text: a launch's seeds carry the launcher's live births of the node's mesh) is withdrawn and not landed; the launch seed stays the launcher alone | Luke, after seeing the build: "the launch seed is the MP or the FP if its launching the MP" (Q382 amended); Q376: the node-admin passes itself into the launch as the seed; a seed list is a special part a node-admin or a primary must not have (Luke: "no special parts in it minus getting a signing key") |
