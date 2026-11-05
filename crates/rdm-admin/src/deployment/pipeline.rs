@@ -879,7 +879,8 @@ pub struct CreateRequest {
     /// The admitted operation identity, unchanged by allocation or recipe lowering.
     pub operation: rdm_core::OperationId,
     /// The node.id the create allocates (D58): the one the Build record names for the node, or the one
-    /// the primary minted when it decided a recovery's re-create. `AllocateIdentity` mints no other.
+    /// the primary minted when it decided a re-create: a recovery's, or a Build's over its own birth lost
+    /// before Ready. `AllocateIdentity` mints no other.
     pub node_id: NodeId,
     /// The owning mesh supplied by the Build or exact predecessor.
     pub mesh: String,
@@ -1647,8 +1648,8 @@ impl DeploymentPipeline<'_> {
         let (run_build, run_operation) = (req.build_id.as_ref(), run.operation.clone());
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
-        // lost with it) is a lost birth: everything is decided afresh, a new
-        // identity and endpoints the current allocator hands out.
+        // lost with it) is a lost birth: the path takes a new node.id, with a new
+        // identity and the endpoints the current allocator hands out.
         let executor = self.template.executor_birth();
         let recorded_by_another = |run: &Run<'_>, step: CreateStep| run.owner.get(step.name()).is_some_and(|o| o.as_ref() != Some(&executor));
         self.give_create_values(run, req).await;
@@ -1678,8 +1679,15 @@ impl DeploymentPipeline<'_> {
                 None => false,
             };
             if !alive {
-                tracing::info!(node_path = %req.path, node_name = %req.name, "the earlier run's runtime is gone: a fresh birth");
-                run.done.clear();
+                // The birth joined and its runtime is gone. This operation's completed steps stand
+                // (build.md §1: never run again), so a new birth is a new operation under a new node.id;
+                // this operation ends complete on that birth's Ready ([`Self::create_steps`]). Recovery
+                // finds the lost birth with a live node at its path, and deletes it.
+                let new_node_id = NodeId::mint();
+                tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_span(run_build), node_path = %req.path, node_name = %req.name, node_id = %req.node_id, new_node_id = %new_node_id)
+                    .in_scope(|| tracing::info!("the earlier run's runtime is gone: the path takes a new node.id"));
+                let new_req = CreateRequest { operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id, ..req.clone() };
+                return self.create_with_launch_of(&new_req, of, pre_node_ready, before_launch).await;
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
                 // Launched by an executor that is not this one and never joined: its only seed is
                 // that executor's endpoint, which this birth can no longer rely on (the lost admin's

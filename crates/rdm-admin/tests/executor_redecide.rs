@@ -382,6 +382,49 @@ fn complete_steps(view: &rdm_admin::build_state::BuildProjection, step: CreateSt
     view.steps.iter().filter(|r| r.step == step.name() && r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(node)).to_string() && r.outcome == StepOutcome::Complete).count()
 }
 
+/// CONTRACT (build.md §1: "A step whose `rdm.build.step` event ended `complete` is not run again";
+/// live.rs: "A deleted node never returns"; node-recovery.md: "a new node.id"): a birth that joined and
+/// whose runtime is gone before Ready is not launched again under its node.id. The successor's create
+/// takes the path under a new node.id, as a new operation, and the Build's operation ends complete on
+/// that birth's Ready. Must NOT happen: a completed step of the Build's operation run again, or the lost
+/// birth's identity launched a second time.
+#[test]
+fn a_joined_birth_whose_runtime_is_gone_takes_a_new_node_id_and_no_completed_step_runs_again() {
+    let cell = "a_joined_birth_whose_runtime_is_gone_takes_a_new_node_id_and_no_completed_step_runs_again";
+    let cap = capture(cell);
+    let data_root = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
+    cap.run(async {
+        let fleet = Fleet::new();
+        let fabric_id = FabricId::mint();
+        let store = Arc::new(MemoryBuildStateAdapter::new());
+        let builds = rdm_admin::build_run::FramedBuilds::stepping(store.clone(), &fabric_id, &NodeId::mint(), "mesh1");
+        let lost = executor(&fleet, &data_root, "lostadminkey", &store, &fabric_id);
+        let successor = executor(&fleet, &data_root, "successoradminkey", &store, &fabric_id);
+        let node = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        let build = accepted_build(&builds).await;
+        lost_run(&fleet, &lost, &build, &node, Dies::AfterJoin).await;
+        let dead = fleet.spawns().last().cloned().expect("the lost run launched the birth");
+        fleet.terminated.lock().unwrap().push(dead.pid);
+
+        let created = successor.pipeline(&fleet).create(&request(&build, &node)).await.unwrap_or_else(|e| panic!("the successor's create: {e}"));
+        let fresh = fleet.spawns().last().cloned().unwrap();
+        assert_ne!(fresh.pid, dead.pid, "a new runtime");
+        assert_ne!(created.node.node_id, dead.node_id, "a new node.id: the lost birth's identity is not launched again");
+        assert_eq!(created.node.node_id, fresh.node_id);
+        assert!(fleet.running(fresh.pid));
+
+        let view = builds.read_build(&build).await.unwrap();
+        for step in [CreateStep::AllocateIdentity, CreateStep::DeployRuntime, CreateStep::WaitForMeshJoin] {
+            assert_eq!(complete_steps(&view, step, &node), 1, "{} of the Build's operation is not run again", step.name());
+        }
+        assert_eq!(complete_steps(&view, CreateStep::Complete, &node), 1, "the Build's operation ends complete on the new birth's Ready");
+    });
+    let spans = cap.spans();
+    let lost_births: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-birth-lost-before-ready").collect();
+    assert_eq!(lost_births.len(), 1, "named once: {} such spans", lost_births.len());
+    let _ = std::fs::remove_dir_all(&data_root);
+}
+
 /// CONTRACT (#2892): a create re-run by a successor executor (the lost admin's recovery, at
 /// another endpoint) does not hand on a birth that was launched by the lost executor and never
 /// joined: that runtime's only seed is the lost admin's endpoint, where a dial can reach another

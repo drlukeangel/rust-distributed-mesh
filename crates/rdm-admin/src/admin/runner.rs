@@ -622,6 +622,20 @@ impl AdminRunner {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
                     let terminal = self.delete_unreached(&*self.builds, Some(build_id), node, &from).await?;
+                    // The create's own birth, lost before Ready: a deleted node never returns (every view
+                    // refuses its digest), so the path takes a new node.id, minted here as node recovery
+                    // mints its own (node-recovery.md, Q110). This Build's create of the path is complete
+                    // once that birth is Ready, as when another birth holds the path.
+                    if prev.node_id == *node_id {
+                        let new_node_id = crate::model::NodeId::mint();
+                        let _new_turn = self.node_work(&new_node_id).await;
+                        tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id, new_node_id = %new_node_id)
+                            .in_scope(|| tracing::info!("the create's own birth is deleted, and a deleted node never returns: the path takes a new node.id"));
+                        let new_req = CreateRequest { operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id.clone(), ..req.clone() };
+                        self.create_over(&*self.builds, Some(build_id), node, &from, &new_node_id, read_exited(&terminal), executable, Some((&new_req, launch_of))).await?;
+                        let r = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete };
+                        return self.builds.write_step(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: the birth {new_node_id} took the path, and its Complete could not be recorded: {e}")));
+                    }
                     return self.create_over(&*self.builds, Some(build_id), node, &from, node_id, read_exited(&terminal), executable, Some((&req, launch_of))).await;
                 }
             }
