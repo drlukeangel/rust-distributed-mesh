@@ -246,7 +246,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         });
     }
     async fn deleted(&self, op: &rdm_core::LifecycleOp) {
-        let f = rdm_gossip::frame::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
+        let f = rdm_gossip::status::Status::node_deleted(op.clone()).frame();
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
             if let Err(e) = self.channels.publish_lifecycle(&f).await {

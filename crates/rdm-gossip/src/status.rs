@@ -35,8 +35,153 @@ impl StatusEvent {
     /// The frame of this event for `op`, published by `publisher` at `topology_version`.
     pub fn frame(self, op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Frame {
         match self {
-            Self::Deleting => Frame::NodeDeleting { op, forwarded_by: None, publisher, topology_version },
-            Self::Stopped => Frame::NodeStopped { op, forwarded_by: None, publisher, topology_version },
+            Self::Deleting => Status::node_deleting(op, publisher, topology_version),
+            Self::Stopped => Status::node_stopped(op, publisher, topology_version),
+        }
+        .frame()
+    }
+}
+
+/// What a [`Status`] is the status of (Q374): a node's birth, a mesh, or the fabric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusType {
+    /// A node's birth: `stopped`, `deleting` or `deleted`.
+    Node,
+    /// A mesh: its state (`pending`, `ready`, `leaving`, ...).
+    Mesh,
+    /// The fabric: its state.
+    Fabric,
+}
+
+/// The subject of a [`Status`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusSubject {
+    /// A node's birth, by the operation that changed it.
+    Node(LifecycleOp),
+    /// A mesh, by its name.
+    Mesh(String),
+    /// The fabric, by its id.
+    Fabric(FabricId),
+}
+
+/// How a [`Status`] is ordered against the one held: each type keeps its own rule (gossip-by-kind.md
+/// §5.3; receive_order.rs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusOrder {
+    /// A node's `stopped` and `deleting`: the `topology_version` at which its subject changed, per
+    /// publisher and subject mesh.
+    TopologyVersion {
+        /// The exact birth that published it.
+        publisher: PublisherId,
+        /// The subject mesh's topology version at the change.
+        topology_version: u64,
+    },
+    /// A node's `deleted`: no order; applied once per `(type, build_id, operation)`.
+    Once,
+    /// A mesh's and the fabric's: the primary revision of its envelope, then `changed_at_rafka_ms`.
+    Changed {
+        /// The node that published it, by its node id.
+        publisher: String,
+        /// The instant of the change, Rafka-time.
+        changed_at_rafka_ms: u64,
+    },
+}
+
+/// One status (Q374; gossip-by-kind.md §5.3): the one Rust type every status publisher builds its
+/// frame from and every status receiver reads a frame as. It encodes to today's five frames
+/// (`NodeStopped`, `NodeDeleting`, `NodeDeleted`, `MeshStatus`, `FabricStatus`) and decodes from
+/// them, the wire unchanged (D1); each type keeps its own order ([`StatusOrder`]), recovery and sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    subject: StatusSubject,
+    status: String,
+    order: StatusOrder,
+    forwarded_by: Option<String>,
+}
+
+impl Status {
+    /// A node's `stopped` (`NodeStopped`), published by `publisher` at `topology_version`.
+    pub fn node_stopped(op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Self {
+        Self { subject: StatusSubject::Node(op), status: "stopped".into(), order: StatusOrder::TopologyVersion { publisher, topology_version }, forwarded_by: None }
+    }
+
+    /// A node's `deleting` (`NodeDeleting`), published by `publisher` at `topology_version`.
+    pub fn node_deleting(op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Self {
+        Self { subject: StatusSubject::Node(op), status: "deleting".into(), order: StatusOrder::TopologyVersion { publisher, topology_version }, forwarded_by: None }
+    }
+
+    /// A node's `deleted` (`NodeDeleted`).
+    pub fn node_deleted(op: LifecycleOp) -> Self {
+        Self { subject: StatusSubject::Node(op), status: "deleted".into(), order: StatusOrder::Once, forwarded_by: None }
+    }
+
+    /// `mesh`'s `status` (`MeshStatus`), published by `publisher` at `changed_at_rafka_ms`.
+    pub fn mesh(mesh: &str, status: &str, publisher: &str, changed_at_rafka_ms: u64) -> Self {
+        Self { subject: StatusSubject::Mesh(mesh.to_string()), status: status.to_string(), order: StatusOrder::Changed { publisher: publisher.to_string(), changed_at_rafka_ms }, forwarded_by: None }
+    }
+
+    /// The fabric's `status` (`FabricStatus`), published by `publisher` at `changed_at_rafka_ms`.
+    pub fn fabric(fabric: &FabricId, status: &str, publisher: &str, changed_at_rafka_ms: u64) -> Self {
+        Self { subject: StatusSubject::Fabric(fabric.clone()), status: status.to_string(), order: StatusOrder::Changed { publisher: publisher.to_string(), changed_at_rafka_ms }, forwarded_by: None }
+    }
+
+    /// The same status, forwarded by `by` (`None`: as its publisher sent it).
+    pub fn forwarded_by(mut self, by: Option<String>) -> Self {
+        self.forwarded_by = by;
+        self
+    }
+
+    /// What it is the status of.
+    pub fn r#type(&self) -> StatusType {
+        match self.subject {
+            StatusSubject::Node(_) => StatusType::Node,
+            StatusSubject::Mesh(_) => StatusType::Mesh,
+            StatusSubject::Fabric(_) => StatusType::Fabric,
+        }
+    }
+
+    /// Its subject.
+    pub fn subject(&self) -> &StatusSubject {
+        &self.subject
+    }
+
+    /// The status itself.
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// How it is ordered against the one held.
+    pub fn order(&self) -> &StatusOrder {
+        &self.order
+    }
+
+    /// The node that forwarded it, if any.
+    pub fn forwarder(&self) -> Option<&str> {
+        self.forwarded_by.as_deref()
+    }
+
+    /// Its frame on the wire: one of today's five.
+    pub fn frame(&self) -> Frame {
+        let forwarded_by = self.forwarded_by.clone();
+        match (&self.subject, &self.order) {
+            (StatusSubject::Node(op), StatusOrder::TopologyVersion { publisher, topology_version }) if self.status == "stopped" => Frame::NodeStopped { op: op.clone(), forwarded_by, publisher: publisher.clone(), topology_version: *topology_version },
+            (StatusSubject::Node(op), StatusOrder::TopologyVersion { publisher, topology_version }) => Frame::NodeDeleting { op: op.clone(), forwarded_by, publisher: publisher.clone(), topology_version: *topology_version },
+            (StatusSubject::Node(op), _) => Frame::NodeDeleted { op: op.clone(), forwarded_by },
+            (StatusSubject::Mesh(mesh), StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::MeshStatus { mesh: mesh.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
+            (StatusSubject::Fabric(fabric), StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::FabricStatus { fabric: fabric.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
+            (StatusSubject::Mesh(_) | StatusSubject::Fabric(_), _) => unreachable!("a mesh's and the fabric's status are built ordered by their change (Status::mesh, Status::fabric)"),
+        }
+    }
+
+    /// The status `f` carries, when it is one of the five status frames.
+    pub fn of(f: &Frame) -> Option<Self> {
+        match f.data() {
+            Frame::NodeStopped { op, forwarded_by, publisher, topology_version } => Some(Self::node_stopped(op.clone(), publisher.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
+            Frame::NodeDeleting { op, forwarded_by, publisher, topology_version } => Some(Self::node_deleting(op.clone(), publisher.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
+            Frame::NodeDeleted { op, forwarded_by } => Some(Self::node_deleted(op.clone()).forwarded_by(forwarded_by.clone())),
+            Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::mesh(mesh, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),
+            Frame::FabricStatus { fabric, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::fabric(fabric, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),
+            _ => None,
         }
     }
 }
@@ -238,13 +383,10 @@ impl StatusPublisher {
 
     pub(crate) fn frame(&mut self, fact: &StatusFact) -> Frame {
         let frame = match &self.scope {
-            StatusScope::Mesh(mesh) => {
-                Frame::MeshStatus { mesh: mesh.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, changed_at_rafka_ms: fact.changed_at_rafka_ms }
-            }
-            StatusScope::Fabric(fabric) => {
-                Frame::FabricStatus { fabric: fabric.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, changed_at_rafka_ms: fact.changed_at_rafka_ms }
-            }
-        };
+            StatusScope::Mesh(mesh) => Status::mesh(mesh, &fact.status, &self.node, fact.changed_at_rafka_ms),
+            StatusScope::Fabric(fabric) => Status::fabric(fabric, &fact.status, &self.node, fact.changed_at_rafka_ms),
+        }
+        .frame();
         if let Some((_, context)) = self.context.as_ref().filter(|(held, _)| held == fact) {
             return frame.with_context(Some(context.clone()));
         }
@@ -370,8 +512,12 @@ impl StatusView {
     /// Hold what `f` carries if it is newer than what is held; whether it was taken.
     pub fn take(&self, f: &Frame, fabric: &FabricId) -> bool {
         let context = f.context();
-        match f.data() {
-            Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, .. } => {
+        // A mesh's or the fabric's status, read as its one Rust type (gossip-by-kind.md §5.3).
+        let Some(taken) = Status::of(f) else { return false };
+        let StatusOrder::Changed { publisher, changed_at_rafka_ms } = taken.order() else { return false };
+        let status = &taken.status;
+        match taken.subject() {
+            StatusSubject::Mesh(mesh) => {
                 let mut held = self.meshes.lock().unwrap();
                 // The same fact under its author's context replaces one held without any (a hand-off's
                 // state or a self-applied one, held before its publisher sent it; Q272): what this node
@@ -385,7 +531,7 @@ impl StatusView {
                 self.mesh_changes.send_modify(|v| *v += 1);
                 true
             }
-            Frame::FabricStatus { fabric: f, status, publisher, changed_at_rafka_ms, .. } if f == fabric => {
+            StatusSubject::Fabric(f) if f == fabric => {
                 let mut held = self.fabric.lock().unwrap();
                 if !crate::receive_order::admit_status_context("fabric-status", f.as_str(), held.as_ref().and_then(|h| h.context.as_ref()), context, held.as_ref().map(|h| h.status.as_str()).unwrap_or(""), status).unwrap_or_else(|| crate::receive_order::admit_status("fabric-status", f.as_str(), held.as_ref().map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms)) {
                     return false;
@@ -449,11 +595,11 @@ impl StatusView {
         let mut out: Vec<Frame> = held_meshes
             .into_iter()
             .filter(|(_, h)| h.context.is_some())
-            .map(|(mesh, h)| Frame::MeshStatus { mesh, status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context))
+            .map(|(mesh, h)| Status::mesh(&mesh, &h.status, &h.publisher, h.changed_at_rafka_ms).forwarded_by(by(&h.publisher)).frame().with_context(h.context))
             .collect();
         out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
         if let Some(h) = held_fabric {
-            out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context));
+            out.push(Status::fabric(fabric, &h.status, &h.publisher, h.changed_at_rafka_ms).forwarded_by(by(&h.publisher)).frame().with_context(h.context));
         }
         out
     }

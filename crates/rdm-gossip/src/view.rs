@@ -230,19 +230,19 @@ impl View {
 
     pub(crate) fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         if crate::receive_order::refuse_reserved(f, &self.current_name(), via) { return Vec::new(); }
-        match f.data() {
-            Frame::NodeDeleting { op, publisher, topology_version, .. } | Frame::NodeStopped { op, publisher, topology_version, .. } => {
-                let kind = match f.data() {
-                    Frame::NodeDeleting { .. } => StatusEvent::Deleting,
-                    _ => StatusEvent::Stopped,
-                };
+        // A status frame is read as its one Rust type (gossip-by-kind.md §5.3); each type keeps its rule.
+        let Some(status) = Status::of(f) else { return Vec::new() };
+        match (status.subject(), status.order()) {
+            (StatusSubject::Node(op), StatusOrder::TopologyVersion { publisher, topology_version }) => {
+                let kind = if status.status() == "deleting" { StatusEvent::Deleting } else { StatusEvent::Stopped };
                 let op = &traced_by_envelope(f, op);
                 if !self.refuses_status_event(kind, op, publisher, *topology_version, via) {
                     self.apply_status_event(kind, op, Some((publisher.to_string(), *topology_version)), via);
                 }
                 Vec::new()
             }
-            Frame::NodeDeleted { op, forwarded_by } => {
+            (StatusSubject::Node(op), _) => {
+                let forwarded_by = status.forwarder();
                 let op = &traced_by_envelope(f, op);
                 let span = tracing::info_span!(
                     "rdm.mesh.topology.update.via-node-deleted",
@@ -252,7 +252,7 @@ impl View {
                     incarnation_id = %op.incarnation,
                     build_id = %op.build_id,
                     operation = %op.operation.action, operation_subject = ?op.operation.subject,
-                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    forwarded_by = forwarded_by.unwrap_or(""),
                     via,
                     applied = tracing::field::Empty,
                 );
@@ -260,11 +260,10 @@ impl View {
                 span.record("applied", self.digest_view.depart(op.clone()));
                 Vec::new()
             }
-            Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
+            (StatusSubject::Mesh(_) | StatusSubject::Fabric(_), _) => {
                 self.take_status(f, fabric, via);
                 Vec::new()
             }
-            _ => Vec::new(),
         }
     }
 
