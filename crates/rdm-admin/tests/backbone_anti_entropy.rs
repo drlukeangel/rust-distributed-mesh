@@ -137,7 +137,7 @@ impl Capture {
     }
 }
 
-/// CONTRACT (gossip.md §3.2, the `MeshTopology` row: "on its anti-entropy timer and at once on a material
+/// CONTRACT (gossip.md §3.2, the `TopologyFull` row: "on its anti-entropy timer and at once on a material
 /// change"; R-D1: t from the last direct backbone receipt): a mesh primary
 /// whose reads of the shared store take three backbone intervals each goes on publishing its mesh
 /// on the backbone every interval. A peer mesh's t of it stays under two backbone intervals the whole time

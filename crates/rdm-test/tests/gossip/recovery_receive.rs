@@ -78,7 +78,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let mut serial=0;
         for d in [&own,&restarted,&started,&deleted,&rpc_primary] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),rpc_primary.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
-        serial+=1;send(&sender,&receiver,Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some(own.node.node_id.to_string()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::TopologyFull{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some(own.node.node_id.to_string()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{ mesh: own.node.mesh.clone(), r#type: own.node.r#type.clone(),node_id:own.node.node_id.clone(),path:own.node.path.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
@@ -101,8 +101,8 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
             Frame::Digest{digest:stale.clone()},
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
-            Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some(own.node.node_id.to_string()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
-            Frame::MeshTopologyDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![rpc_primary.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
+            Frame::TopologyFull{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some(own.node.node_id.to_string()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
+            Frame::TopologyDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![rpc_primary.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
             StatusEvent::Stopped.frame(stop,publisher.clone(),10),StatusEvent::Deleting.frame(delete.clone(),publisher.clone(),10),
             Frame::NodeDeleted{op:delete.clone(),forwarded_by:None},
             Frame::Concern{role:PrimaryRole::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:NodeId::mint().to_string()},

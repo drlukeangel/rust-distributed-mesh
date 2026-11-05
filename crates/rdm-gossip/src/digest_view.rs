@@ -208,7 +208,7 @@ pub struct DigestView {
     /// Local to this view: refused on receipt, never projected or published.
     pub(crate) recovering: Arc<Mutex<HashMap<String, IncarnationId>>>,
     /// The deletions this process executed and published as `NodeDeleted`, by the deleted NodeId: its
-    /// mesh's topology carries each in `MeshTopology.deleted` for the retention, whatever mesh the deleted
+    /// mesh's topology carries each in `TopologyFull.deleted` for the retention, whatever mesh the deleted
     /// birth was in (gossip.md §3.1 `NodeDeleted`: the "executor's own mesh channel; backbone
     /// Members.deleted"). A deletion this view only heard is not one of them.
     pub(crate) executed_deletions: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -233,7 +233,7 @@ pub struct DigestView {
     /// primary authors its members' statuses; every other member takes them from its projection.
     pub(crate) primary: Arc<std::sync::atomic::AtomicBool>,
     /// The holder's own mesh: an own-mesh birth's status comes from that mesh's primary (gossip.md
-    /// §3.1 `MeshTopology`). Empty for a view no topology view holds: no birth is own-mesh to it.
+    /// §3.1 `TopologyFull`). Empty for a view no topology view holds: no birth is own-mesh to it.
     pub(crate) own_mesh: Arc<Mutex<String>>,
     /// The holder's own NodeId, once it published: its own birth's word about itself is its own.
     pub(crate) own: Arc<Mutex<Option<String>>>,
@@ -269,7 +269,7 @@ pub struct DigestView {
     pub(crate) retention: Duration,
     /// The staleness floor.
     pub(crate) staleness_floor: Duration,
-    /// The primaries this node holds (a digest, a `MeshTopology` projection, an entry read): an input to every election.
+    /// The primaries this node holds (a digest, a `TopologyFull` projection, an entry read): an input to every election.
     pub primaries: PrimaryView,
     /// The mesh and fabric statuses this node holds (`Frame::MeshStatus`, `Frame::FabricStatus`, a
     /// replay or an entry answer): application routing reads a birth's mesh status here.
@@ -573,7 +573,7 @@ impl DigestView {
 
     /// The removal overlays (`NodeDeleting`) the Build facts ended, closed: an overlay is keyed by its
     /// operation (gossip.md: `(build_id, operation)` is the only operation identity; the overlay rides
-    /// `MeshTopology.in_flight` while the operation has not completed), so it closes when its
+    /// `TopologyFull.in_flight` while the operation has not completed), so it closes when its
     /// operation's verdict is terminal or its Build is forgotten (`forgotten`). `by_verdict` names each
     /// removal whose operation has a terminal verdict, by the overlay's key, with the verdict's name. A
     /// copy of a closed overlay opens nothing again.
@@ -1078,7 +1078,7 @@ impl DigestView {
     }
 
     /// Whether `d` is a birth of this view's own mesh other than its holder: its status comes from
-    /// that mesh's primary (gossip.md §3.1 `MeshTopology`).
+    /// that mesh's primary (gossip.md §3.1 `TopologyFull`).
     /// The holder is known by its node id from the moment it joins (the id it joined under), and by its
     /// own published birth once it publishes.
     pub(crate) fn is_own_lineage(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
@@ -1096,7 +1096,7 @@ impl DigestView {
     /// `ds` as every read hands them out: each birth with the primary records this view holds for it
     /// ([`Self::recorded_primaries`]), and an own-mesh birth ([`Self::own_mesh_member`]) with the one
     /// status this view holds for it ([`Self::projected_status`]), whatever its held digest says. A
-    /// mesh-primary's `MeshTopology` projection is such a read, so it carries the recorded primaries (gossip.md
+    /// mesh-primary's `TopologyFull` projection is such a read, so it carries the recorded primaries (gossip.md
     /// "A primary change on gossip"). Called with no hold of `inner`.
     pub(crate) fn hand_out<'a>(&self, ds: impl IntoIterator<Item = &'a mut MeshDigest>) {
         let own_mesh = self.own_mesh.lock().unwrap().clone();

@@ -17,7 +17,7 @@ Build or change the target's meta.
 
 ## Typed read contract
 
-`node.topology.get` maps to GetTopology on op 0x1E. It emits no lifecycle event and keeps
+`node.topology.get` maps to GetTopology on op 0x1E. It emits no status frame and keeps
 the admitted endpoint and port.
 
 Startup is separate from gap repair: after the hook and required Build-facts check it makes

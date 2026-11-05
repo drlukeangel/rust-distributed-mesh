@@ -15,7 +15,7 @@
 //!
 //! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
 //! and topology-read installs:
-//! - MeshTopology and MeshTopologyDelta: the actual installed publisher/version floor orders that source,
+//! - TopologyFull and TopologyDelta: the actual installed publisher/version floor orders that source,
 //!   regardless of publication timestamp; a node's own publications are its floor for its own source
 //!   under its exact birth, a topology read included ([`ReceiveOrder::published`]). The existing cross-publisher publication check remains.
 //!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
@@ -332,10 +332,10 @@ fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
 /// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
     match f.data() {
-        Frame::MeshTopology { mesh, topology_version, published_at_rafka_ms, .. } => {
+        Frame::TopologyFull { mesh, topology_version, published_at_rafka_ms, .. } => {
             Some(("mesh-topology", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
-        Frame::MeshTopologyDelta { mesh, topology_version, published_at_rafka_ms, .. } => {
+        Frame::TopologyDelta { mesh, topology_version, published_at_rafka_ms, .. } => {
             Some(("mesh-topology-delta", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
         Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.mesh.clone() }, Key::TopologyVersion(*topology_version))),
@@ -382,11 +382,11 @@ struct InstalledSource {
     snapshot_id: Option<u64>,
 }
 
-/// The publisher a `MeshTopology` or `MeshTopologyDelta` names and its `topology_version`.
+/// The publisher a `TopologyFull` or `TopologyDelta` names and its `topology_version`.
 fn publication_of(f: &Frame) -> Option<(&str, &PublisherId, u64)> {
     match f.data() {
-        Frame::MeshTopology { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
-        Frame::MeshTopologyDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
+        Frame::TopologyFull { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
+        Frame::TopologyDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
         _ => None,
     }
 }
@@ -407,7 +407,7 @@ impl ReceiveOrder {
     }
 
     /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A taken frame's
-    /// key is held when it is newer than the held one, except a `MeshTopology` or `MeshTopologyDelta` key, held
+    /// key is held when it is newer than the held one, except a `TopologyFull` or `TopologyDelta` key, held
     /// when its snapshot installs or its delta applies ([`Self::installed`]).
     pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
         let (frame, keys) = orders_of(f);
@@ -537,7 +537,7 @@ mod tests {
         let mut order = ReceiveOrder::default();
         order.installed_projection("mesh1", &publisher, 10, None, &crate::snapshot::Full::default(), None);
         let renamed = PublisherId { ..publisher };
-        let old = Frame::MeshTopology { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
+        let old = Frame::TopologyFull { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
         let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
@@ -597,11 +597,11 @@ mod tests {
     }
 
     fn mesh_topology(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, topology_version: u64, chunk_index: u32) -> Frame {
-        Frame::MeshTopology { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
+        Frame::TopologyFull { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     fn delta(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, base_version: u64, topology_version: u64) -> Frame {
-        Frame::MeshTopologyDelta { mesh: mesh.into(), source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
+        Frame::TopologyDelta { mesh: mesh.into(), source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     fn publisher(path: &str) -> PublisherId {
@@ -612,7 +612,7 @@ mod tests {
         LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
-    /// CONTRACT (R-RX3: MeshTopology and MeshTopologyDelta order by `published_at_rafka_ms` then
+    /// CONTRACT (R-RX3: TopologyFull and TopologyDelta order by `published_at_rafka_ms` then
     /// `topology_version`, per mesh; R-RX2: no cross-publisher rule; gossip.md §3.1: a snapshot install
     /// and a delta move the held source version): both chunks of one publication are taken (they share
     /// its key), and its key is held once it installed; a chunk of the installed publication reaches its content classifier
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(order.admit_read("mesh2", &p, 1), Ok(()), "another mesh is another source");
     }
 
-    /// CONTRACT (gossip.md receive rules, `MeshTopology`: "`P(topology_version)` against the installed
+    /// CONTRACT (gossip.md receive rules, `TopologyFull`: "`P(topology_version)` against the installed
     /// floor, including a topology read"; #3211 red 2): what this node published of its own mesh is its
     /// floor for that source, so its own exact birth's read or full below it is refused naming the
     /// version published, at it is taken, and another publisher of the mesh is not ordered against it.

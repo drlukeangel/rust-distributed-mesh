@@ -96,7 +96,7 @@ mod probe_root_span_tests {
 }
 
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rdm_admin::accepted::{FabricTopology, MeshTopology};
+use rdm_admin::accepted::{FabricTopology, TopologyFull};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
@@ -425,7 +425,7 @@ pub async fn publish_build(builds: &(impl BuildStateAdapter + ?Sized), topology:
 
 /// mesh1 with one admin and one node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() }
+    FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), TopologyFull::of(&rdm_admin::build::MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.

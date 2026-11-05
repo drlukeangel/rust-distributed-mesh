@@ -457,7 +457,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let source_target = format!("exact:{}", source.node_id);
     let destination_target = format!("exact:{}", destination.node_id);
     ready_under(&estate, &second).await;
-    // mesh2.node.1 learns of mesh1.node.1 from the MeshTopologyDelta its mesh-primary forwards (gossip.md §3.3),
+    // mesh2.node.1 learns of mesh1.node.1 from the TopologyDelta its mesh-primary forwards (gossip.md §3.3),
     // not from the admin's view the cell settled on: the origination waits until mesh2.node.1's own
     // resolver holds the destination.
     wait_for("mesh2.node.1's own resolver holds mesh1.node.1", Duration::from_secs(30), || async {

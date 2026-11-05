@@ -88,7 +88,7 @@ fn frames() -> Vec<Frame> {
         Frame::Digest { digest: heartbeat(1, None, false) },
         Frame::Digest { digest: heartbeat(2, Some(process_runtime()), true) },
         Frame::Digest { digest: heartbeat(3, Some(container_runtime()), true) },
-        Frame::MeshTopology {
+        Frame::TopologyFull {
             mesh: "mesh2".into(),
             publisher: p.clone(),
             forwarded_by: Some(executor().node_id.to_string()),
@@ -101,7 +101,7 @@ fn frames() -> Vec<Frame> {
             in_flight: vec![op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node")],
             deleted: vec![op("node.delete", PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node")],
         },
-        Frame::MeshTopology {
+        Frame::TopologyFull {
             mesh: "mesh2".into(),
             publisher: p.clone(),
             forwarded_by: None,
@@ -114,7 +114,7 @@ fn frames() -> Vec<Frame> {
             in_flight: vec![],
             deleted: vec![],
         },
-        Frame::MeshTopologyDelta {
+        Frame::TopologyDelta {
             mesh: "mesh2".into(),
             source_publisher: p.clone(),
             base_version: 8,
@@ -158,7 +158,7 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete", PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node")).collect();
     let full = Full::new(members.clone(), overlays.clone(), overlays.iter().take(5).cloned().collect());
     let p = publisher();
-    let chunks = chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
+    let chunks = chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: "mesh1".into(),
         publisher: p.clone(),
         forwarded_by: None,
@@ -175,9 +175,9 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     let mut heard = 0;
     for c in &chunks {
         let bytes = c.encode();
-        assert!(bytes.len() <= MAX_MESSAGE_BYTES, "a MeshTopology chunk of {} bytes fits the ceiling", bytes.len());
+        assert!(bytes.len() <= MAX_MESSAGE_BYTES, "a TopologyFull chunk of {} bytes fits the ceiling", bytes.len());
         match Frame::decode(&bytes).unwrap().into_data() {
-            Frame::MeshTopology { digests, .. } => heard += digests.len(),
+            Frame::TopologyFull { digests, .. } => heard += digests.len(),
             other => panic!("{other:?}"),
         }
     }

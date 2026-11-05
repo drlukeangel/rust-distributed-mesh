@@ -222,7 +222,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // A delta of mesh1 under the primary's revision whose base is not what mesh1.node-admin.2 holds.
         let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.node-admin.2 holds mesh1");
         let (gap_base, gap_version) = (held + 5, held + 6);
-        let delta = Frame::MeshTopologyDelta {
+        let delta = Frame::TopologyDelta {
             mesh: "mesh1".into(),
             source_publisher: root_publisher.clone(),
             base_version: gap_base,

@@ -53,7 +53,7 @@ impl Prior {
 /// A backbone snapshot as its publisher stamped it.
 pub(crate) struct Publication {
     pub(crate) publisher: PublisherId,
-    /// The publisher's rafka-time when it published (`Frame::MeshTopology::published_at_rafka_ms`).
+    /// The publisher's rafka-time when it published (`Frame::TopologyFull::published_at_rafka_ms`).
     pub(crate) published_at_rafka_ms: u64,
     /// The publisher's own digest in the snapshot, matched by its exact birth.
     pub(crate) publisher_digest: Option<MeshDigest>,
@@ -332,14 +332,14 @@ impl View {
         }
     }
 
-    /// A `MeshTopology` chunk or a `MeshTopologyDelta`, arrived on `side`. A snapshot is applied to the view
+    /// A `TopologyFull` chunk or a `TopologyDelta`, arrived on `side`. A snapshot is applied to the view
     /// only once complete; a delta only at exactly its base. A frame that does not belong on its
     /// channel is refused by name. Whoever published it, a frame is taken for what it carries: one
     /// published before the newest the channel holds of its mesh was already ignored by the receive
     /// path (R-RX3, [`crate::receive_order`]), and only the mesh-primary publishes a mesh (R-RX2).
     pub(crate) fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side, order: &mut crate::receive_order::ReceiveOrder) -> SnapshotTaken {
         match f.data() {
-            Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => {
+            Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => {
                 if forwarded_by.is_some() == (side == Side::Backbone) {
                     tracing::info_span!(
                         "rdm.mesh.topology.reject.via-members-on-wrong-channel",
@@ -349,7 +349,7 @@ impl View {
                         publisher = %publisher,
                         forwarded_by = forwarded_by.as_deref().unwrap_or(""),
                     )
-                    .in_scope(|| tracing::warn!("a MeshTopology frame on a channel it is not published on: refused"));
+                    .in_scope(|| tracing::warn!("a TopologyFull frame on a channel it is not published on: refused"));
                     return SnapshotTaken::default();
                 }
                 if self.outside_build(mesh, side) {
@@ -400,10 +400,10 @@ impl View {
                     }
                 }
             }
-            Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted } => {
+            Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted } => {
                 if side == Side::Backbone {
                     tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
-                        .in_scope(|| tracing::warn!("a MeshTopologyDelta on the backbone, where only complete snapshots travel: refused"));
+                        .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete snapshots travel: refused"));
                     return SnapshotTaken::default();
                 }
                 if self.outside_build(mesh, side) {
@@ -633,7 +633,7 @@ impl View {
         let mut carried = Vec::new();
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
             // The primary records the entry carries, this node's own among them (gossip.md "A primary
-            // change on gossip": the mesh-primary's `MeshTopology` projection carries them): held by revision
+            // change on gossip": the mesh-primary's `TopologyFull` projection carries them): held by revision
             // whatever else of the entry is taken, and however old its copy of the digest is.
             self.digest_view.take_primaries(&d);
             // A read carries this node's own digest as the node read holds it: this node's own
@@ -653,7 +653,7 @@ impl View {
             }
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
-                // An own-mesh member's status from its primary's projection (gossip.md §3.1 `MeshTopology`
+                // An own-mesh member's status from its primary's projection (gossip.md §3.1 `TopologyFull`
                 // author): nothing else of it, so no liveness from it.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
                     self.digest_view.take_projected_status(&d, target);

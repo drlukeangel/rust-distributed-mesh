@@ -5524,7 +5524,7 @@ async fn control_run(cell: &str, shape: Shape) {
         for (_, fr) in &seen {
             match fr {
                 Frame::Digest { digest } => digests.entry((digest.node.location(), digest.node.incarnation.to_string())).or_default().push(digest.digest_seq),
-                Frame::MeshTopology { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
+                Frame::TopologyFull { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
                 Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
                 _ => {}
             }

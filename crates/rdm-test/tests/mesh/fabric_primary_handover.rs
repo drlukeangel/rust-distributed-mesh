@@ -386,7 +386,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying connections-deleting or Leaving is not routable at {m}: {leaving_states:?}");
         // Each ordinary node holds a member's own state from what it installs, or it skipped those
         // versions and recovered the members' ends from mesh1's `deleted`: gossip.md "A node that missed a
-        // lifecycle event recovers it from `MeshTopology.in_flight` or `MeshTopology.deleted`, through the
+        // lifecycle event recovers it from `TopologyFull.in_flight` or `TopologyFull.deleted`, through the
         // next delta, full or top-up". A delete that ends between two of mesh1's versions it installs
         // reaches it as the next one, mesh1 with every other member deleted, and it holds none of their
         // transient states; which frame brought it is best-effort dissemination (R-NS2).

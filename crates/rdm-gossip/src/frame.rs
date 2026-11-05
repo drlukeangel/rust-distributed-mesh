@@ -21,7 +21,7 @@ pub const MAX_FRAME: usize = rdm_transport::chunking::MAX_MESSAGE_BYTES;
 /// `datacontenttype`; `source` names the original author birth. A variant describes domain data, its
 /// fields in declaration order (their postcard position), without an outer kind discriminant on the
 /// wire: a variant's schema index is internal, never a wire kind. The in-process carrier
-/// [`Frame::Authored`] is never serialized. MeshTopology publication identity in data is
+/// [`Frame::Authored`] is never serialized. TopologyFull publication identity in data is
 /// `(fabric_id, node_id, incarnation, counter)`; the frame retains the counter alongside its authored
 /// context. A field with a serde `with` module travels in that module's wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +47,7 @@ pub enum Frame {
     /// `published_at_rafka_ms` makes each publication distinct.
     ///
     /// Schema index 1, never a wire kind.
-    MeshTopology {
+    TopologyFull {
         /// The source mesh's name.
         mesh: String,
         /// The source mesh's primary birth that published the snapshot, the revision of
@@ -83,7 +83,7 @@ pub enum Frame {
     /// `in_flight` and `deleted` are the overlays and deletions added since `base_version`.
     ///
     /// Schema index 2, never a wire kind.
-    MeshTopologyDelta {
+    TopologyDelta {
         /// The source mesh's name.
         mesh: String,
         /// The source mesh's primary birth the delta is derived from.
@@ -108,7 +108,7 @@ pub enum Frame {
     /// The mesh executor holding `op` has started removing its exact birth:
     /// the node is still found, and application routing stops selecting it.
     /// Published on the executor's own mesh channel only; the backbone carries it as an open
-    /// overlay of its mesh's topology (`MeshTopology.in_flight`).
+    /// overlay of its mesh's topology (`TopologyFull.in_flight`).
     ///
     /// Schema index 3, never a wire kind.
     NodeDeleting {
@@ -123,7 +123,7 @@ pub enum Frame {
         topology_version: u64,
     },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
-    /// channel as `NodeDeleting`; retained afterwards in `MeshTopology.deleted`.
+    /// channel as `NodeDeleting`; retained afterwards in `TopologyFull.deleted`.
     ///
     /// Schema index 4, never a wire kind.
     NodeDeleted {
@@ -233,7 +233,7 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (R-G3; gossip.md, reserved lifecycle frame positions): never sent on any
-    /// channel: a primary change rides the successor's `Digest` and the mesh-primary's `MeshTopology`
+    /// channel: a primary change rides the successor's `Digest` and the mesh-primary's `TopologyFull`
     /// projection, and a birth's contact addresses ride its `Digest` and that projection.
     ///
     /// Schema index 13, never a wire kind.
@@ -286,7 +286,7 @@ pub enum Frame {
     /// The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the
     /// stop call's own reply: the birth is stopped (its process alive, its endpoint bound) and
     /// gossips nothing. Every node drops it from its view until the birth itself rejoins. Same
-    /// channel as `NodeDeleting`; carried in `MeshTopology.in_flight` while open.
+    /// channel as `NodeDeleting`; carried in `TopologyFull.in_flight` while open.
     ///
     /// Schema index 18, never a wire kind.
     NodeStopped {

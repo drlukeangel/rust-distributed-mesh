@@ -17,7 +17,7 @@
 //!
 //! The stamps are publication time: `MeshDigest::emitted_at_rafka_ms` is read from the composed
 //! clock inside [`crate::topology::TopologyView::publish`] as the frame is built, and
-//! `Frame::MeshTopology::published_at_rafka_ms` is read from the same clock at the start of
+//! `Frame::TopologyFull::published_at_rafka_ms` is read from the same clock at the start of
 //! `Backbone::publish`, before the chunks are built and sent.
 
 use rdm_transport::clock::{Ignored, Observed, SharedClock};

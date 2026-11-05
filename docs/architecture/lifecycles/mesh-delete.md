@@ -162,7 +162,7 @@ The gossip frames, in order. The mesh's status at `mesh.deleting`, from the mesh
 
 Each member's `NodeStopped` and `NodeDeleted` are [node.delete](node-delete.md)'s, the
 [catalog's examples](../gossip.md#examples). After `mesh.deleted` the mesh-primary's mesh topology is
-the [`MeshTopology` example](../gossip.md#examples) with `mesh2`, `digests` holding its own digest only,
+the [`TopologyFull` example](../gossip.md#examples) with `mesh2`, `digests` holding its own digest only,
 `deleted` holding every member's `NodeDeleted`, and the mesh's status deleted riding its
 `MeshStatus`:
 
@@ -176,9 +176,9 @@ the [`MeshTopology` example](../gossip.md#examples) with `mesh2`, `digests` hold
 }
 ```
 
-The separate node.delete's last frame is `mesh2.node-admin.1`'s final mesh topology: the same `MeshTopology` with
+The separate node.delete's last frame is `mesh2.node-admin.1`'s final mesh topology: the same `TopologyFull` with
 `mesh2.node-admin.1` deleting under `operation` `node.delete:mesh2.node-admin.1`, and the mesh's status
-deleted. The fabric-primary publishes no `NodeStopped` or `NodeDeleted` for it, and no `MeshTopology`
+deleted. The fabric-primary publishes no `NodeStopped` or `NodeDeleted` for it, and no `TopologyFull`
 for `mesh2` follows.
 
 On the wire, mesh.delete rides the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm);
@@ -213,7 +213,7 @@ sequenceDiagram
             M->>P: stop and inspect the exact runtime
             P-->>M: exact Exited
             M->>M: member row deleted, node.deleted
-            M->>B: mesh topology: NodeDeleted in MeshTopology.deleted
+            M->>B: mesh topology: NodeDeleted in TopologyFull.deleted
         end
     end
     M->>M: mesh row deleted

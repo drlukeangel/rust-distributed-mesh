@@ -291,7 +291,7 @@ existing ops below. The build family is op 0x20.
 
 A changing call returns a streamed execution view: Started, each completed step's
 noun/past-tense event, then its terminal result. Reads return their typed result and
-publish no lifecycle event. A failure is `Failed { step, reason }`: no downstream
+publish no status frame. A failure is `Failed { step, reason }`: no downstream
 success event follows it.
 
 Transport uncertainty is NotSent before the request commit cut and Indeterminate
@@ -1203,7 +1203,7 @@ pub struct Primary {
 
 `mesh=None` asks for every held or eligible stored mesh; Some(m) asks for one mesh.
 A matching held source version answers Unchanged. Accepted reads stream Started, then
-Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip MeshTopology's shape and
+Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip TopologyFull's shape and
 chunking; a mesh is installed atomically only after every chunk of the same snapshot_id,
 publisher and topology_version is present. End.meshes counts each answered mesh once.
 A mesh with no published snapshot is absent unless the answerer writes its records or holds its

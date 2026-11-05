@@ -68,7 +68,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
     };
     let taken = rx.take_chunk(chunk);
     assert!(matches!(taken, rdm_gossip::snapshot::Taken::Installed(_)));
-    let _ = Frame::MeshTopology {
+    let _ = Frame::TopologyFull {
         mesh: "mesh3".into(),
         publisher: pub_id,
         forwarded_by: None,

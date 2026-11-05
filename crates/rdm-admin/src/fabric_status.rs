@@ -793,14 +793,14 @@ mod tests {
     /// runs, reading the current Build again inside the turn.
     #[tokio::test]
     async fn one_status_turn_reads_the_current_build_once_however_many_steps_of_the_change_it_takes() {
-        use crate::accepted::MeshTopology;
+        use crate::accepted::TopologyFull;
         use crate::build::MeshDesired;
         use crate::build_state::BuildAccepted;
         let capture = crate::span_capture::Capture::new("one-build-read-per-turn");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
+        let mesh1 = ("mesh1".to_string(), TopologyFull::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         started(&builds.inner, &id, &fp.birth().unwrap()).await;
@@ -838,12 +838,12 @@ mod tests {
     // @feature: fabric-lifecycle
     #[tokio::test]
     async fn the_fabric_primarys_entry_to_ready_moves_the_fabric_record_with_one_event() {
-        use crate::accepted::MeshTopology;
+        use crate::accepted::TopologyFull;
         use crate::build::MeshDesired;
         use crate::build_state::BuildAccepted;
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
-        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
+        let mesh1 = ("mesh1".to_string(), TopologyFull::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
         started(&builds, &id, &fp.birth().unwrap()).await;
@@ -962,13 +962,13 @@ mod tests {
     /// the fabric reset to pending by a hand-over.
     #[tokio::test]
     async fn the_same_build_read_from_another_copy_is_no_resize_and_a_new_executable_is() {
-        use crate::accepted::MeshTopology;
+        use crate::accepted::TopologyFull;
         use crate::build::MeshDesired;
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let exe = |sha: &str| rdm_core::binding::Binding { launch_id: "node".into(), executable: "/b/rpc".into(), sha256: sha.into(), image: None };
         let topology = |sha: Option<&str>| {
-            let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
+            let mut m = TopologyFull::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)]));
             let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
             let mut c = m.spec(&rpc).cloned().unwrap();
             c.executable = sha.map(exe);
@@ -1339,7 +1339,7 @@ mod tests {
         // docs/architecture/lifecycles/states.md:187 — "When the fabric-primary changes, the new
         // fabric-primary adopts the published fabric status; it does not reset to pending and does
         // not re-send `on_fabric_ready`."
-        use crate::accepted::MeshTopology;
+        use crate::accepted::TopologyFull;
         use crate::build::MeshDesired;
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
 
@@ -1374,7 +1374,7 @@ mod tests {
 
             let mesh1_a = (
                 "mesh1".to_string(),
-                MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])),
+                TopologyFull::of(&MeshDesired::of("mesh1", [("node-admin", 1)])),
             );
             builds
                 .publish_accepted(&BuildAccepted {
@@ -1487,7 +1487,7 @@ mod tests {
             //    topology becomes Ready, `on_fabric_ready` fires again with `build_b`'s CallContext.
             let mesh1_b = (
                 "mesh1".to_string(),
-                MeshTopology::of(&MeshDesired::of(
+                TopologyFull::of(&MeshDesired::of(
                     "mesh1",
                     [("node-admin", 1), ("node", 1)],
                 )),

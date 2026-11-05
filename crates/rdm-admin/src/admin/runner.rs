@@ -1996,7 +1996,7 @@ mod tests {
     }
 
     async fn runner_rig(cell: &str) -> (std::path::PathBuf, Arc<AdminRunner>, Arc<crate::build_state::MemoryBuildStateAdapter>, crate::build::BuildId) {
-        use crate::accepted::{FabricTopology, MeshTopology};
+        use crate::accepted::{FabricTopology, TopologyFull};
         use crate::build::MeshDesired;
         use crate::build_state::BuildAccepted;
         use crate::deployment::process::ProcessDeploymentProvider;
@@ -2141,7 +2141,7 @@ mod tests {
         });
         let build_id = crate::build::BuildId::mint();
         let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
-        fab_top.meshes.insert("mesh1".into(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])));
+        fab_top.meshes.insert("mesh1".into(), TopologyFull::of(&MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])));
         adapter.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: fab_top, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1000 }).await.unwrap();
         (dir, runner, adapter, build_id)
     }

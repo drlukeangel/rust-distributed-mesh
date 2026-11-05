@@ -171,7 +171,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// The chunks of `mesh`'s snapshot in `topology` as a topology read delivers them.
 fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
     let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
-    chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
+    chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: s.mesh.clone(),
         publisher: s.publisher.clone(),
         forwarded_by: None,
@@ -186,13 +186,13 @@ fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) ->
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted },
-        _ => unreachable!("chunks_of shapes MeshTopology"),
+        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted },
+        _ => unreachable!("chunks_of shapes TopologyFull"),
     })
     .collect()
 }
 
-/// CONTRACT (gossip.md §3.1 `MeshTopology` / `MeshTopologyDelta`: "Own-mesh members receive
+/// CONTRACT (gossip.md §3.1 `TopologyFull` / `TopologyDelta`: "Own-mesh members receive
 /// statuses through the primary's versioned member projection ... For an own-mesh birth, liveness,
 /// endpoints with freshness and the runtime fact come from its Digest and status from the
 /// projection; NodeStopped and NodeDeleting stay immediate events"): through real

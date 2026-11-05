@@ -994,7 +994,7 @@ fn in_flight_launch(mesh: &str, spec: &rdm_core::meta::NodeSpec, deployment_id: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accepted::{FabricTopology, MeshTopology};
+    use crate::accepted::{FabricTopology, TopologyFull};
     use crate::build::MeshDesired;
     use crate::build_state::{BuildAccepted, BuildStateAdapter as _, MemoryBuildStateAdapter};
     use crate::deployment::pipeline::DeleteStep;
@@ -1222,7 +1222,7 @@ mod tests {
         let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
         fab_top.meshes.insert(
             "mesh2".into(),
-            MeshTopology::of(&MeshDesired::of("mesh2", [("node-admin", 1)])),
+            TopologyFull::of(&MeshDesired::of("mesh2", [("node-admin", 1)])),
         );
         steps
             .publish_accepted(&BuildAccepted {

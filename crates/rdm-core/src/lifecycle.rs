@@ -41,7 +41,7 @@ pub struct LifecycleOp {
     /// operation): taken from the envelope of the lifecycle frame that brought the operation (gossip.md
     /// §3.4), so an application span made from it is the operation's child. Observability only. Never
     /// written: it is no part of the frame's body or of a receipt, and an operation learned only from a
-    /// `MeshTopology` carries none.
+    /// `TopologyFull` carries none.
     #[serde(skip)]
     pub traceparent: Option<String>,
     /// The operation's W3C `tracestate`, beside [`Self::traceparent`] and as it is.

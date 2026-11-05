@@ -59,9 +59,9 @@ fn story(story: Story) {
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let id = NodeId::mint();
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh2".into(), r#type: "node".into(), node_id: id.clone(), path: "mesh2.node".into(), name: "1".into(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
-        let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::MeshTopology { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
+        let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::TopologyFull { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
         let read = |digests| Chunk { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![] };
-        let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], deleted: vec![] };
+        let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::TopologyDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], deleted: vec![] };
         let baseline = snapshot(10, 1, 0, 1, vec![digest.clone()], 100);
         if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
         else { send(&sender, &receiver, baseline.clone(), 1).await; }
@@ -73,7 +73,7 @@ fn story(story: Story) {
         match story {
             Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat => {
                 let mut full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, if matches!(story, Story::CrossRepeat) { 1 } else { 2 }, 0, 1, vec![if matches!(story, Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { let mut current = digest.clone(); if matches!(story, Story::NewPublication) { current.digest_seq += 1; } current } else { changed.clone() }], if matches!(story, Story::CrossRepeat) { 100 } else { 101 });
-                if let Frame::MeshTopology { forwarded_by, .. } = &mut full { *forwarded_by = None; }
+                if let Frame::TopologyFull { forwarded_by, .. } = &mut full { *forwarded_by = None; }
                 send(backbone_sender.as_ref().unwrap(), &receiver, full, 2).await;
                 if matches!(story, Story::CrossRepeat) { assert_eq!(receiver.digest_view.get(id.as_str()).unwrap().1, heard_before, "a publication already installed on another channel is not heard again"); }
                 if matches!(story, Story::NewPublication) {
@@ -135,7 +135,7 @@ fn story(story: Story) {
                 send(&sender, &receiver, baseline.clone().authored(&owner_b, 0, 100), 2).await;
                 let installs = || capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed").count();
                 assert_eq!(installs(), 2, "a second forwarder's counter 1 is a distinct publication install");
-                let repeated = |by: &str| { let mut f = baseline.clone(); if let Frame::MeshTopology { forwarded_by, .. } = &mut f { *forwarded_by = Some(by.into()); } f };
+                let repeated = |by: &str| { let mut f = baseline.clone(); if let Frame::TopologyFull { forwarded_by, .. } = &mut f { *forwarded_by = Some(by.into()); } f };
                 send(&sender, &receiver, repeated("mesh1.node-admin.4"), 3).await;
                 assert_eq!(installs(), 2, "the first owner's resend is still a duplicate after the other owner's publication");
                 send(&sender, &receiver, snapshot(10, 2, 0, 1, vec![digest.clone()], 101), 4).await;

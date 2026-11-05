@@ -1,6 +1,6 @@
 //! Fixed bytes for a member's heartbeat and its mesh-primary's member projection on the topology
 //! channels (gossip.md §3.1: the `Digest` carries "`node_state`" and "no status: a member's status
-//! comes only from its mesh-primary"; `MeshTopology` and `MeshTopologyDelta` carry the mesh-primary's own-mesh
+//! comes only from its mesh-primary"; `TopologyFull` and `TopologyDelta` carry the mesh-primary's own-mesh
 //! member projection, each entry its digest and its status). Postcard, positional, append-only. The
 //! literals are derived from the postcard rules by hand. Never regenerate an expectation from the Rust
 //! serializer to make a schema change pass.
@@ -36,8 +36,8 @@ const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
 
 /// CONTRACT (gossip.md §3.1 frame catalog): a heartbeat (`Digest`, variant 0) is the digest's wire
 /// shape with the liveness `node_state` at position 2 and no status: a ConnectionsDeleting digest and a
-/// ready one encode alike. A member projection entry, in `MeshTopology` (variant 1) and
-/// `MeshTopologyDelta` (variant 2), is the digest's wire shape then its status (`Ready` = 1), and
+/// ready one encode alike. A member projection entry, in `TopologyFull` (variant 1) and
+/// `TopologyDelta` (variant 2), is the digest's wire shape then its status (`Ready` = 1), and
 /// decodes to that status. What must NOT happen: a status on the heartbeat, a projection entry without
 /// its status, or a field moved.
 #[test]
@@ -49,7 +49,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     }
 
     let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
-    let members = Frame::MeshTopology {
+    let members = Frame::TopologyFull {
         mesh: "mesh1".into(),
         publisher: publisher.clone(),
         forwarded_by: None,
@@ -62,13 +62,13 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         deleted: vec![],
     };
-    let mesh_topology_hex = format!("01 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
-    let mesh_topology_golden = golden(&members, &bytes(&mesh_topology_hex));
-    assert_eq!(members.golden_encode(), mesh_topology_golden, "MeshTopology: one projection entry, digest then status");
-    let Frame::MeshTopology { digests, .. } = Frame::decode(&mesh_topology_golden).expect("the MeshTopology frame decodes").into_data() else { panic!("not MeshTopology") };
+    let topology_full_hex = format!("01 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
+    let topology_full_golden = golden(&members, &bytes(&topology_full_hex));
+    assert_eq!(members.golden_encode(), topology_full_golden, "TopologyFull: one projection entry, digest then status");
+    let Frame::TopologyFull { digests, .. } = Frame::decode(&topology_full_golden).expect("the TopologyFull frame decodes").into_data() else { panic!("not TopologyFull") };
     assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::Ready], "the entry's status is the projection's");
 
-    let delta = Frame::MeshTopologyDelta {
+    let delta = Frame::TopologyDelta {
         mesh: "mesh1".into(),
         source_publisher: publisher,
         base_version: 2,
@@ -81,8 +81,8 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     };
     let delta_hex = format!("02 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
     let delta_golden = golden(&delta, &bytes(&delta_hex));
-    assert_eq!(delta.golden_encode(), delta_golden, "MeshTopologyDelta: one changed projection entry, digest then status");
-    let Frame::MeshTopologyDelta { changed, .. } = Frame::decode(&delta_golden).expect("the MeshTopologyDelta frame decodes").into_data() else { panic!("not MeshTopologyDelta") };
+    assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: one changed projection entry, digest then status");
+    let Frame::TopologyDelta { changed, .. } = Frame::decode(&delta_golden).expect("the TopologyDelta frame decodes").into_data() else { panic!("not TopologyDelta") };
     assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::Ready], "the entry's status is the projection's");
 }
 
@@ -127,14 +127,14 @@ fn members_chunks_are_sized_against_the_complete_message() {
     let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.path = "mesh1.node".into(); second.node.name = "2".into();
     let author = crate::gossip_wire::author();
     let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
-    let shape = |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted }.authored(&author, 0, 1);
+    let shape = |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted }.authored(&author, 0, 1);
     let complete = shape(vec![first.clone(), second.clone()], vec![], vec![], 0, 1).encode();
     let (_, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&complete).unwrap();
     assert!(body.len() < 4032);
     assert!(complete.len() > 4032, "metadata makes this otherwise fitting body too large");
     let chunks = rdm_gossip::snapshot::chunks_of(&rdm_gossip::snapshot::Full::new(vec![first, second], vec![], vec![]), shape);
     assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks.iter().map(|f| match f.data() { Frame::MeshTopology { digests, .. } => digests.len(), _ => unreachable!() }).sum::<usize>(), 2);
+    assert_eq!(chunks.iter().map(|f| match f.data() { Frame::TopologyFull { digests, .. } => digests.len(), _ => unreachable!() }).sum::<usize>(), 2);
     assert!(chunks.iter().all(|f| f.encode().len() <= 4032));
 }
 
@@ -173,7 +173,7 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     let mut d = digest("ready"); d.admin_api_base = Some("x".repeat(1600));
     let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.path = "mesh1.node".into(); other.node.name = "2".into();
     let shape = |digests, in_flight, deleted, chunk_index, chunk_count| {
-        let mut f = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: deleted }.authored(&author, 0, 1);
+        let mut f = Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: deleted }.authored(&author, 0, 1);
         let Frame::Authored { context, .. } = &mut f else { unreachable!() };
         context.traceparent = Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into());
         context.tracestate = Some(state.clone()); f

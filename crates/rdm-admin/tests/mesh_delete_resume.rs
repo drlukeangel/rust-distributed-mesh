@@ -755,7 +755,7 @@ fn exited(b: &RosterBirth, runtime: &RuntimeIdentity) -> TerminalReceipt {
 }
 
 /// CONTRACT: mesh-delete.md draws each member's end at the mesh-primary as "member row deleted;
-/// node.deleted", then "mesh topology: NodeDeleted in MeshTopology.deleted", and its resume keeps a member's
+/// node.deleted", then "mesh topology: NodeDeleted in TopologyFull.deleted", and its resume keeps a member's
 /// finished delete ("Resume after the primary's loss" step 3: "Completed member receipts stand").
 /// Run 1, under the final primary path `mesh2.node-admin`, name `1`: path `mesh2.node`, name `2`'s whole delete runs to
 /// `Complete` and the lost primary publishes its NodeDeleted, which no other admin hears (the

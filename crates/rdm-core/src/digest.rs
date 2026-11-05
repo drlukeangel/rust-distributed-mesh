@@ -103,7 +103,7 @@ pub struct MeshDigest {
     pub fabric_id: FabricId,
     /// The birth the digest describes.
     pub node: MeshNode,
-    /// The member's status as the holder holds it: its mesh-primary's (gossip.md §3.1 `MeshTopology`),
+    /// The member's status as the holder holds it: its mesh-primary's (gossip.md §3.1 `TopologyFull`),
     /// or, for the holder's own birth, its own word. A heartbeat carries none
     /// ([`crate::wire::WireDigest`]).
     pub status: MemberStatus,
@@ -140,7 +140,7 @@ pub struct MeshDigest {
     pub gossip: Option<GossipStats>,
     /// The revision at which this birth is its node type's primary in its mesh (`is_primary`), when it
     /// is (gossip.md "A primary change on gossip"): on its own digest, the election's result it
-    /// installed; on a member of its mesh-primary's `MeshTopology` projection, the primary recorded on the
+    /// installed; on a member of its mesh-primary's `TopologyFull` projection, the primary recorded on the
     /// node's row. A node that hears it installs a member fact, never a primary by advertisement: the
     /// election decides.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -7,10 +7,10 @@
 //! gossip wiring in [`crate::topology`] feeds it frames and sends what it returns.
 //!
 //! ```text
-//! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> MeshTopology on the backbone
-//! RECEIVER         MeshTopology chunks -> SnapshotReceiver -> installed only once EVERY chunk is held
-//! FORWARDER        held source Full, last-published Full -> Forwarder -> MeshTopologyDelta | forwarded full
-//! RECEIVER         MeshTopologyDelta -> applied only at exactly base_version, else the source desyncs
+//! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> TopologyFull on the backbone
+//! RECEIVER         TopologyFull chunks -> SnapshotReceiver -> installed only once EVERY chunk is held
+//! FORWARDER        held source Full, last-published Full -> Forwarder -> TopologyDelta | forwarded full
+//! RECEIVER         TopologyDelta -> applied only at exactly base_version, else the source desyncs
 //! ```
 
 use crate::frame::{Frame, MAX_FRAME};
@@ -154,7 +154,7 @@ impl Full {
         }
     }
 
-    /// This full moved by `delta` (gossip.md §3.1, `MeshTopologyDelta` carries "overlay and deleted
+    /// This full moved by `delta` (gossip.md §3.1, `TopologyDelta` carries "overlay and deleted
     /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
     /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
     /// `node.joined` ended the stop. A departure ends every overlay of its exact birth, its stop
@@ -322,7 +322,7 @@ impl SourceSnapshot {
     }
 }
 
-/// One chunk of a snapshot, as a receiver reads it from a `MeshTopology` frame.
+/// One chunk of a snapshot, as a receiver reads it from a `TopologyFull` frame.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// The source mesh's name.
@@ -867,7 +867,7 @@ impl Forwarder {
     fn full_frames(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Vec<Frame> {
         let snapshot_id = self.snapshots.fetch_add(1, Ordering::Relaxed) + 1;
         let author = self.author.as_ref().expect("forwarder requires its supplied author birth");
-        chunks_of(full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
+        chunks_of(full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
             mesh: mesh.to_string(),
             publisher: publisher.clone(),
             forwarded_by: Some(me.to_string()),
@@ -906,7 +906,7 @@ impl Forwarder {
             self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version: basis.version, full: stripped });
             return Forward::Nothing("the move changes nothing a member of this Mesh holds");
         }
-        let frame = Frame::MeshTopologyDelta {
+        let frame = Frame::TopologyDelta {
             mesh: mesh.to_string(),
             source_publisher: publisher.clone(),
             base_version: basis.version,

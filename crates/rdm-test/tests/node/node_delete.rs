@@ -256,7 +256,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let heard_deleted = named(&spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| rdm_test::estate::of_node(sp, &victim_at, &victim_id)).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
     // mesh topology while the operation is open (`in_flight`: "while the operation is claimed and has no
-    // completed receipt", gossip.md MeshTopology): a deletion that completes within one mesh topology interval
+    // completed receipt", gossip.md TopologyFull): a deletion that completes within one mesh topology interval
     // reaches it as the retained departure alone, which `heard_deleted` below covers for every node.
     assert!(heard_deleting >= 2, "the victim's own mesh heard the pre-notice: {heard_deleting}");
     // Each receiver's overlay install shows the victim found, live and not routable as the overlay

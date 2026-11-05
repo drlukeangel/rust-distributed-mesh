@@ -58,7 +58,7 @@ and recording it are separate for every type.
    then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
    moment.
 5. The successor records the change on its own record: `is_primary` (and `is_fabric_primary`) at the
-   next revision, and its mesh-primary's next `MeshTopology` projection carries it, its normal
+   next revision, and its mesh-primary's next `TopologyFull` projection carries it, its normal
    publication. The write records the role; it does not grant it. No frame of its own announces a
    primary change.
 6. The commander continues on the primary's `node.primary.updated { node_id }`, never on gossip: step 5 is the recording of a change that has already happened, and the commander waits for neither the digest nor the record. The fabric-primary and the mesh-primary each record the answer in their atlas, for the update it sent or the answer streamed back to it (Q355). The action's next command goes to the old primary's mesh-primary as it stands now: for the `node-admin` type, the new mesh-primary `node_id` names, which runs the old primary's connections delete, stop or delete as for any node of its mesh; for any other type, the mesh-primary, which runs it itself.
@@ -181,10 +181,10 @@ successor                 becomes primary: installs the election's result in its
   ← node.primary.updated { node_id }   (PrimaryUpdated)
 primary → commander  node.primary.updating, then node.primary.updated { node_id }; the next command goes to the node's mesh-primary as it stands after the update
 successor → mesh channel  its next Digest carries is_primary (its normal announcement)
-mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next MeshTopology projection carries it
+mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next TopologyFull projection carries it
 ```
 
-No gossip frame announces a primary change: the successor's `Digest` and the mesh-primary's `MeshTopology`
+No gossip frame announces a primary change: the successor's `Digest` and the mesh-primary's `TopologyFull`
 projection are the normal announcement and publication, best-effort dissemination a stop does not wait
 for (R-NS2). The election's result is the fact, and the row records it.
 
@@ -205,7 +205,7 @@ sequenceDiagram
     NA1-->>FP: node.primary.updating, then node.primary.updated { node_id }
     Note over FP,NA2: FP sends NA1's next command to NA2, which runs it as NA1's mesh-primary
     NA2->>G: Digest (is_primary, next revision)
-    Note over NA2: records is_primary on its own row; MeshTopology projection carries it
+    Note over NA2: records is_primary on its own row; TopologyFull projection carries it
 ```
 
 ## Observability contract

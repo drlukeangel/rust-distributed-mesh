@@ -223,7 +223,7 @@ impl TopologyView {
 
     /// Hold (or drop) this node as its mesh's primary: while it is, it authors its own mesh's member
     /// statuses from what its members report to it and replays what it holds to a neighbour coming
-    /// up; otherwise it takes them from its primary's projection (gossip.md §3.1 `MeshTopology`).
+    /// up; otherwise it takes them from its primary's projection (gossip.md §3.1 `TopologyFull`).
     /// [`Backbone::set_mesh_primary`] sets it with the role; a launcher that executes its mesh's
     /// node lifecycle with no backbone sets it here.
     pub fn set_mesh_primary(&self, primary: bool) {
@@ -653,7 +653,7 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md "A primary change on gossip": "the mesh-primary records it on the node's row
-    /// and its next `MeshTopology` projection carries it, its normal publication"; lifecycles/node-primary-update.md
+    /// and its next `TopologyFull` projection carries it, its normal publication"; lifecycles/node-primary-update.md
     /// step 5): a member of mesh1 holds the primary records its mesh-primary's projection carries, its own
     /// birth's among them, though the projection's copy of its own digest is older than the one it holds.
     /// Must NOT happen: a node whose mesh-primary named it the `node` primary holding no record
@@ -673,7 +673,7 @@ mod tests {
         let mut theirs = digest(&other, &other_inc, None, MemberStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); theirs.node.path = at.path; theirs.node.name = at.name; }
         theirs.node.mesh = "mesh1".into();
-        let members = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
+        let members = Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
         let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
         assert!(heard, "the projection is admitted");
         assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
@@ -856,16 +856,16 @@ mod tests {
     /// `f` (a `members` frame) as the one chunk of a one-chunk snapshot.
     fn single_chunk(f: Frame) -> Frame {
         match f {
-            Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, digests, in_flight, deleted, .. } => {
-                Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index: 0, chunk_count: 1, digests, in_flight, deleted }
+            Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, digests, in_flight, deleted, .. } => {
+                Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index: 0, chunk_count: 1, digests, in_flight, deleted }
             }
             other => other,
         }
     }
 
-    /// One `MeshTopology` chunk as a single-chunk snapshot at version 1.
+    /// One `TopologyFull` chunk as a single-chunk snapshot at version 1.
     fn mesh_topology(mesh: &str, publisher: &str, forwarded_by: Option<&str>, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, deleted: Vec<LifecycleOp>) -> Frame {
-        Frame::MeshTopology {
+        Frame::TopologyFull {
             mesh: mesh.into(),
             publisher: PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() },
             forwarded_by: forwarded_by.map(String::from),
@@ -1097,7 +1097,7 @@ mod tests {
         assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a deleted node never returns");
     }
 
-    /// CONTRACT (gossip.md §3.1 `MeshTopology`; R-HB1): a non-primary node-admin of mesh1 takes its own
+    /// CONTRACT (gossip.md §3.1 `TopologyFull`; R-HB1): a non-primary node-admin of mesh1 takes its own
     /// mesh's statuses from its primary's backbone mesh topology, and a stop's end only when that
     /// projection moves, in order, past the stop. Holding mesh1.node.1 stopped from the
     /// primary's event, which carries v2 (the version its stop changed the birth at): v1
@@ -1119,7 +1119,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest(&id, &inc, None, status, seq);
         let stop = op(&id, &inc, "node.stop");
-        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>| Frame::MeshTopology {
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>| Frame::TopologyFull {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
             forwarded_by: None,
@@ -1168,7 +1168,7 @@ mod tests {
         assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
     }
 
-    /// CONTRACT (gossip.md §3.1 `MeshTopology`): a node's own birth is its own word. The mesh-primary's
+    /// CONTRACT (gossip.md §3.1 `TopologyFull`): a node's own birth is its own word. The mesh-primary's
     /// projection lists every member, the receiving node among them; the status it holds of itself
     /// stays the one it published, whether the projection arrives before its first publication (its
     /// name) or after it (its NodeId). Must NOT happen: a node taking a lagging status of itself from
@@ -1181,7 +1181,7 @@ mod tests {
         let view = test_view("mesh1", id.as_str());
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let itself = |status, seq| digest(&id, &inc, None, status, seq);
-        let mesh_topology = |version: u64, d: MeshDigest| Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], deleted: vec![] };
+        let mesh_topology = |version: u64, d: MeshDigest| Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], deleted: vec![] };
         view.take_snapshot(&mesh_topology(1, itself(MemberStatus::Pending, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         assert!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).is_none(), "before its first publication, by the node id it joined under");
         *view.digest_view.own.lock().unwrap() = Some(id.to_string());
@@ -1192,7 +1192,7 @@ mod tests {
 
     /// CONTRACT (gossip.md §3: "the mesh topology/current birth projection preserves the current
     /// RuntimeFact and required current runtime metadata needed by an authority-bearing admin to
-    /// manage that birth"; §3.1 `MeshTopology`: "what every node-admin holds of every Mesh", where "for an
+    /// manage that birth"; §3.1 `TopologyFull`: "what every node-admin holds of every Mesh", where "for an
     /// own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and
     /// status from the projection"; node-recovery.md "Detection and proof" step 1: "Every node-admin
     /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the role mid-window
@@ -1209,7 +1209,7 @@ mod tests {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = test_view("mesh1", "mesh1.node-admin.2");
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, deleted: Vec<LifecycleOp>| Frame::MeshTopology {
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, deleted: Vec<LifecycleOp>| Frame::TopologyFull {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
             forwarded_by: Some(publisher.node_id.to_string()),
@@ -1251,7 +1251,7 @@ mod tests {
         assert!(view.digest_view.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
     }
 
-    /// CONTRACT (gossip.md §3.1 `MeshTopology`: the mesh-primary is the author of its own mesh's
+    /// CONTRACT (gossip.md §3.1 `TopologyFull`: the mesh-primary is the author of its own mesh's
     /// statuses): the mesh-primary authors its own mesh's statuses, a rule keyed on the receiver's own
     /// role. A mesh topology of its own mesh from another publisher (a predecessor's last one, arriving
     /// after this node took the role), on the backbone or its own channel, moves none of them. Must NOT happen: the primary's authored status overwritten by a projection copy.
@@ -1265,14 +1265,14 @@ mod tests {
         assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.node-admin.1".to_string()))] {
-            let late = Frame::MeshTopology { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
+            let late = Frame::TopologyFull { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
             assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Ready, 5)), "{side:?}: the authored status stands");
             assert_eq!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(MemberStatus::Ready));
         }
     }
 
-    /// CONTRACT (gossip.md §3.1 `MeshTopologyDelta` carries "overlay and deleted changes"; §3.3 a delta is
+    /// CONTRACT (gossip.md §3.1 `TopologyDelta` carries "overlay and deleted changes"; §3.3 a delta is
     /// "the complete difference between the two projections"): a delta's `changed` entry of a birth
     /// clears that exact birth's stop overlay in the held projection: its source lists a stopped birth
     /// again only after node.joined cleared the stop. A deleting overlay of the birth, and a stop of
@@ -1476,7 +1476,7 @@ mod tests {
         assert_eq!(late_joiner.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Pending, 91)), "held again from the latest heartbeat it refused");
     }
 
-    /// CONTRACT: a stop is an open overlay of its mesh's topology (`MeshTopology.in_flight`), recognised
+    /// CONTRACT: a stop is an open overlay of its mesh's topology (`TopologyFull.in_flight`), recognised
     /// by its operation, so a node that never heard the frame reads the node as stopped from the mesh topology.
     #[test]
     fn a_stop_overlay_rides_the_aggregate_and_is_told_by_its_operation() {
@@ -1860,11 +1860,11 @@ mod tests {
 
     /// CONTRACT (gossip.md §6.1: a stopped status by itself and silence are not departure proof;
     /// node-identity-and-state.md §4.1: `Leaving` is a status the routing rule reads; gossip.md §3.1:
-    /// `MeshTopology.digests` are the digests as held): a member held `Leaving` stays current, and so in
+    /// `TopologyFull.digests` are the digests as held): a member held `Leaving` stays current, and so in
     /// every mesh topology, for as long as any member does: until it has been silent past the staleness
     /// floor. One gossip interval and a millisecond after its last heartbeat it is current, heard
     /// directly or forwarded. Must NOT happen: a member whose status is `Leaving` and whose heartbeat is
-    /// one interval old absent from `MeshTopology`, so a live node declared Leaving oscillates in and out of
+    /// one interval old absent from `TopologyFull`, so a live node declared Leaving oscillates in and out of
     /// every peer's list with its own heartbeat.
     #[test]
     fn a_member_held_leaving_is_current_until_it_is_silent_past_the_staleness_floor() {
@@ -1895,7 +1895,7 @@ mod tests {
     }
 
     /// A member of this node's own mesh is heard directly on the mesh channel. A mesh topology carrying
-    /// it as well (its mesh primary's backbone `MeshTopology`) leaves it held as heard directly: it is
+    /// it as well (its mesh primary's backbone `TopologyFull`) leaves it held as heard directly: it is
     /// among the members that checked in on its own channel (`heard_direct_since`), and a peer
     /// mesh's member in the same kind of mesh topology is held as heard on the backbone.
     #[test]
@@ -1937,7 +1937,7 @@ mod tests {
         };
         let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
         let forwarder_id = NodeId::mint();
-        let first = Frame::MeshTopology {
+        let first = Frame::TopologyFull {
             mesh: "mesh2".into(),
             publisher: publisher.clone(),
             forwarded_by: Some(forwarder_id.to_string()),
@@ -1968,7 +1968,7 @@ mod tests {
             })
         };
         for v in 2..=LAST {
-            let delta = Frame::MeshTopologyDelta {
+            let delta = Frame::TopologyDelta {
                 mesh: "mesh2".into(),
                 source_publisher: publisher.clone(),
                 base_version: v - 1,
@@ -2058,7 +2058,7 @@ mod tests {
     /// hearing it again departs nothing a second time.
 
     /// CONTRACT (R4, Luke 2026-10-11; lifecycles/mesh-delete.md "Every stopping member publishes its
-    /// own Leaving … carries that same Leaving digest in its final `MeshTopology` over the
+    /// own Leaving … carries that same Leaving digest in its final `TopologyFull` over the
     /// node-admin backbone channel"): a peer mesh learns that a leaving mesh's members are leaving
     /// only from each member's own state. A node that joins a peer mesh after those members said
     /// ConnectionsDeleting and Leaving installs their own states from its mesh primary's topology read (op
@@ -2070,7 +2070,7 @@ mod tests {
         let m1 = MeshId::mint();
         let (admin, connections_deleting, leaving) = (born("mesh1", "node-admin", 1, Some(&m1), 1), born("mesh1", "node", 1, None, 1), born("mesh1", "node", 2, None, 1));
         let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
-        let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::MeshTopology {
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::TopologyFull {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
             forwarded_by: None,
@@ -2106,7 +2106,7 @@ mod tests {
         // A new mesh2 node joins: it reads the primary's topology (0x1E), then hears its replay.
         let joiner = test_view("mesh2", "mesh2.node.9");
         for s in primary.forwarder.lock().unwrap().snapshots() {
-            for f in crate::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
+            for f in crate::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
                 mesh: s.mesh.clone(),
                 publisher: s.publisher.clone(),
                 forwarded_by: None,
@@ -2119,7 +2119,7 @@ mod tests {
                 in_flight,
                 deleted,
             }.authored(&test_author(), 0, 1)) {
-                let Frame::MeshTopology { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() else { unreachable!() };
+                let Frame::TopologyFull { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() else { unreachable!() };
                 let chunk = crate::snapshot::Chunk { mesh, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted };
                 let prior = Prior::of(&joiner.mesh_rx.lock().unwrap(), &chunk.mesh);
                 let installed = joiner.mesh_rx.lock().unwrap().take_chunk(chunk);
@@ -2132,7 +2132,7 @@ mod tests {
         replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.node-admin.1", 3));
         for f in &replay {
             match f {
-                Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. } => {
+                Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => {
                     joiner.take_snapshot(f, &fabric, Side::MeshChannel, &mut joiner.order.lock().unwrap());
                 }
                 _ => {
@@ -2162,8 +2162,8 @@ mod tests {
     /// again or a newer one, installs nothing.
 
     /// CONTRACT (R-MD1 item 3: "MeshLeft applies Gone and the terminal topology removal"): a
-    /// receiver that applied mesh-left for a MeshId refuses every later `MeshTopology` and
-    /// `MeshTopologyDelta` of that MeshId by name, for its deleted retention, whether or not it holds the
+    /// receiver that applied mesh-left for a MeshId refuses every later `TopologyFull` and
+    /// `TopologyDelta` of that MeshId by name, for its deleted retention, whether or not it holds the
     /// accepted Build. A late mesh topology of the deleted mesh (no digests, the final birth in
     /// `deleted`) installs nothing on the backbone, nor forwarded on the mesh channel. A mesh created again at that (path, name) has a new MeshId and is
     /// taken. That holds when the projection held at mesh-left is already a mesh topology with no
@@ -2471,21 +2471,21 @@ mod tests {
 
     /// One complete snapshot of `mesh` by `publisher` at `version`, as `side` carries it.
     fn snapshot_of(mesh: &str, publisher: &PublisherId, forwarded_by: Option<&str>, version: u64, snapshot_id: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, deleted: Vec<LifecycleOp>) -> Frame {
-        Frame::MeshTopology { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: forwarded_by.map(String::from), topology_version: version, published_at_rafka_ms: version, snapshot_id, chunk_index: 0, chunk_count: 1, digests, in_flight, deleted }
+        Frame::TopologyFull { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: forwarded_by.map(String::from), topology_version: version, published_at_rafka_ms: version, snapshot_id, chunk_index: 0, chunk_count: 1, digests, in_flight, deleted }
     }
 
     fn publisher_of(d: &MeshDigest) -> PublisherId {
         PublisherId { incarnation: d.node.incarnation.clone(), node_id: d.node.node_id.clone() }
     }
 
-    /// `f`, a `MeshTopology` or `MeshTopologyDelta`, stamped `published_at_rafka_ms`.
+    /// `f`, a `TopologyFull` or `TopologyDelta`, stamped `published_at_rafka_ms`.
     fn stamped(f: Frame, at: u64) -> Frame {
         match f {
-            Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
-                Frame::MeshTopology { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms: at, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }
+            Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
+                Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms: at, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }
             }
-            Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted, .. } => {
-                Frame::MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms: at, changed, removed, in_flight, deleted }
+            Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted, .. } => {
+                Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms: at, changed, removed, in_flight, deleted }
             }
             other => other,
         }
@@ -2498,7 +2498,7 @@ mod tests {
             return false;
         }
         match f {
-            Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. } => {
+            Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => {
                 view.take_snapshot(f, fabric, side, order);
             }
             _ => {
@@ -2616,7 +2616,7 @@ mod tests {
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p2), Some("mesh1.node-admin.2"), 1, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 700), &fabric, Side::MeshChannel));
         assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)), "the successor's full is installed: its revision");
         assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 6, 2, vec![p1.clone(), rpc1.clone()], vec![], vec![]), 600), &fabric, Side::MeshChannel), "the predecessor's full stamped before the successor's is ignored");
-        let late_delta = Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p1), base_version: 5, topology_version: 6, published_at_rafka_ms: 600, changed: vec![], removed: vec![p2.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p1), base_version: 5, topology_version: 6, published_at_rafka_ms: 600, changed: vec![], removed: vec![p2.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         assert!(!hear(&mut channel, &member, &late_delta, &fabric, Side::MeshChannel), "the predecessor's delta stamped before the successor's full is ignored");
         assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)), "the member keeps the successor's projection");
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked desynchronized: {:?}", member.mesh_rx.lock().unwrap().desynced());
@@ -2722,7 +2722,7 @@ mod tests {
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&lost), 7)));
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&recovered), Some("mesh2.node-admin.1"), 1, 2, vec![recovered.clone(), rpc.clone()], vec![], vec![]), 90), &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 1)), "the new revision's full is installed: no primary evidence is asked of its publisher");
-        let delta = Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 1, topology_version: 2, published_at_rafka_ms: 95, changed: vec![], removed: vec![rpc.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        let delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 1, topology_version: 2, published_at_rafka_ms: 95, changed: vec![], removed: vec![rpc.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         assert!(hear(&mut channel, &member, &delta, &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 2)), "its delta applies at exactly its base");
         assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.node-admin.1"), 8, 3, vec![lost.clone(), rpc.clone()], vec![], vec![]), 80), &fabric, Side::MeshChannel), "the lost birth's full stamped before the new revision's is ignored");
@@ -2758,7 +2758,7 @@ mod tests {
         let (admin, rpc1, rpc2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1), birth_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 1));
         let p = publisher_of(&admin);
         let full = |version: u64, at: u64| stamped(snapshot_of("mesh1", &p, Some("mesh1.node-admin.1"), version, version, vec![admin.clone(), rpc1.clone(), rpc2.clone()], vec![], vec![]), at);
-        let delta = |base_version: u64, topology_version: u64, at: u64| Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: p.clone(), base_version, topology_version, published_at_rafka_ms: at, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] };
+        let delta = |base_version: u64, topology_version: u64, at: u64| Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: p.clone(), base_version, topology_version, published_at_rafka_ms: at, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] };
         let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone(), rpc2.clone()], in_flight: vec![], deleted: vec![] };
 
         assert!(hears(&full(7, 700)));
@@ -2958,7 +2958,7 @@ mod tests {
         assert_eq!(ended.iter().map(|f| (f["stop_carried_at"].clone(), f["held_again"].clone(), f["held_digest_seq"].clone())).collect::<Vec<_>>(), vec![("11".to_string(), "true".to_string(), "6".to_string())], "ended once: {ended:#?}");
     }
 
-    /// CONTRACT (gossip.md §3.1: "`MeshTopology` and `MeshTopologyDelta`: `published_at_rafka_ms`, then
+    /// CONTRACT (gossip.md §3.1: "`TopologyFull` and `TopologyDelta`: `published_at_rafka_ms`, then
     /// `topology_version`, per mesh; the publisher reads `published_at_rafka_ms` in the same critical
     /// section that assigns `topology_version` and `snapshot_id`, so a version's stamp is never earlier
     /// than the one before it"; rejoin_commander trace 75adf49598edd1c7d4a975013f554216): `Backbone::publish`
@@ -2969,7 +2969,7 @@ mod tests {
     /// forwarded in version order, and a member hearing the mesh channel installs both versions in order.
     /// Must NOT happen: `now_rafka_ms()` read outside `self.version.lock()` / `self.forwarder.lock()` so a
     /// concurrent publish or replay stamps `v1` at 471 ms while `v2` is stamped at 459 ms, causing
-    /// `ReceiveOrder` to ignore `MeshTopologyDelta(1 -> 2)` as `via-stale`.
+    /// `ReceiveOrder` to ignore `TopologyDelta(1 -> 2)` as `via-stale`.
     #[tokio::test]
     async fn interleaved_backbone_publishes_and_neighbour_up_replay_stamp_and_forward_in_version_order() {
         use rdm_transport::clock::{Clock, SharedClock};
@@ -3047,7 +3047,7 @@ mod tests {
         assert!(spans.named("rdm.mesh.topology.reject.via-stale").is_empty(), "no frame was ignored as earlier");
     }
 
-    /// CONTRACT (gossip.md receive rules, `MeshTopology`: "`P(topology_version)` against the installed
+    /// CONTRACT (gossip.md receive rules, `TopologyFull`: "`P(topology_version)` against the installed
     /// floor, including a topology read"; #3211 red 2, gate 19d4afbee release,
     /// `mock_control_loss_recovers_without_status_heartbeat`: 485.567 mesh2.node-admin.2, mesh2's primary,
     /// published mesh2 v28; 485.811 it installed a topology read of its own v25 served by
@@ -3095,7 +3095,7 @@ mod tests {
 
     /// CONTRACT (gate 7965f026, `admin_top_up`: `mesh1.node-admin.2` called `GetTopology` on `mesh1.node-admin.1`
     /// while `mesh1.node-admin.1` served `topology_version = 0` before its first `anti_entropy` publication;
-    /// `Frame::MeshTopology(mesh1, topology_version = 1)` arrived on `mesh-channel` and `backbone` 600 µs
+    /// `Frame::TopologyFull(mesh1, topology_version = 1)` arrived on `mesh-channel` and `backbone` 600 µs
     /// before the `Side::Read` `topology_version = 0` chunk, advancing `ReceiveOrder` to `v1` while
     /// `View::apply_full` recorded only `take_projected_status` for own-mesh members; `View::take_read_chunk`
     /// refused `v0` as `OlderThanHeld { held_version: 1, offered_version: 0 }` without recording the

@@ -394,7 +394,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         accepted_top.meshes.get_mut("mesh1").unwrap().spec_by_path.insert(rpc2.clone(), rdm_core::meta::NodeSpec::default_for(rpc2, "mesh1", "node"));
         accepted_top.meshes.insert(
             "mesh2".into(),
-            rdm_admin::accepted::MeshTopology {
+            rdm_admin::accepted::TopologyFull {
                 name: "mesh2".into(),
                 mesh_id: mesh2_id.clone(),
                 nodes: std::collections::BTreeSet::from([rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()]),

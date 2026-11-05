@@ -130,7 +130,7 @@ The primary the election named, on `mesh2`'s channel and the backbone
 }
 ```
 
-And the mesh's first backbone `MeshTopology`, one member, itself; the shape is the
+And the mesh's first backbone `TopologyFull`, one member, itself; the shape is the
 [catalog's example](../gossip.md#examples) with `mesh2`, `publisher` the node-admin's exact
 birth, `topology_version` 1 and that one digest in `digests`. Peer mesh primaries install it into
 their held external topology and forward it on their own channels under the rules in

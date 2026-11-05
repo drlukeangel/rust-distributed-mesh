@@ -17,7 +17,7 @@ apply: that is [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-prima
 2. **The election names the successor:** the lowest Ready node-admin of the mesh
    ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)).
 3. **The successor's first act is the backbone publish.** It publishes its mesh's aggregate
-   (`MeshTopology`) on the backbone, naming itself mesh-primary, so the fabric-primary and every peer
+   (`TopologyFull`) on the backbone, naming itself mesh-primary, so the fabric-primary and every peer
    mesh hear the mesh's new primary before anything else moves. It publishes the update to its own
    mesh asynchronously, and records itself as the mesh's primary on its own row
    ([node.primary.update](node-primary-update.md)).
@@ -75,7 +75,7 @@ A mesh whose aggregate is heard again at any point cancels the fabric-primary's 
 ## Command, completion and gossip messages
 
 ```text
-successor (lowest Ready node-admin)  → backbone        MeshTopology, itself mesh-primary      (first)
+successor (lowest Ready node-admin)  → backbone        TopologyFull, itself mesh-primary      (first)
 successor                            → its own mesh    the update, asynchronously
 successor                                              node.primary.update on its own row
 successor                                              the current Build's owed steps, from its events

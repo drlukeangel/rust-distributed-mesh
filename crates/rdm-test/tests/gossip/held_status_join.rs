@@ -158,7 +158,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let early = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
     until_arrival("the early observer hears the backbone's mesh topology and mesh1's heartbeat", Duration::from_secs(30), &early.arrivals, || {
         let all = early.all();
-        let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. }));
+        let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { .. }));
         let digest = all.iter().any(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Digest { .. }));
         (members && digest).then_some(())
     })
@@ -219,16 +219,16 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     assert_eq!(primary_before, primary_after, "no role moved during the quiet window");
     let status_in_window: Vec<&Seen> = window.iter().filter(|x| is_status(&x.frame)).collect();
     assert!(status_in_window.is_empty(), "a quiet fabric carries no status frame: {:#?}", status_in_window.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
-    let mesh_topology_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. })).count();
+    let topology_full_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { .. })).count();
     let digests_in_window = window.iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Digest { .. })).count();
-    assert!(mesh_topology_in_window > 0 && digests_in_window > 0, "the mesh topology ({mesh_topology_in_window}) and the heartbeat ({digests_in_window}) keep going");
+    assert!(topology_full_in_window > 0 && digests_in_window > 0, "the mesh topology ({topology_full_in_window}) and the heartbeat ({digests_in_window}) keep going");
     assert!(early.all().len() > before);
-    // No MeshTopology frame carries a status: the frame has no such field.
-    for x in early.all().iter().filter(|x| matches!(x.frame.data(), Frame::MeshTopology { .. })) {
+    // No TopologyFull frame carries a status: the frame has no such field.
+    for x in early.all().iter().filter(|x| matches!(x.frame.data(), Frame::TopologyFull { .. })) {
         // The frame's own fields, not its wire bytes (postcard, R-W1).
-        let v: Value = serde_json::to_value(x.frame.data()).unwrap()["MeshTopology"].clone();
-        assert!(v.is_object(), "a MeshTopology frame: {v}");
-        assert!(v.get("status").is_none() && v.get("mesh_status").is_none() && v.get("fabric_status").is_none(), "MeshTopology carries no status: {v}");
+        let v: Value = serde_json::to_value(x.frame.data()).unwrap()["TopologyFull"].clone();
+        assert!(v.is_object(), "a TopologyFull frame: {v}");
+        assert!(v.get("status").is_none() && v.get("mesh_status").is_none() && v.get("fabric_status").is_none(), "TopologyFull carries no status: {v}");
     }
 
     // The late member joins now, with everything already said and the five sends long over.
@@ -316,7 +316,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
         "quiet_window": {
             "seconds": 10,
             "status_frames": status_in_window.len(),
-            "backbone_mesh_topology_frames": mesh_topology_in_window,
+            "backbone_topology_full_frames": topology_full_in_window,
             "mesh_channel_digest_frames": digests_in_window,
             "fabric_primary": primary_after,
         },

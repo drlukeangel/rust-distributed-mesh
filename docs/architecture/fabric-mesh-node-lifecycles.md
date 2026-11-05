@@ -34,7 +34,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 ```text
 TOPOLOGY GOSSIP
     says what the Fabric looks like now
-    topology channels, mesh topologies, lifecycle events
+    topology channels, mesh topologies, status frames
 
 BUILD / SECTION / STEP
     adds or removes nodes and records each step as an event

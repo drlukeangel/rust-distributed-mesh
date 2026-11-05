@@ -1,5 +1,5 @@
 //! Each published digest carries the process's CPU and RAM against the host or budget ceilings,
-//! and the backbone's `MeshTopology` snapshot retains those loads while the forwarding primary's
+//! and the backbone's `TopologyFull` snapshot retains those loads while the forwarding primary's
 //! cross-mesh projection omits them.
 //!
 //! CONTRACT: `docs/architecture/gossip.md:151` "the complete Mesh with loads: what every node-admin
@@ -77,7 +77,7 @@ fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
 /// remain on the backbone."
 /// When `RDM_CPU_BUDGET_MILLICORES` and `RDM_RAM_BUDGET_BYTES` are set in the process environment,
 /// `TopologyView::publish` stamps the sampled `NodeLoad` with those budget ceilings and positive
-/// resident memory, the backbone `MeshTopology` snapshot retains that load for the receiving
+/// resident memory, the backbone `TopologyFull` snapshot retains that load for the receiving
 /// node-admin, and the forwarded cross-mesh projection omits it for an ordinary member.
 #[test]
 fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and_omits_it_for_remote_members() {
@@ -159,7 +159,7 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
             .get(src_digest.node.node_id.as_str())
             .expect("receiving node-admin holds the remote member from the backbone")
             .0;
-        let admin_load = admin_seen.load.expect("backbone MeshTopology retains the member's NodeLoad");
+        let admin_load = admin_seen.load.expect("backbone TopologyFull retains the member's NodeLoad");
         assert_eq!(admin_load.cpu_budget_millicores, 3500, "{admin_load:?}");
         assert_eq!(admin_load.ram_budget_bytes, 536_870_912, "{admin_load:?}");
         assert_eq!(admin_load.ram_used_bytes, sampled.ram_used_bytes, "{admin_load:?}");

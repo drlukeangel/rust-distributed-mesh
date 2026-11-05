@@ -285,7 +285,7 @@ impl Replayed {
             f.authored(author, 0, now_ms)
         }).collect();
         let bytes = direct.iter().map(|f| f.encode().len()).sum();
-        let full_chunks = direct.iter().filter(|f| matches!(f.data(), Frame::MeshTopology { .. })).count();
+        let full_chunks = direct.iter().filter(|f| matches!(f.data(), Frame::TopologyFull { .. })).count();
         let frames = direct.len();
         Self { direct, frames, full_chunks, bytes }
     }
@@ -458,10 +458,10 @@ impl Channel {
                 }
                 // Back on its channel, a node dials the members of its mesh it holds (gossip.md §6's
                 // held members, their addresses known), with the peers it was seeded or repaired
-                // through: a node-admin's seed is the admin that launched it, which for a mesh's first
-                // admin is the fabric-primary, on the backbone and not on this channel (Q88, Luke
-                // 2026-10-20: a node-admin on a mesh with another node-admin is never without a
-                // neighbour on its mesh channel).
+                // through. A mesh channel is never seeded with a launcher of another mesh (Q376): a
+                // mesh's first node-admin, launched by the fabric-primary, is seeded with none, and
+                // its held members are who it dials (Q88, Luke 2026-10-20: a node-admin on a mesh
+                // with another node-admin is never without a neighbour on its mesh channel).
                 for t in held_members().targets {
                     location_view.fill(&t.addr);
                     known.lock().unwrap().insert(t.addr.id);
@@ -905,7 +905,7 @@ impl Channels {
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
             let mut digest_fresh = false;
             let carried = match frame.data() {
-                Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel, order).carried,
+                Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel, order).carried,
                 _ => {
                     let (carried, fresh) = v.take_with(&frame, &f, "mesh-channel");
                     digest_fresh = fresh;

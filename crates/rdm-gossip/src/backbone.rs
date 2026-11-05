@@ -154,7 +154,7 @@ impl Backbone {
         let (m, own) = (channels.clone(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
             let me = m.topology_view.view.current_name();
-            if matches!(frame.data(), Frame::MeshTopology { .. } | Frame::MeshTopologyDelta { .. }) {
+            if matches!(frame.data(), Frame::TopologyFull { .. } | Frame::TopologyDelta { .. }) {
                 let taken = m.topology_view.view.take_snapshot(&frame, &m.topology_view.fabric, Side::Backbone, order);
                 // A mesh primary's clock follows its current fabric-primary's mesh topology.
                 if let Some(p) = &taken.publication {
@@ -436,7 +436,7 @@ impl Backbone {
         }
         let mesh = self.mesh.clone();
         let withheld = (!full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone")) || self.withholds("aggregate", "backbone");
-        for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
+        for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
             mesh: mesh.clone(),
             publisher: publisher.clone(),
             forwarded_by: None,
@@ -488,7 +488,7 @@ impl Backbone {
 
     /// Resolves when the next publication is due: at `deadline`, the anti-entropy timer, or
     /// at once while this admin is its Mesh's publisher and the Mesh's normalized projection is no
-    /// longer the one its `topology_version` was last bumped on (gossip.md, `MeshTopology`: "at once on a
+    /// longer the one its `topology_version` was last bumped on (gossip.md, `TopologyFull`: "at once on a
     /// material change"). The projection is looked at when the view says something it carries
     /// moved (a member's birth or status, a member heard again, an overlay or a departure), never
     /// on a timer.
@@ -613,7 +613,7 @@ impl Backbone {
 
     /// This admin was elected primary, or, as its mesh's primary, recorded another node type's
     /// primary (R-MT1 Q3): it holds the record. No frame announces it: its next `Digest` carries it,
-    /// and the mesh-primary's `MeshTopology` projection.
+    /// and the mesh-primary's `TopologyFull` projection.
     pub fn hold_primary(&self, role: PrimaryRole, primary: Primary) {
         self.channels.topology_view.view.note_primary(role, &primary, "own");
     }
