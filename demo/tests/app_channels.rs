@@ -3,7 +3,10 @@ use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_node::app::{Channel, Event};
+use rdm_node::app::{Event, Publisher, Subscriber};
+
+/// An application channel as `Channels::app` hands it: its publisher and its one receiver.
+type Joined = (Publisher, Subscriber);
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use std::{
     sync::{Arc, Mutex},
@@ -11,7 +14,7 @@ use std::{
 };
 /// `kind`'s application channel, joined through `peers` (`Channels::join`, gossip.md §8), and its one
 /// receiver (`Channels::app`).
-async fn open(channels: &rdm_gossip::channel::Channels, fabric: &rdm_core::FabricId, kind: &str, peers: &[rdm_core::EndpointId]) -> anyhow::Result<Channel> {
+async fn open(channels: &rdm_gossip::channel::Channels, fabric: &rdm_core::FabricId, kind: &str, peers: &[rdm_core::EndpointId]) -> anyhow::Result<Joined> {
     let addrs = peers.iter().map(rdm_gossip::channel::peer).collect::<anyhow::Result<Vec<_>>>()?;
     channels.join(rdm_gossip::channel::ChannelId::app(fabric, kind), addrs).await?;
     channels.app(kind).await.map_err(|e| anyhow::anyhow!("{e}"))
@@ -48,8 +51,8 @@ fn apply(held: &mut Option<Row>, row: Row) {
         *held = Some(row);
     }
 }
-async fn recv(channel: &mut Channel) -> Row {
-    let event = tokio::time::timeout(BOUND, channel.recv())
+async fn recv(channel: &mut Joined) -> Row {
+    let event = tokio::time::timeout(BOUND, channel.1.recv())
         .await
         .unwrap()
         .unwrap();
@@ -226,7 +229,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
             version: 1,
             value: "2:live".into(),
         };
-        sender.publish(event(&live)).await.unwrap();
+        sender.0.publish(event(&live)).await.unwrap();
         let mut held = None;
         apply(&mut held, recv(&mut receiver).await);
         release.send_replace(true);
@@ -254,10 +257,10 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         rdm_test::gossip_faults::drop_chunk_once(&root.channels, LARGE, 1)
             .await
             .unwrap();
-        let mut incomplete = large_receiver.lost();
+        let mut incomplete = large_receiver.1.lost();
         let generation = *incomplete.borrow();
         large_sender
-            .publish(event(&Row {
+            .0.publish(event(&Row {
                 version: 2,
                 value: format!("3:{}", "x".repeat(9000)),
             }))
@@ -271,7 +274,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         .unwrap()
         .unwrap();
         assert_eq!(
-            large_receiver.dropped(),
+            large_receiver.1.dropped(),
             0,
             "the loss is assembly expiry, not queue overflow"
         );
@@ -288,17 +291,17 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
             version: 2,
             value: format!("3:{}", "y".repeat(9000)),
         };
-        large_sender.publish(event(&complete)).await.unwrap();
+        large_sender.0.publish(event(&complete)).await.unwrap();
         assert_eq!(
             recv(&mut large_receiver).await,
             complete,
             "the one-shot cut removed itself"
         );
-        let mut lost = receiver.lost();
+        let mut lost = receiver.1.lost();
         let before = *lost.borrow();
         for version in 2..4098 {
             sender
-                .publish(event(&Row {
+                .0.publish(event(&Row {
                     version,
                     value: "2:burst".into(),
                 }))
@@ -309,7 +312,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
             .await
             .unwrap()
             .unwrap();
-        assert!(receiver.dropped() > 0);
+        assert!(receiver.1.dropped() > 0);
         let healed = Row {
             version: 1,
             value: "4:after-overflow".into(),

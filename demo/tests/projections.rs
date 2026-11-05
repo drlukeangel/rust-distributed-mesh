@@ -10,7 +10,10 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
-use rdm_node::app::{Channel, Event};
+use rdm_node::app::{Event, Publisher, Subscriber};
+
+/// An application channel as `Channels::app` hands it: its publisher and its one receiver.
+type Joined = (Publisher, Subscriber);
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
 use std::{
 
@@ -21,7 +24,7 @@ use std::{
 
 /// `kind`'s application channel, joined through `peers` (`Channels::join`, gossip.md §8), and its one
 /// receiver (`Channels::app`).
-async fn open(channels: &rdm_gossip::channel::Channels, fabric: &rdm_core::FabricId, kind: &str, peers: &[rdm_core::EndpointId]) -> anyhow::Result<Channel> {
+async fn open(channels: &rdm_gossip::channel::Channels, fabric: &rdm_core::FabricId, kind: &str, peers: &[rdm_core::EndpointId]) -> anyhow::Result<Joined> {
     let addrs = peers.iter().map(rdm_gossip::channel::peer).collect::<anyhow::Result<Vec<_>>>()?;
     channels.join(rdm_gossip::channel::ChannelId::app(fabric, kind), addrs).await?;
     channels.app(kind).await.map_err(|e| anyhow::anyhow!("{e}"))
@@ -72,10 +75,10 @@ fn config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// node-admin's side: every kind's channel feeds the one cache.
-fn feed(cache: &Cache, mut channel: Channel) {
+fn feed(cache: &Cache, mut channel: Joined) {
     let cache = cache.clone();
     tokio::spawn(async move {
-        while let Some(received) = channel.recv().await {
+        while let Some(received) = channel.1.recv().await {
             let value = String::from_utf8_lossy(&received.data).to_string();
             let version = received.sequence.unwrap_or(0);
             if install(&cache, &received.subject, version, &value) {
@@ -183,8 +186,8 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
     .unwrap()
 }
 
-async fn recv(channel: &mut Channel) -> (String, u64, String) {
-    let e = tokio::time::timeout(BOUND, channel.recv()).await.unwrap().unwrap();
+async fn recv(channel: &mut Joined) -> (String, u64, String) {
+    let e = tokio::time::timeout(BOUND, channel.1.recv()).await.unwrap().unwrap();
     (e.subject.clone(), e.sequence.unwrap_or(0), String::from_utf8_lossy(&e.data).to_string())
 }
 
@@ -237,11 +240,11 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         let g1 = member(&root, &dir.join("gateway.1"), &root_dir, "gateway", 1, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
         let c1 = member(&root, &dir.join("compute.1"), &root_dir, "compute", 1, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
         assert!(g1_held.lock().unwrap().is_empty() && c1_held.lock().unwrap().is_empty(), "nothing was published yet");
-        let mut g1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
+        let mut g1_channels: BTreeMap<&str, Joined> = BTreeMap::new();
         for kind in GATEWAY_KINDS {
             g1_channels.insert(kind, open(&g1.channels, g1.topology_view.fabric_id(), kind, admin).await.unwrap());
         }
-        let mut c1_channels: BTreeMap<&str, Channel> = BTreeMap::new();
+        let mut c1_channels: BTreeMap<&str, Joined> = BTreeMap::new();
         for kind in COMPUTE_KINDS {
             c1_channels.insert(kind, open(&c1.channels, c1.topology_view.fabric_id(), kind, admin).await.unwrap());
         }
@@ -276,7 +279,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
                 k if k == SHARED && *version == 2 => &c1_channels[k],
                 k => &g1_channels[k],
             };
-            publisher.publish(event(subject, *version, value)).await.unwrap();
+            publisher.0.publish(event(subject, *version, value)).await.unwrap();
         }
         // node-admin's cache holds the latest version of every subject, fed by the channels alone.
         let expected: BTreeMap<String, (u64, String)> = [
@@ -325,7 +328,7 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         })
         .await
         .unwrap();
-        c1_channels[SHARED].publish(event("demo.topic/orders", 3, "orders@v3 live")).await.unwrap();
+        c1_channels[SHARED].0.publish(event("demo.topic/orders", 3, "orders@v3 live")).await.unwrap();
         assert_eq!(recv(&mut g2_topic).await, ("demo.topic/orders".to_string(), 3, "orders@v3 live".to_string()));
         assert_eq!(recv(&mut c2_topic).await, ("demo.topic/orders".to_string(), 3, "orders@v3 live".to_string()));
         tokio::time::timeout(BOUND, async {

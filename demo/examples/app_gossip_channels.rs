@@ -117,9 +117,9 @@ fn main() -> Result<()> {
         // The node-admin joins first; the broker names it, by its endpoint_id, as its first neighbour.
         let fabric = root.topology_view.fabric_id().clone();
         root.channels.join(rdm_gossip::channel::ChannelId::app(&fabric, KIND), vec![]).await?;
-        let mut receiver = root.channels.app(KIND).await?;
+        let (_root_publisher, mut receiver) = root.channels.app(KIND).await?;
         node.channels.join(rdm_gossip::channel::ChannelId::app(&fabric, KIND), vec![rdm_gossip::channel::peer(&d.node.endpoint_id)?]).await?;
-        let sender = node.channels.app(KIND).await?;
+        let (sender, _node_subscriber) = node.channels.app(KIND).await?;
         tokio::time::timeout(BOUND, async {
             while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.channel.update.via-neighbour" && s["attributes"]["event_type"] == KIND).count() < 2 {
                 tokio::task::yield_now().await;
