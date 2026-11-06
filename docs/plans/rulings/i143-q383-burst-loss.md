@@ -13,7 +13,9 @@ A 5,000 x 256 B burst on an application channel delivers 13-25% when the publish
 
 ### 3. Flame
 
-No Jaeger flame carries this: `span_export_filter` turns every third-party crate off, so the Graft and the drop are not spans. The evidence is iroh's own debug log (`RUST_LOG=iroh_gossip::net=debug`) on every node but the first node-admin, the line after a `SendMessage` naming its drop:
+M11's exported run at `3f2e731dd`, the 5,000 burst: http://192.168.68.99:16687/trace/928652ff8755e7d85bf02a4065b225c4 is one message that survived, `m11-2/0`. Across that burst ClickHouse holds receipts for 938 distinct messages: 18 of 19 receivers hold exactly 827 and one 938, in runs `0-63`, `576-639`, `1216-1279`, `3201-3264`, `3566-3629`, `3682-3745`, `4030-4093`, `4606-4669` (each 64), `1796-1918`, `2319-2621`. M11's row: 24.66% at the far node, publish to receipt p50 90.5 ms against 5.6 ms for the 1,000 burst: 5 ms IHave dispatch plus the 80 ms Graft timer.
+
+The Graft and the drop are not spans: `span_export_filter` turns every third-party crate off. The evidence for them is iroh's own debug log (`RUST_LOG=iroh_gossip::net=debug`) on every node but the first node-admin, the line after a `SendMessage` naming its drop:
 
 ```
 handle out_event event=SendMessage(PublicKey(4cf7e53c…), Message { topic: TopicId(70986f4c…), message: Gossip(Graft(Graft { id: Some(MessageId(c3eea78f…)), round: Round(0) })) })
@@ -52,7 +54,7 @@ messages by how many receivers got them at the protocol: [(0, 2822), (1, 156), (
 
 ### 5. Delta
 
-Spec says a dropped full-queue enqueue is recovered through lazy-push/GRAFT; code sends the Graft and its reply through the same full queue and forgets them, so 2,783 of 5,000 messages reached no receiver with all five neighbours told.
+Spec says a dropped full-queue enqueue is recovered through lazy-push/GRAFT; code sends the Graft and its reply through the same full queue and forgets them, so 2,783 of 5,000 messages reached no receiver though the publisher advertised them to its neighbours (four observed; the first node-admin's log was not kept, and no Graft of its arrived for them).
 
 ### 6. Arms
 
@@ -65,4 +67,4 @@ Every arm assumes the net actor still never awaits a peer's queue (`637a374`'s r
 - E: no code: §7 and the consumer guide state the limit, and Rafka paces itself — changes page text only (Luke's yes on the exact text).
 - X: something else.
 
-dev recommendation: A, proved first in a lane with an uncommitted patch: M11 at L1 and L2 and the empty-set small bursts, before any pin moves. A later row's `via-lagged` count then shows whether the 256-slot topic channel is the next limit.
+dev recommendation: A, proved first in a lane with an uncommitted patch: M11 at L1 and L2 and the empty-set small bursts, before any pin moves. A is one constant and it tests the whole chain; B follows only if A's drop count or `via-lagged` rows still show loss. A does not change that a burst from a publisher with no eager peer starts 85 ms late (`add_lazy` has no floor); it stops that start losing messages.
