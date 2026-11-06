@@ -425,7 +425,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
 /// whole map to its latest owned state and issues one put"): `node.config.update` of the stopped
 /// `mesh1.node.1` at its mesh-primary ends `node.config.updated`: the stopped process, still bound, is
 /// sent `UpdateConfig` once and its own writer puts the map (the via-config span says
-/// `apply=direct`, no `answered`; one `via-apply-node-config` at the node). Then `node.start` makes the
+/// `apply=direct`, no `answered`; one `via-update-config` at the node). Then `node.start` makes the
 /// same process rejoin (`via-join` admitted; its own record, not the join answer, holds the config),
 /// and `node.get` lists the same birth `ready` carrying the config. What must NOT happen: `ConfigNotApplied` for a stopped node, or the started birth without
 /// the config.
@@ -483,7 +483,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let update = named(&spans, "rdm.node_admin.node.update.via-config").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).expect("the mesh-primary served the node.config.update");
     let a = &update["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["apply"]), s(&a["answered"])), ("config-updated".into(), "direct".into(), String::new()), "the stopped node's own writer applied it: {update:#?}");
-    let applied = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| sp["trace_id"] == update["trace_id"]).count();
+    let applied = named(&spans, "rdm.node_admin.node.update.via-update-config").into_iter().filter(|sp| sp["trace_id"] == update["trace_id"]).count();
     assert_eq!(applied, 1, "one UpdateConfig reached the stopped, still bound node");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && at_location(sp, &path)).expect("the start command was sent");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");

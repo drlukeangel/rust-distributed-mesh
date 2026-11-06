@@ -488,8 +488,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.delete.via-terminate-returned` | `crates/rdm-admin/src/admin/runner.rs` | 858 |
 | `rdm.node_admin.node.delete.via-unproven-runtime` | `crates/rdm-admin/src/admin/runner.rs` | 782 |
 | `rdm.node_admin.node.delete.via-workflow` | `crates/rdm-core/src/names.rs` | 90 |
-| `rdm.node_admin.node.reject.via-apply-node-name` | `crates/rdm-admin/src/status_rpc.rs` | 2419 |
-| `rdm.node_admin.node.reject.via-apply-node-name` | `crates/rdm-node/src/node.rs` | 2093 |
+| `rdm.node_admin.node.reject.via-update-name` | `crates/rdm-admin/src/status_rpc.rs` | 2419 |
+| `rdm.node_admin.node.reject.via-update-name` | `crates/rdm-node/src/node.rs` | 2093 |
 | `rdm.node_admin.node.reject.via-birth-replaced` | `crates/rdm-admin/src/build.rs` | 265 |
 | `rdm.node_admin.node.reject.via-call-failed` | `crates/rdm-admin/src/status_rpc.rs` | 1270 |
 | `rdm.node_admin.node.reject.via-delete-under-way` | `crates/rdm-admin/src/stopped_gc.rs` | 306 |
@@ -528,9 +528,9 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.serve.via-own-row` | `crates/rdm-admin/src/admin/boot.rs` | 2061 |
 | `rdm.node_admin.node.serve.via-read` | `crates/rdm-admin/src/read_op.rs` | 43 |
 | `rdm.node_admin.node.serve.via-view-holds-birth` | `crates/rdm-admin/src/admin/records.rs` | 447 |
-| `rdm.node_admin.node.update.via-apply-node-config` | `crates/rdm-node/src/node.rs` | 2067 |
-| `rdm.node_admin.node.update.via-apply-node-name` | `crates/rdm-admin/src/status_rpc.rs` | 2432 |
-| `rdm.node_admin.node.update.via-apply-node-name` | `crates/rdm-node/src/node.rs` | 2131 |
+| `rdm.node_admin.node.update.via-update-config` | `crates/rdm-node/src/node.rs` | 2067 |
+| `rdm.node_admin.node.update.via-update-name` | `crates/rdm-admin/src/status_rpc.rs` | 2432 |
+| `rdm.node_admin.node.update.via-update-name` | `crates/rdm-node/src/node.rs` | 2131 |
 | `rdm.node_admin.node.update.via-call-answered` | `crates/rdm-admin/src/offline.rs` | 214 |
 | `rdm.node_admin.node.update.via-call-failed` | `crates/rdm-admin/src/offline.rs` | 129 |
 | `rdm.node_admin.node.update.via-command-frame` | `crates/rdm-admin/src/status_rpc.rs` | 1884 |

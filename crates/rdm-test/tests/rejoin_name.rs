@@ -113,7 +113,7 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
         }
         assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.location(), taken, "the started node publishes the name it holds");
         // Its apply published the name; its stop and start select the same node (R12).
-        let applies: Vec<(String, String, String)> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-apply-node-name").map(|(_, _, f)| (f["to_path"].clone(), f["to_name"].clone(), f["digest"].clone())).collect();
+        let applies: Vec<(String, String, String)> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-update-name").map(|(_, _, f)| (f["to_path"].clone(), f["to_name"].clone(), f["digest"].clone())).collect();
         assert_eq!(applies, vec![(taken.path.clone(), taken.name.clone(), "published".to_string())], "the apply publishes the name");
         for span in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.status.update.via-start-node"] {
             let named: Vec<String> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == span).map(|(_, _, f)| f["node"].clone()).collect();

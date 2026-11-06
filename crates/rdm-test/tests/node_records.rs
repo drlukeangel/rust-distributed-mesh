@@ -574,7 +574,7 @@ async fn a_start_preserves_a_newer_owed_update() {
     estate.artifact("owed-update.json", &json!({"before": before, "after": after}));
     estate.stop().await;
     let spans = estate.spans();
-    let applied = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| attr(sp, "node") == before.node_id.as_str()).max_by_key(|sp| start_ns(sp)).expect("the node applied B");
+    let applied = named(&spans, "rdm.node_admin.node.update.via-update-config").into_iter().filter(|sp| attr(sp, "node") == before.node_id.as_str()).max_by_key(|sp| start_ns(sp)).expect("the node applied B");
     estate.record_trace_url(applied["trace_id"].as_str().unwrap());
 }
 

@@ -991,7 +991,7 @@ impl StatusService {
                 let asked = match rdm_core::PathName::new(me_name.path.clone(), name.clone()) {
                     Ok(n) => n,
                     Err(e) => {
-                        tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_path = %me_name.path, node_name = %me_name.name, sender = %sender_name, to_name = %name, reason = %format!("invalid name {name:?}: {e}"), "otel.kind" = "internal")
+                        tracing::info_span!("rdm.node_admin.node.reject.via-update-name", node_path = %me_name.path, node_name = %me_name.name, sender = %sender_name, to_name = %name, reason = %format!("invalid name {name:?}: {e}"), "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("apply-node-name refused: invalid name"));
                         return rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt);
                     }
@@ -1004,7 +1004,7 @@ impl StatusService {
                     crate::node_name::NameApply::Busy { routes, .. } => routes.join(", "),
                     _ => String::new(),
                 };
-                tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_path = %held.path, node_name = %held.name, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.node.update.via-update-name", node_path = %held.path, node_name = %held.name, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the mesh-primary's name for this admin was decided"));
                 crate::node_name::reply(&decision)
             }

@@ -394,7 +394,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     assert_eq!(traces.len(), 1, "the storage steps are on one causal trace: {traces:?}");
     // The node applies the update's map only once its mesh-primary's `mesh.unblock` began.
     let unblocked = of_change(&spans, UNBLOCK, &change_id, Some("mesh2")).into_iter().filter(|sp| sp["attributes"]["outcome"] == "unblocked").map(start_ns).min().expect("mesh2's mesh-primary unblocked");
-    let applied: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| [subject.node_id.as_str(), subject_after.node_id.as_str()].contains(&attr(sp, "node").as_str()) && start_ns(sp) >= start_ns(&blocked)).collect();
+    let applied: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-update-config").into_iter().filter(|sp| [subject.node_id.as_str(), subject_after.node_id.as_str()].contains(&attr(sp, "node").as_str()) && start_ns(sp) >= start_ns(&blocked)).collect();
     assert!(!applied.is_empty(), "mesh2.node.1 applied the update's map");
     assert!(applied.iter().all(|sp| start_ns(sp) >= unblocked), "mesh2.node.1 applies the map only once its mesh-primary is unblocked: {applied:#?}");
     estate.record_trace_url(traces.iter().next().unwrap());

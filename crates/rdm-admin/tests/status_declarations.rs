@@ -2063,10 +2063,10 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         assert!(matches!(own_command(&rig, &told(inc, PathName { path: "mesh1.node-admin".into(), name: "not a name".into() })).await, StatusReply::Malformed { .. }));
         assert_eq!(asked.lock().unwrap().len(), 4, "only the four admitted applies reached the decision");
     });
-    let spans = cap.spans("rdm.node_admin.node.update.via-apply-node-name");
+    let spans = cap.spans("rdm.node_admin.node.update.via-update-name");
     let outcomes: Vec<_> = spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
     assert_eq!(outcomes.len(), 4, "{spans:?}");
-    eprintln!("trace {}: rdm.node_admin.node.update.via-apply-node-name outcomes={outcomes:?}", spans[0].0);
+    eprintln!("trace {}: rdm.node_admin.node.update.via-update-name outcomes={outcomes:?}", spans[0].0);
 }
 
 /// What a node-left call is answered: no command, by name.

@@ -132,7 +132,7 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
     let written = rdm_test::estate::named(&spans, "rdm.node.record.update.via-properties").into_iter().find(|span| attr(span, "node_id") == node_id.as_str()).expect("the node wrote its own record");
     assert_eq!(attr(written, "outcome"), "durable");
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config-push").is_empty(), "no primary sends copied config upward");
-    assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-apply-node-config").iter().all(|span| attr(span, "node") != node_id.as_str()), "an own update requires no config command back to the node");
+    assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-update-config").iter().all(|span| attr(span, "node") != node_id.as_str()), "an own update requires no config command back to the node");
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config").iter().all(|span| attr(span, "apply") != "own"));
     estate.record_trace_url(written["trace_id"].as_str().unwrap());
 }

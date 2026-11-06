@@ -1955,7 +1955,7 @@ async fn apply_config(me: &Kicked, sender_name: &str, config: &std::collections:
     if let Err(error) = me.property_writer.update(initial, move |record| record.config = changed, |_| {}).await {
         return rdm_core::reply::status::bounded_config_row_refused(&me.topology_view.node_name().to_string(), &error.to_string());
     }
-    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-update-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the config its mesh-primary sent is durable on its property record"));
     rdm_core::reply::applied()
 }
@@ -1970,7 +1970,7 @@ async fn apply_name(me: &Kicked, sender_name: &str, name: &str) -> rdm_core::sta
     let asked = match rdm_core::PathName::new(held.path.clone(), name.to_string()) {
         Ok(n) => n,
         Err(e) => {
-            tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_id = %me.digest.node.node_id, from_path = %held.path, from_name = %held.name, sender = %sender_name, to_name = %name, reason = %format!("invalid name {name:?}: {e}"), "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.node.reject.via-update-name", node_id = %me.digest.node.node_id, from_path = %held.path, from_name = %held.name, sender = %sender_name, to_name = %name, reason = %format!("invalid name {name:?}: {e}"), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
             return rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt);
         }
@@ -2008,7 +2008,7 @@ async fn apply_name(me: &Kicked, sender_name: &str, name: &str) -> rdm_core::sta
         _ => "unchanged",
     };
     let held_routes = routes.iter().map(crate::node_name::route_name).collect::<Vec<_>>().join(", ");
-    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_id = %me.digest.node.node_id, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-update-name", node_id = %me.digest.node.node_id, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
     crate::node_name::reply(&decision)
 }
