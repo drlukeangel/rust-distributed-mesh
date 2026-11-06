@@ -1,5 +1,7 @@
 ## Q383: a full send queue loses a channel burst and its repair. May the iroh-gossip fork change, and to what?
 
+**Ruled, Luke 2026-11-06:** "move all the to the vendor tip overlay our fixes where there is still a gap then re-run".
+
 Evidence, scripts and the temporary test code: `rust-distributed-mesh-deploy/reports/burst-loss-2026-11-06/`. L1 unless stated: 20 nodes, one host, loopback.
 
 ### 1. Spec
