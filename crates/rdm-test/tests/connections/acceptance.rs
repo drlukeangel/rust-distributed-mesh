@@ -571,7 +571,11 @@ async fn many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy
 /// `cert` as `name` (a birth no node holds), its resolver holding only `target`'s birth. Returns its
 /// registry, its router and its endpoint key as an acceptor's span names an unknown key (short form).
 async fn foreign_dialer(name: &PathName, target: &Value, cert: Vec<u8>) -> (rdm_transport::connections::ConnectionsRegistry, iroh::protocol::Router, String) {
-    let key = iroh::SecretKey::generate();
+    foreign_dialer_keyed(iroh::SecretKey::generate(), name, target, cert).await
+}
+
+/// [`foreign_dialer`] dialling under `key`.
+async fn foreign_dialer_keyed(key: iroh::SecretKey, name: &PathName, target: &Value, cert: Vec<u8>) -> (rdm_transport::connections::ConnectionsRegistry, iroh::protocol::Router, String) {
     let short = key.public().fmt_short().to_string();
     let ep = rdm_transport::endpoint::bind_with_alpns(key, "127.0.0.1:0".parse().unwrap(), &[rdm_test::node::APP_PROTOCOL.to_vec()]).await.expect("the dialer binds");
     let me = rdm_transport::connections::Birth { mesh: "mesh1".to_owned(), r#type: "node".into(), path: name.path.clone(), name: name.name.clone(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
@@ -635,6 +639,37 @@ async fn a_dial_presenting_no_member_cert_is_refused_no_credential_on_the_accept
     let short = s(&refused["attributes"]["source"]);
     assert!(named(&spans, "rdm.node.connection.serve.via-admitted").into_iter().all(|sp| s(&sp["attributes"]["source"]) != short && !rdm_test::estate::names_location(sp, "source", &Estate::path("mesh1.node", "8"))), "the dial was never admitted");
     estate.record_trace_url(&s(&refused["trace_id"]));
+}
+
+/// CONTRACT (node-connections-admit.md, Row: "A refusal is written as the connection fact `Refused` with
+/// its reason, source the dialer when a topology view names its key, destination the acceptor"): a dial
+/// under the key of a birth the acceptor's view holds, presenting no member cert, is refused and stored
+/// as one `Refused` line in `connections.jsonl`, not only held by a sink. Must NOT happen: a refusal of
+/// a named dialer that leaves no stored fact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refusal_of_a_dialer_a_view_names_is_a_stored_refused_fact() {
+    let cell = "a_refusal_of_a_dialer_a_view_names_is_a_stored_refused_fact";
+    let mut estate = born(cell).await;
+    let source = estate.node_value(&SOURCE).await;
+    let target = estate.node_value(&DEST).await;
+    let key = rdm_node::node::load_or_mint_key(std::path::Path::new(&estate.data_dir(&SOURCE).await)).expect("the source's key");
+    let (registry, router, _) = foreign_dialer_keyed(key, &SOURCE, &target, Vec::new()).await;
+    let birth = rdm_transport::connections::Birth { mesh: s(&rdm_test::estate::mesh_of(&target)), r#type: (target["type"].as_str().unwrap()).to_string(), path: DEST.path.clone(), name: DEST.name.clone(), node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(), incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation"])).unwrap() };
+    let reason = match registry.probe_direct(&birth, rdm_test::node::APP_PROTOCOL).await {
+        Err(rdm_transport::connections::ConnectError::Refused { reason }) => reason,
+        other => panic!("the acceptor refuses the dial by name: {other:?}"),
+    };
+    assert_eq!(reason, "no-credential");
+    let _ = router.shutdown().await;
+    let source_id = rdm_core::NodeId::parse(&s(&source["node_id"])).unwrap();
+    let row = wait_for("the acceptor's Refused fact is stored", Duration::from_secs(15), || async {
+        estate.connection_history(&source_id).into_iter().find(|f| f["state"] == "Refused")
+    })
+    .await;
+    assert_eq!(s(&row["reason"]), "no-credential", "{row}");
+    assert_eq!(s(&row["source"]["node_id"]), s(&source["node_id"]), "the source is the dialer the view names: {row}");
+    assert_eq!(s(&row["destination"]["node_id"]), s(&target["node_id"]), "the destination is the acceptor: {row}");
+    estate.stop().await;
 }
 
 /// CONTRACT (node-connections-admit.md Verification: "the issuer's signature against the fabric CA's

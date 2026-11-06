@@ -71,7 +71,7 @@ sequenceDiagram
 
 ## States written
 
-This operation writes no state. A refusal is a connection fact, a whole `node-connection` line in `connections.jsonl`. A `Refused` line has this `Connected` line's fields, with `state` `Refused` and its `reason`.
+This operation writes no state. A refusal is a connection fact, a whole `node-connection` line in `connections.jsonl`.
 
 | written | by | when |
 |---|---|---|
@@ -79,10 +79,10 @@ This operation writes no state. A refusal is a connection fact, a whole `node-co
 
 As stored:
 
-a `Connected` line:
+`Refused`:
 
 ```json
-{"len":816,"specversion":"1.0","id":"01a1ae8c-2f06-74e4-b5eb-6be83130a7b2","source":"rdm://yp91jvvhj8a6/mddfj4ts5eft/d9th83avjfg3","type":"node-connection","subject":"mddfj4ts5eft--qs3y0744ax8t--7261666b612d6e6f64652d7270632f31--direct","time":"2026-11-06T01:49:45.091Z","datacontenttype":"application/json","dataschema":"node-connection/3","data":{"id":"c49p885yfqez","source":{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"7","node_id":"mddfj4ts5eft","incarnation":"d9th83avjfg3"},"destination":{"mesh":"mesh1","type":"node-admin","path":"mesh1.node-admin","name":"1","node_id":"qs3y0744ax8t","incarnation":"8fysnsmwc0vt"},"kind":"Direct","alpn":[114,97,102,107,97,45,110,111,100,101,45,114,112,99,47,49],"state":"Connected","carrier":null,"reason":null,"logged_at_ms":1793929785094},"crc32":"90282bea"}
+{"len":809,"specversion":"1.0","id":"01a1b026-3c66-70d8-bc44-403508fbb8c0","source":"rdm://kz26tt7ckpx3/wby7ca1dfwx1/k09z1cbs8enn","type":"node-connection","subject":"c96jnjeqa0q2--wby7ca1dfwx1--72646d2d746573742f6563686f2f31--direct","time":"2026-11-06T09:17:38.276Z","datacontenttype":"application/json","dataschema":"node-connection/3","data":{"id":"qftv5grtkx9j","source":{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"1","node_id":"c96jnjeqa0q2","incarnation":"105p3315dd55"},"destination":{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"3","node_id":"wby7ca1dfwx1","incarnation":"k09z1cbs8enn"},"kind":"Direct","alpn":[114,100,109,45,116,101,115,116,47,101,99,104,111,47,49],"state":"Refused","carrier":null,"reason":"no-credential","logged_at_ms":1793956658278},"crc32":"d2bac8c5"}
 ```
 
 ## Failure
