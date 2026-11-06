@@ -1051,7 +1051,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     .map_err(|e| format!("topology view: {e}"))?;
                 channels.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
                 // The name this admin holds is its topology view's (R12): its connections rows name it as their
-                // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
+                // source from here on, whatever name the join hands it or an `UpdateName` gives it.
                 {
                     let (held, birth) = (topology_view.clone(), name.clone());
                     connections.follow_held_name(move || held.held_name(&birth))?;
@@ -1456,7 +1456,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // digest exists, below.
                                 let republish: crate::status_rpc::Republish =
                                     Arc::new(std::sync::OnceLock::new());
-                                // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
+                                // This admin taking the name its row gives it (`UpdateName`): filled with the republish, below.
                                 let rename: crate::status_rpc::Rename =
                                     Arc::new(std::sync::OnceLock::new());
                                 let commands = Arc::new(crate::node_commands::CommandView::new(

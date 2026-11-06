@@ -890,7 +890,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     // node-config-update.md step 1: the caller sends it to the fabric-primary, which sends it down.
     let (fp_client, fp_id) = caller_of(&fp).await;
     let reply = rdm_client::NodeRpc::new(&fp_client)
-        .config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
+        .config_update(&fp_id, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path:?} at the fabric-primary: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the node wrote the config on its own record and applied it: {reply:?}");

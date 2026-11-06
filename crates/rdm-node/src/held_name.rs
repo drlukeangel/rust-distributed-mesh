@@ -1,6 +1,6 @@
 //! The name this birth holds now (R12, R-JN1; lifecycles/node-start.md step 2: at any join the row
 //! wins). A node's name moves by `node.name.update`: a stopped node takes its row's name from its join
-//! answer, a live one from `ApplyNodeName`; either way this holds it, and its topology view is handed it. Every testkit service that
+//! answer, a live one from `UpdateName`; either way this holds it, and its topology view is handed it. Every testkit service that
 //! names this node in a reply (the testkit store's provenance, the resolve probe's and the originate
 //! service's `by`) and the originate service's own route source read it per call, as the connections writer
 //! names its rows' source ([`rdm_admin::connections_writer::ConnectionsWriter::follow_held_name`](crate::connections_writer::ConnectionsWriter::follow_held_name)).
@@ -18,7 +18,7 @@ pub struct HeldName {
     path: String,
     /// The name, beside its path.
     name: String,
-    /// The name its row gave it (`ApplyNodeName`, or its join answer); `None` while it holds its launch name.
+    /// The name its row gave it (`UpdateName`, or its join answer); `None` while it holds its launch name.
     told: Arc<Mutex<Option<PathName>>>,
 }
 

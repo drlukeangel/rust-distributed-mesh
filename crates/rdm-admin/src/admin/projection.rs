@@ -144,7 +144,7 @@ impl ViewReads {
 /// store index, read for one projection and held by nothing after it; the caller holds the birth's
 /// node id, so it is the row's id index, `NodesStorage::node_row_name`: one read per birth). A birth
 /// that publishes names itself: its digest carries its row's name (R12: it publishes only the row's
-/// name, a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
+/// name, a live rename reaching it as `UpdateName`). One that does not (stopped, silent past the
 /// staleness floor, held true offline) may have had its row moved while it said
 /// nothing: a stopped node's `node.name.update` (R13: it is told nothing and reads the name at its next
 /// join), node.name.update's renames included. Beside the names: which births' rows released their

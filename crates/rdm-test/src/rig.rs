@@ -569,13 +569,6 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                 let (commands, receiver, digest_view, config_updates) = (commands.clone(), receiver.clone(), digest_view.clone(), config_updates.clone());
                 async move {
                     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest as R};
-                    // A node's own config update reaches its mesh-primary (Q235): recorded with its sender
-                    // and answered as a mesh-primary answers it, the config as written.
-                    if let R::UpdateNodeConfig { node_id, incarnation, config } = &req {
-                        config_updates.lock().unwrap().push((peer.endpoint_id, req.clone()));
-                        let reply = StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
-                        return Ok(reply);
-                    }
                     // A member's report to its mesh's primary sets its status (node-status.md "Status
                     // report": "A node reports to its mesh's primary, which sets its status"), as a
                     // node-admin's status authority applies it into its view: its node.started sets

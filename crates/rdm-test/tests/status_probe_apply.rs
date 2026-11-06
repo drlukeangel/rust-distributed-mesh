@@ -18,7 +18,7 @@ use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 /// CONTRACT: at a live node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `DeleteConnections { All }` answers `ConnectionsDeleted`
 /// with an `Established` receipt; the reserved `Reserved6` is refused by name and starts nothing;
-/// `ApplyNodeConfig` answers `Applied` and the node's own topology answer carries the config on its
+/// `UpdateConfig` answers `Applied` and the node's own topology answer carries the config on its
 /// digest from the version its mesh-primary publishes it at, while one naming another incarnation is `RejectedStaleIncarnation`;
 /// `ApplyNodeState(ConnectionsDeleting)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
 /// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
@@ -115,10 +115,10 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // apply-node-config (node-config-update.md step 3: "it applies the map"): the birth holds the
         // whole config; no digest carries it (Q203).
         let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();
-        let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
-        assert_eq!(call(told).await, StatusReply::Applied);
-        let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
-        assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
+        let told = rdm_core::node_command::NodeCommandRequest::UpdateConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
+        assert_eq!(crate::common::property_command(&observer.client, &target, &told).await, StatusReply::Applied);
+        let stale_config = rdm_core::node_command::NodeCommandRequest::UpdateConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
+        assert_eq!(crate::common::property_command(&observer.client, &target, &stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
         // The reserved Reserved6 is refused by name; node.connection.delete { All } is answered with its receipt.
         let reserved = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), operation: rdm_core::OperationId::node("node.connection.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())) };
         assert!(matches!(call(reserved).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");

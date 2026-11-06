@@ -292,12 +292,12 @@ mod tests {
             configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("status-own")).unwrap(), (None, None)).await.unwrap();
             let _ = service.configs.set(Arc::new(configs));
         }
-        let config_req = StatusRequest::ApplyNodeConfig {
+        let config_req = rdm_core::node_command::NodeCommandRequest::UpdateConfig {
             node_id: admin_id.clone(),
             incarnation: admin_inc.clone(),
             config: BTreeMap::from([("zone".to_string(), "eu-1".to_string())]),
         };
-        let config_reply = service.apply(Some(admin_node.clone()), &config_req).await;
+        let config_reply = service.own_property_command(Some(&admin_node), &config_req, &mut crate::node_config::PropertyFrames::none()).await;
         assert_eq!(config_reply, StatusReply::Applied);
         assert_eq!(service.declared.lock().unwrap().node(&admin_id, &admin_inc), None, "config put never moves node status");
 

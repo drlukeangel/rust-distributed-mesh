@@ -327,7 +327,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["gold", "ssd"])).await.expect("node.tag.create answered");
         assert_eq!(reply, created(&[]));
         let config: std::collections::BTreeMap<String, String> = [("zone", "eu-1"), ("rack.row", "7")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let reply = NodeRpc::new(&client).config_update(&me.node.node_id, &route, &birth, config.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
+        let reply = NodeRpc::new(&client).config_update(&me.node.node_id, &birth, config.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
         assert!(matches!(reply, StatusReply::ConfigUpdated { .. }), "node.config.updated: {reply:?}");
         let got = one().await;
         assert_eq!((got.tags.clone(), got.config.clone()), (labels(&["gold", "ssd"]), config), "the row answers the labels and the config");

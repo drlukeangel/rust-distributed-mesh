@@ -170,7 +170,7 @@ pub const TRANSPORT_TAG_TOKENS: &[&str] = &[
 /// The runtime sources where a descriptive annotation is never read to decide.
 /// The one writer of a node row's move (`move_row`).
 pub const NODE_ROWS: &str = "crates/rdm-admin/src/node_rows.rs";
-/// The node runtime: where a node writes its own record under a told name (`ApplyNodeName`, Q356).
+/// The node runtime: where a node writes its own record under a told name (`UpdateName`, Q356).
 pub const NODE_RUNTIME: &str = "crates/rdm-node/src/node.rs";
 /// The nodes store: the claim and the release are defined and implemented here.
 pub const NODES_STORAGE: &str = "crates/rdm-admin/src/storage.rs";
@@ -275,8 +275,8 @@ pub const FORWARD_REPLIES: u32 = 14;
 pub const NODE_COMMAND: &str = "crates/rdm-core/src/node_command.rs";
 pub const NODE_COMMAND_WIRE: &str = "crates/rdm-core/tests/node_command_wire.rs";
 /// The frozen 0x22 counts.
-pub const NODE_COMMAND_REQUESTS: u32 = 8;
-pub const NODE_COMMAND_REPLIES: u32 = 27;
+pub const NODE_COMMAND_REQUESTS: u32 = 10;
+pub const NODE_COMMAND_REPLIES: u32 = 29;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 /// The frozen transport-header goldens (node-rpc-envelope.md "Transport frames"): Request kind 0,
@@ -720,8 +720,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 NODE_COMMAND_WIRE,
                 &[
-                    "fn the_requests_match_the_frozen_eight_variant_wire_schema",
-                    "fn replies_match_the_frozen_twenty_seven_variant_wire_schema",
+                    "fn the_requests_match_the_frozen_ten_variant_wire_schema",
+                    "fn replies_match_the_frozen_twenty_nine_variant_wire_schema",
                     "NodeCommand::REQUEST_VARIANTS",
                     "NodeCommand::REPLY_VARIANTS",
                 ],
@@ -782,7 +782,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         }
         Ratchet::OneRenameWritePath => {
             // A node's name moves through one write (R13: node.update is one write path): the node
-            // writes its own record with the told name (`ApplyNodeName`, Q356). Nothing releases a
+            // writes its own record with the told name (`UpdateName`, Q356). Nothing releases a
             // node name claim, and no rename call site stands in the node records writer.
             // The storage layers that only forward the NodesStorage trait (its own module and the
             // replaceable handle, i149 e2) are no call site of their own.

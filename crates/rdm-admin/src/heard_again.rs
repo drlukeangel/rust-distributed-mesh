@@ -64,7 +64,7 @@ impl HeardAgain {
     }
 
     /// `node.name.update`'s rejoin (node-name-update.md step 6; Q347): the live birth `node` at the
-    /// name its row now holds, its connections deleted and its `ApplyNodeName` answered, is commanded
+    /// name its row now holds, its connections deleted and its `UpdateName` answered, is commanded
     /// `node.mesh.join` by this mesh-primary over its own call, its join registered first under the
     /// row's name so the `JoinService` admits its report (node-mesh-join.md step 4). Answers the birth's
     /// reply (`MeshJoined` once it is back on its mesh), or `Err` naming how the call ended. A command

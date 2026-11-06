@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     let send = |route: RouteChoice| {
         let (birth, config) = (exact(row), config.clone());
         let (rpc, receiver, opts) = (&rpc, &receiver.node_id, &opts);
-        async move { rpc.config_update(receiver, &route, &birth?, config, opts).await.map_err(anyhow::Error::from) }
+        async move { rpc.config_update(receiver, &birth?, config, opts).await.map_err(anyhow::Error::from) }
     };
 
     let reply = if forced.is_some() {

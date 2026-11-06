@@ -167,6 +167,34 @@ pub enum NodeCommandRequest {
         /// The new provider.
         to: String,
     },
+    /// `node.config.update` (node-config-update.md, Q367): put the exact birth's whole config. The
+    /// caller's command goes to the fabric-primary, which sends it to the node's mesh-primary, which
+    /// sends it to the node; the node writes the map on its own record (Q356). Its `CommandAccepted` is
+    /// `node.config.updating`, and the stream ends with [`NodeCommandReply::PropertyUpdated`].
+    ///
+    /// Position 8 on the wire.
+    UpdateConfig {
+        /// The birth whose config is put.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The whole config: a put replaces, it never merges.
+        config: std::collections::BTreeMap<String, String>,
+    },
+    /// `node.name.update` (node-name-update.md, Q367): rename the exact birth. The same hops as
+    /// [`Self::UpdateConfig`]; the node writes the name on its own record (Q356). It carries the name
+    /// only: a node's path never moves. Its `CommandAccepted` is `node.name.updating`, and the stream
+    /// ends with [`NodeCommandReply::PropertyUpdated`].
+    ///
+    /// Position 9 on the wire.
+    UpdateName {
+        /// The birth renamed.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The new name.
+        name: String,
+    },
 }
 
 impl NodeCommandRequest {
@@ -181,13 +209,15 @@ impl NodeCommandRequest {
             Self::Reserved4 { .. } => "reserved-4",
             Self::BlockMesh { .. } => "block-mesh",
             Self::UnblockMesh { .. } => "unblock-mesh",
+            Self::UpdateConfig { .. } => "node.config.update",
+            Self::UpdateName { .. } => "node.name.update",
         }
     }
 
     /// The birth the command names.
     pub fn subject(&self) -> (&NodeId, &IncarnationId) {
         match self {
-            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::Reserved4 { node_id, incarnation, .. } | Self::BlockMesh { node_id, incarnation, .. } | Self::UnblockMesh { node_id, incarnation, .. } => (node_id, incarnation),
+            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::Reserved4 { node_id, incarnation, .. } | Self::BlockMesh { node_id, incarnation, .. } | Self::UnblockMesh { node_id, incarnation, .. } | Self::UpdateConfig { node_id, incarnation, .. } | Self::UpdateName { node_id, incarnation, .. } => (node_id, incarnation),
         }
     }
 }
@@ -408,6 +438,46 @@ pub enum NodeCommandReply {
         /// What it refused, for the reader.
         detail: String,
     },
+    /// The terminal of an accepted [`NodeCommandRequest::UpdateConfig`] or
+    /// [`NodeCommandRequest::UpdateName`]: `node.config.updated` or `node.name.updated`, or how the
+    /// command ended short (`ConfigNotApplied`, `NameNotApplied`, the node's own refusal). The reply is
+    /// the one vocabulary of a node's property commands, [`crate::status::StatusReply`]. Appended: no
+    /// variant before it moves.
+    ///
+    /// Position 27 on the wire.
+    PropertyUpdated {
+        /// How the command ended.
+        reply: crate::status::StatusReply,
+    },
+    /// An [`NodeCommandRequest::UpdateConfig`] or [`NodeCommandRequest::UpdateName`] refused before
+    /// anything was accepted, by name (`NameHeld`, `RejectedName`, `RejectedAdmittingConnections`,
+    /// `RejectedNotPrimary`, a stale birth). Nothing was sent to the node. Appended: no variant before
+    /// it moves.
+    ///
+    /// Position 28 on the wire.
+    PropertyRefused {
+        /// The refusal.
+        reply: crate::status::StatusReply,
+    },
+}
+
+impl NodeCommandReply {
+    /// How a property command ended, in the one vocabulary of a node's property commands: the reply
+    /// [`Self::PropertyUpdated`] or [`Self::PropertyRefused`] carries, or the same refusal a receiver
+    /// answers any node command with before it knows the command.
+    pub fn property_end(self) -> crate::status::StatusReply {
+        use crate::reply::status as r;
+        match self {
+            Self::PropertyUpdated { reply } | Self::PropertyRefused { reply } => reply,
+            Self::NotReady { reason } => r::not_ready(reason),
+            Self::PeerUnresolved { reason } => r::peer_unresolved(reason),
+            Self::Busy { reason } => r::busy(reason),
+            Self::RejectedConnectionsDeleting { reason } => r::connections_deleting(reason),
+            Self::Malformed { kind } => r::malformed(kind),
+            Self::RejectedStaleIncarnation { held } => r::rejected_stale_incarnation(held),
+            other => r::request_not_handled(other.name().to_string()),
+        }
+    }
 }
 
 impl NodeCommandReply {
@@ -441,6 +511,8 @@ impl NodeCommandReply {
             Self::MeshBlocked => "mesh-blocked",
             Self::MeshUnblocked { .. } => "mesh-unblocked",
             Self::Rejected { .. } => "rejected",
+            Self::PropertyUpdated { .. } => "property-updated",
+            Self::PropertyRefused { .. } => "property-refused",
         }
     }
 }
@@ -463,13 +535,13 @@ impl NodeProtocol for NodeCommand {
     /// A `node.connections.deleted` names every connection it accounts for by id
     /// ([`crate::status::MAX_REPORTED_CONNECTIONS`] of them).
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
-    /// The mesh-primary's direct hop to its node: never carried by a peer.
+    /// Each hop is one direct call: never carried by a peer.
     const FORWARDABLE: bool = false;
     /// A connections-deleting node still takes a command: a second `All` leaves an incomplete
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 8;
-    const REPLY_VARIANTS: u32 = 27;
+    const REQUEST_VARIANTS: u32 = 10;
+    const REPLY_VARIANTS: u32 = 29;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -503,6 +575,8 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::MeshBlocked => "mesh-blocked",
             NodeCommandReply::MeshUnblocked { .. } => "mesh-unblocked",
             NodeCommandReply::Rejected { .. } => "rejected",
+            NodeCommandReply::PropertyUpdated { .. } => "property-updated",
+            NodeCommandReply::PropertyRefused { .. } => "property-refused",
         }
     }
 
@@ -528,6 +602,7 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::RejectedConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             NodeCommandReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             NodeCommandReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            NodeCommandReply::PropertyUpdated { reply } | NodeCommandReply::PropertyRefused { reply } => crate::status::Status::classify_reply(reply),
         }
     }
 
@@ -556,6 +631,7 @@ impl StreamingProtocol for NodeCommand {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
+            NodeCommandReply::PropertyUpdated { .. } => FrameKind::Terminal,
             NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::Reserved21 { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }

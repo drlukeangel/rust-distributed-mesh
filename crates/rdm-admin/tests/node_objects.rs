@@ -1070,7 +1070,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         // The rename reaches the node's mesh-primary only with a name within the grammar.
         let (mp, route) = (NodeId::mint(), rdm_transport::RouteChoice::Direct);
         for (bad, says) in [("Rpc", "name `Rpc` must contain"), (".old", "name `.old` must contain"), ("", "name `` must contain")] {
-            let refused = nodes.name_update(&birth, &mp, &route, &rdm_core::PathName { path: "mesh1.node".into(), name: bad.into() }).await.expect("a typed refusal");
+            let refused = nodes.name_update(&birth, &mp, bad).await.expect("a typed refusal");
             assert!(matches!(&refused, rdm_core::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
         }
         // Labels that are not a node's tag set, and a filter its entity's schema refuses (Q167), are refused here.

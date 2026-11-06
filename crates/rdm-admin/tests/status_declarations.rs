@@ -19,6 +19,7 @@ use rdm_admin::storage::{MemoryNodesStorage, MeshStorage, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
+use rdm_core::node_command::NodeCommandRequest;
 use rdm_core::status::{FabricEvent, MeshState, NodeState, NotPrimary, Status, StatusReply, StatusRequest};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
@@ -455,6 +456,8 @@ async fn a_connections_deleting_mesh_primary_accepts_upward_status_and_decides_i
 struct ServedNode {
     resolved: ResolvedNode,
     seen: Arc<Mutex<Vec<StatusRequest>>>,
+    /// Every property command (`UpdateConfig`, `UpdateName`) it is sent on the node command op 0x22, in order.
+    told: Arc<Mutex<Vec<NodeCommandRequest>>>,
     /// Every `node.connection.delete` it is sent on the node command op 0x22, in order.
     deletes: Arc<Mutex<Vec<rdm_core::node_command::NodeCommandRequest>>>,
     /// Notified once per request served (a permit is kept when nobody waits yet).
@@ -462,7 +465,7 @@ struct ServedNode {
     /// The endpoint it serves on: a cell's call made as this birth goes out on it.
     endpoint: iroh::Endpoint,
     _router: Router,
-    /// The nodes store this birth writes its own record to on `ApplyNodeName` (Q356): the rig's, set
+    /// The nodes store this birth writes its own record to on `UpdateName` (Q356): the rig's, set
     /// by [`node_configs_for`].
     store: Arc<OnceLock<Arc<MemoryNodesStorage>>>,
 }
@@ -471,15 +474,39 @@ async fn serve_node(b: &Birth) -> ServedNode {
     serve_node_answering(b, StatusReply::Applied).await
 }
 
-/// A birth serving Status that records every request and answers each with `reply`.
+/// A birth serving Status and its property commands that records every request and answers each with `reply`.
 async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
-    serve_node_with(b, move |_| reply.clone()).await
+    let command = reply.clone();
+    serve_node_on(b, move |_| reply.clone(), move |_| command.clone()).await
 }
 
-/// A birth serving Status that records every request and answers each with what `answer` says.
+/// A birth serving Status that records every request and answers each with what `answer` says; its
+/// property commands it applies.
 async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusReply + Send + Sync + 'static) -> ServedNode {
+    serve_node_on(b, answer, |_| StatusReply::Applied).await
+}
+
+/// A birth answering its property commands with what `answer` says.
+async fn serve_node_commanded(b: &Birth, answer: impl Fn(&NodeCommandRequest) -> StatusReply + Send + Sync + 'static) -> ServedNode {
+    serve_node_on(b, |_| StatusReply::Applied, answer).await
+}
+
+/// The birth's property command to `b`'s admin, read to its end.
+async fn command(rig: &Rig, b: &Birth, req: &NodeCommandRequest) -> StatusReply {
+    let client = client_of(rig, b).await;
+    rdm_client::NodeRpc::new(&client).property_command(&NodeTarget::ExactNode(rig.admin.node.node_id.clone()), req, &CallOptions::default()).await.unwrap_or_else(|e| panic!("{} did not end in a reply: {e:?}", req.op()))
+}
+
+/// The property command at the node it names, the rig's admin itself: what the primary above it commands it.
+async fn own_command(rig: &Rig, req: &NodeCommandRequest) -> StatusReply {
+    rig.service.own_property_command(None, req, &mut rdm_admin::node_config::PropertyFrames::none()).await
+}
+
+/// A birth serving Status and the node command op, recording what it is sent and answering with `answer` and `command_answer`.
+async fn serve_node_on(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusReply + Send + Sync + 'static, command_answer: impl Fn(&NodeCommandRequest) -> StatusReply + Send + Sync + 'static) -> ServedNode {
     use rdm_core::catalog::OpOwner;
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
+    let told: Arc<Mutex<Vec<NodeCommandRequest>>> = Arc::default();
     let deletes: Arc<Mutex<Vec<rdm_core::node_command::NodeCommandRequest>>> = Arc::default();
     let heard: Arc<tokio::sync::Notify> = Arc::default();
     let (s, h) = (seen.clone(), heard.clone());
@@ -488,13 +515,48 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let writer = Arc::new(rdm_node::node_records::NodePropertyWriter::new(node_records(), || "memory".into()));
     let store: Arc<OnceLock<Arc<MemoryNodesStorage>>> = Arc::default();
     let own_store = store.clone();
+    let (ct, command_answer, command_store, command_writer) = (told.clone(), Arc::new(command_answer), store.clone(), writer.clone());
     let server = ServerBuilder::new()
         // The node command op 0x22 (i144 R22): `node.connection.delete` reaches the birth here, logged in
         // `deletes` and answered with every named connection cut, on the command's ordered stream.
         .serve_stream::<rdm_core::node_command::NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: rdm_core::node_command::NodeCommandRequest, sink| {
             let (s, h, answer, d) = (cs.clone(), ch.clone(), canswer.clone(), cd.clone());
+            let (told, command_answer, own_store, writer) = (ct.clone(), command_answer.clone(), command_store.clone(), command_writer.clone());
             async move {
-                use rdm_core::node_command::{NodeCommandReply as N, NodeCommandRequest};
+                use rdm_core::node_command::NodeCommandReply as N;
+                // A property command: the birth writes it on its own record, as a node does (node writes
+                // its own); `command_answer` refusing it writes nothing, and is one refusal frame.
+                if matches!(req, NodeCommandRequest::UpdateConfig { .. } | NodeCommandRequest::UpdateName { .. }) {
+                    let answered = command_answer(&req);
+                    let reply = match (&answered, &req) {
+                        (StatusReply::Applied | StatusReply::AlreadyApplied, NodeCommandRequest::UpdateName { node_id, name, .. }) => {
+                            use rdm_admin::storage::NodesStorage as _;
+                            if let Some(store) = own_store.get() {
+                                if let Some(line) = store.node(node_id).await.unwrap() {
+                                    store.put_node(&rdm_admin::storage::NodeRecord { name: name.clone(), ..line.record }).await.unwrap();
+                                }
+                            }
+                            answered
+                        }
+                        (StatusReply::Applied | StatusReply::AlreadyApplied, NodeCommandRequest::UpdateConfig { node_id, incarnation, config }) => {
+                            let initial = rdm_node::nodes_storage::fixture_record(&PathName::new("mesh1.node", "1").unwrap(), "node", node_id.clone(), incarnation.clone(), NodeStatus::Ready);
+                            let config = config.clone();
+                            writer.update(initial, move |record| record.config = config, |_| {}).await.unwrap_or_else(|e| panic!("the node's own put: {e}"));
+                            answered
+                        }
+                        _ => answered,
+                    };
+                    let (node_id, incarnation) = req.subject();
+                    let (node_id, incarnation) = (node_id.clone(), incarnation.clone());
+                    told.lock().unwrap().push(req);
+                    h.notify_one();
+                    return Ok(if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::ConfigUpdated { .. } | StatusReply::NameUpdated { .. }) {
+                        sink.started(N::CommandAccepted { node_id, incarnation }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        N::PropertyUpdated { reply }
+                    } else {
+                        N::PropertyRefused { reply }
+                    });
+                }
                 let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req.clone() else { panic!("expected DeleteConnections") };
                 d.lock().unwrap().push(req);
                 h.notify_one();
@@ -513,17 +575,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
                 // A birth that takes a property command puts it on its own record through its own
                 // writer, as a node does (node writes its own); `answer` refusing it writes nothing.
                 let reply = match answer(&req) {
-                    applied @ (StatusReply::Applied | StatusReply::AlreadyApplied) => match (&req, own_store.get()) {
-                        // A told name: the node writes its own record at its node.id with the new name.
-                        (StatusRequest::ApplyNodeName { node_id, name, .. }, Some(store)) => {
-                            use rdm_admin::storage::NodesStorage as _;
-                            if let Some(line) = store.node(node_id).await.unwrap() {
-                                store.put_node(&rdm_admin::storage::NodeRecord { path: name.path.clone(), name: name.name.clone(), ..line.record }).await.unwrap();
-                            }
-                            applied
-                        }
-                        _ => written_by_the_node(&writer, &req).await.unwrap_or(applied),
-                    },
+                    applied @ (StatusReply::Applied | StatusReply::AlreadyApplied) => written_by_the_node(&writer, &req).await.unwrap_or(applied),
                     other => other,
                 };
                 s.lock().unwrap().push(req);
@@ -537,25 +589,20 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let resolved = ResolvedNode { mesh: b.node.mesh.clone(), r#type: b.node.r#type.clone(), node_id: b.node.node_id.clone(), path: b.node.path.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
-    ServedNode { resolved, seen, deletes, heard, endpoint: ep, _router: router, store }
+    ServedNode { resolved, seen, told, deletes, heard, endpoint: ep, _router: router, store }
 }
 
 /// What a node's own writer answers `req` with once it is put on its own record in [`node_records`]:
-/// the config of `ApplyNodeConfig` (`Applied`), the labels of `CreateTags` or `DeleteTags` (their
-/// reply); `None` for any other request.
+/// the labels of `CreateTags` or `DeleteTags` (their reply); `None` for any other request.
 async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter, req: &StatusRequest) -> Option<StatusReply> {
     use rdm_node::node_records::TagChange;
     let (node_id, incarnation) = match req {
-        StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } => (node_id, incarnation),
+        StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
     };
     // The record the node holds when it held none before: its own start's, at its birth.
     let initial = rdm_node::nodes_storage::fixture_record(&PathName::new("mesh1.node", "1").unwrap(), "node", node_id.clone(), incarnation.clone(), NodeStatus::Ready);
     let written = match req {
-        StatusRequest::ApplyNodeConfig { config, .. } => {
-            let config = config.clone();
-            writer.update(initial, move |record| record.config = config, |_| {}).await.map(|_| StatusReply::Applied)
-        }
         StatusRequest::CreateTags { labels, .. } => writer.tags(initial, TagChange::Create(labels.clone()), |_| {}).await,
         StatusRequest::DeleteTags { scope, .. } => writer.tags(initial, TagChange::Delete(scope.clone()), |_| {}).await,
         _ => unreachable!("property commands only"),
@@ -621,7 +668,7 @@ fn updated_of(b: &Birth, config: &BTreeMap<String, String>) -> (NodeId, Incarnat
 /// mesh-primary is the only writer and writes the whole row): a caller's `node.config.update` to
 /// mesh1's primary ends `node.config.updated` (`ConfigUpdated` naming the exact birth); the node's
 /// record at its path.name holds the config; the birth was told the whole map exactly once
-/// (`ApplyNodeConfig`) before the mesh-primary answered; and one `rdm.node_admin.node.update.via-config`
+/// (`UpdateConfig`) before the mesh-primary answered; and one `rdm.node_admin.node.update.via-config`
 /// span says `config-updated`.
 // @feature: node-config
 #[test]
@@ -634,14 +681,14 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         node_configs(&rig, &node).await;
         let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(rpc1, &config));
         let row = rig.nodes.record_at(&rpc1.node.location()).await.unwrap().expect("the mesh-primary wrote the node's row");
         let (row_config, row_tags) = props(&rig, &row.node_id).await;
         assert_eq!((row.node_id.clone(), row_config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.node.1 is this node with the whole config");
         assert_eq!(
-            node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
+            node.told.lock().unwrap().clone(),
+            vec![NodeCommandRequest::UpdateConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
             "the birth was told the whole config once, before the update was answered"
         );
     });
@@ -671,10 +718,10 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
         node_configs(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "d".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(rpc1, &config));
         assert_eq!(props(&rig, &rpc1.node.node_id).await.0, config, "the node's own record holds the whole config");
-        assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
+        assert_eq!(node.told.lock().unwrap().len(), 1, "the birth was told once");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(spans.len(), 1, "{spans:?}");
@@ -701,12 +748,12 @@ fn a_stopped_nodes_config_update_is_applied_by_its_bound_writer_and_keeps_its_ta
         stopped_with_row(&rig, stopped, &["edge"]).await;
         let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
         let client = client_of(&rig, &b["admin2"]).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(stopped, &config), "a stopped node's config update completes once its writer put it");
         assert_eq!(props(&rig, &stopped.node.node_id).await, (config.clone(), labels(&["edge"])), "its own record holds the whole config and keeps its tags");
         assert_eq!(
-            node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config }],
+            node.told.lock().unwrap().clone(),
+            vec![NodeCommandRequest::UpdateConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config }],
             "the stopped birth, still bound, is told once"
         );
     });
@@ -738,11 +785,11 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
         node_configs(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         let StatusReply::ConfigNotApplied { node: named, answered, reason } = &reply else { panic!("the row is written and the birth refused: {reply:?}") };
         assert_eq!((named.as_str(), answered.as_str()), (rpc1.node.node_id.as_str(), "not-ready"), "{reply:?}");
         assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
-        assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
+        assert_eq!(node.told.lock().unwrap().len(), 1, "the birth was told once");
         assert!(props(&rig, &rpc1.node.node_id).await.0.is_empty(), "the birth refused: its own record holds nothing new");
         (reason.clone(), refusal)
     });
@@ -801,8 +848,8 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
         // commands hand its writer.
         let bound = rdm_admin::model::Node { endpoint_id: Some(rdm_admin::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..me.clone() };
         let _ = configs.bound_own(&bound, Default::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("own-started")).unwrap(), (None, None)).await;
-        let req = StatusRequest::UpdateNodeConfig { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
-        let reply = configs.update(&me.location(), &me.node_id, &view, &MemoryNodesStorage::default(), &req).await;
+        let req = NodeCommandRequest::UpdateConfig { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
+        let reply = configs.update(&me.location(), &me.node_id, &view, &MemoryNodesStorage::default(), &req, &mut rdm_admin::node_config::PropertyFrames::none()).await;
         assert!(
             matches!(&reply, StatusReply::ConfigRowRefused { node, reason, .. } if *node == me.node_id.to_string() && reason.contains("disk refused the write")),
             "the store refused the put: {reply:?}"
@@ -850,25 +897,25 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
         rig.topology.write().await.nodes.push(m2rpc.node.clone());
         let node = serve_node(&m2rpc).await;
         let config: BTreeMap<String, String> = [("tags".to_string(), "far".to_string())].into();
-        let req = StatusRequest::UpdateNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config: config.clone() };
+        let req = NodeCommandRequest::UpdateConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config: config.clone() };
         let view = rig.topology.read().await.clone();
         // At an admin that is neither the fabric-primary nor mesh2's primary: refused by name.
         let neither_rows = MemoryNodesStorage::default();
         let neither = node_configs_at(&admin2.key, &node).await;
-        let refused = neither.serve(&admin2.node.location(), &admin2.node.node_id, &view, &rig.topology, &neither_rows, SentBy::Other, &req).await;
+        let refused = neither.serve(&admin2.node.location(), &admin2.node.node_id, &view, &rig.topology, &neither_rows, SentBy::Other, &req, &mut rdm_admin::node_config::PropertyFrames::none()).await;
         let StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } = &refused else { panic!("mesh1.node-admin.2 is neither primary: {refused:?}") };
         assert!(needed.contains("fabric-primary") && needed.contains(rig.admin.node.node_id.as_str()), "the refusal names the fabric-primary: {needed}");
         assert!(neither_rows.record_at(&m2rpc.node.location()).await.unwrap().is_none(), "no row is written");
-        assert!(node.seen.lock().unwrap().is_empty(), "nothing is told by an admin that is neither primary");
+        assert!(node.told.lock().unwrap().is_empty(), "nothing is told by an admin that is neither primary");
         // At mesh2's primary: the row is written, then the birth is told directly.
         let mp_rows = MemoryNodesStorage::default();
         let configs = node_configs_at(&m2admin.key, &node).await;
-        let served = configs.serve(&m2admin.node.location(), &m2admin.node.node_id, &view, &rig.topology, &mp_rows, SentBy::Other, &req).await;
+        let served = configs.serve(&m2admin.node.location(), &m2admin.node.node_id, &view, &rig.topology, &mp_rows, SentBy::Other, &req, &mut rdm_admin::node_config::PropertyFrames::none()).await;
         assert_eq!(updated(&served), updated_of(&m2rpc, &config));
         assert_eq!(config_of(&m2rpc.node.node_id).await, config, "the node's own record holds the whole config");
         assert_eq!(
-            node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config }],
+            node.told.lock().unwrap().clone(),
+            vec![NodeCommandRequest::UpdateConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config }],
             "the birth was told once, by its mesh's primary"
         );
     });
@@ -907,9 +954,9 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         let (node_id, incarnation) = (m2rpc.node.node_id.clone(), m2rpc.node.incarnation_id.clone().unwrap());
         let (n, i) = (node_id.clone(), incarnation.clone());
         // mesh2.node-admin.1: elected in the fabric-primary's view, not holding it until `landed`.
-        let mp = serve_node_with(m2admin, move |req| match req {
-            StatusRequest::UpdateNodeConfig { .. } if !holds.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() }),
-            StatusRequest::UpdateNodeConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone() },
+        let mp = serve_node_commanded(m2admin, move |req| match req {
+            NodeCommandRequest::UpdateConfig { .. } if !holds.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() }),
+            NodeCommandRequest::UpdateConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone() },
             other => panic!("only the config command reaches mesh2's primary: {other:?}"),
         })
         .await;
@@ -917,11 +964,12 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         let (tick, views) = tokio::sync::watch::channel(0u64);
         configs.watch_views(views);
         let told: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh2".to_string())].into();
-        let req = StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
+        let req = NodeCommandRequest::UpdateConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
         let view = rig.topology.read().await.clone();
         let rows = MemoryNodesStorage::default();
         let admin_at = rig.admin.node.location();
-        let serve = configs.serve(&admin_at, &rig.admin.node.node_id, &view, &rig.topology, &rows, SentBy::Caller, &req);
+        let mut frames = rdm_admin::node_config::PropertyFrames::none();
+        let serve = configs.serve(&admin_at, &rig.admin.node.node_id, &view, &rig.topology, &rows, SentBy::Caller, &req, &mut frames);
         let land = async {
             tokio::time::timeout(Duration::from_secs(10), mp.heard.notified()).await.expect("the fabric-primary sent the command down");
             // mesh2.node-admin.1 holds the primary now, and the fabric-primary's view changes.
@@ -930,7 +978,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         };
         let (reply, ()) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(serve, land) }).await.expect("the owed command completes once mesh2.node-admin.1 holds the primary");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() }, "the caller is answered once the primary is held");
-        let sent: Vec<StatusRequest> = mp.seen.lock().unwrap().clone();
+        let sent: Vec<NodeCommandRequest> = mp.told.lock().unwrap().clone();
         assert!(sent.len() >= 2 && sent.iter().all(|r| *r == req), "the same command, sent down again to mesh2.node-admin.1: {sent:?}");
         m2admin.node.node_id.to_string()
     });
@@ -940,55 +988,6 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
     let sends: u32 = a.get("sends").and_then(|v| v.parse().ok()).unwrap_or(0);
     assert!(sends >= 2, "sent down again after the refusal: {a:?}");
     eprintln!("trace {trace}: rdm.node_admin.node.update.via-fabric-primary subject=mesh2.node.1 sends={sends} outcome=config-updated");
-}
-
-/// CONTRACT (ops-naming "Node data" :79: caller → the node's mesh-primary, Forward `0x1A` when not
-/// directly reachable): a caller that resolves only a carrier (mesh2's primary) reaches mesh1's
-/// primary through it, and mesh1's primary, which here does NOT hold the fabric-primary role, writes
-/// mesh1.node.1's row and tells it: `ConfigUpdated`, the birth told once, and the caller's
-/// `via-connections` span names `via-peer` with carrier mesh2.node-admin.1 inside the via-config trace.
-#[test]
-fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_applies() {
-    let cap = capture();
-    let carrier_id = cap.run(async {
-        let (rig, b) = rig().await;
-        let (admin2, rpc1, rpc2, m2admin) = (&b["admin2"], &b["rpc1"], &b["rpc2"], &b["m2admin"]);
-        // The fabric-primary role is mesh1.node-admin.2's in this view: the receiver is mesh1's primary only.
-        for n in rig.topology.write().await.nodes.iter_mut() {
-            n.is_fabric_primary = n.node_id == admin2.node.node_id;
-        }
-        let node = serve_node(rpc1).await;
-        node_configs(&rig, &node).await;
-        let (carrier, _carrier_router) = carrier_admin(m2admin, &rig.resolved).await;
-        let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(carrier);
-        let ep = rdm_transport::endpoint::bind(rpc2.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
-        let config: BTreeMap<String, String> = [("zone".to_string(), "far".to_string())].into();
-        let route = rdm_transport::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone() };
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &route, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
-        assert_eq!(updated(&reply), updated_of(rpc1, &config));
-        let row = rig.nodes.record_at(&rpc1.node.location()).await.unwrap().expect("mesh1's primary wrote the row");
-        let (row_config, row_tags) = props(&rig, &row.node_id).await;
-        assert_eq!(row_config, config);
-        assert_eq!(
-            node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
-            "the birth was told once, by its mesh's primary"
-        );
-        m2admin.node.node_id.to_string()
-    });
-    let config_spans = cap.spans("rdm.node_admin.node.update.via-config");
-    assert_eq!(config_spans.len(), 1, "{config_spans:?}");
-    let (trace_id, attrs) = &config_spans[0];
-    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-updated"), "{attrs:?}");
-    assert_eq!(attrs.get("node").map(String::as_str), Some("mesh1.node-admin.1"), "{attrs:?}");
-    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
-    let carried: Vec<_> = routes.iter().filter(|(t, a)| t == trace_id && a.get("route").map(String::as_str) == Some("via-peer")).collect();
-    assert_eq!(carried.len(), 1, "the caller's one carried leg is in the via-config trace: {routes:?}");
-    assert_eq!(carried[0].1.get("carrier"), Some(&carrier_id));
-    assert_eq!(carried[0].1.get("protocol").map(String::as_str), Some("status"));
-    eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.node-admin.1 > rdm.node_admin.node.update.via-config node=mesh1.node-admin.1 outcome=config-updated");
 }
 
 /// CONTRACT (ops-naming "Node data" :78-79: the mesh-primary writes its mesh's rows, its own
@@ -1007,12 +1006,12 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let me = &rig.admin.node;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &rdm_transport::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), (me.node_id.clone(), me.incarnation_id.clone().unwrap(), config.clone()));
         let row = rig.nodes.record_at(&me.location()).await.unwrap().expect("mesh1's primary wrote its own row");
         let (row_config, row_tags) = props(&rig, &row.node_id).await;
         assert_eq!((row.node_id.clone(), row_config.clone()), (me.node_id.clone(), config.clone()));
-        assert!(node.seen.lock().unwrap().is_empty(), "no other node is told");
+        assert!(node.told.lock().unwrap().is_empty(), "no other node is told");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(spans.len(), 1, "{spans:?}");
@@ -1182,9 +1181,9 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
         let landed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let holds = landed.clone();
         let (n, i) = (rpc2.node.node_id.clone(), rpc2.node.incarnation_id.clone().unwrap());
-        let fp = serve_node_with(m2admin, move |req| match req {
-            StatusRequest::UpdateNodeConfig { .. } if !holds.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "the fabric-primary".into() }),
-            StatusRequest::UpdateNodeConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone() },
+        let fp = serve_node_commanded(m2admin, move |req| match req {
+            NodeCommandRequest::UpdateConfig { .. } if !holds.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "the fabric-primary".into() }),
+            NodeCommandRequest::UpdateConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone() },
             other => panic!("only the config command reaches the fabric-primary: {other:?}"),
         })
         .await;
@@ -1197,7 +1196,7 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
         let (rpc, birth) = (rdm_client::NodeRpc::new(&client), exact(rpc2));
-        let call = rpc.config_update(&admin2.node.node_id, &rdm_transport::RouteChoice::Direct, &birth, config.clone(), &opts);
+        let call = rpc.config_update(&admin2.node.node_id, &birth, config.clone(), &opts);
         let land = async {
             tokio::time::timeout(Duration::from_secs(10), fp.heard.notified()).await.expect("mesh1.node-admin.2 carried the command up");
             landed.store(true, Ordering::SeqCst);
@@ -1205,8 +1204,8 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
         };
         let (reply, ()) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(call, land) }).await.expect("the carried command completes once the fabric-primary is held");
         assert_eq!(reply.expect("a typed reply"), StatusReply::ConfigUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap(), config: config.clone() });
-        let sent = fp.seen.lock().unwrap().clone();
-        let req = StatusRequest::UpdateNodeConfig { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap(), config };
+        let sent = fp.told.lock().unwrap().clone();
+        let req = NodeCommandRequest::UpdateConfig { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap(), config };
         assert!(sent.len() >= 2 && sent.iter().all(|r| *r == req), "the same command, carried up again: {sent:?}");
         m2admin.node.node_id.to_string()
     });
@@ -1382,10 +1381,9 @@ async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Route
 
 /// CONTRACT (node-config-update.md, a caller's update, step 2: "The node's property writer applies
 /// the whole map to its latest owned state and issues one put"; a node-admin is a node like any other):
-/// `ApplyNodeConfig` naming this admin is answered by the admin itself, whoever sends it (node-rpc.md
-/// §14): `Applied`, after its own writer put the whole map on its own property record, from another
-/// node-admin and from a node alike. One naming another incarnation of it is `RejectedStaleIncarnation`
-/// with the one held, and writes nothing.
+/// `UpdateConfig` naming this admin is answered by the admin itself, whoever sends it (node-rpc.md
+/// §14): `Applied`, after its own writer put the whole map on its own property record. One naming
+/// another incarnation of it is `RejectedStaleIncarnation` with the one held, and writes nothing.
 #[test]
 fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
     let cap = capture();
@@ -1396,12 +1394,12 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let later: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:10".to_string())].into();
         let me = &rig.admin.node;
-        let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
-        assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
+        let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| NodeCommandRequest::UpdateConfig { node_id: me.node_id.clone(), incarnation, config };
+        assert_eq!(own_command(&rig, &told(me.incarnation_id.clone().unwrap(), config.clone())).await, StatusReply::Applied);
         assert_eq!(props(&rig, &me.node_id).await.0, config, "the admin's own record holds the whole config it was told");
-        assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), later.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
+        assert_eq!(own_command(&rig, &told(IncarnationId::mint(), later.clone())).await, StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
         assert_eq!(props(&rig, &me.node_id).await.0, config, "the refusal wrote nothing");
-        assert_eq!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), later.clone())).await), StatusReply::Applied, "the subject answers whoever sends it");
+        assert_eq!(own_command(&rig, &told(me.incarnation_id.clone().unwrap(), later.clone())).await, StatusReply::Applied);
         assert_eq!(props(&rig, &me.node_id).await.0, later, "each apply puts the whole map");
     });
     for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
@@ -1428,8 +1426,8 @@ fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_mesh
         let admin2 = &b["admin2"];
         let me = &rig.admin.node;
         let fp = NodeTarget::ExactNode(me.node_id.clone());
-        // A told config naming another birth of the authority: answered by name, nothing held.
-        let stale = StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), config: BTreeMap::new() };
+        // A probe naming another birth of the authority: answered by name, nothing held.
+        let stale = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: IncarnationId::mint() };
         let first = client_of(&rig, admin2).await;
         assert!(matches!(first.call::<Status>(&fp, &stale, &CallOptions::default()).await.0, RpcOutcome::Reply(_)), "the first endpoint is answered");
         // The process ends without a close: the authority keeps the old connection until it idles out.
@@ -1494,8 +1492,8 @@ async fn deleted_all(rig: &Rig, b: &Birth) -> rdm_admin::status_rpc::CarryEnd {
     rig.service.carry_connections_delete(&b.node.node_id, b.node.incarnation_id.as_ref().unwrap(), &rdm_core::status::ConnectionScope::All).await
 }
 
-fn update_name(b: &Birth, name: &str) -> StatusRequest {
-    StatusRequest::UpdateName { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: PathName { path: b.node.path.clone(), name: name.into() } }
+fn update_name(b: &Birth, name: &str) -> NodeCommandRequest {
+    NodeCommandRequest::UpdateName { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into() }
 }
 
 /// The span of a mesh-primary's `node.name.update`.
@@ -1538,8 +1536,8 @@ async fn deleted_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     node
 }
 
-fn apply_name(b: &Birth, to: &PathName) -> StatusRequest {
-    StatusRequest::ApplyNodeName { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: to.clone() }
+fn apply_name(b: &Birth, to: &PathName) -> NodeCommandRequest {
+    NodeCommandRequest::UpdateName { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: to.name.clone() }
 }
 
 /// Each span's `(outcome, connections)`.
@@ -1556,18 +1554,18 @@ fn outcomes_and_connections(spans: &[(String, BTreeMap<String, String>)]) -> Vec
 /// (no row at `mesh1.node.3`), the view keeps the birth at `mesh1.node.8`, and the birth is told nothing. One
 /// `rdm.node_admin.name.update.via-writer` span says `rejected-admitting-connections` with
 /// `traffic=Ready` and `connections=none-deleted`. What must NOT happen: the row written, the
-/// birth told `ApplyNodeName`, or `NameUpdated`.
+/// birth told `UpdateName`, or `NameUpdated`.
 #[test]
 fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_written_or_told() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
-        let reply = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        let reply = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Ready, held_connections: vec![] });
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert!(node.told.lock().unwrap().is_empty(), "the birth is told nothing");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.location() == succ.node.location()), "the view keeps the birth at its name");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1591,7 +1589,7 @@ fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_written_
 /// carried to the exact birth and answered with the birth's `node.connections.deleted`, which the
 /// mesh-primary holds; the same `node.name.update`, the birth still on its mesh, then puts the row at
 /// `mesh1.node.3` carrying `renamed_from: mesh1.node.8`, releases the old key, tells the birth
-/// `ApplyNodeName`, commands its `node.mesh.join` at `mesh1.node.3` once, and ends `NameUpdated` on its
+/// `UpdateName`, commands its `node.mesh.join` at `mesh1.node.3` once, and ends `NameUpdated` on its
 /// `MeshJoined`. A start begins the birth's next cycle: no receipt is carried over, and a rename after
 /// it is refused again. What must NOT happen: a node whose connections were not deleted taking another
 /// name, a rename completed before its rejoin, or a started one renamed on its last cycle's receipt.
@@ -1603,23 +1601,23 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied_and_
         let (rig, b) = rig().await;
         let (succ, node) = successor_connections_deleted(&rig).await;
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-        let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        let refused = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert!(node.told.lock().unwrap().is_empty(), "the birth is told nothing");
 
         let deleted = deleted_all(&rig, &succ).await;
         assert!(matches!(&deleted, rdm_admin::status_rpc::CarryEnd::Deleted { held, .. } if held.is_empty()), "the mesh-primary holds the birth's node.connections.deleted: {deleted:?}");
         assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)], "the delete is carried to the exact birth");
-        assert!(node.seen.lock().unwrap().is_empty(), "and nothing else");
-        let applied = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        assert!(node.told.lock().unwrap().is_empty(), "and nothing else");
+        let applied = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert_eq!(applied, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
-        assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(apply_name(&succ, &taken)), "the birth is told its name");
+        assert_eq!(node.told.lock().unwrap().last().cloned(), Some(apply_name(&succ, &taken)), "the birth is told its name");
         assert_eq!(rig.rejoins.lock().unwrap().clone(), vec![(succ.node.node_id.clone(), taken.clone())], "the birth is commanded back on its mesh under the new name, once");
 
         // A start begins the birth's next cycle: its last cycle's receipt does not carry over.
         rig.service.begin_cycle(&succ.node, succ.node.incarnation_id.as_ref().unwrap()).await;
-        let again = reply(&call(&rig, &b["admin2"], &update_name(&succ, "8")).await);
+        let again = command(&rig, &b["admin2"], &update_name(&succ, "8")).await;
         assert!(matches!(&again, StatusReply::RejectedAdmittingConnections { held_connections, .. } if held_connections.is_empty()), "a started birth is refused until its connections are deleted again: {again:?}");
         succ.node.node_id.to_string()
     });
@@ -1663,10 +1661,10 @@ fn a_connections_deleted_node_still_holding_a_connection_is_refused_naming_it_an
             (n.status, n.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         }
         rig.service.declared.lock().unwrap().connections_deleted.insert((succ.node.node_id.clone(), inc), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![held_id.clone()], status_at_cut: NodeStatus::ConnectionsDeleting });
-        let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        let refused = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![held_id.clone()] });
         assert_eq!(rig.nodes.record_at(&rdm_core::PathName::new("mesh1.node", "3").unwrap()).await.unwrap(), None, "nothing is claimed");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert!(node.told.lock().unwrap().is_empty(), "the birth is told nothing");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(outcomes_and_connections(&spans), vec![("rejected-admitting-connections".to_string(), "held".to_string())], "{spans:?}");
@@ -1689,12 +1687,12 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         let holder = NodeId::mint();
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
         rig.nodes.put_node(&rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(taken.path.clone(), taken.name.clone()).unwrap(), "node", holder.clone(), rdm_core::IncarnationId::mint(), NodeStatus::Leaving)).await.unwrap();
-        let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        let held = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert_eq!(held, StatusReply::NameHeld { path: taken.path.clone(), name: taken.name.clone(), by: holder.clone() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert!(node.told.lock().unwrap().is_empty(), "the birth is told nothing");
         let routed = &b["rpc1"];
-        let refused = reply(&call(&rig, &b["admin2"], &update_name(routed, "renamed")).await);
+        let refused = command(&rig, &b["admin2"], &update_name(routed, "renamed")).await;
         assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Ready, held_connections: vec![] }, "a live node that can carry traffic keeps its name");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1703,56 +1701,13 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
     eprintln!("trace {}: {NAME_SPAN} to=mesh1.node.3 outcome=name-held", spans[0].0);
 }
 
-/// CONTRACT (proposal §2.1 Caller / executor: "Caller to the node's mesh-primary ... (Forward `0x1A`
-/// when not directly reachable)"): a caller of another mesh whose client reaches mesh1's primary only
-/// through a carrier (mesh1.node-admin.2) renames the successor `mesh1.node.8`, whose
-/// `node.connections.deleted` mesh1's primary holds, to the name `3` with `node.name.update`: the call
-/// ends `NameUpdated` naming the exact birth, the row at `mesh1.node.3` holds it, the birth was told
-/// `ApplyNodeName` once and commanded back on its mesh; the route span says `via-peer` with the carrier, and the mesh-primary's
-/// `via-writer` span says `name-updated` after the apply answered `applied`. What must NOT happen: the
-/// call ending `NotBackedToday` on the caller.
-#[test]
-fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_name_updated() {
-    let cap = capture();
-    let carrier_id = cap.run(async {
-        let (rig, b) = rig().await;
-        let (succ, node) = successor_connections_deleted(&rig).await;
-        assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }), "the successor's connections are deleted first");
-        let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
-        let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(carrier.clone());
-        let caller = &b["m2admin"];
-        let ep = rdm_transport::endpoint::bind(caller.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
-        let route = rdm_transport::RouteChoice::ViaPeer { carrier: carrier.node_id.clone() };
-        let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-        let reply = rdm_client::NodeRpc::new(&client).name_update(&rig.admin.node.node_id, &route, &exact(&succ), &taken, &CallOptions::default()).await.expect("a typed reply");
-        assert_eq!(reply, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
-        let row = rig.nodes.record_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
-        assert_eq!(row.node_id, succ.node.node_id);
-        assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)]);
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(&succ, &taken)]);
-        assert_eq!(rig.rejoins.lock().unwrap().clone(), vec![(succ.node.node_id.clone(), taken.clone())]);
-        b["admin2"].node.node_id.to_string()
-    });
-    let updates = cap.spans(NAME_SPAN);
-    assert_eq!(updates.len(), 1, "{updates:?}");
-    let (mp_trace, attrs) = &updates[0];
-    assert_eq!((attrs.get("outcome").map(String::as_str), attrs.get("answered").map(String::as_str)), (Some("name-updated"), Some("applied")), "{attrs:?}");
-    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
-    let carried: Vec<_> = routes.iter().filter(|(_, a)| a.get("route").map(String::as_str) == Some("via-peer")).collect();
-    assert_eq!(carried.len(), 1, "one carried leg: {routes:?}");
-    assert_eq!((carried[0].1.get("carrier").map(String::as_str), carried[0].1.get("protocol").map(String::as_str)), (Some(carrier_id.as_str()), Some("status")));
-    eprintln!("trace {}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh1.node-admin.2 protocol=status; trace {mp_trace}: {NAME_SPAN} answered=applied outcome=name-updated", carried[0].0);
-}
-
 /// CONTRACT (node-name-update.md Precondition: "The node holds no connection: it is stopped, or ...";
 /// Completion by case, "The stopped node: `node.name.updated` after `Applied` or `AlreadyApplied`; its
 /// start rejoins it under the name"; Q345: "the old node is stopped, and its name changed with
 /// node.name.update"): `node.name.update` renaming the stopped `mesh1.node.2` (stopped in the
 /// mesh-primary's view, its row at `mesh1.node.2`), its process bound and served, to `kept` ends
 /// `NameUpdated`: the row is at `mesh1.node.kept`, `mesh1.node.2` is released, the view lists the node
-/// at the new name, and the birth is told `ApplyNodeName` once and commanded no join (its start
+/// at the new name, and the birth is told `UpdateName` once and commanded no join (its start
 /// rejoins it). One `via-writer` span says `name-updated` with `traffic=Stopped`,
 /// `connections=stopped` and `rejoin=at-start`. What must NOT happen: a refusal, or a join commanded
 /// to a stopped node.
@@ -1766,12 +1721,12 @@ fn a_stopped_nodes_rename_is_applied_and_its_start_rejoins_it() {
         node_configs(&rig, &node).await;
         stopped_with_row(&rig, stopped, &[]).await;
         let to: PathName = rdm_core::PathName::new("mesh1.node", "kept").unwrap();
-        let renamed = reply(&call(&rig, &b["admin2"], &update_name(stopped, "kept")).await);
+        let renamed = command(&rig, &b["admin2"], &update_name(stopped, "kept")).await;
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
         assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the row is at the new name");
         assert_eq!(rig.nodes.record_at(&stopped.node.location()).await.unwrap(), None, "the old key is released");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.location() == to), "the view lists the stopped node at the new name");
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(stopped, &to)], "the bound process is told its name");
+        assert_eq!(node.told.lock().unwrap().clone(), vec![apply_name(stopped, &to)], "the bound process is told its name");
         assert!(rig.rejoins.lock().unwrap().is_empty(), "a stopped node is commanded no join: its start rejoins it");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1790,7 +1745,7 @@ fn a_stopped_nodes_rename_is_applied_and_its_start_rejoins_it() {
 /// succeeds"; node-name-update.md Precondition): the live `mesh1.node.2`, its connections deleted,
 /// renamed to the name `9` ends `NameUpdated`: the row is at `mesh1.node.9`,
 /// `mesh1.node.2` is released, the view lists the node at `mesh1.node.9`, and the birth is told
-/// `ApplyNodeName { mesh1.node.9 }`. What must NOT happen: a refusal because `9` is not derived from
+/// `UpdateName { mesh1.node.9 }`. What must NOT happen: a refusal because `9` is not derived from
 /// the old name.
 #[test]
 fn a_node_with_no_connection_renamed_to_any_name_within_its_path_ends_name_updated() {
@@ -1800,12 +1755,12 @@ fn a_node_with_no_connection_renamed_to_any_name_within_its_path_ends_name_updat
         let left = &b["rpc2"];
         let node = deleted_with_row(&rig, left, &[]).await;
         let to: PathName = rdm_core::PathName::new("mesh1.node", "9").unwrap();
-        let reply = reply(&call(&rig, &b["admin2"], &update_name(left, "9")).await);
+        let reply = command(&rig, &b["admin2"], &update_name(left, "9")).await;
         assert_eq!(reply, StatusReply::NameUpdated { node_id: left.node.node_id.clone(), incarnation: left.node.incarnation_id.clone().unwrap() });
         assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(left.node.node_id.clone()), "the row is at the new name");
         assert_eq!(rig.nodes.record_at(&left.node.location()).await.unwrap(), None, "the old key is released");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.location() == to), "the view lists the node at the new name");
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(left, &to)], "the birth is told its name");
+        assert_eq!(node.told.lock().unwrap().clone(), vec![apply_name(left, &to)], "the birth is told its name");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("to").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-updated".to_string(), "mesh1.node.9".to_string())], "{spans:?}");
@@ -1828,12 +1783,12 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
         let left = &b["rpc2"];
         let node = deleted_with_row(&rig, left, &[]).await;
         for bad in ["Two", "rpc.2", "2.older"] {
-            let refused = reply(&call(&rig, &b["admin2"], &update_name(left, bad)).await);
+            let refused = command(&rig, &b["admin2"], &update_name(left, bad)).await;
             assert!(matches!(&refused, StatusReply::RejectedName { reason } if reason.contains(bad)), "{bad}: {refused:?}");
         }
         assert_eq!(rig.nodes.node(&left.node.node_id).await.unwrap().map(|l| l.record.name), Some(left.node.name.clone()), "the node's record stays at its name");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.location() == left.node.location()), "the view keeps the node at its name");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert!(node.told.lock().unwrap().is_empty(), "the birth is told nothing");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["rejected-name"; 3], "{spans:?}");
@@ -1841,12 +1796,12 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
 }
 
 /// CONTRACT (proposal §2.1 Idempotency: "A repeat naming the name the row already holds ... for a
-/// live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`"; §2.3 "Row
-/// written, apply unresolved ... the resubmit resends `ApplyNodeName`, and completes on `Applied` or
+/// live node, resends `UpdateName` and completes on `Applied` or `AlreadyApplied`"; §2.3 "Row
+/// written, apply unresolved ... the resubmit resends `UpdateName`, and completes on `Applied` or
 /// `AlreadyApplied` from the node, never from the row"): the successor `mesh1.node.8`, its
 /// connections deleted, renamed to `3` answers the apply `NotReady`: the command ends `NameNotApplied {
 /// node: mesh1.node.3, answered: not-ready }` with the row moved. The same command again resends
-/// `ApplyNodeName`, which the node answers `AlreadyApplied`, and ends `NameUpdated`. What must NOT
+/// `UpdateName`, which the node answers `AlreadyApplied`, and ends `NameUpdated`. What must NOT
 /// happen: `NameUpdated` on the row alone, or the resubmit refused because the row already holds the name.
 #[test]
 fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_on_the_nodes_answer() {
@@ -1859,23 +1814,23 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         rig.nodes.put_node(&own_record(&succ, succ.node.status, &[])).await.unwrap();
         let applies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a = applies.clone();
-        let node = serve_node_with(&succ, move |req| match req {
-            StatusRequest::ApplyNodeName { .. } if a.fetch_add(1, Ordering::SeqCst) == 0 => StatusReply::NotReady { reason: "the node's digest does not exist yet".into() },
+        let node = serve_node_commanded(&succ, move |req| match req {
+            NodeCommandRequest::UpdateName { .. } if a.fetch_add(1, Ordering::SeqCst) == 0 => StatusReply::NotReady { reason: "the node's digest does not exist yet".into() },
             _ => StatusReply::AlreadyApplied,
         })
         .await;
         node_configs(&rig, &node).await;
         assert!(matches!(deleted_all(&rig, &succ).await, rdm_admin::status_rpc::CarryEnd::Deleted { .. }));
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
-        let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        let incomplete = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert!(matches!(&incomplete, StatusReply::NameNotApplied { node, answered, .. } if node == succ.node.node_id.as_str() && answered == "not-ready"), "{incomplete:?}");
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "the node, whose apply did not answer, wrote nothing (Q356)");
-        let done = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        let done = command(&rig, &b["admin2"], &update_name(&succ, "3")).await;
         assert_eq!(done, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "the node wrote its record at the new name on the resent apply");
-        let apply = StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.clone() };
+        let apply = NodeCommandRequest::UpdateName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.name.clone() };
         assert_eq!(node.deletes.lock().unwrap().clone(), vec![delete_all(&succ)]);
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply.clone(), apply], "the resubmit resent the apply");
+        assert_eq!(node.told.lock().unwrap().clone(), vec![apply.clone(), apply], "the resubmit resent the apply");
         assert_eq!(rig.rejoins.lock().unwrap().clone(), vec![(succ.node.node_id.clone(), taken.clone())], "the birth is commanded back on its mesh once, after the apply answered");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1901,7 +1856,7 @@ fn a_node_name_update_before_the_fabric_first_reaches_ready_is_admitted() {
         let _node = deleted_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let to: PathName = rdm_core::PathName::new("mesh1.node", "renamed").unwrap();
-        let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await);
+        let renamed = command(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await;
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "admitted before the first ready");
         assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()));
     });
@@ -1929,7 +1884,7 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
 /// on keyed label rows, not a replacement of a tags property"; proposal node-properties-own-commands.md §1: "Each command goes to the node's
 /// mesh-primary as the row writer"; Q166, Q171: each is admitted at any time): while the initial fabric is
 /// pending and has never been ready, a caller's `node.config.update` {zone: a} of
-/// `mesh1.node.1` at its mesh-primary ends `ConfigUpdated`, the birth is sent `ApplyNodeConfig` with it
+/// `mesh1.node.1` at its mesh-primary ends `ConfigUpdated`, the birth is sent `UpdateConfig` with it
 /// and its own record carries the map (and no tag). Then, each put by the node's own writer: create
 /// {rabbit} ends `TagsCreated`; create {rabbit, red} names rabbit already carried; delete {rabbit, blue}
 /// names blue not carried; a create that would carry the node past 32 labels is refused `RejectedTags`
@@ -1948,10 +1903,10 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
         node_configs(&rig, &node).await;
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let zone: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
-        let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
-        assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &config).await)), updated_of(rpc1, &zone), "node.config.update is admitted before the first ready");
+        let config = NodeCommandRequest::UpdateConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
+        assert_eq!(updated(&command(&rig, &b["admin2"], &config).await), updated_of(rpc1, &zone), "node.config.update is admitted before the first ready");
         assert_eq!(props(&rig, &rpc1.node.node_id).await, (zone.clone(), Default::default()), "the node's own record carries the map and no tag");
-        assert_eq!(node.seen.lock().unwrap().drain(..).collect::<Vec<_>>(), vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone }], "the birth is sent the map");
+        assert_eq!(node.told.lock().unwrap().drain(..).collect::<Vec<_>>(), vec![NodeCommandRequest::UpdateConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone }], "the birth is sent the map");
 
         let (id, birth) = (rpc1.node.node_id.clone(), rpc1.node.incarnation_id.clone().unwrap());
         let created = |already: &[&str]| StatusReply::TagsCreated { node_id: id.clone(), incarnation: birth.clone(), already_carried: labels(already) };
@@ -1985,7 +1940,7 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
 /// writer puts the labels on its own record. A `node.config.update` of rpc.1 then puts the new config
 /// and the record keeps the same tags. The left `mesh1.node.2` (its connections deleted, its mesh left),
 /// whose own record carries {red}, renamed to `2-old` keeps its tags: its record is keyed by its node
-/// id. What must NOT happen: a tags command sending `ApplyNodeName`, or a config put or a rename
+/// id. What must NOT happen: a tags command sending `UpdateName`, or a config put or a rename
 /// dropping the tags.
 #[test]
 fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_tags() {
@@ -2002,14 +1957,14 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         assert_eq!(props(&rig, &rpc1.node.node_id).await.1, labels(&["rabbit", "red"]), "the node's own record holds the tags the create added");
 
         let config: BTreeMap<String, String> = [("zone".to_string(), "c".to_string())].into();
-        let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: config.clone() };
-        assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &req).await)), updated_of(rpc1, &config));
+        let req = NodeCommandRequest::UpdateConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: config.clone() };
+        assert_eq!(updated(&command(&rig, &b["admin2"], &req).await), updated_of(rpc1, &config));
         assert_eq!(props(&rig, &rpc1.node.node_id).await, (config, labels(&["rabbit", "red"])), "the config put writes the new config and keeps the tags");
 
         hold_connections_deleted(&rig, rpc2).await;
         own_tags(rpc2, &["red"]).await;
         rig.nodes.put_node(&own_record(rpc2, NodeStatus::ConnectionsDeleting, &["red"])).await.unwrap();
-        let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await);
+        let renamed = command(&rig, &b["admin2"], &update_name(rpc2, "renamed")).await;
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
         assert_eq!(props(&rig, &rpc2.node.node_id).await.1, labels(&["red"]), "the renamed node's own record keeps its tags");
         assert!(!rpc2_node.seen.lock().unwrap().iter().any(|r| matches!(r, StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. })), "a rename sends no tags command");
@@ -2021,7 +1976,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
     eprintln!("trace {}: rdm.node_admin.tag.create.via-writer arrived=rabbit,red outcome=tags-created; trace {}: {NAME_SPAN} outcome=name-updated", creates[0].0, spans[0].0);
 }
 
-/// CONTRACT (proposal §2.2 step 6: "A live connections-deleted node is sent `ApplyNodeName`";
+/// CONTRACT (proposal §2.2 step 6: "A live connections-deleted node is sent `UpdateName`";
 /// node_config.rs: the mesh-primary is a member of its mesh and the writer of its own row, and applies
 /// its own config in-process): a caller's `node.name.update` renaming mesh1's primary itself, ConnectionsDeleting
 /// and holding the `node.connections.deleted` of an `All` cut that left nothing held, to the name
@@ -2057,12 +2012,12 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
             })
         }));
         let to: PathName = rdm_core::PathName::new("mesh1.node-admin", "renamed").unwrap();
-        let update = StatusRequest::UpdateName { node_id: me.node.node_id.clone(), incarnation: inc.clone(), name: to.clone() };
-        let renamed = reply(&call(&rig, &b["admin2"], &update).await);
+        let update = NodeCommandRequest::UpdateName { node_id: me.node.node_id.clone(), incarnation: inc.clone(), name: to.name.clone() };
+        let renamed = command(&rig, &b["admin2"], &update).await;
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: me.node.node_id.clone(), incarnation: inc });
         assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(me.node.node_id.clone()), "the row moved to the new name");
         assert_eq!(asked.lock().unwrap().clone(), vec![to.clone()], "the mesh-primary's own name decision was asked the new name, once");
-        assert!(node.seen.lock().unwrap().is_empty(), "no other node is told anything");
+        assert!(node.told.lock().unwrap().is_empty(), "no other node is told anything");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.len(), 1, "{spans:?}");
@@ -2071,8 +2026,8 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
     eprintln!("trace {trace}: {NAME_SPAN} from=mesh1.node-admin.1 to=mesh1.node-admin.renamed apply=in-process answered=applied outcome=name-updated");
 }
 
-/// CONTRACT (R12; proposal node-properties-own-commands.md §2.2 step 6, the ApplyNodeName answers):
-/// `ApplyNodeName` naming this admin, from another node-admin, is answered by the admin itself from
+/// CONTRACT (R12; proposal node-properties-own-commands.md §2.2 step 6, the UpdateName answers):
+/// `UpdateName` naming this admin, from another node-admin, is answered by the admin itself from
 /// what its name decision says: `Applied` once it holds the name, `AlreadyApplied` for the name it
 /// holds, `BusyHoldingConnections` naming each held connection by id while it holds any, and the same from a member (nothing checks who is calling,
 /// node-rpc.md §14). One naming another incarnation is `RejectedStaleIncarnation` and one whose name
@@ -2095,17 +2050,17 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
             })
         }));
         let me = &rig.admin.node;
-        let told = |incarnation: IncarnationId, name: PathName| StatusRequest::ApplyNodeName { node_id: me.node_id.clone(), incarnation, name };
+        let told = |incarnation: IncarnationId, name: PathName| NodeCommandRequest::UpdateName { node_id: me.node_id.clone(), incarnation, name: name.name };
         let inc = me.incarnation_id.clone().unwrap();
-        assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await), StatusReply::Applied);
-        assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await), StatusReply::AlreadyApplied);
+        assert_eq!(own_command(&rig, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await, StatusReply::Applied);
+        assert_eq!(own_command(&rig, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await, StatusReply::AlreadyApplied);
         assert_eq!(
-            reply(&call(&rig, admin2, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await),
+            own_command(&rig, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await,
             StatusReply::BusyHoldingConnections { connections: vec![rdm_core::ConnectionId::parse("3123456789ab").unwrap(), rdm_core::ConnectionId::parse("4123456789ab").unwrap()] }
         );
-        assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await), StatusReply::RejectedStaleIncarnation { held: inc.clone() });
-        assert_eq!(reply(&call(&rig, rpc1, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await), StatusReply::AlreadyApplied, "the subject answers a member from its own decision");
-        assert!(matches!(reply(&call(&rig, admin2, &told(inc, PathName { path: "mesh1.node-admin".into(), name: "not a name".into() })).await), StatusReply::Malformed { .. }));
+        assert_eq!(own_command(&rig, &told(IncarnationId::mint(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await, StatusReply::RejectedStaleIncarnation { held: inc.clone() });
+        assert_eq!(own_command(&rig, &told(inc.clone(), PathName::new("mesh1.node-admin", "1-old").unwrap())).await, StatusReply::AlreadyApplied, "the subject answers from its own decision");
+        assert!(matches!(own_command(&rig, &told(inc, PathName { path: "mesh1.node-admin".into(), name: "not a name".into() })).await, StatusReply::Malformed { .. }));
         assert_eq!(asked.lock().unwrap().len(), 4, "only the four admitted applies reached the decision");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-apply-node-name");
@@ -2262,11 +2217,11 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
     let no_birth = (rpc2.node.node_id.clone(), IncarnationId::mint());
     for (case, (node_id, incarnation)) in [("not in the view", unknown), ("no known birth", no_birth)] {
         let requests = [
-            StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
-            StatusRequest::UpdateName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.node", "2").unwrap() },
+            NodeCommandRequest::UpdateConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
+            NodeCommandRequest::UpdateName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: "2".into() },
         ];
         for req in requests {
-            let got = reply(&call(&rig, caller, &req).await);
+            let got = command(&rig, caller, &req).await;
             assert_eq!(got, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "{case}: {} answers the receiver's own fact", req.op());
         }
     }

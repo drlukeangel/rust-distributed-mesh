@@ -143,7 +143,7 @@ async fn a_config_update_made_after_the_callers_read_survives_a_create() {
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(read.node_id.clone()), node_id: read.node_id.clone(), incarnation: read.incarnation.clone().expect("the read names the incarnation") };
     let carrier = estate.carrier().await;
     let mesh_primary = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1's primary");
-    let updated = rdm_client::NodeRpc::new(carrier.client()).config_update(&mesh_primary, &rdm_transport::RouteChoice::Direct, &birth, zone("b"), &rdm_transport::CallOptions::default()).await;
+    let updated = rdm_client::NodeRpc::new(carrier.client()).config_update(&mesh_primary, &birth, zone("b"), &rdm_transport::CallOptions::default()).await;
     assert!(matches!(updated, Ok(rdm_core::status::StatusReply::ConfigUpdated { .. })), "node.config.update of mesh1.node.1 to zone=b: {updated:?}");
 
     let created = Estate::workflow("the caller's Create of mesh1.node.2", nodes.create(vec![node(&estate, "mesh1.node", "2", "mesh1", "node")]).await).await.expect("the call opened a Build");

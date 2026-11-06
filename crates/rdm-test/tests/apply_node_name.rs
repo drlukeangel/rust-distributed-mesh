@@ -1,8 +1,8 @@
-//! A live node takes the name its mesh-primary's row now holds (`ApplyNodeName`; node-rpc-envelope.md
+//! A live node takes the name its mesh-primary's row now holds (`UpdateName`; node-rpc-envelope.md
 //! "Meta and config", R12/R13, R-CR1).
 //!
 //! CONTRACT: a node born `mesh1.node.7` that originated a data-plane connection to its admin
-//! answers `ApplyNodeName { name: mesh1.node.1 }` with `BusyHoldingConnections` naming that connection
+//! answers `UpdateName { name: mesh1.node.1 }` with `BusyHoldingConnections` naming that connection
 //! by the minted id of its open entry (proposal node-properties-own-commands.md §2.2 step 6), and holds nothing:
 //! its digest still says `mesh1.node.7`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
 //! node's `node.connection.delete { All }` has completed): `All`, held open by one call in flight
@@ -104,7 +104,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
                 }
             }
         };
-        let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.clone() };
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.name.clone() };
 
         // The node originates a data-plane connection to its admin: a Direct entry of its log.
         match seams.client.call::<Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &CallOptions::default()).await.0 {
@@ -115,7 +115,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         // Holding that route: the name is refused, naming the connection by its entry's id, and nothing is held.
         let held_ids: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         assert_eq!(held_ids.len(), 1, "the node holds the one route it dialled: {held_ids:?}");
-        match call(apply.clone()).await {
+        match crate::common::property_command(&client, &target, &apply).await {
             StatusReply::BusyHoldingConnections { connections } => assert_eq!(connections, held_ids, "the refusal names each connection the node holds"),
             other => panic!("a node holding a connection answered {other:?}"),
         }
@@ -161,13 +161,13 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         assert_eq!((get(dialled, "source_id"), get(dialled, "source_path"), get(dialled, "source_name"), get(dialled, "destination_path"), get(dialled, "destination_name"), get(dialled, "origin")), (launch.node_id.to_string(), "mesh1.node".to_string(), "7".to_string(), "mesh1.node-admin".to_string(), "1".to_string(), "dial".to_string()), "{dialled:#?}");
         assert!(dialled.get("peer").is_some_and(|p| !p.is_empty()) && dialled.get("peer") == deletes[0].get("peer"), "the observed fact and the delete name the same peer: {dialled:#?} vs {deletes:#?}");
         assert!(fields_of("rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "All hard-cuts no pool");
-        assert_eq!(call(apply.clone()).await, StatusReply::Applied);
+        assert_eq!(crate::common::property_command(&client, &target, &apply).await, StatusReply::Applied);
         assert_eq!(running.topology_view.held_name(&born), taken, "the node holds the applied name");
 
         // The same name again is done; a stale incarnation is refused naming the one held.
-        assert_eq!(call(apply.clone()).await, StatusReply::AlreadyApplied);
-        let stale = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: IncarnationId::mint(), name: taken.clone() };
-        assert_eq!(call(stale).await, StatusReply::RejectedStaleIncarnation { held: launch.incarnation.clone() });
+        assert_eq!(crate::common::property_command(&client, &target, &apply).await, StatusReply::AlreadyApplied);
+        let stale = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: launch.node_id.clone(), incarnation: IncarnationId::mint(), name: taken.name.clone() };
+        assert_eq!(crate::common::property_command(&client, &target, &stale).await, StatusReply::RejectedStaleIncarnation { held: launch.incarnation.clone() });
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

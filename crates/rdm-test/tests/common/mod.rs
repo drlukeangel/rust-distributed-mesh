@@ -663,6 +663,12 @@ pub async fn node_command_completion(client: &rdm_transport::NodeRpcClient, targ
     }
 }
 
+/// A node's property command (`UpdateConfig`, `UpdateName`) to `target`, read to its end.
+pub async fn property_command(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::node_command::NodeCommandRequest) -> rdm_core::status::StatusReply {
+    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(std::time::Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..rdm_transport::CallOptions::default() };
+    rdm_client::NodeRpc::new(client).property_command(target, req, &opts).await.unwrap_or_else(|e| panic!("{} did not end in a reply: {e:?}", req.op()))
+}
+
 /// Old cell request builders retain their assertion vocabulary; their command hop is 0x22.
 /// The fixture primary records progress before acknowledging recovery, as the product owner does.
 pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::status::StatusRequest, opts: &rdm_transport::CallOptions, digest_view: Option<&rdm_gossip::digest_view::DigestView>) -> Option<rdm_core::status::StatusReply> {

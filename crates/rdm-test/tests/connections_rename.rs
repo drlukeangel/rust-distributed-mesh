@@ -143,8 +143,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             let early: Vec<_> = held.iter().filter(|(k, (n, _, _))| n == "rdm.node_rpc.connection.delete.via-hard-cut" && **k < deleted[0]).map(|(_, (_, _, f))| f.clone()).collect();
             assert!(early.is_empty(), "no pool is hard-cut before the All has deleted its connections: {early:#?}");
         }
-        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.clone() };
-        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.name.clone() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), operation: rdm_core::OperationId::node("node.stop", &renamed.node_id) };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         admin.put_record(rdm_node::nodes_storage::fixture_record(&taken, &renamed.r#type, renamed.node_id.clone(), renamed.incarnation.clone(), NodeStatus::Stopped)).await;
@@ -349,8 +349,8 @@ fn a_node_renamed_then_stopped_records_its_next_connection_under_the_name_it_hol
         };
         let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
-        let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.clone() };
-        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.name.clone() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied, "the node takes the name, holding no connection");
         let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), operation: rdm_core::OperationId::node("node.stop", &launch.node_id) };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.observations_landed().await;

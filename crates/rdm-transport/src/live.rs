@@ -184,7 +184,7 @@ impl LiveNodeResolver {
             live.superseded.entry(id.clone()).or_default().insert(old.clone());
             live.exited.remove(&(id.clone(), old.clone()));
         }
-        // A birth that took another name (`ApplyNodeName`, R12) gives up the one it held.
+        // A birth that took another name (`UpdateName`, R12) gives up the one it held.
         let gave_up = live.nodes.get(&id).map(|held| held.location()).filter(|held| *held != birth.location());
         let path = birth.location();
         live.nodes.insert(id.clone(), birth);
@@ -477,7 +477,7 @@ mod tests {
 
     /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-name-update.md: `(path, name)` resolves to
     /// the renamed birth the moment its Applied lands): a held birth that took another name
-    /// (`ApplyNodeName`) is the same birth at its new `(path, name)`: it resolves there by path and by
+    /// (`UpdateName`) is the same birth at its new `(path, name)`: it resolves there by path and by
     /// its exact id, nobody holds the name it gave up, and the change ticks. The same fact again is
     /// unchanged. What must NOT happen: the birth kept under the name it gave up, or its new name
     /// resolving to nobody.

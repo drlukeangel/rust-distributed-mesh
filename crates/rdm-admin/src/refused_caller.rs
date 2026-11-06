@@ -235,7 +235,7 @@ impl RefusedCallers {
             return Err("this admin has no node-RPC client to call the fabric-primary".into());
         };
         let me = self.recovery.held_name();
-        match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, &rdm_core::status::StatusRequest::GetAtlas, crate::node_config::Hop::Root).await {
+        match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, crate::node_config::PropertyCall::Status(&rdm_core::status::StatusRequest::GetAtlas), crate::node_config::Hop::Root).await {
             crate::node_config::Owed::InProcess(_) => Ok(None),
             crate::node_config::Owed::Answered(rdm_core::status::StatusReply::Atlas { atlas }) => Ok(Some(atlas)),
             crate::node_config::Owed::Answered(rdm_core::status::StatusReply::RejectedSourceFailed { source, op, cause }) => Err(format!("fabric.atlas.get at the fabric-primary answered rejected-source-failed (source {source}, op {op}: {cause}): nothing acts until the root answers its atlas")),

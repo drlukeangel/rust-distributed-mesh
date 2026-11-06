@@ -167,6 +167,10 @@ pub fn busy(reason: String) -> NodeCommandReply { NodeCommandReply::Busy { reaso
 pub fn rejected_connections_deleting(reason: String) -> NodeCommandReply { NodeCommandReply::RejectedConnectionsDeleting { reason } }
 /// Construct the typed malformed outcome.
 pub fn malformed(kind: MalformedKind) -> NodeCommandReply { NodeCommandReply::Malformed { kind } }
+/// How a node's property command ended once it was accepted: `node.config.updated`, `node.name.updated`, or how it ended short.
+pub fn property_updated(reply: crate::status::StatusReply) -> NodeCommandReply { NodeCommandReply::PropertyUpdated { reply } }
+/// A node's property command refused before anything was accepted, by name.
+pub fn property_refused(reply: crate::status::StatusReply) -> NodeCommandReply { NodeCommandReply::PropertyRefused { reply } }
 }
 
 /// Constructors for the BuildReply family.

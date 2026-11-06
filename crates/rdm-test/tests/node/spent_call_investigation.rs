@@ -6,7 +6,7 @@
 //! CONTRACT: in a one-mesh estate at a 60 s staleness floor, a node's exact runtime
 //! is hung (every task but the leader held, so it neither gossips nor answers). At once the caller asks
 //! the mesh-primary (here the fabric-primary too) for `node.config.update` of that node: the
-//! mesh-primary's own `ApplyNodeConfig` to the hung birth spends its attempts with no answer, and the
+//! mesh-primary's own `UpdateConfig` to the hung birth spends its attempts with no answer, and the
 //! mesh-primary marks the exact birth (`rdm.node_admin.node.update.via-call-failed`, sender `own-call`,
 //! outcome `marked`). Its tick then investigates the birth from that mark (the provider's inspection,
 //! `rdm.node_admin.node.resolve.via-provider-inspection`), half a floor after the mark, before the birth's
@@ -63,12 +63,12 @@ async fn a_mesh_primarys_spent_call_marks_the_birth_and_its_tick_investigates_it
     let rt = ExactRuntime::published(Path::new(&estate.data_dir(&path).await)).expect("the node's published runtime");
     let held_at = now_nano();
     let hung = rt.hang().expect("the hang is acknowledged by the OS");
-    // The caller's node.config.update at the mesh-primary: its own ApplyNodeConfig to the hung birth.
+    // The caller's node.config.update at the mesh-primary: its own UpdateConfig to the hung birth.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: node.incarnation.clone().expect("the node's birth") };
     let carrier = estate.carrier().await;
     let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
-    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &opts).await;
+    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &birth, told, &opts).await;
     eprintln!("node.config.update of the hung birth answered: {reply:?}");
 
     // The mark, then the investigation from it.

@@ -5,7 +5,7 @@
 //! { All }`, a node command of its mesh-primary), then renames. A held name answers `NameHeld` naming
 //! the node that holds it, and a name outside the grammar is `RejectedName`.
 //!
-//! The mesh-primary checks the name and tells the node (`ApplyNodeName`); the node writes the new name
+//! The mesh-primary checks the name and tells the node (`UpdateName`); the node writes the new name
 //! on its own record (Q356), takes it and rejoins its mesh under it, and the call completes once it is
 //! back on its mesh publishing the new name.
 //!
@@ -17,7 +17,7 @@
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{ExactBirth, Filter, Frame, MeshNode, NodeView, Nodes, PathName, Peers, WorkflowStream};
 
-use rdm_transport::{NodeTarget, RouteChoice};
+use rdm_transport::NodeTarget;
 
 async fn enter() -> Result<(Peers, PathName)> {
     let json = std::env::var("RDM_NODE_ADMIN_BIRTH").context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
     finish("delete connections", nodes.delete_connections(&node, &rdm_core::status::ConnectionScope::All).await?).await?;
 
     // Answered once the node is back on its mesh under the new name.
-    let reply = nodes.name_update(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &renamed).await?;
+    let reply = nodes.name_update(&exact(row)?, &primary.node_id, &renamed.name).await?;
     println!("node.name.update path {:?}, name {:?} -> name {:?}: {reply:?}", node.path, node.name, renamed.name);
     Ok(())
 }

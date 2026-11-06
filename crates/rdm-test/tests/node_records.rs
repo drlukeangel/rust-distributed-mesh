@@ -228,7 +228,7 @@ async fn fabric_primary(estate: &Estate) -> NodeId {
 async fn config_update(estate: &Estate, v: &NodeView, config: BTreeMap<String, String>) -> rdm_core::status::StatusReply {
     let fp = fabric_primary(estate).await;
     let carrier = estate.carrier().await;
-    rdm_client::NodeRpc::new(carrier.client()).config_update(&fp, &rdm_transport::RouteChoice::Direct, &birth_of(v), config, &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {:?} at the fabric-primary: {e:?}", v.name))
+    rdm_client::NodeRpc::new(carrier.client()).config_update(&fp, &birth_of(v), config, &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {:?} at the fabric-primary: {e:?}", v.name))
 }
 
 /// node.tag.create of `labels` on `v`'s exact birth, sent to the fabric-primary (commands go down, Q203).
@@ -334,7 +334,7 @@ async fn a_node_with_no_connection_renamed_rejoins_its_mesh_under_the_new_name_k
     Estate::workflow(&format!("node.connection.delete {{ All }} of {subject:?}"), nodes.delete_connections(&subject, &rdm_core::status::ConnectionScope::All).await).await;
     let mesh_primary = estate.node_views().await.into_iter().find(|n| n.mesh() == before.mesh() && n.is_primary && rdm_core::is_node_admin(&n.r#type)).expect("the view names mesh1's primary").node_id;
     let renamed_at = now_ns();
-    let reply = nodes.name_update(&birth_of(&before), &mesh_primary, &rdm_transport::RouteChoice::Direct, &moved).await.unwrap_or_else(|e| panic!("node.name.update of {subject:?}: {e:?}"));
+    let reply = nodes.name_update(&birth_of(&before), &mesh_primary, &moved.name).await.unwrap_or_else(|e| panic!("node.name.update of {subject:?}: {e:?}"));
     assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "a node with no connection is renamed on its mesh: {reply:?}");
     // No wait: the reads the moment the caller is answered.
     let at_moved = at_pair(&estate, &moved).await;

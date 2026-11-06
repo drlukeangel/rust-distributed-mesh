@@ -223,7 +223,7 @@ impl ConnectionsWriter {
     /// Read this node's name from `held`, the one place the process holds the name it publishes
     /// (its topology view's, R12): from then on every row this writer writes names it as the source
     /// (node-identity-and-state.md §8: `source` is the end's path and name), so a name the node takes
-    /// (`ApplyNodeName`, or the name its join answer hands it) is the source of its next row.
+    /// (`UpdateName`, or the name its join answer hands it) is the source of its next row.
     /// Until then the source is the birth's name, which is the name the node holds while nothing
     /// can have given it another. Bound once, at boot; a second binding is refused by name.
     pub fn follow_held_name(&self, held: impl Fn() -> PathName + Send + Sync + 'static) -> Result<(), String> {

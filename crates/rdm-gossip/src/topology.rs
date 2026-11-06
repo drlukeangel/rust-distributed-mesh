@@ -41,7 +41,7 @@ pub struct TopologyView {
     pub digest_view: DigestView,
     /// The Rafka-time this process composes; every gossip stamp on this topology view reads it.
     pub(crate) clock: SharedClock,
-    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
+    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12): carried in every
     /// digest this topology view publishes from then on. `None` while the birth holds its launch name.
     pub(crate) name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// This node's own mesh [`StatusPublisher`], shared with its [`Backbone`].

@@ -636,7 +636,7 @@ async fn management_load(estate: &Estate, meshes: &[String], admins: u32, rows: 
             let rpc = rdm_client::NodeRpc::new(carrier.client());
             let config: std::collections::BTreeMap<String, String> = [("load.blob".to_string(), "x".repeat(bytes))].into();
             let t = Instant::now();
-            let r = rpc.config_update(&fp, &rdm_transport::RouteChoice::Direct, &birth, config, &rdm_transport::CallOptions::default()).await;
+            let r = rpc.config_update(&fp, &birth, config, &rdm_transport::CallOptions::default()).await;
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             match r {
                 Ok(rdm_core::status::StatusReply::ConfigUpdated { .. }) => Ok(ms),

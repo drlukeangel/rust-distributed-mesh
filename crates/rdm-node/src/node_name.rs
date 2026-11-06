@@ -1,4 +1,4 @@
-//! `ApplyNodeName` at its subject (proposal node-properties-own-commands.md §2.2 step 6; R12/R13; R-CR1, R-CR1a):
+//! `UpdateName` at its subject (proposal node-properties-own-commands.md §2.2 step 6; R12/R13; R-CR1, R-CR1a):
 //! the node owns its name and publishes only the name its mesh-primary's row holds. It takes a new
 //! name only while it holds no connection: every route it held was closed by
 //! `node.connection.delete`, its drop written under the old name, before the name changes. The
@@ -8,7 +8,7 @@ use rdm_core::connections::{ConnectionKind, NodeConnection};
 use rdm_core::{ConnectionId, PathName};
 use rdm_core::status::StatusReply;
 
-/// What the subject of an `ApplyNodeName` decides.
+/// What the subject of an `UpdateName` decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NameApply {
     /// The request tried to change the node's immutable path.

@@ -414,6 +414,9 @@ pub struct ReplyStream<P: StreamingProtocol> {
     attempt_end: Option<AttemptEnd>,
     /// The request's commit, taken by the reset that ends the stream, which it classifies.
     committed: Option<Committed>,
+    /// Who to tell when the call's attempts are spent after its commit, and the call's options.
+    client: NodeRpcClient,
+    opts: CallOptions,
     _p: PhantomData<fn() -> P>,
 }
 
@@ -485,6 +488,20 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     Some(Attempted::TransportLost(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(why)))),
                     Some(Attempted::EndedPreCommit(_)) => {
                         return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into()))));
+                    }
+                    // A request resent until acked (`CallOptions::resend_unacked_stream`), its attempts spent
+                    // with no answer: the call ends to its owner, and on_call_failed is told (node-rpc.md §43).
+                    Some(Attempted::Spent) => {
+                        let reason = IndeterminateReason::ReplyLost("its attempts are spent with no answer".into());
+                        self.span
+                            .record("delivery", "attempts-spent")
+                            .record("attempts", self.owed.attempts.load(Ordering::SeqCst))
+                            .record("outcome", "Indeterminate");
+                        if self.opts.carried.is_none() {
+                            let end = crate::client::CallEnd::Spent(crate::client::CallFailedReason::Indeterminate(reason.clone()));
+                            self.span.in_scope(|| self.client.tell_end(self.owed.receiver.as_ref(), end));
+                        }
+                        return Some(self.fail(StreamFailure::Indeterminate(reason)));
                     }
                     Some(Attempted::Ended(path)) => self.attempt_end = Some(path),
                     None => {
@@ -592,7 +609,7 @@ impl NodeRpcClient {
                         let deadline = None;
                         let evidence = owed.evidence.lock().unwrap().clone();
                         span.record("reused", evidence.reused);
-                        return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { client: self.clone(), opts: opts.clone(), span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::Spent) => {
@@ -667,7 +684,11 @@ mod tests {
             receiver: None,
             _task: crate::client::AbortOnDrop(None),
         };
-        let mut stream = ReplyStream::<NodeCommand> { span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: None, _p: PhantomData };
+        let client = NodeRpcClient::new(
+            crate::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(),
+            Arc::new(crate::resolve::StaticResolver::new()),
+        );
+        let mut stream = ReplyStream::<NodeCommand> { client, opts: CallOptions::default(), span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: None, _p: PhantomData };
         let frame = NodeCommandReply::CommandAccepted { node_id: birth.node_id, incarnation: birth.incarnation };
         tx.send(SlotEvent::Frame(NodeCommand::encode_reply(&frame).unwrap(), None)).unwrap();
         assert!(matches!(stream.next().await, Some(StreamItem::Failed(StreamFailure::Violation(reason))) if reason == "a response frame carries no transport position"));

@@ -288,7 +288,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
         incarnation: serde_json::from_value(targets[0]["incarnation"].clone()).expect("an incarnation id"),
     };
     let mesh_primary: rdm_core::NodeId = serde_json::from_value(primary["node_id"].clone()).expect("a node id");
-    let reply = nodes.name_update(&birth, &mesh_primary, &rdm_transport::RouteChoice::Direct, &renamed).await.unwrap_or_else(|e| panic!("node.name.update of {node:?} at mesh2's primary: {e}"));
+    let reply = nodes.name_update(&birth, &mesh_primary, &renamed.name).await.unwrap_or_else(|e| panic!("node.name.update of {node:?} at mesh2's primary: {e}"));
     assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "node.name.update of {node:?} at mesh2's primary: {reply:?}");
     // No wait: the fabric-primary's read the moment the caller is answered.
     let read = estate.node_values().await;

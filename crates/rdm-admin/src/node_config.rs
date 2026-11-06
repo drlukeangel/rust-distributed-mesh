@@ -3,10 +3,90 @@
 //! Local changes commit at the node without an upward property copy.
 
 use crate::topology::Topology;
-use rdm_client::{CallEnd, ExactBirth, NodeRpc};
+use rdm_client::{CallEnd, ExactBirth, NodeRpc, PropertyFrame};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use std::sync::Arc;
+
+/// What a node's property command has sent back to whoever asked (Q367): the node's acceptance, which
+/// is its `node.config.updating` or `node.name.updating`, goes on at once, and the command then ends
+/// with its terminal; refused before that, it ends with a refusal.
+pub struct PropertyFrames {
+    frames: Option<Box<dyn crate::node_self::CommandFrames>>,
+    accepted: bool,
+}
+
+impl PropertyFrames {
+    /// The frames of the stream `frames`.
+    pub fn to(frames: Box<dyn crate::node_self::CommandFrames>) -> Self {
+        Self { frames: Some(frames), accepted: false }
+    }
+
+    /// No caller holds a stream: a Build's own create spec, in process.
+    pub fn none() -> Self {
+        Self { frames: None, accepted: false }
+    }
+
+    /// The node's acceptance, sent on once. A caller gone is not this command's failure: the command
+    /// runs on, as a call whose caller left does.
+    pub async fn accepted(&mut self, frame: NodeCommandReply) {
+        if !std::mem::replace(&mut self.accepted, true) {
+            if let Some(frames) = self.frames.as_mut() {
+                let _ = frames.accepted(frame).await;
+            }
+        }
+    }
+
+    /// `req` to `target`, one direct call: the node's acceptance is sent on, and the answer is how the
+    /// command ended.
+    pub async fn carried(&mut self, client: &NodeRpcClient, target: &NodeTarget, req: &NodeCommandRequest, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let mut stream = NodeRpc::new(client).property_stream(target, req, opts).await?;
+        loop {
+            match stream.next().await? {
+                PropertyFrame::Accepted(frame) => self.accepted(frame).await,
+                PropertyFrame::End(reply) => return Ok(reply),
+            }
+        }
+    }
+
+    /// The stream's last frame: the command's terminal once it was accepted, else a refusal.
+    pub fn end(&self, reply: StatusReply) -> NodeCommandReply {
+        if self.accepted {
+            rdm_core::reply::node_command::property_updated(reply)
+        } else {
+            rdm_core::reply::node_command::property_refused(reply)
+        }
+    }
+}
+
+/// A node's property command on its way up to the fabric-primary or down to the mesh-primary: tags
+/// are a Status call, carried by a peer when no direct route answers; name and config are node commands
+/// (Q367), one direct call whose frames go on to whoever asked.
+pub enum PropertyCall<'a> {
+    /// A call on Status 0x1B.
+    Status(&'a StatusRequest),
+    /// A command on NodeCommand 0x22.
+    Command(&'a NodeCommandRequest, &'a mut PropertyFrames),
+}
+
+impl PropertyCall<'_> {
+    fn op(&self) -> &'static str {
+        match self {
+            Self::Status(req) => req.op(),
+            Self::Command(req, _) => req.op(),
+        }
+    }
+
+    /// The node the command is about.
+    fn node_id(&self) -> &rdm_core::NodeId {
+        match self {
+            Self::Status(StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. }) => node_id,
+            Self::Status(other) => unreachable!("forward_up carries a node's property command only, never {}", other.op()),
+            Self::Command(req, _) => req.subject().0,
+        }
+    }
+}
 
 /// A mesh-primary's `NodeConfigs`: the client it tells a birth of its mesh through, what holds this
 /// admin's own config (the mesh-primary is a member of its mesh and the writer of its own row too),
@@ -292,11 +372,11 @@ impl NodeConfigs {
     /// not fail the caller: the owning workflow retargets it to the mesh-primary the view names when the
     /// view next changes, or after the resend schedule's next delay, whichever is first.
     #[allow(clippy::too_many_arguments)]
-    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &Arc<tokio::sync::RwLock<Topology>>, storage: &dyn crate::storage::NodesStorage, sent_by: SentBy, req: &StatusRequest) -> StatusReply {
-        let StatusRequest::UpdateNodeConfig { node_id, config, .. } = req else { unreachable!("serve is called for UpdateNodeConfig only") };
+    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &Arc<tokio::sync::RwLock<Topology>>, storage: &dyn crate::storage::NodesStorage, sent_by: SentBy, req: &NodeCommandRequest, frames: &mut PropertyFrames) -> StatusReply {
+        let NodeCommandRequest::UpdateConfig { node_id, config, .. } = req else { unreachable!("serve is called for UpdateConfig only") };
         let mut held = None;
         if sent_by == SentBy::Caller && !view.is_fabric_primary(me_id) {
-            match self.forward_up(me, me_id, view, topology, req).await {
+            match self.forward_up(me, me_id, view, topology, PropertyCall::Command(req, &mut *frames)).await {
                 Up::Answered(reply) => return reply,
                 Up::InProcess(now) => held = Some(now),
                 Up::Unanswered(why) => return Up::unanswered(why),
@@ -305,11 +385,11 @@ impl NodeConfigs {
         let view = held.as_ref().unwrap_or(view);
         let fabric_primary = view.is_fabric_primary(me_id);
         let Some(subject) = view.own(node_id).cloned() else {
-            return self.update(me, me_id, view, storage, req).await;
+            return self.update(me, me_id, view, storage, req, frames).await;
         };
         if !fabric_primary {
             if view.is_mesh_primary(&subject.mesh, me_id) {
-                return self.update(me, me_id, view, storage, req).await;
+                return self.update(me, me_id, view, storage, req, frames).await;
             }
             let held_by = view.fabric_primary().map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
             let needed = format!("the fabric-primary, where node.config.update of {} goes ({held_by}; {me_id} does not hold it)", subject.node_id);
@@ -332,9 +412,9 @@ impl NodeConfigs {
         );
         let reply = tracing::Instrument::instrument(
             async {
-                match self.send_down(me, me_id, view, topology, &subject, req).await {
+                match self.send_down(me, me_id, view, topology, &subject, PropertyCall::Command(req, &mut *frames)).await {
                     Down::Answered(reply) => reply,
-                    Down::InProcess(now) | Down::Gone(now) => self.update(me, me_id, &now, storage, req).await,
+                    Down::InProcess(now) | Down::Gone(now) => self.update(me, me_id, &now, storage, req, frames).await,
                     Down::Unanswered(why) => Up::unanswered(why),
                 }
             },
@@ -354,8 +434,8 @@ impl NodeConfigs {
     /// the mesh-primary's answer, the view in which this admin holds that primary itself (served in
     /// process) or no longer holds the birth, or the call's end when its attempts are spent unanswered.
     /// Each send is one span event naming the mesh-primary, the route and the outcome.
-    pub async fn send_down(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, subject: &crate::model::Node, req: &StatusRequest) -> Down {
-        match self.owed(me, me_id, first, topology, req, Hop::Down(subject)).await {
+    pub async fn send_down(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, subject: &crate::model::Node, call: PropertyCall<'_>) -> Down {
+        match self.owed(me, me_id, first, topology, call, Hop::Down(subject)).await {
             Owed::Answered(reply) => Down::Answered(reply),
             Owed::InProcess(view) => Down::InProcess(view),
             Owed::Gone(view) => Down::Gone(view),
@@ -376,16 +456,14 @@ impl NodeConfigs {
     /// schedule's next delay. A call whose attempts are spent unanswered ends the command
     /// ([`Up::Unanswered`]): the owner never resends (node-rpc.md §43). One span,
     /// `rdm.node_admin.node.update.via-forward`, names the fabric-primary, the sends and the answer.
-    pub async fn forward_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest) -> Up {
-        let (node_id, subject) = match req {
-            StatusRequest::UpdateNodeConfig { node_id, .. } | StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. } | StatusRequest::UpdateName { node_id, .. } => (node_id, first.own(node_id).map(|n| n.location())),
-            other => unreachable!("forward_up carries a node's property command only, never {}", other.op()),
-        };
+    pub async fn forward_up(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, call: PropertyCall<'_>) -> Up {
+        let node_id = call.node_id().clone();
+        let subject = first.own(&node_id).map(|n| n.location());
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-forward",
             node_path = %me.path, node_name = %me.name,
             receiver_node_id = %me_id,
-            op = req.op(),
+            op = call.op(),
             subject_path = ?subject.as_ref().map(|location| location.path.as_str()), subject_name = ?subject.as_ref().map(|location| location.name.as_str()),
             node_id = %node_id,
             fabric_primary = tracing::field::Empty,
@@ -395,7 +473,7 @@ impl NodeConfigs {
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let up = tracing::Instrument::instrument(self.owed(me, me_id, first, topology, req, Hop::Up), span.clone()).await;
+        let up = tracing::Instrument::instrument(self.owed(me, me_id, first, topology, call, Hop::Up), span.clone()).await;
         let up = match up {
             Owed::Answered(reply) => {
                 span.record("outcome", reply.name());
@@ -422,8 +500,8 @@ impl NodeConfigs {
     /// (retargeting on a domain answer is the owning workflow's). A call whose attempts are spent ends
     /// it unanswered: the owner never resends (node-rpc.md §43).
     #[allow(clippy::too_many_arguments)]
-    async fn owed(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest, hop: Hop<'_>) -> Owed {
-        owed(&self.client, self.views.get().cloned(), me, me_id, first, topology, req, hop).await
+    async fn owed(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, call: PropertyCall<'_>, hop: Hop<'_>) -> Owed {
+        owed(&self.client, self.views.get().cloned(), me, me_id, first, topology, call, hop).await
     }
 }
 
@@ -531,8 +609,9 @@ impl ReadTo {
 
 /// [`NodeConfigs::owed`] over `client`, woken by `views`, the tick of the admin's installed view.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Receiver<u64>>, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, req: &StatusRequest, hop: Hop<'_>) -> Owed {
+pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::watch::Receiver<u64>>, me: &crate::model::PathName, me_id: &rdm_core::NodeId, first: &Topology, topology: &tokio::sync::RwLock<Topology>, mut call: PropertyCall<'_>, hop: Hop<'_>) -> Owed {
     {
+        let op = call.op();
         let (field, to_whom) = match hop {
             Hop::Down(_) => ("mesh_primary", "the mesh-primary"),
             Hop::Up | Hop::Root => ("fabric_primary", "the fabric-primary"),
@@ -571,21 +650,33 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                 Err(none) => none,
                 Ok((primary, mesh, role)) => {
                     tracing::Span::current().record(field, primary.as_str());
-                    let opts = CallOptions { send: rdm_transport::Send::default(), route: Some(primary_route(&view, &mesh, &primary, me_id)), ..CallOptions::default() };
                     sends += 1;
-                    let (out, _) = client.call::<Status>(&role, req, &opts).await;
+                    // Answered, or how the call ended with no answer: its name and detail.
+                    let out: Result<StatusReply, (String, String)> = match &mut call {
+                        PropertyCall::Status(req) => {
+                            let opts = CallOptions { send: rdm_transport::Send::default(), route: Some(primary_route(&view, &mesh, &primary, me_id)), ..CallOptions::default() };
+                            match client.call::<Status>(&role, req, &opts).await.0 {
+                                rdm_core::outcome::RpcOutcome::Reply(r) => Ok(r.into_value()),
+                                other => Err((other.name().to_string(), other.detail_name().to_string())),
+                            }
+                        }
+                        PropertyCall::Command(req, frames) => {
+                            let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
+                            frames.carried(client, &role, req, &opts).await.map_err(|end| (end.outcome().to_string(), describe(&end)))
+                        }
+                    };
                     let outcome = match &out {
-                        rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
-                        other => other.name().to_string(),
+                        Ok(reply) => reply.name().to_string(),
+                        Err((name, _)) => name.clone(),
                     };
                     tracing::Span::current().record("sends", sends);
                     tracing::Span::current().record("route", "owed");
                     match hop {
-                        Hop::Down(_) => tracing::info!(to_node_id = %primary, send = sends, outcome = %outcome, "{} sent down to the mesh-primary", req.op()),
-                        Hop::Up | Hop::Root => tracing::info!(to_node_id = %primary, send = sends, outcome = %outcome, "{} carried up to the fabric-primary", req.op()),
+                        Hop::Down(_) => tracing::info!(to_node_id = %primary, send = sends, outcome = %outcome, "{} sent down to the mesh-primary", op),
+                        Hop::Up | Hop::Root => tracing::info!(to_node_id = %primary, send = sends, outcome = %outcome, "{} carried up to the fabric-primary", op),
                     }
                     match out {
-                        rdm_core::outcome::RpcOutcome::Reply(r) => match (r.into_value(), &hop) {
+                        Ok(reply) => match (reply, &hop) {
                             // Down: any refusal that the receiver is not the primary is the primary changing. Up: only
                             // `ReceiverNotPrimary` is; any other answer (a subject the fabric-primary does not hold) is the caller's.
                             (StatusReply::RejectedNotPrimary { why }, Hop::Down(_)) => format!("{primary} answered rejected-not-primary ({})", why.as_str()),
@@ -596,8 +687,8 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                         },
                         // No answer: the call's attempts are spent (or the role names no birth). The owner
                         // never resends it (node-rpc.md §43): the command ends unanswered, by name.
-                        other => {
-                            let why = format!("{} to {to_whom} ({primary}) ended {} with no answer ({})", req.op(), other.name(), other.detail_name());
+                        Err((name, detail)) => {
+                            let why = format!("{op} to {to_whom} ({primary}) ended {name} with no answer ({detail})");
                             tracing::Span::current().record("detail", why.as_str());
                             return Owed::Unanswered(why);
                         }
@@ -607,7 +698,7 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
             waits += 1;
             let delay = client.delivery().pacing().after(waits);
             tracing::Span::current().record("detail", ended.as_str());
-            tracing::info!(detail = %ended, wait_ms = delay.as_millis() as u64, "{} is sent again to {to_whom} the view names next", req.op());
+            tracing::info!(detail = %ended, wait_ms = delay.as_millis() as u64, "{op} is sent again to {to_whom} the view names next");
             match views.as_mut() {
                 Some(rx) => {
                     let _ = tokio::time::timeout(delay, rx.changed()).await;
@@ -620,12 +711,12 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
 }
 
 impl NodeConfigs {
-    /// Serve an `UpdateNodeConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
+    /// Serve an `UpdateConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
     /// span, opened first, holds the whole put: the row write and the call that tells the birth are
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
     /// reply bound; the span carries it whole (`answered`, `detail`), so nothing of it is lost.
-    pub async fn update(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
-        let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
+    pub async fn update(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &NodeCommandRequest, frames: &mut PropertyFrames) -> StatusReply {
+        let NodeCommandRequest::UpdateConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateConfig only") };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-config",
             node_path = %me.path, node_name = %me.name,
@@ -642,14 +733,14 @@ impl NodeConfigs {
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let reply = tracing::Instrument::instrument(self.put(me, me_id, view, storage, node_id, incarnation, config, &span), span.clone()).await;
+        let reply = tracing::Instrument::instrument(self.put(me, me_id, view, storage, req, node_id, incarnation, config, frames, &span), span.clone()).await;
         span.record("outcome", reply.name());
         span.in_scope(|| tracing::info!("node.config.update decided"));
         reply
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
+    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &NodeCommandRequest, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, frames: &mut PropertyFrames, span: &tracing::Span) -> StatusReply {
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
         // mesh-primary moved to a name node.name.update gave it is still that birth (never found by path and name, its shape
         // included: `Topology::own`). A subject this receiver does not hold is the receiver's own fact
@@ -679,9 +770,10 @@ impl NodeConfigs {
         }
         if self.records().is_some() {
             // The node's own property writer puts the map: this admin's in-process, any other node's
-            // through `ApplyNodeConfig`, called directly.
+            // through its node command, called directly.
             let applied = if node_id == me_id {
                 span.record("apply", "in-process");
+                frames.accepted(NodeCommandReply::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await;
                 match self.own_config(subject, config.clone()).await {
                     Some(Ok(reply)) => Ok(reply),
                     Some(Err(error)) => {
@@ -692,8 +784,7 @@ impl NodeConfigs {
                 }
             } else {
                 span.record("apply", "direct");
-                let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-                NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await
+                frames.carried(&self.client, &NodeTarget::ExactNode(node_id.clone()), req, &CallOptions::default()).await
             };
             let (answered, detail) = match applied {
                 Ok(StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::ConfigUpdated { .. }) => (None, String::new()),
@@ -756,15 +847,15 @@ mod tests {
         let configs = NodeConfigs::new(client);
         let records = Arc::new(MemoryNodesStorage::default());
         let storage = MemoryNodesStorage::default();
-        let req = |value: &str| StatusRequest::UpdateNodeConfig {
+        let req = |value: &str| NodeCommandRequest::UpdateConfig {
             node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap(), config: [("source".into(), value.into())].into(),
         };
-        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
+        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &req("unbound"), &mut PropertyFrames::none()).await, StatusReply::NotReady { .. }));
         assert!(storage.record_at(&admin.location()).await.unwrap().is_none());
         configs.uses_records(records.clone(), || "memory".into(), || None);
         configs.bound_own(&crate::model::Node { endpoint_id: Some(crate::model::EndpointId("0".repeat(64))), transport_addr: Some("127.0.0.1:1".parse().unwrap()), ..admin.clone() }, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into(), executable: None, persistence: None }, rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("config-own")).unwrap(), (None, None)).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
-        assert!(matches!(configs.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
+        assert!(matches!(configs.serve(&admin.location(), &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller"), &mut PropertyFrames::none()).await, StatusReply::ConfigUpdated { .. }));
         let own = || async { records.node(&admin.node_id).await.unwrap().unwrap().record };
         let caller = own().await;
         assert_eq!(caller.config, [("source".into(), "caller".into())].into());
@@ -778,10 +869,10 @@ mod tests {
         configs.own_entry(&admin, entry).await.unwrap().unwrap();
         assert_eq!(own().await.config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
         let mut stale = req("stale");
-        if let StatusRequest::UpdateNodeConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }
-        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+        if let NodeCommandRequest::UpdateConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }
+        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &view, &storage, &stale, &mut PropertyFrames::none()).await, StatusReply::RejectedStaleIncarnation { .. }));
         let mut other = view.clone(); other.nodes[0].is_primary = false;
-        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &other, &storage, &req("wrong-primary")).await, StatusReply::RejectedNotPrimary { .. }));
+        assert!(matches!(configs.update(&admin.location(), &admin.node_id, &other, &storage, &req("wrong-primary"), &mut PropertyFrames::none()).await, StatusReply::RejectedNotPrimary { .. }));
         assert_eq!(SentBy::of_writer_call(None), SentBy::Caller);
         assert_eq!(SentBy::of_writer_call(Some(&admin)), SentBy::Other);
         ep.close().await;

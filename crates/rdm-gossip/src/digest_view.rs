@@ -257,7 +257,7 @@ pub struct DigestView {
     pub(crate) ended_overlays: Arc<Mutex<std::collections::HashSet<crate::receive_order::LifecycleIdentity>>>,
     /// The path name of the node holding this view, named by the refusals it writes.
     pub(crate) observer_name: Arc<Mutex<String>>,
-    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
+    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
     /// the topology view; `None` while the birth holds its launch name.
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
@@ -409,7 +409,7 @@ impl DigestView {
     }
 
     /// The [`PathName`](rdm_core::PathName) the mesh-primary's row last gave this view's
-    /// holder (`ApplyNodeName`, R12), or `None` while the holder has its launch name.
+    /// holder (`UpdateName`, R12), or `None` while the holder has its launch name.
     pub fn held_path_name(&self) -> Option<rdm_core::PathName> {
         self.held_name.lock().unwrap().clone()
     }

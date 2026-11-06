@@ -151,7 +151,7 @@ fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_goss
 /// CONTRACT: the rename precondition counts open Direct and Proxy entries only (lifecycles/node-name-update.md: "it
 /// holds no connection (gossip neighbours and the Node RPC pool are not connections)"). After a
 /// completed `All`, the commander makes a further Node RPC call to the node on a new pool connection,
-/// then sends `ApplyNodeName`: the node answers `Applied`. What must NOT happen: `Busy` naming the
+/// then sends `UpdateName`: the node answers `Applied`. What must NOT happen: `Busy` naming the
 /// Node RPC connection the further call opened as a held direct connection.
 #[test]
 fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
@@ -175,8 +175,8 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let read = rdm_client::NodeRpc::new(&admin.observer.client).connections_get(&birth, &rdm_core::filter::Filter::new(), &opts).await;
         assert!(read.is_ok(), "the further call is answered: {read:?}");
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.clone() };
-        assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a Node RPC connection is no connection the rename counts");
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id, incarnation, name: taken.name.clone() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied, "a Node RPC connection is no connection the rename counts");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -316,7 +316,7 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
 /// `All` answers holding nothing, the node's data-plane call to its admin ends `NotSent`
 /// `AdmissionBlocked` naming the node, before any dial: one
 /// `rdm.node_rpc.connection.reject.via-admission-block` span, `at = dial`, names the destination. The log
-/// holds nothing, and `ApplyNodeName` answers `Applied`. The block stays: the next call is refused the
+/// holds nothing, and `UpdateName` answers `Applied`. The block stays: the next call is refused the
 /// same way. The node joins its mesh again (`JoinMesh`): the block lifts, and its next data-plane call is
 /// answered, its entry naming the name it took as its source. What must NOT happen: a call answered on a
 /// new connection before the join, a Direct entry written between `All` and the join,
@@ -349,8 +349,8 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination_node_id").map(String::as_str)), (Some("dial"), Some(admin.launcher.node_id.as_str())), "{refusals:#?}");
 
         let taken: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
-        assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.name.clone() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied, "a node that opened nothing takes its name");
         assert_eq!(running.topology_view.held_name(&launch.location()), taken, "the node holds the applied name");
 
         // The block stays after the apply: a renamed node opens nothing until it starts or joins its mesh
@@ -381,7 +381,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
 /// The dial stops once connected (the client's after-connect failpoint); `All` answers holding nothing;
 /// released, the dial's connection is closed and the call ends `NotSent` `AdmissionBlocked`, its
 /// `rdm.node_rpc.connection.reject.via-admission-block` span naming the pool (`at = pool`). The log
-/// holds nothing and `ApplyNodeName` answers `Applied`. What must NOT happen: the late connection
+/// holds nothing and `UpdateName` answers `Applied`. What must NOT happen: the late connection
 /// pooled and answered, its Direct entry written, or `BusyHoldingConnections` naming it.
 #[test]
 fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
@@ -415,8 +415,8 @@ fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
         let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
         assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
         assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination_node_id").map(String::as_str)), (Some("pool"), Some(admin.launcher.node_id.as_str())), "{refusals:#?}");
-        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: rdm_core::PathName::new("mesh1.node", "1").unwrap() };
-        assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "no late connection makes the node Busy");
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id, incarnation, name: "1".into() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied, "no late connection makes the node Busy");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

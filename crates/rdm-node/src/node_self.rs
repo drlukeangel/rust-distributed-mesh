@@ -370,7 +370,7 @@ impl NodeSelf {
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
-    /// `ApplyNodeName`, or from its join answer), else its birth's (R12). Every span, refusal and
+    /// `UpdateName`, or from its join answer), else its birth's (R12). Every span, refusal and
     /// frame of this surface names it.
     pub fn held_name(&self) -> PathName {
         self.topology_view.held_name(&self.location())
@@ -1554,9 +1554,10 @@ pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8
 /// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    // Position 34, the removed upward property copy, and position 21, the caller's connections delete
-    // that goes on NodeCommand 0x22 (D18), name no operation: refused by name, nothing written.
-    if let StatusRequest::Reserved34 { node_id, .. } | StatusRequest::Reserved21 { node_id, .. } = req {
+    // Position 34, the removed upward property copy, position 21, the caller's connections delete
+    // that goes on NodeCommand 0x22 (D18), and positions 17 to 20, the name and config commands that go
+    // on it too (Q367), name no operation: refused by name, nothing written.
+    if let StatusRequest::Reserved34 { node_id, .. } | StatusRequest::Reserved21 { node_id, .. } | StatusRequest::Reserved17 { node_id, .. } | StatusRequest::Reserved18 { node_id, .. } | StatusRequest::Reserved19 { node_id, .. } | StatusRequest::Reserved20 { node_id, .. } = req {
         let reported = format!("{} of {node_id}", req.op());
         tracing::info_span!(
             "rdm.node_admin.status.reject.via-reserved-position",

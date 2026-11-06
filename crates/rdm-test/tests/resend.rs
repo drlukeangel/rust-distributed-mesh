@@ -5,7 +5,7 @@
 //! application's `on_call_failed` and `on_node_investigated`, each recording a span) at a 60 s staleness
 //! floor, an rpc member holding no role is hung (`ExactRuntime::hang`: every task but the leader held, so
 //! it neither gossips nor answers, and the provider reads it running). At once the caller asks the
-//! mesh-primary for `node.config.update` of that member, so the mesh-primary's own `ApplyNodeConfig` call
+//! mesh-primary for `node.config.update` of that member, so the mesh-primary's own `UpdateConfig` call
 //! goes to the hung birth. In order:
 //! 1. that call ends with its attempts spent, after three attempts (`rdm.node_rpc.request.update.via-call`,
 //!    `attempts` 3, `delivery` `attempts-spent`, outcome `NotSent` or `Indeterminate`);
@@ -96,12 +96,12 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     let hung = rt.hang().expect("the hang is acknowledged by the OS");
     assert!(!hung.held.is_empty(), "every task but the leader is held: the provider reads it running");
 
-    // The caller's node.config.update at the mesh-primary: its own ApplyNodeConfig to the hung birth.
+    // The caller's node.config.update at the mesh-primary: its own UpdateConfig to the hung birth.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     let carrier = estate.carrier().await;
     let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
-    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &opts).await;
+    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &birth, told, &opts).await;
     eprintln!("node.config.update of the hung birth answered: {reply:?}");
 
     // 2. on_call_failed for the mesh-primary's spent call to the hung birth.

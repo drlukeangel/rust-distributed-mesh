@@ -27,7 +27,7 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
 
 /// CONTRACT (node-name-update.md step 5: the node "holds the new name and publishes it"; R-JN1): a node
 /// born path `mesh1.node`, name `1` has its connections deleted and takes path `mesh1.node`, name
-/// `renamed` live: `ApplyNodeName` answers `Applied` and its apply span says `digest=published`. It is
+/// `renamed` live: `UpdateName` answers `Applied` and its apply span says `digest=published`. It is
 /// then stopped and started: its stop and start select the same node id, its start presents the name
 /// it holds and is admitted under it, and every digest after the apply names path `mesh1.node`, name
 /// `renamed`. What must NOT happen: a digest under name `1` after the apply, or the start refused
@@ -90,8 +90,8 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
         // publishes.
         let published = || running.topology_view.digest_view.get(launch.node_id.as_str()).expect("the node's own view records what it published").0.digest_seq;
         // The name, live; then the stop.
-        let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
-        assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.name.clone() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied);
         let seq_at_apply = published();
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), operation: rdm_core::OperationId::node("node.stop", &node_id) };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), operation: rdm_core::OperationId::node("node.start", &node_id) };

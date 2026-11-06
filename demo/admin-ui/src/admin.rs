@@ -192,7 +192,7 @@ impl Admin {
         config.insert(key.to_string(), value.to_string());
         let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(own.node_id.clone()), node_id: own.node_id.clone(), incarnation: own.incarnation.clone().expect("checked above") };
         let carrier = self.carrier();
-        rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, config, &rdm_transport::CallOptions::default()).await.map_err(|e| format!("node.config.update: {e:?}"))
+        rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &birth, config, &rdm_transport::CallOptions::default()).await.map_err(|e| format!("node.config.update: {e:?}"))
     }
 
     /// `node.connection.get { node }` of `n`'s exact birth.

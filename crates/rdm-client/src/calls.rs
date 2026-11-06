@@ -187,6 +187,51 @@ pub(crate) fn ended<R>(out: RpcOutcome<R>) -> Result<R, CallEnd> {
     }
 }
 
+/// What a node's property command's stream says next.
+#[derive(Debug)]
+pub enum PropertyFrame {
+    /// The node accepted it: its `node.config.updating` or `node.name.updating`.
+    Accepted(rdm_core::node_command::NodeCommandReply),
+    /// How the command ended.
+    End(StatusReply),
+}
+
+/// The stream of a node's property command ([`NodeRpc::property_stream`]).
+pub struct PropertyStream {
+    stream: Option<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>>,
+    answered: Option<StatusReply>,
+    op: &'static str,
+}
+
+impl PropertyStream {
+    /// The next frame that says anything: the acceptance, then the end. A stream that breaks first
+    /// ends `Indeterminate`: the command may have run.
+    pub async fn next(&mut self) -> Result<PropertyFrame, CallEnd> {
+        use rdm_core::node_command::NodeCommand;
+        use rdm_core::streaming::StreamingProtocol as _;
+        if let Some(reply) = self.answered.take() {
+            return Ok(PropertyFrame::End(reply));
+        }
+        if let Some(stream) = self.stream.as_mut() {
+            while let Some(item) = stream.next().await {
+                match item {
+                    StreamItem::Frame(_, frame) => {
+                        let kind = NodeCommand::frame_kind(&frame);
+                        stream.accepted().await;
+                        match kind {
+                            FrameKind::Started => return Ok(PropertyFrame::Accepted(frame)),
+                            FrameKind::Terminal | FrameKind::Refusal(_) => return Ok(PropertyFrame::End(frame.property_end())),
+                            FrameKind::Data => {}
+                        }
+                    }
+                    StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the {} stream broke: {f:?}", self.op) }),
+                }
+            }
+        }
+        Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("the {} stream ended before its end", self.op) })
+    }
+}
+
 /// The exact birth a node-RPC call is for: where to reach it and which node and incarnation it
 /// must be. A call that names the wrong birth is refused by the receiver, never applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,34 +326,53 @@ impl<'a> NodeRpc<'a> {
         }
     }
 
-    /// `node.config.update`, the caller's single call to the fabric-primary `receiver`
-    /// (node-config-update.md step 1): put the birth's whole config. The fabric-primary writes the map
-    /// to the node in its atlas and sends the command to the node's mesh-primary, the writer
-    /// of that mesh's rows. `route` is the caller's choice: `Direct`, or `ViaPeer` through a carrier
-    /// (Forward `0x1A`) when the receiver is not directly reachable, executed exactly as chosen
-    /// (`NodeRpcClient::call_routed`). `ConfigUpdated` is `node.config.updated`: the mesh-primary wrote
-    /// the node's row and the birth applied the config. A caller that is not a node-admin may send it to
-    /// any node-admin: one that is not the fabric-primary carries it up and hands the answer back.
-    /// A node-admin's call at an admin holding neither the fabric-primary
-    /// nor the node's mesh-primary is refused `RejectedNotPrimary`, naming the fabric-primary.
-    pub async fn config_update(&self, receiver: &NodeId, route: &RouteChoice, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
-        let span = NodeOp::ConfigUpdate.span();
-        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(receiver, route, &req, opts), span.clone()).await;
-        let r = ended(out);
+    /// `node.config.update` (Q367): put the birth's whole config, NodeCommand 0x22 `UpdateConfig` to the
+    /// fabric-primary `receiver`, directly. The fabric-primary sends the command to the node's
+    /// mesh-primary, which sends it to the node; the node writes the map on its own record and each
+    /// sends the stream back. An unreachable receiver ends the call `NotSent`. `ConfigUpdated` is
+    /// `node.config.updated`. A caller that is not a node-admin may send it to any node-admin: one that
+    /// is not the fabric-primary carries it up and hands the answer back. A node-admin's call at an
+    /// admin holding neither the fabric-primary nor the node's mesh-primary is refused
+    /// `RejectedNotPrimary`, naming the fabric-primary.
+    pub async fn config_update(&self, receiver: &NodeId, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = rdm_core::node_command::NodeCommandRequest::UpdateConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
+        self.property_call(NodeOp::ConfigUpdate, receiver, &req, opts).await
+    }
+
+    /// One property command to `receiver`, read to its end, its span saying how it ended.
+    async fn property_call(&self, op: NodeOp, receiver: &NodeId, req: &rdm_core::node_command::NodeCommandRequest, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let span = op.span();
+        let target = NodeTarget::ExactNode(receiver.clone());
+        let r = tracing::Instrument::instrument(self.property_command(&target, req, opts), span.clone()).await;
         span.record("outcome", match &r {
             Ok(reply) => reply.name(),
             Err(e) => e.outcome(),
         });
-        span.in_scope(|| tracing::info!(op = NodeOp::ConfigUpdate.name(), route = route.token(), "an object call ended"));
+        span.in_scope(|| tracing::info!(op = op.name(), "an object call ended"));
         r
     }
 
-    /// The mesh-primary's call to the exact birth of its mesh, direct: put this whole config through
-    /// the birth's own property writer (node-config-update.md, a caller's update, step 2).
-    pub async fn config_apply(&self, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::ApplyNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
-        self.status(NodeOp::ConfigUpdate, birth, req, opts).await
+    /// A node's property command (`UpdateConfig`, `UpdateName`) to `target`, read to its end.
+    pub async fn property_command(&self, target: &NodeTarget, req: &rdm_core::node_command::NodeCommandRequest, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let mut stream = self.property_stream(target, req, opts).await?;
+        loop {
+            if let PropertyFrame::End(reply) = stream.next().await? {
+                return Ok(reply);
+            }
+        }
+    }
+
+    /// A node's property command (`UpdateConfig`, `UpdateName`) to `target`, its frames to read. What a
+    /// primary carrying the command down reads, to send the node's acceptance on.
+    pub async fn property_stream(&self, target: &NodeTarget, req: &rdm_core::node_command::NodeCommandRequest, opts: &CallOptions) -> Result<PropertyStream, CallEnd> {
+        use rdm_core::node_command::NodeCommand;
+        // The request is owed until acked and its attempts can be spent (node-rpc.md §34): a hung
+        // receiver ends the call by name, and its primary marks it, as any call's.
+        let opts = CallOptions { resend_unacked_stream: true, ..opts.clone() };
+        match self.client.call_stream::<NodeCommand>(target, req, &opts).await {
+            Ok((stream, _)) => Ok(PropertyStream { stream: Some(stream), answered: None, op: req.op() }),
+            Err((out, _)) => Ok(PropertyStream { stream: None, answered: Some(ended(out)?.property_end()), op: req.op() }),
+        }
     }
 
     /// Apply a Build's entire entry to this exact birth through its own property writer.
@@ -347,16 +411,13 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// `node.name.update` of the exact birth, the caller's single call to the node's mesh-primary
-    /// `mesh_primary` (proposal node-properties-own-commands.md §2; R13, R-CR1): `name` is the name
-    /// only, never its path. The mesh-primary validates from its held record, claims the name,
-    /// moves the row, tells a live birth `ApplyNodeName` and answers `NameUpdated` after
-    /// the birth answered; a stopped birth is told nothing and the call completes on the row. `route`
-    /// is the caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward
-    /// `0x1A`), executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn name_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rdm_core::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.clone() };
-        self.row_writer_call(NodeOp::NameUpdate, mesh_primary, route, &req, opts).await
+    /// `node.name.update` of the exact birth (Q367), NodeCommand 0x22 `UpdateName` to `receiver`,
+    /// directly: `name` is the name only, a node's path never moves. The mesh-primary validates from its
+    /// held record and checks the name; the node writes it on its own record, and a live node rejoins its
+    /// mesh under it. `NameUpdated` is `node.name.updated`. An unreachable receiver ends the call `NotSent`.
+    pub async fn name_update(&self, receiver: &NodeId, birth: &ExactBirth, name: &str, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        self.property_call(NodeOp::NameUpdate, receiver, &req, opts).await
     }
 
     /// `node.connection.delete` of the exact birth's connections named by `scope`, the caller's single
@@ -395,24 +456,6 @@ impl<'a> NodeRpc<'a> {
             Err(e) => e.outcome(),
         });
         span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), scope = scope.name(), "an object call ended"));
-        r
-    }
-
-    /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
-    /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
-    /// published it, `AlreadyApplied` for the name it holds, `BusyHoldingConnections` naming each
-    /// connection it holds while it holds any (R-CR1). `route` is executed exactly as chosen
-    /// (`NodeRpcClient::call_routed`).
-    pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rdm_core::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.clone() };
-        let span = NodeOp::NameUpdate.span();
-        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
-        let r = ended(out);
-        span.record("outcome", match &r {
-            Ok(reply) => reply.name(),
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), route = route.token(), "an object call ended"));
         r
     }
 

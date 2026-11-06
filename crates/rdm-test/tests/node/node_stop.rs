@@ -384,7 +384,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
     // The rename of a stopped node: one call to its mesh-primary, which checks the name and tells the
     // bound process, which writes the name on its own record (Q356).
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(stopped.node_id.clone()), node_id: stopped.node_id.clone(), incarnation: stopped.incarnation.clone().expect("the stopped node's birth") };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed).await.expect("node.name.update answered");
+    let reply = nodes.name_update(&birth, &primary.node_id, &renamed.name).await.expect("node.name.update answered");
     assert!(matches!(reply, StatusReply::NameUpdated { .. }), "a stopped node holds no connection and is renamed: {reply:?}");
     let listed = view_of(&estate.nodes_obj().await, &renamed).await;
     assert!(listed.state == NodeStatus::Stopped && listed.node_id == before.node_id && listed.incarnation == before.incarnation, "node.get lists the stopped birth at {renamed:?}: {listed:?}");
@@ -424,7 +424,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
 /// with its Node RPC endpoint bound"; a caller's update, step 2: "The node's property writer applies the
 /// whole map to its latest owned state and issues one put"): `node.config.update` of the stopped
 /// `mesh1.node.1` at its mesh-primary ends `node.config.updated`: the stopped process, still bound, is
-/// sent `ApplyNodeConfig` once and its own writer puts the map (the via-config span says
+/// sent `UpdateConfig` once and its own writer puts the map (the via-config span says
 /// `apply=direct`, no `answered`; one `via-apply-node-config` at the node). Then `node.start` makes the
 /// same process rejoin (`via-join` admitted; its own record, not the join answer, holds the config),
 /// and `node.get` lists the same birth `ready` carrying the config. What must NOT happen: `ConfigNotApplied` for a stopped node, or the started birth without
@@ -455,7 +455,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation.clone().expect("the stopped node's birth") };
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client())
-        .config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
+        .config_update(&primary.node_id, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .expect("node.config.update answered");
     assert!(matches!(&reply, StatusReply::ConfigUpdated { node_id, incarnation, config, .. } if *node_id == before.node_id && Some(incarnation) == before.incarnation.as_ref() && *config == told), "a stopped node's config update completes once its writer put it: {reply:?}");
@@ -484,7 +484,7 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     let a = &update["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["apply"]), s(&a["answered"])), ("config-updated".into(), "direct".into(), String::new()), "the stopped node's own writer applied it: {update:#?}");
     let applied = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| sp["trace_id"] == update["trace_id"]).count();
-    assert_eq!(applied, 1, "one ApplyNodeConfig reached the stopped, still bound node");
+    assert_eq!(applied, 1, "one UpdateConfig reached the stopped, still bound node");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && at_location(sp, &path)).expect("the start command was sent");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
     assert!(rdm_test::estate::names_location(&join, "admitted", &path), "the start's rejoin is admitted at its path and name: {join:#?}");
@@ -531,7 +531,7 @@ async fn a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_ever
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(before.node_id.clone()), node_id: before.node_id.clone(), incarnation: before.incarnation.clone().expect("the node's birth") };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed).await.expect("node.name.update answered");
+    let reply = nodes.name_update(&birth, &primary.node_id, &renamed.name).await.expect("node.name.update answered");
     assert!(matches!(reply, StatusReply::NameUpdated { .. }), "{reply:?}");
     // Every admin's view names the stopped birth by its record, the one that performed no rename included.
     for admin in &admins {

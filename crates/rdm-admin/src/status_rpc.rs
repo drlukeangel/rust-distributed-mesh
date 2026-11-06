@@ -494,7 +494,7 @@ pub struct StatusService {
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// What this admin applied.
     pub declared: Arc<Mutex<Declared>>,
-    /// The nodes store: the node records a config update writes (`UpdateNodeConfig`), carrying the
+    /// The nodes store: the node records a config update writes (`UpdateConfig`), carrying the
     /// facts on each birth an applied declaration writes before it is answered.
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
@@ -556,7 +556,7 @@ pub struct StatusService {
     /// `Pending` a probe naming this admin is answered `Pending` with its reason, and once its start
     /// ended Failed `StartFailed`.
     pub pre_node_ready: PreNodeReadyCell,
-    /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
+    /// This admin as the subject of `UpdateName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
     /// This admin's view taking a node's row its `node.name.update` moved (R13): the view is projected
@@ -696,12 +696,12 @@ pub fn decide(service: &StatusService, view: &Topology, declared: &Declared, req
         }
         // Downward exact-node operations are answered by the birth they reach (`self_subject`), which
         // this admin answers as once its view holds it.
-        StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeProperties { .. } | StatusRequest::ApplyNodeName { .. } => {
+        StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeProperties { .. } => {
             (rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name)), None)
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::Reserved21 { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::Reserved29 { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::Reserved34 { .. } | StatusRequest::ReportCallFailed { .. } | StatusRequest::UpdateStorage { .. } => {
+        StatusRequest::Reserved17 { .. } | StatusRequest::Reserved18 { .. } | StatusRequest::Reserved19 { .. } | StatusRequest::Reserved20 { .. } | StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::Reserved21 { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::Reserved29 { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::Reserved34 { .. } | StatusRequest::ReportCallFailed { .. } | StatusRequest::UpdateStorage { .. } => {
             (crate::node_self::request_not_handled(service.node_id.as_str(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state, changed_at_rafka_ms } => {
@@ -908,23 +908,107 @@ impl StatusService {
 
 
     /// `node.name.update` (`UpdateName`) at this admin: the one validator and writer of a rename.
-    pub async fn update_name(&self, req: &StatusRequest) -> StatusReply {
-        let StatusRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
+    pub async fn update_name(&self, req: &rdm_core::node_command::NodeCommandRequest, frames: &mut crate::node_config::PropertyFrames) -> StatusReply {
+        let rdm_core::node_command::NodeCommandRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
         let me = self.held_name().await;
         // The mesh-primary writes the record through its `NodeConfigs`, the one place its record changes take turns at.
         let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
         let service = crate::node_name_update::NodeNameUpdateService { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename, rejoin: &self.rejoin };
-        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, service, deleted.as_ref(), req).await
+        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, service, deleted.as_ref(), req, frames).await
     }
 
-    /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
-    /// (build.md §1, "The Build applies the diff"): the one config door.
-    pub async fn update_config_from_spec(&self, req: &StatusRequest) -> StatusReply {
+    /// `node.config.update` of a Build's create spec at this admin, in-process (build.md §1, "The Build
+    /// applies the diff"): the one config door.
+    pub async fn update_config_from_spec(&self, req: &rdm_core::node_command::NodeCommandRequest) -> StatusReply {
         let me = self.held_name().await;
         let view = self.topology.read().await.clone();
         match self.configs.get() {
-            Some(configs) => configs.update(&me, &self.node_id, &view, &*self.nodes_storage, req).await,
+            Some(configs) => configs.update(&me, &self.node_id, &view, &*self.nodes_storage, req, &mut crate::node_config::PropertyFrames::none()).await,
             None => rdm_core::reply::status::not_ready(format!("path {me_path:?}, name {me_name:?} has no node-RPC client yet; {} is refused", req.op(), me_path = &me.path, me_name = &me.name)),
+        }
+    }
+
+    /// A caller's `node.config.update` or `node.name.update` (Q367) at this admin: up to the
+    /// fabric-primary, down to the node's mesh-primary, and to the node, each hop's frames sent back. A
+    /// birth this admin's node recovery holds deleted is refused by name (node-recovery.md step 3; Q342).
+    /// A caller's property command is admitted at any time (Q166); a mesh-primary that replied `blocked`
+    /// to a storage change issues it only once it is unblocked (storage.md §2 step 1).
+    pub async fn property_command(&self, sender: Option<&crate::model::Node>, req: &rdm_core::node_command::NodeCommandRequest, frames: &mut crate::node_config::PropertyFrames) -> StatusReply {
+        use rdm_core::node_command::NodeCommandRequest;
+        let view = self.topology.read().await.clone();
+        let me_name = self.held_name_in(&view);
+        if let (Some(n), Some(channels)) = (sender, self.topology_view.as_ref()) {
+            if n.incarnation_id.as_ref().is_some_and(|inc| channels.is_recovering(n.node_id.as_str(), inc)) {
+                tracing::info_span!("rdm.node_admin.status.reject.via-deleted-birth", node_path = %me_name.path, node_name = %me_name.name, op = req.op(), sender = %n.node_id, sender_path = %n.path, sender_name = %n.name, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a call from a birth held deleted from its recovery's verdict: refused"));
+                return rdm_core::reply::status::rejected_not_primary(rdm_core::status::NotPrimary::SubjectUnknown);
+            }
+        }
+        self.commands.admitted().await;
+        let sent_by = crate::node_config::SentBy::of_writer_call(sender);
+        match req {
+            NodeCommandRequest::UpdateName { .. } => match crate::node_name_update::routed(&me_name, &self.node_id, &self.topology, self.configs.get().map(|c| &**c), sent_by, req, frames).await {
+                crate::node_name_update::Routed::Answered(reply) => reply,
+                crate::node_name_update::Routed::Here => self.update_name(req, frames).await,
+            },
+            _ => match self.configs.get() {
+                Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, sent_by, req, frames).await,
+                None => rdm_core::reply::status::not_ready(format!("path {:?}, name {:?} has no node-RPC client yet; {} is refused", me_name.path, me_name.name, req.op())),
+            },
+        }
+    }
+
+    /// A `node.config.update` or `node.name.update` at the node it names, this admin (Q367): the exact
+    /// birth is checked, its `CommandAccepted` is its `updating`, and it writes the map or the name on
+    /// its own record (Q356). A node-admin serving its own record is a node here, regardless of the
+    /// primary roles it holds.
+    pub async fn own_property_command(&self, sender: Option<&crate::model::Node>, req: &rdm_core::node_command::NodeCommandRequest, frames: &mut crate::node_config::PropertyFrames) -> StatusReply {
+        use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
+        let view = self.topology.read().await.clone();
+        let me_name = self.held_name_in(&view);
+        let Some(subject) = view.own(&self.node_id) else {
+            return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?} holds no own birth yet", me_name.path, me_name.name));
+        };
+        let incarnation = req.subject().1;
+        if subject.incarnation_id.as_ref() != Some(incarnation) {
+            return rdm_core::reply::stale(subject.incarnation_id.clone().unwrap_or_else(|| incarnation.clone()));
+        }
+        frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: incarnation.clone() }).await;
+        match req {
+            NodeCommandRequest::UpdateConfig { config, .. } => {
+                let Some(configs) = self.configs.get() else {
+                    return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?} has no own property writer yet", me_name.path, me_name.name));
+                };
+                match configs.own_config(subject, config.clone()).await {
+                    Some(Ok(_)) => rdm_core::reply::applied(),
+                    Some(Err(error)) => rdm_core::reply::status::bounded_node_record_refused(self.node_id.as_str(), &error.to_string()),
+                    None => rdm_core::reply::status::not_ready(format!("path {:?}, name {:?} has no own property writer yet", me_name.path, me_name.name)),
+                }
+            }
+            NodeCommandRequest::UpdateName { name, .. } => {
+                let sender_name = sender.map_or_else(String::new, |n| n.node_id.to_string());
+                // R12, R-CR1: the node owns its name and takes the row's name only while it holds no connection.
+                let asked = match rdm_core::PathName::new(me_name.path.clone(), name.clone()) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_path = %me_name.path, node_name = %me_name.name, sender = %sender_name, to_name = %name, reason = %format!("invalid name {name:?}: {e}"), "otel.kind" = "internal")
+                            .in_scope(|| tracing::info!("apply-node-name refused: invalid name"));
+                        return rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt);
+                    }
+                };
+                let Some(rename) = self.rename.get() else {
+                    return rdm_core::reply::status::not_ready(format!("node {}: its digest does not exist yet; path {:?}, name {:?} is not taken", self.node_id, asked.path, asked.name));
+                };
+                let (held, decision) = rename(asked.clone()).await;
+                let routes = match &decision {
+                    crate::node_name::NameApply::Busy { routes, .. } => routes.join(", "),
+                    _ => String::new(),
+                };
+                tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_path = %held.path, node_name = %held.name, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the mesh-primary's name for this admin was decided"));
+                crate::node_name::reply(&decision)
+            }
+            other => unreachable!("{} is no property command", other.op()),
         }
     }
 
@@ -1035,7 +1119,6 @@ impl StatusService {
         // Exact-self downward property commands terminate at this node's writer. A node-admin
         // serving its own record is a node here, regardless of the primary roles it holds.
         let own_property = match req {
-            StatusRequest::ApplyNodeConfig { incarnation, .. } => Some(incarnation),
             StatusRequest::ApplyNodeProperties { node_id, incarnation, .. } if *node_id == self.node_id => Some(incarnation),
             StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } if *node_id == self.node_id => Some(incarnation),
             _ => None,
@@ -1054,14 +1137,13 @@ impl StatusService {
             // tags command's writer opens.
             let tags = matches!(req, StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. }).then(|| crate::node_properties::writer_span(&me_name, req));
             let result = match req {
-                StatusRequest::ApplyNodeConfig { config, .. } => configs.own_config(subject, config.clone()).await,
                 StatusRequest::ApplyNodeProperties { entry, .. } => configs.own_entry(subject, entry.clone()).await,
                 StatusRequest::CreateTags { labels, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Create(labels.clone())).await,
                 StatusRequest::DeleteTags { scope, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Delete(scope.clone())).await,
                 _ => unreachable!("selected own property commands only"),
             };
             let reply = match result {
-                Some(Ok(reply)) => if matches!(req, StatusRequest::ApplyNodeConfig { .. }) { rdm_core::reply::applied() } else { reply },
+                Some(Ok(reply)) => reply,
                 Some(Err(error)) => rdm_core::reply::status::bounded_node_record_refused(self.node_id.as_str(), &error.to_string()),
                 None => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has no own property writer yet", me_name_path = &me_name.path, me_name_name = &me_name.name)),
             };
@@ -1072,7 +1154,7 @@ impl StatusService {
             return reply;
         }
         match req {
-            StatusRequest::Reserved34 { .. } | StatusRequest::Reserved21 { .. } | StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved29 { .. } => return crate::node_commands::refuse_reserved(self.node_id.as_str(), &sender.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), req),
+            StatusRequest::Reserved34 { .. } | StatusRequest::Reserved21 { .. } | StatusRequest::Reserved17 { .. } | StatusRequest::Reserved18 { .. } | StatusRequest::Reserved19 { .. } | StatusRequest::Reserved20 { .. } | StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved29 { .. } => return crate::node_commands::refuse_reserved(self.node_id.as_str(), &sender.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
                 let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.node_id.to_string()).unwrap_or_default();
                 return crate::node_commands::refuse_node_left(self.node_id.as_str(), &name, &sender.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), req);
@@ -1092,25 +1174,9 @@ impl StatusService {
             // command to the node, only once it is unblocked (storage.md §2 step 1).
             // A caller's goes up to the fabric-primary and down to the node's writer (node-name-update.md
             // step 1), the fabric-primary's atlas written on its way back.
-            StatusRequest::UpdateName { .. } => {
-                self.commands.admitted().await;
-                let routed = crate::node_name_update::routed(&me_name, &self.node_id, &self.topology, self.configs.get().map(|c| &**c), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
-                return match routed {
-                    crate::node_name_update::Routed::Answered(reply) => reply,
-                    crate::node_name_update::Routed::Here => self.update_name(req).await,
-                };
-            }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 self.commands.admitted().await;
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
-            }
-            StatusRequest::UpdateNodeConfig { node_id, .. } => {
-                self.commands.admitted().await;
-                let view = self.topology.read().await.clone();
-                return match self.configs.get() {
-                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await,
-                    None => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has no node-RPC client yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name)),
-                };
             }
             // The reads (Q167): answered from what this admin holds, changing nothing.
             // A mesh-primary that is not the fabric-primary answers a read of its own mesh from its atlas
@@ -2285,7 +2351,7 @@ pub type PreNodeReadyCell = Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHand
 
 /// A node's re-publish of its presence (its digest published on the channel it is on), filled once it has joined its mesh.
 pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
-/// This node deciding a name its mesh-primary's row gives it (`ApplyNodeName`): the name it held
+/// This node deciding a name its mesh-primary's row gives it (`UpdateName`): the name it held
 /// and the decision, the name taken and published only on `Applied`.
 pub type Rename = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = (rdm_core::PathName, crate::node_name::NameApply)> + Send>> + Send + Sync>>>;
 
@@ -2359,7 +2425,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 #[allow(clippy::too_many_arguments)]
 async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, rename: &Rename, pre_node_ready: &PreNodeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
-        StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
+        StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } => incarnation,
         _ => return None,
     };
     // The exact birth the call names is checked, so a call that reached another birth is refused
@@ -2411,28 +2477,6 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 .in_scope(|| tracing::info!("apply-node-state refused"));
             Some(rdm_core::reply::status::rejected_invalid_node_transition(current))
         }
-        StatusRequest::ApplyNodeName { name, .. } => {
-            // R12, R-CR1: the node owns its name and takes the row's name only while it holds no connection.
-            let asked = match rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_path = %me.path, node_name = %me.name, sender = %sender_name, to_path = %name.path, to_name = %name.name, reason = %e, "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("apply-node-name refused: invalid path or name"));
-                    return Some(rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt));
-                }
-            };
-            let Some(rename) = rename.get() else {
-                return Some(rdm_core::reply::status::not_ready(format!("node {}: its digest does not exist yet; path {:?}, name {:?} is not taken", me.node_id, asked.path, asked.name)));
-            };
-            let (held, decision) = rename(asked.clone()).await;
-            let routes = match &decision {
-                crate::node_name::NameApply::Busy { routes, .. } => routes.join(", "),
-                _ => String::new(),
-            };
-            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_path = %held.path, node_name = %held.name, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the mesh-primary's name for this admin was decided"));
-            Some(crate::node_name::reply(&decision))
-        }
         _ => None,
     }
 }
@@ -2470,10 +2514,30 @@ fn serve_node_command(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>
             let Some(service) = service.get().cloned() else {
                 return Ok(rdm_core::reply::node_command::not_ready("this admin holds no view yet".into()));
             };
+            let sender = service.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
+            // node.config.update and node.name.update (Q367): the primary above this birth commanding it, it
+            // writes its own record; anyone else's is a caller's, on its way to the node.
+            if matches!(req, NodeCommandRequest::UpdateConfig { .. } | NodeCommandRequest::UpdateName { .. }) {
+                let (node_id, _) = req.subject();
+                let view = service.topology.read().await;
+                let commanded = *node_id == service.node_id && sender.as_ref().is_some_and(|n| view.is_fabric_primary(&n.node_id) || view.own(node_id).is_some_and(|me| view.is_mesh_primary(&me.mesh, &n.node_id)));
+                drop(view);
+                // A caller's hop is acked here, so its own attempts wait on nothing while this primary
+                // spends the attempts of the hop below (node-rpc.md §34, §43); the node's hop is acked by
+                // its `updating` frame.
+                if !commanded {
+                    peer.acceptance.accepted();
+                }
+                let mut frames = crate::node_config::PropertyFrames::to(Box::new(crate::node_self::StreamFrames::new(sink)));
+                let reply = if commanded { service.own_property_command(sender.as_ref(), &req, &mut frames).await } else { service.property_command(sender.as_ref(), &req, &mut frames).await };
+                let end = frames.end(reply);
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node_path = %service.me.path, node_name = %service.me.name, op = req.op(), sender = %sender.map(|n| n.node_id.to_string()).unwrap_or_default(), outcome = end.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a node's property command was decided"));
+                return Ok(end);
+            }
             let Some(own) = service.own.get().cloned() else {
                 return Ok(rdm_core::reply::node_command::not_ready(format!("{} has not yet joined its mesh; {} is refused", service.node_id, req.op())));
             };
-            let sender = service.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
             // `mesh.block` and `mesh.unblock`, the fabric-primary's commands to this mesh-primary's exact
             // birth in its storage change (storage.md §2 "Changing it", steps 1 and 4), are this admin's.
             if let NodeCommandRequest::BlockMesh { incarnation, change_id, from, to, .. } | NodeCommandRequest::UnblockMesh { incarnation, change_id, from, to, .. } = &req {

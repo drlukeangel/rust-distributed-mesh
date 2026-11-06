@@ -83,7 +83,7 @@ pub(crate) struct View {
     pub(crate) forwarder: Arc<Mutex<Forwarder>>,
     /// Wakes the top-up when a source of the Mesh channel desynchronizes.
     pub(crate) desync: Arc<tokio::sync::Notify>,
-    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
+    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
     /// the topology view; `None` while the birth holds its launch name (`node`).
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
 }

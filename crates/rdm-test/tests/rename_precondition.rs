@@ -1,13 +1,13 @@
 //! A node takes another name only when it holds no connection (R-CR1, R-CR1a, R-CR3; rulings
-//! 2026-10-11): `ApplyNodeName` at the node answers `Busy` naming the routes it still holds, and
+//! 2026-10-11): `UpdateName` at the node answers `Busy` naming the routes it still holds, and
 //! `node.connection.delete { scope: All }` closes every one of them, writing each drop under the
 //! node's current name, before the name can move.
 //!
 //! CONTRACT: `(path mesh1.node, name 7)` originates a data-plane connection to its admin and one to its peer
 //! `(path mesh1.node, name 2)`, so its own connections log holds a `connected` entry to each. Told
-//! `ApplyNodeName { (path mesh1.node, name 1) }`, it answers `Busy` naming both routes, holding nothing. Its admin's
+//! `UpdateName { (path mesh1.node, name 1) }`, it answers `Busy` naming both routes, holding nothing. Its admin's
 //! `DeleteConnections { All }` answers `ConnectionsDeleted` closing both routes' open entries and
-//! holding none, each drop written under `(path mesh1.node, name 7)`; the same `ApplyNodeName` then answers
+//! holding none, each drop written under `(path mesh1.node, name 7)`; the same `UpdateName` then answers
 //! `Applied`. No `connected` entry under `(path mesh1.node, name 7)` is the latest of its pair after the
 //! rename, and once the node joins its mesh again the next entry it writes (it dials its peer again)
 //! names `(path mesh1.node, name 1)`. What must
@@ -141,10 +141,10 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
             }
         };
         // Told its name while it holds both routes: refused naming each by its entry's id, nothing held.
-        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.clone() };
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.name.clone() };
         let holding: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         assert_eq!(holding.len(), 2, "the node holds its two routes: {holding:?}");
-        let busy = call(apply.clone()).await;
+        let busy = crate::common::property_command(&admin.observer.client, &target, &apply).await;
         assert_eq!(busy, StatusReply::BusyHoldingConnections { connections: holding }, "a node holding its routes keeps its name, naming each connection");
         assert_eq!(renamed_seams.connections.own().location(), born, "the node holds the name it had");
 
@@ -155,7 +155,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         assert!(open_ids.iter().all(|id| closed.contains(id)) && not_open.is_empty() && held.is_empty(), "every open entry is closed and none held: open {open_ids:?}, {deleted:?}");
 
         // The same apply now takes the name.
-        assert_eq!(call(apply).await, StatusReply::Applied, "with no connection held the name moves");
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied, "with no connection held the name moves");
         assert_eq!(renamed_seams.connections.own().location(), taken, "the node holds its new name");
         assert_eq!(taken.path, born.path, "renaming preserves the immutable path");
         assert_eq!(renamed_seams.connections.own().node_id, renamed.node_id, "renaming preserves identity");
@@ -204,7 +204,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
 /// Q169): a node decides its rename from the connections open now, never from the rows that have
 /// landed. `(path mesh1.node, name 7)`'s connections store refuses every
 /// write, then the node opens a data-plane connection to its admin: the connection is open, its
-/// Connected row owed and not landed. `ApplyNodeName { (path mesh1.node, name 1) }` answers
+/// Connected row owed and not landed. `UpdateName { (path mesh1.node, name 1) }` answers
 /// `BusyHoldingConnections` naming that connection; the name does not move. Once the store takes
 /// writes the row lands under the id the refusal named. What must NOT happen: a rename let through
 /// while a connection is open because its row is still queued.
@@ -287,8 +287,8 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name() {
                 }
             }
         };
-        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.clone() };
-        let busy = call(apply).await;
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.name.clone() };
+        let busy = crate::common::property_command(&admin.observer.client, &target, &apply).await;
         let StatusReply::BusyHoldingConnections { connections } = &busy else { panic!("a node with an open connection keeps its name, its row owed or not: {busy:?}") };
         assert_eq!(connections.len(), 1, "the one open connection is named: {busy:?}");
         assert_eq!(seams.connections.own().location(), born, "the node holds the name it had");

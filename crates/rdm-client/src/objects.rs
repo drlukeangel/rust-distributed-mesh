@@ -176,19 +176,18 @@ impl Nodes {
         .await
     }
 
-    /// `node.name.update`: rename the exact birth `birth` to `name`, the name only (never its path), a
-    /// single call to the node's mesh-primary `mesh_primary` over `route` (proposal
-    /// node-properties-own-commands.md §2; [`crate::NodeRpc::name_update`]). The mesh-primary decides
-    /// everything from its own held record; a name outside the name grammar is refused here,
-    /// `RejectedName`, as the mesh-primary would refuse it, and nothing is sent.
-    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, name: &rdm_core::PathName) -> Result<StatusReply, CallEnd> {
-        if let Err(reason) = rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
+    /// `node.name.update`: rename the exact birth `birth` to `name`, the name only (never its path),
+    /// NodeCommand 0x22 to the node's mesh-primary `mesh_primary`, directly ([`crate::NodeRpc::name_update`]).
+    /// The mesh-primary decides everything from its own held record; a name outside the name grammar is
+    /// refused here, `RejectedName`, as the mesh-primary would refuse it, and nothing is sent.
+    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, name: &str) -> Result<StatusReply, CallEnd> {
+        if let Err(reason) = rdm_core::PathName::new("mesh.node", name.to_string()) {
             let span = NodeOp::NameUpdate.span();
             span.record("outcome", "rejected-name");
             span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), reason = %reason, "the name is outside the name grammar; nothing is sent"));
             return Ok(rdm_core::reply::status::bounded_rejected_name(&reason.to_string()));
         }
-        crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rdm_transport::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, birth, name, &rdm_transport::CallOptions::default()).await
     }
 
     /// `node.tag.create`: add `labels` to the tags of the exact birth `birth`, a single call to the

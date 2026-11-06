@@ -28,7 +28,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
     let mut first = view.read().await.clone();
     if let (Some(configs), crate::node_config::SentBy::Caller) = (configs, sent_by) {
         if !first.is_fabric_primary(me_id) {
-            match configs.forward_up(me, me_id, &first, view, req).await {
+            match configs.forward_up(me, me_id, &first, view, crate::node_config::PropertyCall::Status(req)).await {
                 crate::node_config::Up::Answered(reply) => return reply,
                 crate::node_config::Up::InProcess(now) => first = now,
                 crate::node_config::Up::Unanswered(why) => return crate::node_config::Up::unanswered(why),
@@ -43,7 +43,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
                 mesh_primary = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
                 outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
             );
-            let down = tracing::Instrument::instrument(configs.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
+            let down = tracing::Instrument::instrument(configs.send_down(me, me_id, &first, view, &subject, crate::node_config::PropertyCall::Status(req)), span.clone()).await;
             match down {
                 crate::node_config::Down::Answered(reply) => {
                     span.record("outcome", reply.name());

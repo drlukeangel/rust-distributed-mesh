@@ -687,7 +687,7 @@ async fn start_booted(
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await?;
             // The name this birth holds is its own record's (`HeldName`, R12), the one its topology view was
             // handed: its connections rows name it as their source from here on, and every service names the
-            // node by it, whatever name the join hands it or an `ApplyNodeName` gives it.
+            // node by it, whatever name the join hands it or an `UpdateName` gives it.
             {
                 let (held, birth) = (topology_view.clone(), launch.location());
                 connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
@@ -1041,7 +1041,7 @@ impl crate::node_self::Session for NodeSession {
     }
 
     async fn rejoin(&self, birth_cancel: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
-        // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
+        // The digest this birth presents is the one it holds: a name it took live (UpdateName)
         // rides it, never the birth's frozen name (R-JN1).
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
         // this birth declares from here (its Ready names the start).
@@ -1721,7 +1721,7 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
 /// What this node needs to answer a node-admin's status kick about itself.
 pub(crate) struct Kicked {
     topology_view: TopologyView,
-    /// The name this birth holds (its own record's): an `ApplyNodeName` sets it.
+    /// The name this birth holds (its own record's): an `UpdateName` sets it.
     held_name: crate::held_name::HeldName,
     channels: rdm_gossip::channel::Channels,
     digest: MeshDigest,
@@ -1911,6 +1911,12 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let sender = me.topology_view.projected_member_at(&peer.endpoint_id.to_string());
             let sender_name = sender.as_ref().map(|d| d.node.node_id.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             let commander = sender.as_ref().map(|d| d.node.node_id.clone());
+            if matches!(req, NodeCommandRequest::UpdateConfig { .. } | NodeCommandRequest::UpdateName { .. }) {
+                let reply = property_command(&me, &sender_name, &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.node_id, op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a node command naming this node was decided"));
+                return Ok(reply);
+            }
             let reply = me.own.serve_node_command_on(commander.as_ref(), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
             tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.node_id, op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this node was decided"));
@@ -1919,6 +1925,93 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     })
 }
 
+
+/// `node.config.update` or `node.name.update` at the node it names (Q367): the exact birth is
+/// checked, its `CommandAccepted` is `node.config.updating` or `node.name.updating`, and it writes the
+/// map or the name on its own record (Q356); the stream ends with how that ended.
+async fn property_command(me: &Kicked, sender_name: &str, req: &rdm_core::node_command::NodeCommandRequest, mut frames: Box<dyn crate::node_self::CommandFrames>) -> rdm_core::node_command::NodeCommandReply {
+    use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
+    use rdm_core::reply::node_command as reply;
+    if *req.subject().1 != me.digest.node.incarnation {
+        return reply::property_refused(rdm_core::reply::stale(me.digest.node.incarnation.clone()));
+    }
+    let accepted = NodeCommandReply::CommandAccepted { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone() };
+    if frames.accepted(accepted).await.is_err() {
+        return reply::not_ready(format!("the caller left before {} was accepted", req.op()));
+    }
+    reply::property_updated(match req {
+        NodeCommandRequest::UpdateConfig { config, .. } => apply_config(me, sender_name, config).await,
+        NodeCommandRequest::UpdateName { name, .. } => apply_name(me, sender_name, name).await,
+        other => unreachable!("{} is no property command", other.op()),
+    })
+}
+
+/// node-config-update.md, a caller's update, steps 2 and 3: the node's property writer puts the whole
+/// map and answers once the put is durable, held for the application
+/// (`NodePropertyWriter::config`); no digest carries it (Q203).
+async fn apply_config(me: &Kicked, sender_name: &str, config: &std::collections::BTreeMap<String, String>) -> rdm_core::status::StatusReply {
+    let initial = property_snapshot(&me.property_writer);
+    let changed = config.clone();
+    if let Err(error) = me.property_writer.update(initial, move |record| record.config = changed, |_| {}).await {
+        return rdm_core::reply::status::bounded_config_row_refused(&me.topology_view.node_name().to_string(), &error.to_string());
+    }
+    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the config its mesh-primary sent is durable on its property record"));
+    rdm_core::reply::applied()
+}
+
+/// R12: the node owns its name and takes the row's name only while it holds no connection
+/// (node-name-update.md Precondition). It is held first, so every later publish carries it, and
+/// published at once; a node leaving its mesh inside a stop publishes nothing (node-mesh-leave.md), and
+/// its next join carries the name. A live node's mesh-primary then commands its rejoin
+/// (node-name-update.md step 6). The command names the name only: a node's path never moves.
+async fn apply_name(me: &Kicked, sender_name: &str, name: &str) -> rdm_core::status::StatusReply {
+    let held = me.topology_view.reported(&me.digest).node.location();
+    let asked = match rdm_core::PathName::new(held.path.clone(), name.to_string()) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_id = %me.digest.node.node_id, from_path = %held.path, from_name = %held.name, sender = %sender_name, to_name = %name, reason = %format!("invalid name {name:?}: {e}"), "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
+            return rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt);
+        }
+    };
+    // R-CR1: the name moves only while the node has no connection open, read from what is open now,
+    // never from the rows that have landed (Q169).
+    let routes = match me.own.live_routes() {
+        Ok(r) => r,
+        Err(reason) => return rdm_core::reply::status::not_ready(reason),
+    };
+    let mut decision = crate::node_name::decide(&held, &asked, &routes);
+    // The node writes its record first; only once that write is acked does it publish the name
+    // (record first, mesh second; Q356).
+    if decision == crate::node_name::NameApply::Applied {
+        let initial = property_snapshot(&me.property_writer);
+        let to = asked.clone();
+        if let Err(error) = me.property_writer.update(initial, move |record| { record.path = to.path; record.name = to.name; }, |_| {}).await {
+            decision = crate::node_name::NameApply::Unwritten { node: me.digest.node.node_id.to_string(), reason: error.to_string() };
+        }
+    }
+    let published = match decision {
+        crate::node_name::NameApply::Applied => {
+            me.held_name.set(asked.clone());
+            if *me.status.lock().unwrap() == MemberStatus::Leaving {
+                "off-mesh"
+            } else {
+                let mut d = me.digest.clone();
+                d.status = *me.status.lock().unwrap();
+                match me.channels.publish(&d).await {
+                    Ok(()) => "published",
+                    Err(_) => "publish-failed",
+                }
+            }
+        }
+        _ => "unchanged",
+    };
+    let held_routes = routes.iter().map(crate::node_name::route_name).collect::<Vec<_>>().join(", ");
+    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_id = %me.digest.node.node_id, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
+    crate::node_name::reply(&decision)
+}
 
 /// Serve `Status` on a node: the downward exact-node operations, answered once this node
 /// has joined (until then `NotReady`). A node is never a primary: every upward declaration and
@@ -1978,7 +2071,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(forward_read(&me, &r, &req).await);
             }
             let incarnation = match &req {
-                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeProperties { incarnation, .. } | StatusRequest::CreateTags { incarnation, .. } | StatusRequest::DeleteTags { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
+                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeProperties { incarnation, .. } | StatusRequest::CreateTags { incarnation, .. } | StatusRequest::DeleteTags { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
                 // No handler in this service for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.digest.node.node_id.to_string(), &req)),
             };
@@ -2057,20 +2150,6 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             &me.topology_view.node_name().to_string(), &error.to_string())),
                     }
                 }
-                StatusRequest::ApplyNodeConfig { config, .. } => {
-                    // node-config-update.md, a caller's update, steps 2 and 3: the node's property writer
-                    // puts the whole map and answers once the put is durable, held for the application
-                    // (`NodePropertyWriter::config`); no digest carries it (Q203).
-                    let initial = property_snapshot(&me.property_writer);
-                    let changed = config.clone();
-                    if let Err(error) = me.property_writer.update(initial, move |record| record.config = changed, |_| {}).await {
-                        return Ok(rdm_core::reply::status::bounded_config_row_refused(
-                            &me.topology_view.node_name().to_string(), &error.to_string()));
-                    }
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the config its mesh-primary sent is durable on its property record"));
-                    Ok(rdm_core::reply::applied())
-                }
                 request @ (StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. }) => {
                     let change = match request {
                         StatusRequest::CreateTags { labels, .. } => crate::node_records::TagChange::Create(labels),
@@ -2082,58 +2161,6 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         Ok(reply) => Ok(reply),
                         Err(error) => Ok(rdm_core::reply::status::bounded_node_record_refused(&me.topology_view.node_name().to_string(), &error.to_string())),
                     }
-                }
-                StatusRequest::ApplyNodeName { name, .. } => {
-                    // R12: the node owns its name and takes the row's name only while it holds no
-                    // connection (node-name-update.md Precondition). It is held first, so every later
-                    // publish carries it, and published at once; a node leaving its mesh inside a stop
-                    // publishes nothing (node-mesh-leave.md), and its next join carries the name. A live
-                    // node's mesh-primary then commands its rejoin (node-name-update.md step 6).
-                    let held = me.topology_view.reported(&me.digest).node.location();
-                    let asked = match rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
-                        Ok(n) => n,
-                        Err(e) => {
-                            tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_id = %me.digest.node.node_id, from_path = %held.path, from_name = %held.name, sender = %sender_name, to_path = %name.path, to_name = %name.name, reason = %format!("invalid path or name in {name:?}: {e}"), "otel.kind" = "internal")
-                                .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
-                            return Ok(rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt));
-                        }
-                    };
-                    // R-CR1: the name moves only while the node has no connection open, read from
-                    // what is open now, never from the rows that have landed (Q169).
-                    let routes = match me.own.live_routes() {
-                        Ok(r) => r,
-                        Err(reason) => return Ok(rdm_core::reply::status::not_ready(reason)),
-                    };
-                    let mut decision = crate::node_name::decide(&held, &asked, &routes);
-                    // The node writes its record first; only once that write is acked does it publish the
-                    // name (record first, mesh second; Q356).
-                    if decision == crate::node_name::NameApply::Applied {
-                        let initial = property_snapshot(&me.property_writer);
-                        let to = asked.clone();
-                        if let Err(error) = me.property_writer.update(initial, move |record| { record.path = to.path; record.name = to.name; }, |_| {}).await {
-                            decision = crate::node_name::NameApply::Unwritten { node: me.digest.node.node_id.to_string(), reason: error.to_string() };
-                        }
-                    }
-                    let published = match decision {
-                        crate::node_name::NameApply::Applied => {
-                            me.held_name.set(asked.clone());
-                            if *me.status.lock().unwrap() == MemberStatus::Leaving {
-                                "off-mesh"
-                            } else {
-                                let mut d = me.digest.clone();
-                                d.status = *me.status.lock().unwrap();
-                                match me.channels.publish(&d).await {
-                                    Ok(()) => "published",
-                                    Err(_) => "publish-failed",
-                                }
-                            }
-                        }
-                        _ => "unchanged",
-                    };
-                    let held_routes = routes.iter().map(crate::node_name::route_name).collect::<Vec<_>>().join(", ");
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_id = %me.digest.node.node_id, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
-                    Ok(crate::node_name::reply(&decision))
                 }
                 _ => Ok(crate::node_self::request_not_handled(&me.digest.node.node_id.to_string(), &req)),
             }

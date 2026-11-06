@@ -12,7 +12,11 @@ records its identified obligation separately in lifecycle state.
 ### A caller's update
 
 1. The caller sends the command to the fabric-primary, which forwards it through the node's
-   mesh-primary to the exact node birth. Commands keep the existing downward route.
+   mesh-primary to the exact node birth: `UpdateConfig { node_id, incarnation, config }` on
+   [`0x22`](../node-rpc-envelope.md#nodecommand-op-0x22-rdm) at every hop, each one direct call; an
+   unreachable receiver ends the call `NotSent`. The node's `CommandAccepted` is
+   `node.config.updating`, and each hop streams the frames back. The stream ends
+   `PropertyUpdated { reply }` with `ConfigUpdated`, `node.config.updated`.
 2. The node's property writer applies the whole map to its latest owned state and issues one put.
    The writer retains serialization through terminal persistence and local publication.
 3. Completion follows durable persistence. The completion carries no node-record revision and

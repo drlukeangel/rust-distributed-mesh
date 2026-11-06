@@ -365,72 +365,52 @@ pub enum StatusRequest {
         /// The operation: `node.start:<path>`.
         operation: crate::OperationId,
     },
-    /// Upward: a caller asks the fabric-primary to put the exact birth's whole config
-    /// (`node.config.update`, node-config-update.md), through a carrier (Forward `0x1A`) when it cannot
-    /// reach it directly; the fabric-primary writes the map to the node in its atlas and sends
-    /// the command to the node's mesh-primary, the writer of that mesh's rows, which writes the node's
-    /// record and tells the node. [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node
-    /// applied it. A single call, never a Build.
+    /// Reserved position (Q367): `node.config.update` is NodeCommand 0x22 `UpdateConfig`, never Status.
+    /// Refused by name, never executed.
     ///
     /// Position 17 on the wire.
-    UpdateNodeConfig {
-        /// The birth whose config is put.
+    Reserved17 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The whole config: a put replaces, it never merges.
+        /// Never read.
         config: BTreeMap<String, String>,
     },
-    /// Downward: the birth's mesh-primary tells the exact birth its whole config; the birth's own
-    /// property writer puts it on its record, written whole (node-config-update.md, a caller's
-    /// update, step 3). Answered `Applied` once the put is durable.
+    /// Reserved position (Q367): a node's config reaches it on NodeCommand 0x22 `UpdateConfig`. Refused
+    /// by name, never executed.
     ///
     /// Position 18 on the wire.
-    ApplyNodeConfig {
-        /// The birth told.
+    Reserved18 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The whole config.
+        /// Never read.
         config: BTreeMap<String, String>,
     },
-    /// Downward: the node's mesh-primary, having written the renamed row, tells the exact birth
-    /// its name (proposal node-properties-own-commands.md §2.2 step 6; R12: the node owns its name and
-    /// publishes only the row's name). The birth holds the name and publishes its digest carrying it,
-    /// then answers [`StatusReply::Applied`]; [`StatusReply::AlreadyApplied`] for the name it already
-    /// holds; [`StatusReply::BusyHoldingConnections`] naming each connection it still holds, with
-    /// nothing held. A stopped birth is sent nothing: its join answer hands it the name.
+    /// Reserved position (Q367): a node's name reaches it on NodeCommand 0x22 `UpdateName`. Refused by
+    /// name, never executed.
     ///
     /// Position 19 on the wire.
-    ApplyNodeName {
-        /// The birth told.
+    Reserved19 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The `(path, name)` the row now holds.
+        /// Never read.
         name: crate::PathName,
     },
-    /// Upward: `node.name.update` (proposal node-properties-own-commands.md §2; R13, R-CR1): a caller
-    /// asks the node's mesh-primary, the only writer of its mesh's rows, through a carrier (Forward
-    /// `0x1A`) when it cannot reach it directly, to rename the exact birth. The request carries the
-    /// name only, so the path cannot move: the mesh-primary joins the held record's own path and
-    /// `name` for the `(path, name)` index key. It validates from the record it holds, in order: the
-    /// exact birth ([`StatusReply::RejectedStaleIncarnation`]), its own writer role
-    /// ([`NotPrimary::ReceiverNotPrimary`]), the node admitting no connection
-    /// ([`StatusReply::RejectedAdmittingConnections`]), the name grammar ([`StatusReply::RejectedName`]);
-    /// then it reads the new name's row and claims it ([`StatusReply::NameHeld`]),
-    /// moves the row (put at the new key carrying `renamed_from`, release of the old key), sends a live
-    /// birth `ApplyNodeName` (a stopped one nothing) and answers [`StatusReply::NameUpdated`]
-    /// (`node.name.updated`): for a stopped node after both writes of the move, for a live one after
-    /// the birth answered `Applied` or `AlreadyApplied`. A single call, never a Build.
+    /// Reserved position (Q367): `node.name.update` is NodeCommand 0x22 `UpdateName`, never Status.
+    /// Refused by name, never executed.
     ///
     /// Position 20 on the wire.
-    UpdateName {
-        /// The birth renamed.
+    Reserved20 {
+        /// Never read.
         node_id: NodeId,
-        /// The incarnation of that birth.
+        /// Never read.
         incarnation: IncarnationId,
-        /// The new path and name, as asked: an invalid pair is refused `RejectedName` by the writer.
+        /// Never read.
         #[serde(deserialize_with = "crate::PathName::deserialize_asked")]
         name: crate::PathName,
     },
@@ -1177,11 +1157,11 @@ impl StatusRequest {
             Self::Reserved14 { .. } => "reserved-14",
             Self::Reserved15 { .. } => "reserved-15",
             Self::StartNode { .. } => "start-node",
-            Self::UpdateNodeConfig { .. } => "update-node-config",
-            Self::ApplyNodeConfig { .. } => "apply-node-config",
+            Self::Reserved17 { .. } => "reserved-17",
+            Self::Reserved18 { .. } => "reserved-18",
             Self::ApplyNodeProperties { .. } => "apply-node-properties",
-            Self::ApplyNodeName { .. } => "apply-node-name",
-            Self::UpdateName { .. } => "node.name.update",
+            Self::Reserved19 { .. } => "reserved-19",
+            Self::Reserved20 { .. } => "reserved-20",
             Self::Reserved21 { .. } => "reserved-21",
             Self::GetNodes { select } => select.read(),
             Self::GetMeshes { .. } => "mesh.get",
@@ -1455,7 +1435,7 @@ pub enum StatusReply {
         /// The answering birth's incarnation.
         incarnation: IncarnationId,
     },
-    /// The reply of an `UpdateNodeConfig`: the exact birth's property record holds the config, its
+    /// The end of NodeCommand 0x22 `UpdateConfig`: the exact birth's property record holds the config, its
     /// put durable (`node.config.updated`). It carries the config as written and no node-record
     /// revision (node-config-update.md step 3).
     ///
@@ -1518,7 +1498,7 @@ pub enum StatusReply {
         /// The hook's own reason, in words.
         reason: String,
     },
-    /// The reply of an `UpdateName` (`node.name.updated`): the mesh-primary moved the node's row to
+    /// The end of NodeCommand 0x22 `UpdateName` (`node.name.updated`): the mesh-primary moved the node's row to
     /// the new name, and the exact birth holds the name (it answered `Applied` or `AlreadyApplied`),
     /// or is stopped and reads it in its next join answer.
     ///
@@ -1529,7 +1509,7 @@ pub enum StatusReply {
         /// The incarnation of that birth.
         incarnation: IncarnationId,
     },
-    /// The `UpdateName` was not made: the node admits connections (R-CR1). Its status is not
+    /// The `node.name.update` was not made: the node admits connections (R-CR1). Its status is not
     /// stopped, and its mesh-primary holds no `node.connections.deleted` of an `All` made while it was
     /// not ready that left it holding nothing. Nothing was written.
     ///
@@ -1541,7 +1521,7 @@ pub enum StatusReply {
         /// [`MAX_REPORTED_CONNECTIONS`]; empty when it holds no cut of every connection.
         held_connections: Vec<ConnectionId>,
     },
-    /// The `UpdateName` was not made: another node holds the name (the row writer read its row).
+    /// The `node.name.update` was not made: another node holds the name (the row writer read its row).
     /// Nothing was written.
     ///
     /// Position 28 on the wire.
@@ -1563,7 +1543,7 @@ pub enum StatusReply {
         /// The store's refusal.
         reason: String,
     },
-    /// The `UpdateName` ended incomplete after its put at the new key (proposal
+    /// The `node.name.update` ended incomplete after its put at the new key (proposal
     /// node-properties-own-commands.md §2.3, §2.4): the live birth did not apply the name (its
     /// answer). The row holds the new name; a resubmit completes on the node's answer.
     ///
@@ -1743,7 +1723,7 @@ pub enum StatusReply {
         /// The named labels the node did not carry: nothing was removed for them.
         not_carried: BTreeSet<String>,
     },
-    /// The `UpdateName` was not made: `name` is outside the name grammar ([`name_refusal`]), or the
+    /// The `node.name.update` was not made: `name` is outside the name grammar ([`name_refusal`]), or the
     /// `(path, name)` its join with the held record's path makes is not one this build can key. Nothing
     /// was written.
     ///
@@ -1752,7 +1732,7 @@ pub enum StatusReply {
         /// Why, by name, naming the name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// The exact birth's answer to `ApplyNodeName` while it holds connections (R-CR1;
+    /// The exact birth's answer to `UpdateName` while it holds connections (R-CR1;
     /// proposal node-properties-own-commands.md §2.2 step 6, "`Busy { connections }` naming each
     /// connection it still holds"): it keeps its name and holds nothing. Not [`StatusReply::Busy`],
     /// the protocol's admission bound.
@@ -2506,11 +2486,11 @@ mod tests {
             StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("open-traffic:fabric1") },
             StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("open-traffic:fabric1") },
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::node("node.start", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
-            StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
-            StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
+            StatusRequest::Reserved17 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
+            StatusRequest::Reserved18 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
-            StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "1").unwrap() },
-            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node.old", "1").unwrap() },
+            StatusRequest::Reserved19 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", "1").unwrap() },
+            StatusRequest::Reserved20 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node.old", "1").unwrap() },
             StatusRequest::Reserved21 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
@@ -2558,7 +2538,7 @@ mod tests {
         let longest_name = "n".repeat(MAX_TAG_BYTES);
         assert_eq!(name_refusal(&longest_name), None);
         for q in [
-            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", longest_name.clone()).unwrap() },
+            StatusRequest::Reserved20 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.node", longest_name.clone()).unwrap() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: at_cap.clone() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(at_cap.clone()) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },

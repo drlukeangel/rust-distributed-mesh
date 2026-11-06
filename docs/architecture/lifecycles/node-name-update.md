@@ -12,7 +12,7 @@ own primitive. A node's other properties have their own commands ([node properti
 
 | Field | Contract |
 |---|---|
-| Caller / executor | Caller to the node's mesh-primary, the node's mesh-primary (Forward `0x1A` when not directly reachable). Before a mesh has a primary, the fabric-primary acts as its writer |
+| Caller / executor | Caller to the fabric-primary, then the node's mesh-primary, then the node, each one direct call; an unreachable receiver ends the call `NotSent`. Before a mesh has a primary, the fabric-primary acts as its writer |
 | Entry | The exact `(node.id, incarnation)` and unchanged registered path and new name as separate fields. A different path is refused; mesh, type and tags do not change |
 | Precondition | The node holds no connection: it is stopped, or this mesh-primary holds the birth's `node.connection.deleted` of an `All` ([node.connection.delete](node-connections-delete.md)) that left zero connections held. A live node holding a connection is refused. No new connection is admitted from the row write until the node rejoins its mesh, retries after an interruption included |
 | Validation | The exact birth matches the held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status, held_connections }`; the path/name pair is valid and the name has no dot, else `RejectedName { reason }`. The supplied path must equal the registered immutable path; a different path is refused by name |
@@ -20,15 +20,15 @@ own primitive. A node's other properties have their own commands ([node properti
 | Order | Check first, the node's write second, then the live node's rejoin |
 | Rejoin | A live node, once it holds the new name, is commanded [node.mesh.join](node-mesh-join.md) by its mesh-primary and rejoins its mesh under the new name. A stopped node rejoins at its [node.start](node-start.md) |
 | Completion | [By case](#completion-by-case) |
-| Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds resends `ApplyNodeName`, and for a live node its rejoin, and completes as the first command does. A repeat with a different name is a new rename |
-| Wire | `UpdateName { node_id, incarnation, name: { path, name } }` and `ApplyNodeName { node_id, incarnation, name: { path, name } }` on [`0x1B`](../node-rpc-envelope.md#status-op-0x1b-rdm), then `JoinMesh` on `0x1B` for a live node; replies `NameUpdated`, `NameHeld`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`, `BusyHoldingConnections { connections }`, `NameNotApplied` |
+| Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds resends `UpdateName` to the node, and for a live node its rejoin, and completes as the first command does. A repeat with a different name is a new rename |
+| Wire | `UpdateName { node_id, incarnation, name }` on [`0x22`](../node-rpc-envelope.md#nodecommand-op-0x22-rdm) at every hop, the name only: a node's path never moves. The node's `CommandAccepted` is `node.name.updating`, then `JoinMesh` on `0x1B` for a live node. The stream ends `PropertyUpdated { reply }`, or `PropertyRefused { reply }` before anything was accepted; `reply` is `NameUpdated`, `NameHeld`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`, `BusyHoldingConnections { connections }` or `NameNotApplied` |
 
 ## Numbered end-to-end sequence
 
-1. The caller sends `node.name.update` to the node's mesh-primary; an admin that is not the fabric-primary carries it to the fabric-primary (Forward `0x1A` when not directly reachable) and carries the answer back. The fabric-primary sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable) and returns its completion without installing a copied node row.
+1. The caller sends `node.name.update` to an admin; one that is not the fabric-primary carries it to the fabric-primary and streams the answer back. The fabric-primary sends the command to the node's mesh-primary and streams its frames back without installing a copied node row.
 2. The mesh-primary validates from its view and the node's record: exact birth, that it is the node's mesh-primary, the precondition from the node's `state` and its `node.connection.deleted` receipt, the name grammar.
 3. The mesh-primary checks the destination pair against the node records; a pair held by another node refuses `NameHeld { by }` with nothing written.
-4. The node is sent `ApplyNodeName`. It writes its own record at its node.id with the new name (Q356), the one durable name move, and only once that write is acked does it hold the new name and publish it.
+4. The node is sent `UpdateName` and answers `CommandAccepted`, its `node.name.updating`. It writes its own record at its node.id with the new name (Q356), the one durable name move, and only once that write is acked does it hold the new name and publish it.
 5. It answers `Applied`, `AlreadyApplied` for a name it already holds, or `BusyHoldingConnections { connections }` naming each connection it still holds, with nothing written; a write the store refuses is answered `NodeRecordRefused`. `Busy` is the interrupted case under [Failure and receipts](#failure-and-receipts).
 6. A live node rejoins its mesh under the new name: the mesh-primary commands its
    [node.mesh.join](node-mesh-join.md), the node reports under the new name and joins its mesh again,
@@ -47,7 +47,7 @@ row's name. A node never renames itself.
 - **Row written, apply or rejoin unresolved** (no answer, `Busy`, or a join that did not answer
   `MeshJoined`): the command ends incomplete, `NameNotApplied`, naming the row's new name and how the
   apply or the rejoin ended. The name has moved durably and the node will publish it at its next
-  apply or join; the caller resubmits, the resubmit resends `ApplyNodeName` and the rejoin, and
+  apply or join; the caller resubmits, the resubmit resends `UpdateName` to the node and the rejoin, and
   completes on the node's answers, never from the row. A live node is never reported renamed on the
   row alone.
 
@@ -56,7 +56,7 @@ row's name. A node never renames itself.
 ```text
 node.name.update
   → validate → check the new pair against the node records
-  → ApplyNodeName (the node, holding no connection, writes its record with the new name, then publishes it)
+  → node.name.update (the node, holding no connection, answers node.name.updating, writes its record with the new name, then publishes it)
   → node.mesh.join (a live node: it rejoins its mesh under the new name)
   ← node.name.updated
 ```
@@ -70,7 +70,9 @@ sequenceDiagram
     participant N as Node
     C->>M: node.name.update (exact birth, name)
     Note over M: validate, check the pair against the node records
-    M->>N: ApplyNodeName (no connection held)
+    M->>N: node.name.update (no connection held)
+    N-->>M: node.name.updating
+    M-->>C: node.name.updating
     Note over N: write its record with the new name, then publish
     N-->>M: Applied (name held and published)
     M->>N: JoinMesh (a live node)
@@ -92,7 +94,7 @@ Failures and stream certainty follow the
 - **Apply or rejoin fails or is interrupted after the row**: the incomplete case [above](#completion-by-case).
   The admission block stays in force on the node until it rejoins its mesh, so no connection is
   opened under the old name while the row carries the new one; a retry of the same command resends
-  `ApplyNodeName` and the rejoin and completes on the node's answers.
+  `UpdateName` and the rejoin and completes on the node's answers.
 - **Connection opened between the precondition check and the apply**: impossible by the admission
   block; a node that reports `Busy` is a defect in that block, named by the connections it lists.
 

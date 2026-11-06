@@ -68,7 +68,7 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
     }
     let config: BTreeMap<String, String> = [("zone".to_string(), "eu-1".to_string())].into();
     let carrier = estate.carrier().await;
-    let reply = NodeRpc::new(carrier.client()).config_update(&fp.node_id, &rdm_transport::RouteChoice::Direct, &birth_of(&rpc), config.clone(), &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {:?} at the fabric-primary: {e:?}", rpc.name));
+    let reply = NodeRpc::new(carrier.client()).config_update(&fp.node_id, &birth_of(&rpc), config.clone(), &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {:?} at the fabric-primary: {e:?}", rpc.name));
     assert!(matches!(reply, StatusReply::ConfigUpdated { .. }), "node.config.updated of {:?}: {reply:?}", rpc.name);
     wait_for("the fabric-primary answers both tags and the config", Duration::from_secs(30), || async {
         let red = nodes.get(&Filter::new().eq("tags", ["red"])).await.ok()?;

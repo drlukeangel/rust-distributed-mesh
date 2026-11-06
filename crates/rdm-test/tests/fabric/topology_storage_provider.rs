@@ -343,7 +343,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(subject.node_id.clone()), node_id: subject.node_id.clone(), incarnation: subject.incarnation.clone().expect("a live birth") };
     let carrier = estate.carrier().await;
     let (rpc, options) = (rdm_client::NodeRpc::new(carrier.client()), rdm_transport::CallOptions::default());
-    let update = rpc.config_update(&fabric_primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &options);
+    let update = rpc.config_update(&fabric_primary.node_id, &birth, told, &options);
     let (done, updated) = tokio::join!(ended(&estate, &run), update);
     updated.unwrap_or_else(|e| panic!("node.config.update during the change is answered: {e}"));
     estate.artifact("ended.json", &done);

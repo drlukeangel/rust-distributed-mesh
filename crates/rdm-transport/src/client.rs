@@ -154,6 +154,10 @@ pub struct CallOptions {
     /// Q52): its owner's carrier policy, answered per attempt by the route projection. `None`: every
     /// attempt is direct.
     pub route: Option<RoutePolicy>,
+    /// A stream op whose unacked request is resent as a unary call's is, its attempts spent when no
+    /// ack or frame came (node-rpc.md §34): a node's property command (Q367). Other stream ops are
+    /// resent only when their stream is lost.
+    pub resend_unacked_stream: bool,
 }
 
 /// An owner's carrier policy for a call (node-rpc.md §43, §45; i146 Q52): given the attempt
@@ -188,6 +192,7 @@ impl Default for CallOptions {
             carried: None,
             unsent_is_final: false,
             route: None,
+            resend_unacked_stream: false,
         }
     }
 }
@@ -561,6 +566,11 @@ impl NodeRpcClient {
             RpcOutcome::Reply(_) => CallEnd::Answered,
             _ => return,
         };
+        self.tell_end(receiver, end);
+    }
+
+    /// Tell a call's end to the primary above its receiver and, when spent, to `on_call_failed`.
+    pub(crate) fn tell_end(&self, receiver: Option<&ResolvedNode>, end: CallEnd) {
         // The primary above the receiver marks it or is reported it, or ends its mark (node-rpc.md §43;
         // Q311, Q340).
         if let Some(ends) = self.call_ends.get() {
@@ -1796,7 +1806,7 @@ impl Attempts {
                     // frame: its frames are not bounded by a time limit.
                     let ack_by = match &outer {
                         Some(_) => Some(Instant::now() + pacing.floor),
-                        None if !self.unary => None,
+                        None if !self.unary && !self.opts.resend_unacked_stream => None,
                         None if self.state.borrow().acked => None,
                         None if last_on_birth => {
                             let until = (started + limit).max(Instant::now());

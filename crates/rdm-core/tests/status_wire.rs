@@ -63,12 +63,12 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         (Reserved14 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0e0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472146f70656e2d747261666669633a66616272696331000000"),
         (Reserved15 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0f0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472146f70656e2d747261666669633a66616272696331000000"),
         (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("start-node:mesh1.node.1") }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634721773746172742d6e6f64653a6d657368312e6e6f64652e31000000"),
-        (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
+        (Reserved17 { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
         // node_id | incarnation | config (len 1: "k" "v") | revision 3 (P1)
-        (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
-        (ApplyNodeName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap() }, "130c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f64650131"),
+        (Reserved18 { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
+        (Reserved19 { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1").unwrap() }, "130c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f64650131"),
         // node_id | incarnation | name "1.old" (the name only, never its path)
-        (UpdateName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1-old").unwrap() }, "140c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f646505312d6f6c64"),
+        (Reserved20 { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.node", "1-old").unwrap() }, "140c3031323334353637383961620c3977637072666777767468790a6d657368312e6e6f646505312d6f6c64"),
         (Reserved21 { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
         (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),

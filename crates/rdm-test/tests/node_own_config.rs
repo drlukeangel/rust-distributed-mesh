@@ -58,9 +58,8 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), r#type: launch.r#type, node_id: launch.node_id.clone(), path: launch.path.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
         let target = rdm_transport::NodeTarget::ExactNode(launch.node_id.clone());
         let caller: BTreeMap<String, String> = [("source".into(), "caller".into())].into();
-        let apply = StatusRequest::ApplyNodeConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone() };
-        let (out, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &apply, &rdm_transport::CallOptions::default()).await;
-        assert!(matches!(out, rdm_core::outcome::RpcOutcome::Reply(ref r) if *r.value() == StatusReply::Applied), "{out:?}");
+        let apply = rdm_core::node_command::NodeCommandRequest::UpdateConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone() };
+        assert_eq!(crate::common::property_command(&admin.observer.client, &target, &apply).await, StatusReply::Applied);
         assert_eq!(running.config(), Some(caller));
         let later: BTreeMap<String, String> = [("source".into(), "own".into())].into();
         running.config_update(later.clone()).await.expect("the later own write answers");
@@ -163,7 +162,7 @@ async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     // to the node's mesh-primary, itself (node-config-update.md "A caller's update").
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(before.node_id.clone()), node_id: before.node_id.clone(), incarnation: before.incarnation.clone().expect("the fabric-primary names its incarnation") };
     let carrier = estate.carrier().await;
-    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&before.node_id, &rdm_transport::RouteChoice::Direct, &birth, config.clone(), &rdm_transport::CallOptions::default()).await;
+    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&before.node_id, &birth, config.clone(), &rdm_transport::CallOptions::default()).await;
     assert!(matches!(reply, Ok(StatusReply::ConfigUpdated { ref config, .. }) if config.get("listener.data").map(String::as_str) == Some("127.0.0.1:45007")), "the lone fabric-primary updates its own config: {reply:?}");
     // The kill flushes nothing: the acknowledged write's span is exported before it.
     let written = rdm_test::estate::wait_for("the fabric-primary's own write span is exported", Duration::from_secs(10), || async {

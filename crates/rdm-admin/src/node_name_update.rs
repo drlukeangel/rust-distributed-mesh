@@ -9,21 +9,22 @@
 //! and the path is unchanged (`RejectedName`). Then, one change at a time with every other change
 //! to a node record: the mesh-primary checks the new pair against the node records, a runtime read
 //! (`crate::node_rows::check_name`: `NameHeld { by }`, nothing written), and the node is told
-//! `ApplyNodeName` (this admin itself in-process, through its own name decision): the node writes its
+//! `UpdateName` (this admin itself in-process, through its own name decision): the node writes its
 //! own record at its node.id with the new name (Q356), the name move, then publishes it. A live node
 //! then rejoins its mesh under the new name: this
 //! mesh-primary commands its `node.mesh.join` ([`crate::heard_again::HeardAgain::rejoin`]), and the
 //! command completes on its `MeshJoined`; a stopped node completes on its `Applied` or
 //! `AlreadyApplied`, and its start rejoins it under the name. A repeat naming the name the record already
-//! holds resends `ApplyNodeName` (Idempotency).
+//! holds resends `UpdateName` (Idempotency).
 
 use crate::model::{Node, PathName};
 use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rdm_core::ConnectionId;
-use rdm_client::{ExactBirth, NodeRpc};
-use rdm_transport::{CallOptions, NodeTarget, RouteChoice};
-use rdm_core::status::{NotPrimary, StatusReply, StatusRequest};
+use crate::node_config::{PropertyCall, PropertyFrames};
+use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
+use rdm_transport::{CallOptions, NodeTarget};
+use rdm_core::status::{NotPrimary, StatusReply};
 use tokio::sync::RwLock;
 
 /// What a mesh-primary's `node.name.update` acts through: the `NodeConfigs` its node commands take
@@ -60,12 +61,12 @@ pub enum Routed {
 /// admin acts as the mesh-primary of, is served here ([`Routed::Here`]). A node.update step of a Build is served at its
 /// executor and never routed: its receipt is the atlas's.
 #[allow(clippy::too_many_arguments)]
-pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
-    let StatusRequest::UpdateName { node_id, name, .. } = req else { unreachable!("routed is called for UpdateName only") };
+pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, sent_by: crate::node_config::SentBy, req: &NodeCommandRequest, frames: &mut PropertyFrames) -> Routed {
+    let NodeCommandRequest::UpdateName { node_id, name, .. } = req else { unreachable!("routed is called for UpdateName only") };
     let Some(configs) = configs else { return Routed::Here };
     let mut first = view.read().await.clone();
     if sent_by == crate::node_config::SentBy::Caller && !first.is_fabric_primary(me_id) {
-        match configs.forward_up(me, me_id, &first, view, req).await {
+        match configs.forward_up(me, me_id, &first, view, PropertyCall::Command(req, &mut *frames)).await {
             crate::node_config::Up::Answered(reply) => return Routed::Answered(reply),
             crate::node_config::Up::InProcess(now) => first = now,
             crate::node_config::Up::Unanswered(why) => return Routed::Answered(crate::node_config::Up::unanswered(why)),
@@ -77,11 +78,11 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     }
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-fabric-primary",
-        node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, node_id = %node_id, op = req.op(), requested_path = %name.path, requested_name = %name.name,
+        node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, node_id = %node_id, op = req.op(), requested_name = %name,
         mesh_primary = tracing::field::Empty, atlas = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
-    let down = tracing::Instrument::instrument(configs.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
+    let down = tracing::Instrument::instrument(configs.send_down(me, me_id, &first, view, &subject, PropertyCall::Command(req, &mut *frames)), span.clone()).await;
     let reply = match down {
         crate::node_config::Down::Answered(reply) => reply,
         // The call down ended with its attempts spent: the caller is told by name.
@@ -105,11 +106,11 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, service: NodeNameUpdateService<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
-    let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
+pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, service: NodeNameUpdateService<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &NodeCommandRequest, frames: &mut PropertyFrames) -> StatusReply {
+    let NodeCommandRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.name.update.via-writer",
-        node_path = %me.path, node_name = %me.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), requested_path = %name.path, requested_name = %name.name, from_path = tracing::field::Empty, from_name = tracing::field::Empty, to_path = tracing::field::Empty, to_name = tracing::field::Empty,
+        node_path = %me.path, node_name = %me.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), requested_name = %name, from_path = tracing::field::Empty, from_name = tracing::field::Empty, to_path = tracing::field::Empty, to_name = tracing::field::Empty,
         traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty, rejoin = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
@@ -117,7 +118,7 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         async {
             // A snapshot of the view: no read lock is held across the store reads and the node's call.
             let now = view.read().await.clone();
-            rename(me, me_id, &now, storage, service, deleted, node_id, incarnation, name, &span).await
+            rename(me, me_id, &now, storage, service, deleted, req, node_id, incarnation, name, frames, &span).await
         },
         span.clone(),
     )
@@ -169,9 +170,11 @@ async fn rename(
     storage: &dyn NodesStorage,
     service: NodeNameUpdateService<'_>,
     deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>,
+    req: &NodeCommandRequest,
     node_id: &rdm_core::NodeId,
     incarnation: &rdm_core::IncarnationId,
-    name: &PathName,
+    name: &str,
+    frames: &mut PropertyFrames,
     span: &tracing::Span,
 ) -> StatusReply {
     // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never a
@@ -204,8 +207,9 @@ async fn rename(
         span.record("detail", format!("{me_id}: {} {why}; a name moves only on a node that holds no connection, stopped or its node.connection.delete {{ All }} completed with nothing held: nothing is claimed or written", held.node_id).as_str());
         return rdm_core::reply::status::bounded_rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
-    // Validate both fields before claiming the destination pair.
-    let to = match PathName::new(name.path.clone(), name.name.clone()) {
+    // The name's grammar before claiming the destination pair. The command names the name only: a
+    // node's path never moves.
+    let to = match PathName::new(held.path.clone(), name.to_string()) {
         Ok(to) => to,
         Err(e) => return rdm_core::reply::status::bounded_rejected_name(&format!("{me_id}: {e}; nothing is claimed or written")),
     };
@@ -222,9 +226,6 @@ async fn rename(
         Err(why) => return rdm_core::reply::status::bounded_node_record_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
     };
     let from = known.as_ref().map_or_else(|| held.location(), |r| r.location());
-    if from.path != to.path {
-        return rdm_core::reply::status::bounded_rejected_name("a node's path is immutable; only its name may change, and nothing is claimed or written");
-    }
     let moved = if from != to {
         let Some(moved) = service.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved name yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
@@ -244,6 +245,7 @@ async fn rename(
     // decision in-process, as its `NodeConfigs` applies its own config: it never calls itself.
     let applied = if held.node_id == *me_id {
         span.record("apply", "in-process");
+        frames.accepted(NodeCommandReply::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await;
         match service.rename.get() {
             Some(rename) => {
                 let (_, decision) = rename(to.clone()).await;
@@ -253,8 +255,7 @@ async fn rename(
         }
     } else {
         span.record("apply", "direct");
-        let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-        NodeRpc::new(configs.client()).name_apply(&birth, &RouteChoice::Direct, &to, &CallOptions::default()).await
+        frames.carried(configs.client(), &NodeTarget::ExactNode(node_id.clone()), req, &CallOptions::default()).await
     };
     let (answered, detail) = match applied {
         Ok(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => {
@@ -389,35 +390,35 @@ mod tests {
         let service = || NodeNameUpdateService { configs: None, moved: &moved, rename: &rename_slot, rejoin: &rejoin_slot };
 
         // 1. Stale incarnation -> RejectedStaleIncarnation
-        let stale_req = StatusRequest::UpdateName {
+        let stale_req = NodeCommandRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: IncarnationId::mint(),
-            name: subject.location().with_name("renamed").unwrap(),
+            name: "renamed".into(),
         };
         assert_eq!(
-            update(&admin1.location(), &admin1.node_id, &view, &storage, service(), Some(&clean_rec), &stale_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, service(), Some(&clean_rec), &stale_req, &mut PropertyFrames::none()).await,
             StatusReply::RejectedStaleIncarnation { held: inc.clone() }
         );
 
         // 2. Non-primary -> ReceiverNotPrimary
-        let valid_req = StatusRequest::UpdateName {
+        let valid_req = NodeCommandRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc.clone(),
-            name: subject.location().with_name("renamed").unwrap(),
+            name: "renamed".into(),
         };
         assert!(matches!(
-            update(&admin2.location(), &admin2.node_id, &view, &storage, service(), Some(&clean_rec), &valid_req).await,
+            update(&admin2.location(), &admin2.node_id, &view, &storage, service(), Some(&clean_rec), &valid_req, &mut PropertyFrames::none()).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
         // 3. Invalid name grammar -> RejectedName
-        let bad_name_req = StatusRequest::UpdateName {
+        let bad_name_req = NodeCommandRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc,
-            name: PathName { path: subject.path.clone(), name: "Bad_Name".into() },
+            name: "Bad_Name".into(),
         };
         assert!(matches!(
-            update(&admin1.location(), &admin1.node_id, &view, &storage, service(), Some(&clean_rec), &bad_name_req).await,
+            update(&admin1.location(), &admin1.node_id, &view, &storage, service(), Some(&clean_rec), &bad_name_req, &mut PropertyFrames::none()).await,
             StatusReply::RejectedName { .. }
         ));
     }

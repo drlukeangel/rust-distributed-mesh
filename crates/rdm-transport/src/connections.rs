@@ -718,7 +718,7 @@ impl ConnectionsRegistry {
         self.inner.deleted.store(true, Ordering::SeqCst);
     }
 
-    /// Unblock outbound connections after `ApplyNodeName` or restart.
+    /// Unblock outbound connections after `UpdateName` or restart.
     pub fn unblock_new_connections(&self) {
         self.inner.deleted.store(false, Ordering::SeqCst);
     }

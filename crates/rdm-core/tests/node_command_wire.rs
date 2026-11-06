@@ -25,8 +25,8 @@ fn bytes(hex: &str) -> Vec<u8> {
 /// to a mesh-primary: the change and its two providers, no Build. A stop and a start carry the
 /// birth and the command's identity, its operation keyed on the node.id: they belong to no Build (Q342).
 #[test]
-fn the_requests_match_the_frozen_eight_variant_wire_schema() {
-    assert_eq!(NodeCommand::REQUEST_VARIANTS, 8);
+fn the_requests_match_the_frozen_ten_variant_wire_schema() {
+    assert_eq!(NodeCommand::REQUEST_VARIANTS, 10);
     for (req, hex) in [
         (NodeCommandRequest::StopNode { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("o") }, "010c3031323334353637383961620c397763707266677776746879016f000000"),
         (NodeCommandRequest::StartNode { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("o") }, "020c3031323334353637383961620c397763707266677776746879016f000000"),
@@ -36,6 +36,8 @@ fn the_requests_match_the_frozen_eight_variant_wire_schema() {
         (NodeCommandRequest::StorageStep { node_id: node(), incarnation: birth(), change_id: change(), provider: "f".into() }, "030c3031323334353637383961620c3977637072666777767468790c3331323334353637383961620166"),
         (NodeCommandRequest::BlockMesh { node_id: node(), incarnation: birth(), change_id: change(), from: "f".into(), to: "t".into() }, "060c3031323334353637383961620c3977637072666777767468790c33313233343536373839616201660174"),
         (NodeCommandRequest::UnblockMesh { node_id: node(), incarnation: birth(), change_id: change(), from: "f".into(), to: "t".into() }, "070c3031323334353637383961620c3977637072666777767468790c33313233343536373839616201660174"),
+        (NodeCommandRequest::UpdateConfig { node_id: node(), incarnation: birth(), config: [("a".to_string(), "b".to_string())].into() }, "080c3031323334353637383961620c3977637072666777767468790101610162"),
+        (NodeCommandRequest::UpdateName { node_id: node(), incarnation: birth(), name: "n".into() }, "090c3031323334353637383961620c397763707266677776746879016e"),
         (NodeCommandRequest::Reserved4 { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("o") }, "040c3031323334353637383961620c397763707266677776746879016f000000"),
     ] {
         let expected = bytes(hex);
@@ -51,9 +53,9 @@ fn the_requests_match_the_frozen_eight_variant_wire_schema() {
 /// `MeshUnblocked` 25; Q342 appends `Rejected` 26, the primary above the node's refusal of a caller's
 /// node command by name.
 #[test]
-fn replies_match_the_frozen_twenty_seven_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_nine_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
-    assert_eq!(NodeCommand::REPLY_VARIANTS, 27);
+    assert_eq!(NodeCommand::REPLY_VARIANTS, 29);
     use NodeCommandReply::*;
     for (reply, hex) in [
         (CommandAccepted { node_id: node(), incarnation: birth() }, "000c3031323334353637383961620c397763707266677776746879"),
@@ -84,6 +86,8 @@ fn replies_match_the_frozen_twenty_seven_variant_wire_schema() {
         (MeshBlocked, "18"),
         (MeshUnblocked { provider: "f".into() }, "190166"),
         (Rejected { reason: "r".into(), detail: "d".into() }, "1a01720164"),
+        (PropertyUpdated { reply: rdm_core::status::StatusReply::Applied }, "1b00"),
+        (PropertyRefused { reply: rdm_core::status::StatusReply::AlreadyApplied }, "1c01"),
     ] {
         let expected = bytes(hex);
         variants.insert(NodeCommand::encode_reply(&reply).unwrap()[0]);
@@ -119,7 +123,7 @@ fn node_command_builds_streaming_and_never_forwarded_beside_a_forwarded_status()
 
 #[test]
 fn every_reply_variant_of_node_command_classifies_to_one_code() {
-    replies_match_the_frozen_twenty_seven_variant_wire_schema();
+    replies_match_the_frozen_twenty_nine_variant_wire_schema();
 }
 
 /// CONTRACT (Q47 A): stop/start append requests 1/2, with the exact birth and operation;
