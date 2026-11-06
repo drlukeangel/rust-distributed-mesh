@@ -387,7 +387,7 @@ pub(crate) enum Attempted {
     ReceiverGone(String),
     /// The call's attempts are spent with no answer (Q311): it ends `NotSent` with the last reason
     /// when no attempt committed, `Indeterminate` otherwise.
-    Spent,
+    Spent(Option<String>),
     /// A stream op, acked, lost the stream its frames rode, and its invocation did not complete
     /// within the call's time limit from that loss: the stream ends.
     TransportLost(String),
@@ -1111,6 +1111,7 @@ impl NodeRpcClient {
             unary,
             ends_with_its_connection: matches!(shape, ReplyShape::Stream { ends_with_its_connection: true, .. }),
             resent_until_acked: !matches!(shape, ReplyShape::Stream { resent_until_acked: false, .. }),
+            lost_last: None,
             committed_on: None,
             spent,
             evidence: evidence.clone(),
@@ -1217,11 +1218,12 @@ impl NodeRpcClient {
                             (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Connection(why)),
                         };
                     }
-                    Some(Attempted::Spent) => {
+                    Some(Attempted::Spent(lost)) => {
                         span.record("delivery", "attempts-spent");
                         spent = true;
                         break match (committed.take(), stopped.take(), pre.take()) {
-                            (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
+                            // Its last attempt's stream was lost, or it waited out its time limit.
+                            (Some(c), _, _) => c.indeterminate(lost.map_or(IndeterminateReason::ReplyDeadline, IndeterminateReason::ReplyLost)),
                             (None, Some(e), _) => decode(Decode::Early(e, None)),
                             (None, None, Some(p)) => p.not_sent(last.clone()),
                             (None, None, None) => unreachable!("a call is committed, stopped or pre-commit"),
@@ -1476,6 +1478,9 @@ struct Attempts {
     /// An unacked attempt waits for its ack until the next send, and the last until its time limit
     /// (node-rpc.md §34).
     resent_until_acked: bool,
+    /// Why the last attempt ended with no answer when its stream was lost, not its time limit: the
+    /// call ends `ReplyLost`, never `ReplyDeadline`.
+    lost_last: Option<String>,
     /// That connection, once committed.
     committed_on: Option<iroh::endpoint::Connection>,
     /// The attempts spent before the task started: a receiver the view did not hold yet.
@@ -1543,7 +1548,7 @@ impl Attempts {
     fn end_spent(&self, attempts: u32) -> AttemptEnd {
         tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.send.attempts)
             .in_scope(|| tracing::info!("the call's attempts are spent with no answer: it ends to its owner"));
-        let _ = self.tx.send(Attempted::Spent);
+        let _ = self.tx.send(Attempted::Spent(self.lost_last.clone()));
         AttemptEnd::AttemptsSpent
     }
 
@@ -1819,6 +1824,7 @@ impl Attempts {
                     };
                     let resend_at = ack_by.unwrap_or(next_at);
                     sent_nothing = false;
+                    self.lost_last = None;
                     match self.read(opened, ack_by, outer.as_ref().map(|o| o.id())).await {
                         StreamEnd::Complete => return AttemptEnd::StreamComplete,
                         StreamEnd::Violation => return AttemptEnd::StreamViolation,
@@ -1830,8 +1836,10 @@ impl Attempts {
                         StreamEnd::Lost => {
                             if !self.state.borrow().acked {
                                 if last_on_birth {
-                                    // Its last attempt's stream is gone unacked: no answer can come.
+                                    // Its last attempt's stream is gone unacked: no answer can come,
+                                    // and no time limit lapsed.
                                     last_until = None;
+                                    self.lost_last = Some("its last attempt's stream was lost before an ack".into());
                                 } else {
                                     self.pause(resend_at).await;
                                 }

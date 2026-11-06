@@ -491,8 +491,8 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     }
                     // A request resent until acked, its attempts spent with no answer: the call ends to its
                     // owner, and on_call_failed is told (node-rpc.md §43).
-                    Some(Attempted::Spent) => {
-                        let reason = IndeterminateReason::ReplyLost("its attempts are spent with no answer".into());
+                    Some(Attempted::Spent(lost)) => {
+                        let reason = lost.map_or(IndeterminateReason::ReplyDeadline, IndeterminateReason::ReplyLost);
                         self.span
                             .record("delivery", "attempts-spent")
                             .record("attempts", self.owed.attempts.load(Ordering::SeqCst))
@@ -612,7 +612,7 @@ impl NodeRpcClient {
                         return Ok((ReplyStream { client: self.clone(), opts: opts.clone(), span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
-                    Some(Attempted::Spent) => {
+                    Some(Attempted::Spent(_)) => {
                         span.record("delivery", "attempts-spent").record("attempts", owed.attempts.load(Ordering::SeqCst));
                         let out = pre.take().expect("pre-commit").not_sent(last.clone());
                         span.in_scope(|| self.tell_call_end(opts, owed.receiver.as_ref(), &out));

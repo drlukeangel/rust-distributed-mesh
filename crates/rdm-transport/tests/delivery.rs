@@ -1837,6 +1837,35 @@ impl rdm_transport::CallEndObserver for Told {
     }
 }
 
+/// CONTRACT (node-rpc.md §43; outcome names what happened): a committed call on one attempt whose stream
+/// is lost before any ack ends `ReplyLost`, at once, and `on_call_failed` is told. Must NOT happen:
+/// `ReplyDeadline` with no time limit lapsed (Rafka's `broker.data.update`, `reply-deadline` in 8 ms of a
+/// 300 ms limit as a broker went away, read as an answer timeout).
+#[tokio::test]
+async fn a_committed_call_whose_last_attempt_loses_its_stream_ends_reply_lost_not_reply_deadline() {
+    let mut r = raw().await;
+    let (client, _) = client_of(&[&r.node]).await;
+    let told = Arc::new(Told::default());
+    let client = client.with_call_failed_observer(told.clone());
+    let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let started = Instant::now();
+    let limit = Duration::from_secs(5);
+    let call = tokio::spawn(async move {
+        let opts = CallOptions { send: Send { attempts: 1, time_limit: TimeLimit(limit) }, ..CallOptions::default() };
+        client.call::<Command>(&target, &run(242, Mode::Apply), &opts).await
+    });
+    let conn = r.conns.recv().await.unwrap();
+    let (send, mut recv) = conn.accept_bi().await.unwrap();
+    let _ = read_request(&mut recv).await;
+    drop((send, recv));
+    conn.close(0u32.into(), b"the receiver went away");
+    let (out, _) = tokio::time::timeout(Duration::from_secs(3), call).await.expect("the call ends when its last attempt's stream is lost").unwrap();
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReplyLost(_))), "{out:?}");
+    assert!(started.elapsed() < limit, "no time limit lapsed: {:?}", started.elapsed());
+    eventually("the spent call is told", Duration::from_secs(3), || told.0.lock().unwrap().len() == 1).await;
+    assert!(told.0.lock().unwrap()[0].starts_with("Indeterminate(ReplyLost"), "told by its stored end: {:?}", told.0.lock().unwrap());
+}
+
 /// CONTRACT (node-rpc.md §34: "An unacked attempt waits for its ack until the next send, and the last
 /// attempt until its time limit"; §43): a stream op's request is owed as a unary call's. Committed and
 /// never acked, it is sent three times under one identity, and the stream ends `Indeterminate` with
