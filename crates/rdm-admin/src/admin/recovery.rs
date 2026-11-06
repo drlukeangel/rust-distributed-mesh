@@ -192,7 +192,11 @@ impl RecoverySubmitter {
         if let Some(op) = self.digest_view.deleted().into_iter().find(|op| op.node_id == n.node_id) {
             return Some(of("node-deleted", op));
         }
-        if let Some(op) = self.digest_view.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_stop()) {
+        // A repair belongs to no Build, and is the primary's own work (Q342). This primary's own run is
+        // held by its tick until it ends; any other's was announced by a primary that no longer holds the
+        // role, and nobody finishes it: the next tick that finds the member still lost runs the recovery
+        // (node-recovery.md "Failure").
+        if let Some(op) = self.digest_view.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_stop() && op.build_id != rdm_core::LifecycleOp::NO_BUILD) {
             return Some(of("node-deleting", op));
         }
         let announced = match self.digest_view.statuses.mesh(&n.mesh)?.status.as_str() {

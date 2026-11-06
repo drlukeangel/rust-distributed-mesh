@@ -1359,6 +1359,51 @@ mod tests {
         }
     }
 
+    /// CONTRACT (node-recovery.md "Failure": "the mesh-primary's next tick that finds the member still
+    /// lost investigates it again and runs the recovery"): a repair's `NodeDeleting`, which belongs to no
+    /// Build, announced by an admin that lost the role before it wrote the row, holds no recovery. Must
+    /// NOT happen: the birth stopped by that repair and refused its recovery by every later tick (release
+    /// gate 1577625f2, `mock_control_loss_recovers_without_status_heartbeat`: `via-removal-announced` every
+    /// tick for 25 s, the path never re-created).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_repairs_announcement_left_by_a_former_primary_holds_no_recovery() {
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-repair-announced")).unwrap();
+        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        member.node.runtime = Some(fact.clone());
+        let digest_view = DigestView::default();
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+            digest_view.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        let op = rdm_core::LifecycleOp { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(),
+            build_id: rdm_core::LifecycleOp::NO_BUILD.into(),
+            operation: rdm_core::OperationId::node("node.delete", &member.node.node_id),
+            node_id: member.node.node_id.clone(),
+            incarnation: member.node.incarnation.clone(),
+            path: member.node.path.clone(), name: member.node.name.clone(),
+            event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
+        };
+        assert!(digest_view.deleting(op), "the overlay is taken");
+        let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+        crate::storage::NodesStorage::put_node(&*nodes, &crate::storage::NodeRecord { runtime: fact.clone(), ..record_of(&member) }).await.unwrap();
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+        let (recovery, _, node) = recovery_of(&view, digest_view, provider, nodes);
+        let capture = crate::span_capture::Capture::new("repair-announced");
+        let outcome = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.recover(&node).await
+        };
+        assert_eq!(outcome, Inspected::Exited(Some(137)), "the provider read the exact runtime exited");
+        let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
+        assert_eq!(rejects.len(), 0, "a repair's announcement refuses nothing: {rejects:?}");
+        let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
+        assert_eq!(submits.len(), 1, "the recovery is submitted: {submits:?}");
+        eprintln!("span rdm.node_admin.node.update.via-node-recovery trace_id={}", submits[0].trace_id);
+    }
+
     /// CONTRACT (node-recovery.md "Failure": "An exit during a workflow belongs to that
     /// workflow"; mesh-delete.md: from mesh.deleting, the mesh's status deleting, to mesh.deleted, every
     /// member's removal is the mesh.delete's): an exited member of a mesh whose status the mesh primary
