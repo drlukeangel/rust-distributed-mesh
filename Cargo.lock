@@ -120,18 +120,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "attohttpc"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9"
-dependencies = [
- "base64 0.22.1",
- "http",
- "log",
- "url",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,12 +753,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "fixedbitset"
-version = "0.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -833,19 +815,6 @@ checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
  "futures-sink",
-]
-
-[[package]]
-name = "futures-concurrency"
-version = "7.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175cd8cca9e1d45b87f18ffa75088f2099e3c4fe5e2f83e42de112560bea8ea6"
-dependencies = [
- "fixedbitset",
- "futures-core",
- "futures-lite",
- "pin-project",
- "smallvec",
 ]
 
 [[package]]
@@ -1345,11 +1314,10 @@ dependencies = [
 
 [[package]]
 name = "igd-next"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bac9a3c8278f43b4cd8463380f4a25653ac843e5b177e1d3eaf849cc9ba10d4d"
+checksum = "c71312255fdc5364bff7eec0adf68146bc4e72aba85075261af40d234c11be99"
 dependencies = [
- "attohttpc",
  "bytes",
  "futures",
  "http",
@@ -1358,8 +1326,10 @@ dependencies = [
  "hyper-util",
  "log",
  "rand 0.10.1",
+ "thiserror 2.0.18",
  "tokio",
  "url",
+ "xml-rs",
  "xmltree",
 ]
 
@@ -1405,8 +1375,8 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "iroh"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=076e1a46506e2e8a1782bdf30046c800f7773664#076e1a46506e2e8a1782bdf30046c800f7773664"
+version = "1.4.1"
+source = "git+https://github.com/drlukeangel/iroh?rev=938633e5b5db478d33d5991fdb8453726e6b4221#938633e5b5db478d33d5991fdb8453726e6b4221"
 dependencies = [
  "backon",
  "blake3",
@@ -1454,8 +1424,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-base"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=076e1a46506e2e8a1782bdf30046c800f7773664#076e1a46506e2e8a1782bdf30046c800f7773664"
+version = "1.4.1"
+source = "git+https://github.com/drlukeangel/iroh?rev=938633e5b5db478d33d5991fdb8453726e6b4221#938633e5b5db478d33d5991fdb8453726e6b4221"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -1466,14 +1436,15 @@ dependencies = [
  "n0-error",
  "rand 0.10.1",
  "serde",
+ "tracing",
  "url",
  "zeroize",
 ]
 
 [[package]]
 name = "iroh-dns"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=076e1a46506e2e8a1782bdf30046c800f7773664#076e1a46506e2e8a1782bdf30046c800f7773664"
+version = "1.4.1"
+source = "git+https://github.com/drlukeangel/iroh?rev=938633e5b5db478d33d5991fdb8453726e6b4221#938633e5b5db478d33d5991fdb8453726e6b4221"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -1494,14 +1465,13 @@ dependencies = [
 
 [[package]]
 name = "iroh-gossip"
-version = "0.101.0"
-source = "git+https://github.com/drlukeangel/iroh-gossip?rev=4d58243572f70ca92a1d3dd31267045f9164f84d#4d58243572f70ca92a1d3dd31267045f9164f84d"
+version = "0.102.0"
+source = "git+https://github.com/drlukeangel/iroh-gossip?rev=25f505a05f3ad7461344c5ba82e75ce1eb2e96ca#25f505a05f3ad7461344c5ba82e75ce1eb2e96ca"
 dependencies = [
  "blake3",
  "bytes",
  "data-encoding",
  "derive_more",
- "futures-concurrency",
  "hex",
  "indexmap",
  "iroh",
@@ -1512,6 +1482,7 @@ dependencies = [
  "n0-future",
  "postcard",
  "rand 0.10.1",
+ "rustc-hash",
  "serde",
  "tokio",
  "tokio-util",
@@ -1547,8 +1518,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-relay"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=076e1a46506e2e8a1782bdf30046c800f7773664#076e1a46506e2e8a1782bdf30046c800f7773664"
+version = "1.5.0"
+source = "git+https://github.com/drlukeangel/iroh?rev=938633e5b5db478d33d5991fdb8453726e6b4221#938633e5b5db478d33d5991fdb8453726e6b4221"
 dependencies = [
  "blake3",
  "bytes",
@@ -1563,7 +1534,7 @@ dependencies = [
  "iroh-base",
  "iroh-dns",
  "iroh-metrics",
- "lru",
+ "lru 0.19.0",
  "n0-error",
  "n0-future",
  "noq",
@@ -1791,6 +1762,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1849,7 +1829,7 @@ dependencies = [
  "derive_more",
  "ipconfig",
  "jni 0.22.4",
- "lru",
+ "lru 0.18.5",
  "n0-error",
  "n0-future",
  "ndk-context",
@@ -1927,9 +1907,9 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "netdev"
-version = "0.46.3"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3c52c2584961c68f5a6e3356797344061f818c93b8acc9cd6d7e284795e563e"
+checksum = "98a4d13f8061600697d721c5fd45262aba533a7d4a7670e7c64fd02d68e4a9fb"
 dependencies = [
  "block2",
  "dispatch2",
@@ -1999,7 +1979,7 @@ dependencies = [
 [[package]]
 name = "netwatch"
 version = "0.20.0"
-source = "git+https://github.com/drlukeangel/netwatch?rev=5739114c138308b03a62a75b19392e2ce84905f3#5739114c138308b03a62a75b19392e2ce84905f3"
+source = "git+https://github.com/drlukeangel/netwatch?rev=24417e8ddbd2ba1d66ff8dc68b2dc0a359452458#24417e8ddbd2ba1d66ff8dc68b2dc0a359452458"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2035,8 +2015,8 @@ dependencies = [
 
 [[package]]
 name = "noq"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/noq?rev=bf723891903db90efabe92e9d45cfbcc3ee41752#bf723891903db90efabe92e9d45cfbcc3ee41752"
+version = "1.5.0"
+source = "git+https://github.com/drlukeangel/noq?rev=9de1796d688d548079bb09e1741193930f234314#9de1796d688d548079bb09e1741193930f234314"
 dependencies = [
  "bytes",
  "cfg_aliases",
@@ -2056,8 +2036,8 @@ dependencies = [
 
 [[package]]
 name = "noq-proto"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/noq?rev=bf723891903db90efabe92e9d45cfbcc3ee41752#bf723891903db90efabe92e9d45cfbcc3ee41752"
+version = "1.5.0"
+source = "git+https://github.com/drlukeangel/noq?rev=9de1796d688d548079bb09e1741193930f234314#9de1796d688d548079bb09e1741193930f234314"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -2082,8 +2062,8 @@ dependencies = [
 
 [[package]]
 name = "noq-udp"
-version = "1.4.0"
-source = "git+https://github.com/drlukeangel/noq?rev=bf723891903db90efabe92e9d45cfbcc3ee41752#bf723891903db90efabe92e9d45cfbcc3ee41752"
+version = "1.5.0"
+source = "git+https://github.com/drlukeangel/noq?rev=9de1796d688d548079bb09e1741193930f234314#9de1796d688d548079bb09e1741193930f234314"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -2447,7 +2427,7 @@ dependencies = [
 [[package]]
 name = "portmapper"
 version = "0.20.0"
-source = "git+https://github.com/drlukeangel/netwatch?rev=5739114c138308b03a62a75b19392e2ce84905f3#5739114c138308b03a62a75b19392e2ce84905f3"
+source = "git+https://github.com/drlukeangel/netwatch?rev=24417e8ddbd2ba1d66ff8dc68b2dc0a359452458#24417e8ddbd2ba1d66ff8dc68b2dc0a359452458"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3540,7 +3520,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

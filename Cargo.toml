@@ -35,8 +35,8 @@ opentelemetry-semantic-conventions = "0.33"
 # commit (never a branch), as direct git dependencies: a git importer sees no root [patch], so the
 # forks themselves depend on each other by git (iroh -> netwatch, noq; iroh-gossip -> iroh, noq) and
 # the graph holds one iroh, netwatch and noq. The iroh fork carries path retirement
-# (Endpoint::replace_direct_addrs) and the mapped-address and waker-loss fixes (the merge of
-# 2026-10-21 and every kept patch: docs/plans/proposal/iroh-noq-netwatch-gossip-fixes.md);
+# (Endpoint::replace_direct_addrs) and the mapped-address and waker-loss fixes (the overlay of
+# 2026-11-06 on upstream's tips and every kept patch: docs/plans/proposal/iroh-noq-netwatch-gossip-fixes.md);
 # a `test-knobs` Cargo feature, enabled from [dev-dependencies] only and audited by `dep-rules`, adds
 # QuicTransportConfigBuilder::disable_nat_traversal_for_tests (R-I3: a test that owns every path through its
 # own network seam sees no NAT-traversal path open; nothing in production changes);
@@ -47,13 +47,12 @@ opentelemetry-semantic-conventions = "0.33"
 # this mode, and the address facts a net report needs come from the bound transports. The netwatch
 # commit iroh pins carries interfaces::interface_enumerations(), the count the fork's test asserts.
 # Removal condition: upstream iroh accepts an endpoint option that binds without a network monitor.
-# netwatch enumerates interfaces on the blocking pool; iroh-gossip's net actor never awaits a full
-# per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Every kept patch and
+# netwatch enumerates interfaces on the blocking pool. Every kept patch and
 # its removal condition: docs/plans/proposal/iroh-noq-netwatch-gossip-fixes.md, the one fork ledger
 # (rafka-v2 keeps none and points there).
-iroh = { git = "https://github.com/drlukeangel/iroh", rev = "076e1a46506e2e8a1782bdf30046c800f7773664" }
-iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "076e1a46506e2e8a1782bdf30046c800f7773664" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "4d58243572f70ca92a1d3dd31267045f9164f84d" }
+iroh = { git = "https://github.com/drlukeangel/iroh", rev = "938633e5b5db478d33d5991fdb8453726e6b4221" }
+iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "938633e5b5db478d33d5991fdb8453726e6b4221" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "25f505a05f3ad7461344c5ba82e75ce1eb2e96ca" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }

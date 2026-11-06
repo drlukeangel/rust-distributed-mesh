@@ -1,21 +1,23 @@
 # iroh, noq, netwatch and iroh-gossip: the fixes we keep
 
-The four forks RDM pins were merged with their upstreams on 2026-10-21 (Luke: the most up-to-date
-versions before the soak). Each merge is the branch `rdm-upstream-2026-10-21` on drlukeangel's fork;
-no fork's default branch moved. This page lists every patch we still carry, why, and when it may go;
-and every patch the merge dropped because upstream now does the same. Upstream issues or PRs for the
-kept patches: none filed yet.
+The four forks RDM pins moved to their upstream tips on 2026-11-06 (Q383, Luke: "move all the to the
+vendor tip overlay our fixes where there is still a gap then re-run"). Each is the branch
+`rdm-upstream-2026-11-06` on drlukeangel's fork: upstream's tip with only the patches below on top. No
+fork's default branch moved. The branch `rdm-upstream-2026-10-21` keeps each patch's own history, and
+the hashes below are from it. This page lists every patch we still carry, why, and when it may go; and
+every patch the move dropped because upstream now does the same. Upstream issues or PRs for the kept
+patches: none filed yet.
 
 This page is the one ledger of the forks: rafka-v2 keeps none (Luke, 2026-10-21; its
 `docs/eng/vendor-divergence.md` is deleted and its `[patch]` comment points here). A change to a fork
 lands here in the same commit as the pin that takes it, with the measurement that justified it.
 
-| Fork | Pinned commit | Upstream merged | Our patches kept | Dropped (upstream does it) |
+| Fork | Pinned commit | Upstream tip | Our patches kept | Dropped (upstream does it) |
 |---|---|---|---|---|
-| noq | `bf723891` | n0-computer/noq main `f40e4024` (noq 1.4.0, 110 commits) | 1 | 0 |
-| netwatch, portmapper | `5739114c` | n0-computer/net-tools main `80b449c` (0.20.0, 19 commits) | 4 | 1 |
-| iroh, iroh-base | `076e1a46` | n0-computer/iroh main `efcb1c3f9` (after v1.4.0, 34 commits) | 13 | 1 |
-| iroh-gossip | `4d582435` | n0-computer/iroh-gossip main `c5f44db` (after v0.101.0, 15 commits) | 4 | 5 |
+| noq | `9de1796d` | n0-computer/noq main `04807b67` (noq 1.5.0) | 1 | 0 |
+| netwatch, portmapper | `24417e8d` | n0-computer/net-tools main `c07b688f` (0.20.0) | 4 | 0 |
+| iroh, iroh-base | `938633e5` | n0-computer/iroh main `a5e39c44` (after v1.4.1) | 13 | 0 |
+| iroh-gossip | `25f505a0` | n0-computer/iroh-gossip main `a16f016c` (v0.102.0) | 2 | 2 |
 
 ## noq
 
@@ -64,34 +66,42 @@ Each patch goes when upstream merges an equivalent, unless its line says otherwi
 
 ## iroh-gossip
 
-- **The net actor never awaits a peer's full send queue** (`637a374`, tests `fa25f6c`, `6711230`,
-  `fcf4263`): a full queue loses that one enqueue to that one peer (counted in
-  `msgs_dropped_send_queue_full`), and plumtree repairs it. Upstream still awaits the send there;
-  its #186 bounds a busy publisher and a slow stream header elsewhere. Remove when an upstream release
-  never awaits a peer's send there and our regression tests pass against it.
-- **`peer_topics` pruned on `PeerDisconnected`** (`3ee4d7b`).
 - **cdylib crate-type dropped** (`05ef7c0`), as in iroh.
 - **iroh, iroh-base and noq by git from drlukeangel's forks** (`80fede4`). Remove with the iroh and
   noq forks.
+- Dropped at the move, upstream's v0.102.0 closes the gap:
+  - **The net actor never awaits a peer's full send queue** (`637a374`). Upstream's byte-bounded
+    per-peer queue (#185) never waits. Its removal condition is met: our
+    `reciprocal_send_queue_saturation_never_makes_both_actors_deaf` passes unchanged. The patch's own
+    drop was the burst loss of D64: it dropped the Graft and its reply through the same 64-slot queue
+    and forgot them, so M11's 5,000 burst delivered 16.5-24.7%. On upstream's queue a dropped broadcast
+    is announced again and a control message that does not fit closes the peer; the same run read
+    100.0% (D65, Q383).
+  - **`peer_topics` pruned on `PeerDisconnected`** (`3ee4d7b`): the tip does it after the topic loop.
+- Our regression tests stay beside upstream's and pass on the tip: `peer_disconnected_prunes_peer_topics`,
+  `neighbor_down_prunes_lazy_push_queue`, `quit_of_one_topic_keeps_the_connection_other_topics_use`, the
+  hyparview metadata prunes, `reciprocal_send_queue_saturation_never_makes_both_actors_deaf`.
+- Moved to the queue that replaced theirs: `send_loop_terminates_when_send_channel_closed` is now
+  `send_loop_terminates_when_its_queue_lease_is_revoked`; `a_full_peer_send_queue_never_blocks_the_actor`
+  now tests data (dropped and counted, the peer stays) and control (closes the peer);
+  `a_closed_peer_send_queue_keeps_its_disconnect_cleanup` now tests a send to a peer whose connection ended.
+- No test is ignored (Q384, Luke). Upstream ignores three of its own at v0.102.0, each failing when run; at
+  its unmerged #239 two of the three still are. Nothing migrated: they test today's code, so:
+  - `overflow_during_a_handover_keeps_the_new_connection` goes. `abort` closes both connections on
+    purpose, and `aborted_peer_during_a_handover_loses_both_connections` passes for that behaviour.
+  - **Known limit, one stream per topic:** `topics_within_the_stream_limit_keep_their_neighbors` and
+    `topics_over_the_stream_limit_do_not_join_and_lose_their_neighbors`. Past the peer's limit of
+    concurrent uni streams the topics do not all join and the connection closes, again after each
+    rejoin. RDM leaves the limit at iroh's 100 (`transport_config`), so a node sharing over 100
+    channels with one peer hits it. Rafka's count per peer is not measured.
+  - **Known defect, a late `Disconnect`:** `late_disconnect_leaves_a_rejoined_neighbor_apart`. A
+    `Disconnect` read after the same peer's new `Join` removes the new neighbour, and the two views
+    differ until a later message changes them.
+  - Neither is fixed. Only a wire change fixes them, off upstream's wire, and it waits for telemetry
+    that shows one biting. These tests state today's behaviour, so a change in it is seen.
 - Not carried: the HyParView pending-neighbour patches (R-G4 `61a8cbb`, R-G5 `4b6f558`) were reverted
-  before this merge (the pin `508fb795`, RDM `bf349ba6`, 2026-10-19).
-- Our regression tests stay beside upstream's and pass on the merged code: connection and state
-  eviction (`790db7f`), quitting one topic keeps a connection other topics use (`0fff6a8`), the
-  hyparview metadata prunes, plumtree's `neighbor_down_prunes_lazy_push_queue`, `state`'s
-  `peer_disconnected_prunes_peer_topics`.
-- Dropped, upstream's lifecycle work (#161, #178, #186, #191, #195) does the same:
-  - exit `connection_loop` and reap `PeerState` when a peer is removed (`f5e7be3`);
-  - break `SendLoop` when the send channel closes (`55d8fd2`);
-  - evict `peer_data` and `alive_disconnect_peers` on discard and timeout (`c99e2cf`), now `forget_peer`;
-  - prune `lazy_push_queue` on neighbour down (`6fc9a33`);
-  - `DisconnectPeer` only when the peer's last topic is gone (`d4c6a85`);
-  - removing the peer on a dial failure and on a closed connection: upstream's
-    `dial_failure_keeps_active_peer` requires the peer kept.
-- A test defect, not product behaviour: our `reciprocal_send_queue_saturation_never_makes_both_actors_deaf`
-  bounds a gossip convergence at 15 s and misses it under a loaded parallel run (a time bound on gossip).
+  (the pin `508fb795`, RDM `bf349ba6`, 2026-10-19).
 
 ## RDM
 
-- The pins in the workspace `Cargo.toml` move to the four commits above.
-- `fabric_builds.rs`'s Build-topic loop gains a catch-all arm: upstream's #198 makes the gossip
-  `Event` enum non-exhaustive.
+- The pins in the workspace `Cargo.toml` move to the commits above. No RDM source changed.
