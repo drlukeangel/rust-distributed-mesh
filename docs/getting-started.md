@@ -53,24 +53,24 @@ RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh up
 Output:
 
 ```text
-fabric fabric-wcy2e6, meshes mesh-wcy2e6-1 and mesh-wcy2e6-2
-day-0 admin up: rdm://n0g9awfvsgsc (pid 2381819)
-UI up: http://127.0.0.1:46809
-bootstrap: {"attempt":1,"build_id":"y4qny3jg6n45"}
-topology after 6s: 20 of 20 ready
-ESTATE UP at target/demo-estate-20261029T103315; UI http://127.0.0.1:46809
+fabric fabric-gg4wtw, meshes mesh-gg4wtw-1 and mesh-gg4wtw-2
+day-0 admin up: rdm://h38q5jqafmd8 (pid 3612540)
+UI up: http://127.0.0.1:46571
+bootstrap: {"build_id":"f4q5rfcv0kxr"}
+topology after 4s: 20 of 20 ready
+ESTATE UP at target/demo-estate-20261106T172300; UI http://127.0.0.1:46571
 ```
 
 What `scripts/demo-estate.sh up` did:
 
 1. Started a Day-0 [`node-admin`](architecture/node-admin-lifecycle.md) process, which created the [fabric](architecture/lifecycles/fabric-create.md),
-   the first [mesh](architecture/lifecycles/mesh-create.md) (`mesh-wcy2e6-1`), and its own
-   [birth](architecture/node-identity-and-state.md) (`mesh-wcy2e6-1.admin.1`) as
+   the first [mesh](architecture/lifecycles/mesh-create.md) (`mesh-gg4wtw-1`), and its own
+   [birth](architecture/node-identity-and-state.md) (`mesh-gg4wtw-1.admin.1`) as
    [fabric-primary](architecture/fabric-primary.md).
 2. Started `rdm-admin-ui` attached to that Day-0 `node-admin`.
 3. Submitted a bootstrap [Build](architecture/build.md) (`y4qny3jg6n45`) through the
    `process` [deployment provider](architecture/deployment-provider.md) that created the remaining
-   19 [nodes](architecture/lifecycles/node-create.md) across `mesh-wcy2e6-1` and `mesh-wcy2e6-2`
+   19 [nodes](architecture/lifecycles/node-create.md) across `mesh-gg4wtw-1` and `mesh-gg4wtw-2`
    (3 `admin`, 2 `gateway`, 3 `broker`, and 2 `compute` nodes per mesh) and waited until all 20
    reached [`Ready`](architecture/lifecycles/states.md) in the [topology](architecture/gossip.md).
 
@@ -83,11 +83,11 @@ RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh stream
 Output:
 
 ```text
-mesh-wcy2e6-1.compute.1 -> mesh-wcy2e6-2.broker.1: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': 'mesh-wcy2e6-2.broker.1', 'answered': 'echo mesh-wcy2e6-2.broker.1: hello from mesh-wcy2e6-1.compute.1', 'reason': None, 'refused': None} trace da197df58b2035e529067667f290ffff
-mesh-wcy2e6-1.compute.1 -> mesh-wcy2e6-2.gateway.2: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': 'mesh-wcy2e6-2.gateway.2', 'answered': 'echo mesh-wcy2e6-2.gateway.2: hello again from mesh-wcy2e6-1.compute.1', 'reason': None, 'refused': None} trace 57760dc3d1435e8904f5d6188ce19a27
-mesh-wcy2e6-2.compute.2 -> mesh-wcy2e6-1.broker.3: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': 'mesh-wcy2e6-1.broker.3', 'answered': 'echo mesh-wcy2e6-1.broker.3: hello from mesh-wcy2e6-2.compute.2', 'reason': None, 'refused': None} trace 9accfd33b1fd57063c3eca5a9146b892
-mesh-wcy2e6-2.gateway.1 -> mesh-wcy2e6-1.compute.2: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': 'mesh-wcy2e6-1.compute.2', 'answered': 'echo mesh-wcy2e6-1.compute.2: hello from mesh-wcy2e6-2.gateway.1', 'reason': None, 'refused': None} trace eb3d50a7f552274dac98e6fc163b9c03
-mesh-wcy2e6-1.gateway.1 -> mesh-wcy2e6-1.broker.2: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': 'mesh-wcy2e6-1.broker.2', 'answered': 'echo mesh-wcy2e6-1.broker.2: same mesh, gateway to broker', 'reason': None, 'refused': None} trace f882225ca995393a48b6276225f74049
+mesh-gg4wtw-1.compute.1 -> mesh-gg4wtw-2.broker.1: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': {'name': '1', 'path': 'mesh-gg4wtw-2.broker'}, 'answered': 'echo y8vgq5wz8bkq: hello from mesh-gg4wtw-1.compute.1', 'reason': None, 'refused': None} trace acab52642013efdcb9b77f23d2528693
+mesh-gg4wtw-1.compute.1 -> mesh-gg4wtw-2.gateway.2: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': {'name': '2', 'path': 'mesh-gg4wtw-2.gateway'}, 'answered': 'echo yq5zcaz4jg77: hello again from mesh-gg4wtw-1.compute.1', 'reason': None, 'refused': None} trace f9284ce25804128e351a35c029cd8722
+mesh-gg4wtw-2.compute.2 -> mesh-gg4wtw-1.broker.3: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': {'name': '3', 'path': 'mesh-gg4wtw-1.broker'}, 'answered': 'echo 8q8k077st3m8: hello from mesh-gg4wtw-2.compute.2', 'reason': None, 'refused': None} trace c5b50025d8b1da3ae669a0e4cd43142b
+mesh-gg4wtw-2.gateway.1 -> mesh-gg4wtw-1.compute.2: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': {'name': '2', 'path': 'mesh-gg4wtw-1.compute'}, 'answered': 'echo yqp9rd9tyqch: hello from mesh-gg4wtw-2.gateway.1', 'reason': None, 'refused': None} trace 4482b6f85fb4cacaed0f77536a6e2e07
+mesh-gg4wtw-1.gateway.1 -> mesh-gg4wtw-1.broker.2: {'outcome': 'Reply', 'streamed': True, 'kind': 'direct', 'peer': {'name': '2', 'path': 'mesh-gg4wtw-1.broker'}, 'answered': 'echo 6mfag8ebn67w: same mesh, gateway to broker', 'reason': None, 'refused': None} trace f2eca67a367884773321c13919900325
 ```
 
 ## 3. Run one application op and inspect one Build
@@ -116,11 +116,11 @@ RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh example
 Output:
 
 ```text
-delete path mesh-njqkix-2.broker, name 3: {"attempt":1,"build_id":"<build id>"}
-create a broker in mesh-njqkix-2 onto rshape-example: {"attempt":1,"build_id":"c2tv79rbvh82"}
-delete path mesh-njqkix-2.compute, name 1: {"attempt":1,"build_id":"<build id>"}
-create a compute in mesh-njqkix-2 onto rshape-example: {"attempt":1,"build_id":"zrrs8ttny3w3"}
-the example's lines (target rshape) are in each node's stderr.log under /dev/shm/rdm-lane-2-demo/<path.name>-<node id>/
+delete path mesh-gg4wtw-2.broker, name 3: {"build_id":"vpbzkzk525a6"}
+create a broker in mesh-gg4wtw-2 onto rshape-example: {"build_id":"xkfbzrnckdb8"}
+delete path mesh-gg4wtw-2.compute, name 1: {"build_id":"4xwww1mb0v9z"}
+create a compute in mesh-gg4wtw-2 onto rshape-example: {"build_id":"jfa90t7fsdsh"}
+the example's lines (target rshape) are in each node's stderr.log under target/demo-estate-20261106T172300/<node id>/
 ```
 
 Read the broker's Create whole with `build.get`, through the `build_get` example. Its steps are the
@@ -128,71 +128,62 @@ new node's [node.create](architecture/lifecycles/node-create.md), keyed `node.cr
 node.id the fabric-primary minted for it when it accepted the Build:
 
 ```bash
-RDM_NODE_ADMIN_BIRTH="$(cat target/demo-estate-current/birth.json)" demo/target/debug/examples/build_get c2tv79rbvh82
+ROOT="$(cat target/demo-estate.current)"
+RDM_NODE_ADMIN_BIRTH="$(cat "$ROOT/birth.json")" demo/target/debug/examples/build_get xkfbzrnckdb8
 ```
 
-Output (abbreviated to the first and last steps):
+Output (abbreviated: the `change` left out, and the first and last steps):
 
 ```json
 {
-  "build_id": "c2tv79rbvh82",
+  "build_id": "xkfbzrnckdb8",
   "current": false,
+  "ended": "complete",
   "nodes": 20,
   "phase": "Complete",
+  "time": 1793985062831,
   "steps": [
     {
-      "operation": {
-        "action": "node.create",
-        "occurrence": null,
-        "step": null,
-        "subject": {
-          "Node": "y5x68fhg404e"
-        }
-      },
-      "result": "Complete",
+      "mesh": "mesh-gg4wtw-2",
+      "operation": "node.create:jptbe7p1v0z8",
+      "state": "complete",
       "step": "AllocateIdentity"
     },
     {
-      "operation": {
-        "action": "node.create",
-        "occurrence": null,
-        "step": null,
-        "subject": {
-          "Node": "y5x68fhg404e"
-        }
-      },
-      "result": "Complete",
+      "mesh": "mesh-gg4wtw-2",
+      "operation": "node.create:jptbe7p1v0z8",
+      "state": "complete",
       "step": "Complete"
     }
   ]
 }
 ```
 
-Now read the `rshape` log lines emitted by the serving broker (`mesh-wcy2e6-2.broker.3`) and the
-calling compute node (`mesh-wcy2e6-2.compute.1`) as they execute `ExampleWork` (`0x50`) and
+Now read the `rshape` log lines emitted by the serving broker (`mesh-gg4wtw-2.broker.3`) and the
+calling compute node (`mesh-gg4wtw-2.compute.1`) as they execute `ExampleWork` (`0x50`) and
 `ExampleRecords` (`0x51`):
 
 ```bash
-grep "rshape:" target/demo-estate-current/mesh-*-2.broker.3-*/stderr.log | tail -n 2
-grep "rshape:" target/demo-estate-current/mesh-*-2.compute.1-*/stderr.log | tail -n 2
+grep -h "example-work" "$ROOT"/*/stderr.log | sed 's/\x1b\[[0-9;]*m//g' | tail -n 2
+grep -hE "an example call answered|a serving node's record copied" "$ROOT"/*/stderr.log | sed 's/\x1b\[[0-9;]*m//g' | tail -n 2
 ```
 
 Output:
 
 ```text
-2026-10-29T10:33:47.049036Z  INFO rdm.node_rpc.request.serve.via-direct{protocol="example-work" op=80 peer=621faf96a677ec06ce5a421afbacb0b90733b6be28c6b74f652aceeff8c08f78 caller_system="rdm"}: rshape: an operation recorded, then accepted; its work started operation=mesh-wcy2e6-2.compute.1-sfphgmj1drew-000001
-2026-10-29T10:34:07.054665Z  INFO rdm.node_rpc.request.serve.via-direct{protocol="example-work" op=80 peer=621faf96a677ec06ce5a421afbacb0b90733b6be28c6b74f652aceeff8c08f78 caller_system="rdm" code="OK" detail="accepted"}: rshape: an operation's work completed and its completion is recorded operation=mesh-wcy2e6-2.compute.1-sfphgmj1drew-000001
+2026-11-06T17:25:34.710315Z  INFO rdm.node_rpc.request.serve.via-direct{protocol="example-work" op=80 peer=1b25368a7596e6b37902f99204ff747df02c0d7f68a3433dab00027ca723dabe caller_system="rdm"}: rshape: an operation recorded, then accepted; its work started operation=mesh-gg4wtw-2.compute-1-4t9xkqvm2r63-000033
+2026-11-06T17:25:34.713591Z  INFO rdm.node_rpc.request.serve.via-direct{protocol="example-work" op=80 peer=1b25368a7596e6b37902f99204ff747df02c0d7f68a3433dab00027ca723dabe caller_system="rdm" code="OK" detail="accepted"}: rshape: an operation's work completed and its completion is recorded operation=mesh-gg4wtw-2.compute-1-4t9xkqvm2r63-000031
 ```
 
 ```text
-2026-10-29T10:33:57.041527Z  INFO rshape: an example call answered call="submit" operation=mesh-wcy2e6-2.compute.1-sfphgmj1drew-000004 node=mesh-wcy2e6-2.broker.3 outcome="Reply" detail="accepted" code=Ok
-2026-10-29T10:33:57.047993Z  INFO rshape: a serving node's record copied node=mesh-wcy2e6-2.broker.3 from=3 next=4 ended=Ok(4)
+2026-11-06T17:25:34.711248Z  INFO rshape: an example call answered call="submit" operation=mesh-gg4wtw-2.compute-1-4t9xkqvm2r63-000033 path=mesh-gg4wtw-2.broker name=3 outcome="Reply" detail="accepted" code=Ok
+2026-11-06T17:25:34.726746Z  INFO rshape: a serving node's record copied path=mesh-gg4wtw-2.broker name=3 from=61 next=64 ended=Ok(64)
 ```
 
 While the estate is up, you can also run any standalone example under `demo/examples/`:
 
 ```bash
-cargo run --locked --manifest-path demo/Cargo.toml --example topology_and_atlas
+RDM_NODE_ADMIN_BIRTH="$(cat "$ROOT/birth.json")" cargo run --locked --manifest-path demo/Cargo.toml --example fabric_atlas_read
 ```
 
 ## 4. Tear down the estate
@@ -206,10 +197,10 @@ RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh down
 Output:
 
 ```text
-fabric.delete: {'outcome': 'Reply', 'terminal': 'Complete', 'build_id': '6nydzg6dh2bb', 'elapsed_ms': 14130, 'reason': None}
-node.delete mesh-wcy2e6-1.admin.1: {'outcome': 'Reply', 'deleted': True, 'elapsed_ms': 410, 'reason': None}
-the fabric-primary mesh-wcy2e6-1.admin.1 (pid 2381819) ended
-estate at target/demo-estate-20261029T103315 stopped; left: 0
+fabric.delete: {'outcome': 'Reply', 'terminal': 'Complete', 'build_id': 'mr6wwa34z472', 'elapsed_ms': 16228, 'reason': None}
+node.delete h38q5jqafmd8: {'outcome': 'Reply', 'deleted': True, 'elapsed_ms': 346, 'reason': None}
+the fabric-primary h38q5jqafmd8 (pid 3612540) ended
+estate at target/demo-estate-20261106T172300 stopped; left: 0
 ```
 
 ## Next steps

@@ -56,10 +56,10 @@ for f in glob.glob(f"{store}/*/nodes.jsonl"):
     for line in open(f):
         try:
             l = json.loads(line)
-            r = l["record"]
+            r = l["data"]
         except Exception:
             continue
-        if l.get("key") == node_id:
+        if l.get("subject") == node_id:
             port = (r.get("config") or {}).get("admin_ui_port", port)
 print(port)
 PY
@@ -123,13 +123,16 @@ up() {
   for _ in $(seq 1 600); do
     read -r ready total < <(curl -s "http://$UI_BIND/api/topology" 2>/dev/null | python3 -c 'import json,sys
 try:
-    n=json.load(sys.stdin).get("nodes",[]); print(sum(1 for x in n if x.get("status")=="ready"), len(n))
+    n=json.load(sys.stdin).get("nodes",[]); print(sum(1 for x in n if x.get("state")=="ready"), len(n))
 except Exception: print(0, 0)')
     [ "$ready" = 20 ] && break; sleep 1
   done
   echo "topology after $(( $(date +%s) - t0 ))s: $ready of $total ready"
   echo "ESTATE UP at $ROOT; UI http://$UI_BIND"
 }
+
+# A node's probe target: `path:` and a JSON object with its path and name, from `<path>.<name>`.
+path_target() { printf 'path:{"path":"%s","name":"%s"}' "${1%.*}" "${1##*.}"; }
 
 stream() {
   ROOT=${ROOT:-$(cat "$CURRENT")}
@@ -138,7 +141,7 @@ stream() {
   # shellcheck disable=SC1091
   . "$ROOT/names"
   one() {
-    local out; out=$("$PROBE" --admin-birth "$birth" stream --target "path:$1" --destination "path:$2" --value "$3" 2>/dev/null)
+    local out; out=$("$PROBE" --admin-birth "$birth" stream --target "$(path_target "$1")" --destination "$(path_target "$2")" --value "$3" 2>/dev/null)
     echo "$1 -> $2: $(echo "$out" | python3 -c 'import sys,json
 d=json.load(sys.stdin); print({k: d.get(k) for k in ("outcome","streamed","kind","peer","answered","reason","refused")}, "trace", (d.get("traceparent") or "")[3:35])')"
   }
@@ -159,7 +162,7 @@ build_through_ui() {
   echo "$what: $acc"
   id=$(echo "$acc" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("build_id",""))' 2>/dev/null || true)
   [ -n "$id" ] && for _ in $(seq 1 240); do
-    curl -s "http://$ui/api/builds?id=$id" | python3 -c 'import json,sys; b=[x for x in json.load(sys.stdin)["builds"] if x["build_id"]==sys.argv[1]]; sys.exit(0 if b and b[0]["phase"] in ("Complete","Failed") else 1)' "$id" 2>/dev/null && break; sleep 1
+    curl -s "http://$ui/api/builds?id=$id" | python3 -c 'import json,sys; b=[x for x in json.load(sys.stdin)["builds"] if x["build_id"]==sys.argv[1]]; sys.exit(0 if b and b[0].get("ended") else 1)' "$id" 2>/dev/null && break; sleep 1
   done
 }
 
@@ -176,7 +179,7 @@ example() {
     build_through_ui "$ui" "create a $type in $M2 onto rshape-example" -X POST "http://$ui/api/nodes/spawn" -H 'content-type: application/json' \
       -d "{\"mesh\":\"$M2\",\"type\":\"$type\",\"executable\":\"$BIN/rshape-example\"}"
   done
-  echo "the example's lines (target rshape) are in each node's stderr.log under $ROOT/<path.name>-<node id>/"
+  echo "the example's lines (target rshape) are in each node's stderr.log under $ROOT/<node id>/"
 }
 
 # The example broker's process, found by the path.name in its environment, ended by SIGKILL.

@@ -31,7 +31,7 @@ This compiles the TypeScript sources and writes the production bundle to `demo/a
 
 `scripts/demo-estate.sh up` builds (if needed) and starts `rdm-admin-ui` attached to the Day-0
 `node-admin`, pointing `RDM_UI_STATIC_DIR` at `demo/admin-ui/web/dist`, and prints the bound URL
-(also written to `target/demo-estate-current/ui.url`):
+(its address is also in `ui_bind` under the estate root that `target/demo-estate.current` names):
 
 ```bash
 RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh up
