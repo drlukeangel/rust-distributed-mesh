@@ -1837,6 +1837,51 @@ impl rdm_transport::CallEndObserver for Told {
     }
 }
 
+/// CONTRACT (node-rpc.md §34: "An unacked attempt waits for its ack until the next send, and the last
+/// attempt until its time limit"; §43): a stream op's request is owed as a unary call's. Committed and
+/// never acked, it is sent three times under one identity, and the stream ends `Indeterminate` with
+/// `on_call_failed` told, not held until its connection dies.
+#[tokio::test]
+async fn a_stream_call_committed_and_never_acked_ends_indeterminate_after_three_attempts() {
+    let mut r = raw().await;
+    let (client, _) = client_of(&[&r.node]).await;
+    let told = Arc::new(Told::default());
+    let client = client.with_call_failed_observer(told.clone());
+    let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let started = Instant::now();
+    let call = tokio::spawn(async move {
+        let opts = CallOptions { send: Send::with_time_limit(FLOOR), ..CallOptions::default() };
+        let (mut stream, _) = client.call_stream::<Tick>(&target, &TickRequest::Tick, &opts).await.map_err(|(o, _)| format!("{o:?}")).unwrap();
+        stream.next().await
+    });
+    let conn = r.conns.recv().await.unwrap();
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let reading = {
+        let arrivals = arrivals.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((send, mut recv)) = conn.accept_bi().await else { return };
+                let (h, _) = read_request(&mut recv).await;
+                arrivals.lock().unwrap().push((h.delivery_id(), Instant::now()));
+                // Held open, never acked and no frame.
+                std::mem::forget((send, recv));
+            }
+        })
+    };
+    let item = tokio::time::timeout(Duration::from_secs(5), call).await.expect("the stream ends once its attempts are spent").unwrap();
+    let ended = started.elapsed();
+    assert!(matches!(&item, Some(rdm_transport::stream::StreamItem::Failed(rdm_transport::stream::StreamFailure::Indeterminate(_)))), "{item:?}");
+    reading.abort();
+    let arrivals = arrivals.lock().unwrap().clone();
+    assert_eq!(arrivals.len(), 3, "three sends in all: {arrivals:?}");
+    assert!(arrivals.windows(2).all(|w| w[0].0 == w[1].0), "every send carries the one identity: {arrivals:?}");
+    let third = (arrivals[2].1 - started).as_millis();
+    assert!(ended.as_millis() >= third + FLOOR.as_millis() - 50, "the last attempt waited its time limit for the ack: ended {ended:?}, third send at {third} ms");
+    let told = told.0.lock().unwrap().clone();
+    assert_eq!(told.len(), 1, "on_call_failed is told once: {told:?}");
+    assert!(told[0].starts_with("Indeterminate"), "told by its stored end: {told:?}");
+}
+
 /// CONTRACT (node-rpc.md §43; fabric-node-hooks.md "on_call_failed"): a request whose write does not
 /// complete sent nothing: here its receiver never reads it, so a request larger than the stream's
 /// receive window passes its attempt's send bound mid-frame. It is resent with its identity within its

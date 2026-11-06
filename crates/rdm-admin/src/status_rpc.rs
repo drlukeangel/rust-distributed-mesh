@@ -2574,6 +2574,9 @@ fn serve_node_command(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>
                 let Some(commands) = service.primary_commands.get().cloned() else {
                     return Ok(rdm_core::reply::node_command::not_ready(format!("{} holds no NodeCommandService yet; {} is refused", service.node_id, req.op())));
                 };
+                // A caller's hop is acked here, so its own attempts wait on nothing while this primary
+                // spends the attempts of the hop below (node-rpc.md §34, §43).
+                peer.acceptance.accepted();
                 return Ok(commands.run(sender.as_ref().map(|n| n.node_id.clone()), req, Box::new(crate::node_self::StreamFrames::new(sink))).await);
             }
             let reply = own.serve_node_command_on(sender.as_ref().map(|n| &n.node_id), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;

@@ -312,6 +312,8 @@ impl NodeProtocol for NodePrimaryUpdate {
 }
 
 impl StreamingProtocol for NodePrimaryUpdate {
+    const REQUEST_RESENT_UNTIL_ACKED: bool = false;
+
     /// `PrimaryUpdating` opens the stream (the receiver admitted the call), `PrimaryUpdated` and `Failed`
     /// end it, and every other reply is a refusal, the stream's one frame.
     fn frame_kind(frame: &NodePrimaryUpdateReply) -> FrameKind {

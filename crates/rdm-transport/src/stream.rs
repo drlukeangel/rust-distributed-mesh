@@ -489,8 +489,8 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     Some(Attempted::EndedPreCommit(_)) => {
                         return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into()))));
                     }
-                    // A request resent until acked (`CallOptions::resend_unacked_stream`), its attempts spent
-                    // with no answer: the call ends to its owner, and on_call_failed is told (node-rpc.md §43).
+                    // A request resent until acked, its attempts spent with no answer: the call ends to its
+                    // owner, and on_call_failed is told (node-rpc.md §43).
                     Some(Attempted::Spent) => {
                         let reason = IndeterminateReason::ReplyLost("its attempts are spent with no answer".into());
                         self.span
@@ -579,7 +579,7 @@ impl NodeRpcClient {
         );
         let started = Instant::now();
         let mut opening = crate::client::CallSpanGuard::new(&span);
-        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, ReplyShape::Stream { ends_with_its_connection: P::ENDS_WITH_ITS_CONNECTION }, &span).await;
+        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, ReplyShape::Stream { ends_with_its_connection: P::ENDS_WITH_ITS_CONNECTION, resent_until_acked: P::REQUEST_RESENT_UNTIL_ACKED }, &span).await;
         let finish = |outcome: &str| {
             span.record("outcome", outcome);
             span.record("elapsed_ms", started.elapsed().as_millis() as u64);

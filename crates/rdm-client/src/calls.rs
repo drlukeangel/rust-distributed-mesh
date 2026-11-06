@@ -366,10 +366,7 @@ impl<'a> NodeRpc<'a> {
     /// primary carrying the command down reads, to send the node's acceptance on.
     pub async fn property_stream(&self, target: &NodeTarget, req: &rdm_core::node_command::NodeCommandRequest, opts: &CallOptions) -> Result<PropertyStream, CallEnd> {
         use rdm_core::node_command::NodeCommand;
-        // The request is owed until acked and its attempts can be spent (node-rpc.md §34): a hung
-        // receiver ends the call by name, and its primary marks it, as any call's.
-        let opts = CallOptions { resend_unacked_stream: true, ..opts.clone() };
-        match self.client.call_stream::<NodeCommand>(target, req, &opts).await {
+        match self.client.call_stream::<NodeCommand>(target, req, opts).await {
             Ok((stream, _)) => Ok(PropertyStream { stream: Some(stream), answered: None, op: req.op() }),
             Err((out, _)) => Ok(PropertyStream { stream: None, answered: Some(ended(out)?.property_end()), op: req.op() }),
         }

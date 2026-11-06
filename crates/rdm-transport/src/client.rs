@@ -154,10 +154,6 @@ pub struct CallOptions {
     /// Q52): its owner's carrier policy, answered per attempt by the route projection. `None`: every
     /// attempt is direct.
     pub route: Option<RoutePolicy>,
-    /// A stream op whose unacked request is resent as a unary call's is, its attempts spent when no
-    /// ack or frame came (node-rpc.md §34): a node's property command (Q367). Other stream ops are
-    /// resent only when their stream is lost.
-    pub resend_unacked_stream: bool,
 }
 
 /// An owner's carrier policy for a call (node-rpc.md §43, §45; i146 Q52): given the attempt
@@ -192,7 +188,6 @@ impl Default for CallOptions {
             carried: None,
             unsent_is_final: false,
             route: None,
-            resend_unacked_stream: false,
         }
     }
 }
@@ -1114,7 +1109,8 @@ impl NodeRpcClient {
             payload,
             opts: opts.clone(),
             unary,
-            ends_with_its_connection: matches!(shape, ReplyShape::Stream { ends_with_its_connection: true }),
+            ends_with_its_connection: matches!(shape, ReplyShape::Stream { ends_with_its_connection: true, .. }),
+            resent_until_acked: !matches!(shape, ReplyShape::Stream { resent_until_acked: false, .. }),
             committed_on: None,
             spent,
             evidence: evidence.clone(),
@@ -1316,6 +1312,8 @@ pub(crate) enum ReplyShape {
     Stream {
         /// The connection its request committed on is its bound.
         ends_with_its_connection: bool,
+        /// `StreamingProtocol::REQUEST_RESENT_UNTIL_ACKED`.
+        resent_until_acked: bool,
     },
 }
 
@@ -1475,6 +1473,9 @@ struct Attempts {
     unary: bool,
     /// A stream whose protocol ends it with the connection its request committed on.
     ends_with_its_connection: bool,
+    /// An unacked attempt waits for its ack until the next send, and the last until its time limit
+    /// (node-rpc.md §34).
+    resent_until_acked: bool,
     /// That connection, once committed.
     committed_on: Option<iroh::endpoint::Connection>,
     /// The attempts spent before the task started: a receiver the view did not hold yet.
@@ -1802,11 +1803,12 @@ impl Attempts {
                     // unacked request is sent again at the schedule's next delay; the last attempt
                     // waits for its ack until its time limit. A carried attempt waits for its
                     // carrier's answer, which the carrier gives inside the `remaining_ms` it was
-                    // told. A stream op is resent only when its stream is lost before its first
-                    // frame: its frames are not bounded by a time limit.
+                    // told. A stream op's request is owed the same; only its frames carry no time
+                    // limit. The Build family and the handover are resent only when their stream is
+                    // lost (`StreamingProtocol::REQUEST_RESENT_UNTIL_ACKED`).
                     let ack_by = match &outer {
                         Some(_) => Some(Instant::now() + pacing.floor),
-                        None if !self.unary && !self.opts.resend_unacked_stream => None,
+                        None if !self.resent_until_acked => None,
                         None if self.state.borrow().acked => None,
                         None if last_on_birth => {
                             let until = (started + limit).max(Instant::now());

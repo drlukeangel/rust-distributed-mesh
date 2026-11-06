@@ -715,6 +715,7 @@ impl NodeProtocol for Build {
 
 impl StreamingProtocol for Build {
     const ENDS_WITH_ITS_CONNECTION: bool = true;
+    const REQUEST_RESENT_UNTIL_ACKED: bool = false;
 
     fn frame_kind(frame: &BuildReply) -> FrameKind {
         match frame {

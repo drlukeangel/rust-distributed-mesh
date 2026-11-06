@@ -28,6 +28,11 @@ pub trait StreamingProtocol: NodeProtocol {
     /// loses its stream is held for its call's time limit while its responder resends its frames.
     const ENDS_WITH_ITS_CONNECTION: bool = false;
 
+    /// The request is resent until acked, as any call's, and its attempts can be spent (node-rpc.md
+    /// §34, §43). `false`: the Build family, whose bound is its connection, and the handover, which
+    /// moves only on its own ruling.
+    const REQUEST_RESENT_UNTIL_ACKED: bool = true;
+
     /// The kind of reply frame `frame` is.
     fn frame_kind(frame: &Self::Reply) -> FrameKind;
 }
