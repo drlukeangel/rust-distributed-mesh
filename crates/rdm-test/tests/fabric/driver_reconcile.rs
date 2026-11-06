@@ -136,16 +136,20 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
             unknown_issuer.push(format!("{}: {}", e.display(), line.chars().take(400).collect::<String>()));
         }
     }
-    let spans = estate.spans();
-    for sp in &spans {
-        if sp.to_string().contains("UnknownIssuer") {
-            unknown_issuer.push(format!("span {} {}", sp["name"], sp["span_id"]));
+    // Read line by line with nothing kept: every span of a 30-minute soak parsed whole is about 50 GB,
+    // and two such cells at once ran the host out of memory (67f87a88d).
+    let (mut exported_spans, mut served, mut reconciles) = (0usize, 0usize, 0usize);
+    estate.each_span_line(|line| {
+        exported_spans += 1;
+        let text = String::from_utf8_lossy(line);
+        if text.contains("UnknownIssuer") {
+            unknown_issuer.push(format!("span {}", text.chars().take(400).collect::<String>()));
         }
-    }
+        // The path RAN: the operations reached handlers, the topology actions ran as Build sections.
+        served += usize::from(text.contains("\"rdm.node_rpc.testkit_store.serve.via-request\""));
+        reconciles += usize::from(text.contains("\"rdm.node_admin.build.update.via-reconcile\""));
+    });
     let mut violations: Vec<String> = Vec::new();
-    // The path RAN: the operations reached handlers, the topology actions ran as Build sections.
-    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").len();
-    let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
     if report.ledger.issued > 0 && served == 0 {
         violations.push(format!("{} operations were issued and no testkit-store handler span was exported", report.ledger.issued));
     }
@@ -179,7 +183,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
             "estate_manifest": estate.artifacts.join("manifest.json"),
             "rpc_ledger": estate.artifacts.join("rpc-ledger.jsonl"),
             "spans_dir": estate.kept_evidence(),
-            "exported_spans": spans.len(),
+            "exported_spans": exported_spans,
             "proof_store_serve_spans": served,
             "build_reconcile_spans": reconciles,
             "fault_backend_spans": fault_spans.len(),
