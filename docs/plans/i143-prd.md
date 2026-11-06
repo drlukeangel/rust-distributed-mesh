@@ -3628,3 +3628,4 @@ rdm#174 with the lead's conforming text.
 - 2026-11-06 (D53): the release red at 1577625f2 is fixed at 4604c328e: a repair's NodeDeleting left by a former primary holds no recovery. The chain restarts at the new tip.
 - 2026-11-06 (D54): 80279b0a8 lands the driver soak's line-by-line span read and the stream span fix. The chain restarts at the new tip.
 - 2026-11-06 (D55): the release red at 9bdc82054 is fixed at aaa21a307: the atlas holds a primary update's answer when the new primary's gossip came first. For Luke's review. The chain restarts at the new tip.
+- 2026-11-06 (D56): fast, release, soaks and load L1 to L4 are green at 3bd9b71cd, the pin sent to Rafka. Q367, Q368 and Q369 are closed. Remaining, each for Luke: D49 (silence marks), D50 (no stored Refused line), D52 (the handover against node-rpc.md §34), D53's last sentence, D55 (his review).
