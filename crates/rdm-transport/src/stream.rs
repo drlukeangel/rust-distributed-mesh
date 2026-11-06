@@ -613,7 +613,7 @@ impl NodeRpcClient {
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::Spent) => {
-                        span.record("delivery", "attempts-spent");
+                        span.record("delivery", "attempts-spent").record("attempts", owed.attempts.load(Ordering::SeqCst));
                         let out = pre.take().expect("pre-commit").not_sent(last.clone());
                         span.in_scope(|| self.tell_call_end(opts, owed.receiver.as_ref(), &out));
                         break out;
