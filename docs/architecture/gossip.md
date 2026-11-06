@@ -628,7 +628,7 @@ its own `id`, and evicts an assembly still incomplete after `RDM_STALENESS_MS` b
 events): a full queue drops the newest event by name (`rdm.mesh.channel.reject.via-queue-full`, with
 the count) and never holds the carrier, so a slow app stalls nothing but itself. Every event RDM loses
 locally on a channel, a drop or an assembly evicted incomplete, advances that channel's loss
-generation (`Channel::lost()`), which the app reads to re-pull; a loss that cannot name a subject is
+generation (`Subscriber::lost()`), which the app reads to re-pull; a loss that cannot name a subject is
 still counted.
 
 Until the envelope lands ([i147 e3](../plans/i147-gossip-conformance-prd.md)) the frames carry the

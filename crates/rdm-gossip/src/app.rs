@@ -171,6 +171,12 @@ impl State {
     fn loss(&self) {
         self.lost.send_modify(|n| *n += 1);
     }
+    /// The subscription overflowed below RDM: events are gone, and it cannot name which. It is a loss
+    /// all the same, so the app can re-pull (gossip.md §3.4).
+    fn lagged(&self) {
+        self.loss();
+        tracing::info_span!("rdm.mesh.channel.reject.via-lagged", event_type = %self.kind).in_scope(|| tracing::info!("the channel's subscription lagged: events were lost before they reached this channel"));
+    }
     async fn publish(&self, event: Event) -> Result<(), ChannelError> {
         if self.left.load(Ordering::Acquire) {
             return Err(ChannelError::Left);
@@ -403,6 +409,10 @@ pub(crate) fn deliver_from(state: Arc<State>, mut stream: iroh_gossip::api::Goss
             if let Some(Ok(GossipEvent::NeighborDown(peer))) = &item {
                 let neighbours = state.neighbours.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))).map_or(0, |n| n.saturating_sub(1));
                 tracing::info_span!("rdm.mesh.channel.update.via-neighbour-down", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour left"));
+                continue;
+            }
+            if let Some(Ok(GossipEvent::Lagged)) = &item {
+                state.lagged();
                 continue;
             }
             let Some(Ok(GossipEvent::Received(message))) = item else {
