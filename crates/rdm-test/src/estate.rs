@@ -689,7 +689,7 @@ impl Estate {
     /// and wait for the birth it prints.
     pub async fn bootstrap(owner: Owner, fabric: &str, mesh: &str) -> Self {
         refuse_built_ins_in_consumer_mode("Estate::bootstrap");
-        Self::born(owner, fabric, mesh, None, &[]).await
+        Self::born(owner, fabric, mesh, None, &[], &[]).await
     }
 
     /// [`Estate::bootstrap`], the first node-admin also given `extra_env` (a setting the fabric's
@@ -698,7 +698,7 @@ impl Estate {
     /// (`RDM_EVIDENCE_DIR` empty: no node writes span evidence, the load harness's evidence-off pass).
     pub async fn bootstrap_with_env(owner: Owner, fabric: &str, mesh: &str, extra_env: &[(&str, &str)]) -> Self {
         refuse_built_ins_in_consumer_mode("Estate::bootstrap_with_env");
-        Self::born(owner, fabric, mesh, None, extra_env).await
+        Self::born(owner, fabric, mesh, None, extra_env, &[]).await
     }
 
     /// Start the first node-admin of `fabric` on the set's `node_admin`, and name every created
@@ -716,7 +716,15 @@ impl Estate {
     /// admins read, such as `RDM_GOSSIP_INTERVAL_MS`).
     pub async fn bootstrap_on_with_env(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str], extra_env: &[(&str, &str)]) -> Result<Self, BindingError> {
         let validated = Self::validated(&owner, set, candidate_sha, required)?;
-        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string())), extra_env).await)
+        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string())), extra_env, &[]).await)
+    }
+
+    /// [`Estate::bootstrap_on_with_env`], the files `knobs` written in the estate's root before its
+    /// first node-admin starts: a knob that first node-admin itself reads, such as the testkit
+    /// application's channel, is in place for its own `pre_node_ready`.
+    pub async fn bootstrap_on_with_knobs(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str], extra_env: &[(&str, &str)], knobs: &[&str]) -> Result<Self, BindingError> {
+        let validated = Self::validated(&owner, set, candidate_sha, required)?;
+        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string())), extra_env, knobs).await)
     }
 
     fn validated(owner: &Owner, set: &BindingSet, candidate_sha: &str, required: &[&str]) -> Result<Validated, BindingError> {
@@ -724,7 +732,7 @@ impl Estate {
         set.validate(&Expect { candidate_sha, required, provider_image: image })
     }
 
-    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>, extra_env: &[(&str, &str)]) -> Self {
+    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>, extra_env: &[(&str, &str)], knobs: &[&str]) -> Self {
         let artifacts = artifacts_root().join(&owner.feature).join(&owner.test);
         let _ = std::fs::remove_dir_all(&artifacts);
         let kept = artifacts.join("spans");
@@ -732,6 +740,9 @@ impl Estate {
         let root = estate_root(&owner.test);
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        for knob in knobs {
+            std::fs::write(root.join(knob), b"").unwrap();
+        }
         std::fs::create_dir_all(estate_store_dir(&root)).unwrap();
         let evidence = estate_evidence_dir(&root);
         std::fs::create_dir_all(&evidence).unwrap();

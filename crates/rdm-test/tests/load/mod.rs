@@ -90,7 +90,9 @@ impl Rows {
         self.time(measure, what, samples, None, None);
         let p99 = self.rows[n]["p99"].as_f64().unwrap_or(f64::NAN);
         let pass = samples_enough(&self.rows[n]) && p99 <= target_ms;
-        if !pass {
+        if !samples_enough(&self.rows[n]) {
+            self.missed.push(format!("{measure} {what}: only {} samples, and the target is read on p99 at 100 (p99 {p99:.0} ms)", self.rows[n]["n"]));
+        } else if !pass {
             self.missed.push(format!("{measure} {what}: p99 {p99:.0} ms over the target {target_ms:.0} ms (n {})", self.rows[n]["n"]));
         }
         self.rows[n]["target_p99"] = json!(target_ms);
@@ -936,16 +938,20 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     // M1, M2: the Day-0 Build of the whole shape, submitted to the bootstrap admin, to the fabric's ready.
     // Each phase's end is reported beside the whole, so a bring-up that grows names the phase it grew in.
     let t0 = Instant::now();
-    let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await;
+    let mut estate = if run == Run::Planes {
+        // M11's channel forms only if every node-admin joins it: the testkit's node-admin does, in its
+        // pre_node_ready, the first one too, so its knob is in place before that admin starts. The
+        // product's node-admin joins no testkit channel, and a node names only its mesh-primary.
+        let sha = rdm_test::faults::candidate_sha();
+        Estate::bootstrap_on_with_knobs(owner(test), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["node"], &[], &[rdm_test::test_app::APP_CHANNEL_KNOB]).await.unwrap_or_else(|why| panic!("the planes estate's executables: {why:?}"))
+    } else {
+        Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await
+    };
     let admin_up = t0.elapsed();
     if matches!(run, Run::DataPlane | Run::Planes) {
         // Every node the Build launches registers the app protocol, a carrier included.
         let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();
         std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_PROXY_KNOB), b"").unwrap();
-        if run == Run::Planes {
-            // Every node joins the testkit application's channel in its pre_node_ready (M11).
-            std::fs::write(root.join(rdm_test::test_app::APP_CHANNEL_KNOB), b"").unwrap();
-        }
     }
     let mut stream = estate.submit_shape("fabric1", &shape).await;
     let _ = Estate::until_complete(&mut stream).await;
@@ -1062,7 +1068,14 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     // `node.topology.get` holding it, polled.
     // Each sample no span names applied, by status: the admins it missed, kept on the row it is left out of.
     let (mut stops, mut starts, mut unseen) = (Vec::new(), Vec::new(), std::collections::BTreeMap::<&str, Vec<String>>::new());
-    for sample in 0..run.samples() {
+    // A sample no span names is left out, and p99 is read on 100 measured: a samples run takes more,
+    // up to half as many again, and a shortfall past that stays a failure.
+    let wanted = run.samples();
+    let attempts = if run == Run::Samples { wanted * 3 / 2 } else { wanted };
+    for sample in 0..attempts {
+        if stops.len() >= wanted && starts.len() >= wanted {
+            break;
+        }
         // A stop reaches a node's own topology as `leaving` (the held statuses: pending, ready,
         // connections-deleting, leaving); the row's stopped is the mesh-primary's.
         for (status, out) in [("leaving", &mut stops), ("ready", &mut starts)] {
