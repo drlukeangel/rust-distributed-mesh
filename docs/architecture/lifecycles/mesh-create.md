@@ -153,9 +153,10 @@ sequenceDiagram
     A->>G: 4. create mesh2's channel, join the backbone
     F->>A: 5. Ping
     A-->>F: reply
+    Note over F: writes mesh pending
     F->>A: 5. ApplyMeshState(Pending)
     A-->>F: Applied
-    Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; fabric-primary sets Ready
+    Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; writes ready on its own record
     Note over A: 7. election names it mesh-primary, writes mesh row
     A->>G: 7. Digest (is_primary), MeshStatus pending, first mesh topology
     G-->>R: install mesh2 into external topology
@@ -163,6 +164,7 @@ sequenceDiagram
     Note over A: 8. creates mesh2's other nodes under the same Build
     A->>F: 8. every planned birth ready
     F->>A: ApplyMeshState(Ready)
+    Note over A: writes mesh ready
     A->>G: MeshStatus ready
     Note over A: on_mesh_ready (notice)
 ```
@@ -171,7 +173,42 @@ Checked against the numbered sequence: acceptance mints the id before anything i
 join precedes the channel; Pending follows the Ping; the primary, the mesh row and the first frames
 come after Ready; nothing about `mesh2` is on gossip before step 7.
 
-## Failure and receipts
+## States written
+
+A mesh's states are on its record, a whole `mesh-record` line in `meshes.jsonl`, each with an event in `events.jsonl`. The first node-admin's own states are [node.create](node-create.md)'s.
+
+| written | by | when |
+|---|---|---|
+| mesh `pending`, `rdm.mesh.pending` | the node-admin that launched the mesh's first admin | the launched birth answered Ping |
+| mesh `ready`, `rdm.mesh.ready` | the mesh-primary | the fabric-primary answered `Applied` to its `DeclareMeshState(Ready)` |
+
+As stored:
+
+mesh `pending`:
+
+```json
+{"len":363,"specversion":"1.0","id":"01a1ae8f-e7ec-7336-906a-b041d2b26a70","source":"rdm://6r3bef8k2j70/8gxhqakzmeak/d01rncj4zfct","type":"mesh-record","subject":"kmzsq0ae8f12","time":"2026-11-06T01:53:49.036Z","datacontenttype":"application/json","dataschema":"mesh-record/4","data":{"mesh_id":"kmzsq0ae8f12","name":"mesh2","state":"pending"},"crc32":"1ece1b38"}
+```
+
+`rdm.mesh.pending`:
+
+```json
+{"len":391,"specversion":"1.0","id":"01a1ae8f-e7ed-7938-a1d5-f89a9c7f6543","source":"rdm://6r3bef8k2j70/8gxhqakzmeak/d01rncj4zfct","type":"rdm.mesh.pending","time":"2026-11-06T01:53:49.036Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-6da2303234d77ecf13ee75fc2f3e932e-c90309a62ac4bbe2-01","data":{"mesh":"mesh2","mesh_id":"kmzsq0ae8f12"},"crc32":"d5f44d1e"}
+```
+
+mesh `ready`:
+
+```json
+{"len":361,"specversion":"1.0","id":"01a1ae8f-ec74-7fa3-b8f5-9280f9a2a26e","source":"rdm://6r3bef8k2j70/krdjwtbf3wvx/4jj978a1ecyx","type":"mesh-record","subject":"kmzsq0ae8f12","time":"2026-11-06T01:53:50.194Z","datacontenttype":"application/json","dataschema":"mesh-record/4","data":{"mesh_id":"kmzsq0ae8f12","name":"mesh2","state":"ready"},"crc32":"7ba16bba"}
+```
+
+`rdm.mesh.ready`:
+
+```json
+{"len":317,"specversion":"1.0","id":"01a1ae8f-ec75-79bb-9d09-69ae4c63dee6","source":"rdm://6r3bef8k2j70/krdjwtbf3wvx/4jj978a1ecyx","type":"rdm.mesh.ready","time":"2026-11-06T01:53:50.194Z","datacontenttype":"application/json","dataschema":"event/1","data":{"mesh":"mesh2","mesh_id":"kmzsq0ae8f12"},"crc32":"e16dc954"}
+```
+
+## Failure
 
 A mesh name another mesh holds (`NameHeld`, naming it) fails the create step by name and nothing is
 launched; a join refusal or a hook failure fails it as [node.create](node-create.md) states, and

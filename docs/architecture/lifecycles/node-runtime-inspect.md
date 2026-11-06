@@ -91,7 +91,11 @@ sequenceDiagram
 Checked against the numbered sequence: one question, one answer; the row that follows is the
 caller's own, never the primitive's.
 
-## Failure and receipts
+## States written
+
+This operation writes no state. Its verdict is told to its caller, whose page says what follows.
+
+## Failure
 
 `unavailable` is a named answer, never treated as any of the other three; for node investigation
 it is the `unproven` verdict, and for a delete the step fails naming the domain and the reason. A

@@ -110,10 +110,27 @@ sequenceDiagram
     M->>P: node.runtime.inspect
     P-->>M: exited or os-stopped is the verdict; else running or unavailable
     M->>N: tickle (direct, then via peers), unless the inspect gave the verdict
+    Note over M: writes rdm.node.investigated
     Note over M: reached: node.mesh.join; otherwise the recovery, the mesh-primary's own
     Note over M: node.delete → node.deleted (TerminateRuntime first)
     Note over M: node.create, same path and name (the predecessor's data dir when exited and persistent)
     Note over M: each step recorded on the node record; node.started, node.created
+```
+
+## States written
+
+This operation writes no state of its own. Its verdict is [node investigation](node-investigation.md)'s `rdm.node.investigated`, and each step writes what [node.delete](node-delete.md) and [node.create](node-create.md) write.
+
+| written | by | when |
+|---|---|---|
+| `rdm.node.investigated` | the mesh-primary | the verdict is decided |
+
+As stored:
+
+`exited`:
+
+```json
+{"len":478,"specversion":"1.0","id":"01a1ae8d-f449-75a0-8b01-f4d18d8ccc70","source":"rdm://whpdxrcdyfvh/fdceh6x7d3y6/d3fbkvnm7w63","type":"rdm.node.investigated","subject":"5edf9fd8kmzc","time":"2026-11-06T01:51:41.126Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-07b2cd84abccf6fa5a1c1b873da2e267-3e5747e696e2eea8-01","data":{"incarnation":"vzrw2nsrfnv9","name":"1","next":"recreate","path":"mesh2.node","verdict":"exited"},"crc32":"38f4e36f"}
 ```
 
 ## Failure

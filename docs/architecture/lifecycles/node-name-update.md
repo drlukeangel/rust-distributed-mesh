@@ -29,7 +29,7 @@ own primitive. A node's other properties have their own commands ([node properti
 2. The mesh-primary validates from its view and the node's record: exact birth, that it is the node's mesh-primary, the precondition from the node's `state` and its `node.connection.deleted` receipt, the name grammar.
 3. The mesh-primary checks the destination pair against the node records; a pair held by another node refuses `NameHeld { by }` with nothing written.
 4. The node is sent `UpdateName` and answers `CommandAccepted`, its `node.name.updating`. It writes its own record at its node.id with the new name (Q356), the one durable name move, and only once that write is acked does it hold the new name and publish it.
-5. It answers `Applied`, `AlreadyApplied` for a name it already holds, or `BusyHoldingConnections { connections }` naming each connection it still holds, with nothing written; a write the store refuses is answered `NodeRecordRefused`. `Busy` is the interrupted case under [Failure and receipts](#failure-and-receipts).
+5. It answers `Applied`, `AlreadyApplied` for a name it already holds, or `BusyHoldingConnections { connections }` naming each connection it still holds, with nothing written; a write the store refuses is answered `NodeRecordRefused`. `Busy` is the interrupted case under [Failure](#failure).
 6. A live node rejoins its mesh under the new name: the mesh-primary commands its
    [node.mesh.join](node-mesh-join.md), the node reports under the new name and joins its mesh again,
    and answers `MeshJoined` once it is back on its mesh. A stopped node rejoins at its start.
@@ -73,7 +73,7 @@ sequenceDiagram
     M->>N: node.name.update (no connection held)
     N-->>M: node.name.updating
     M-->>C: node.name.updating
-    Note over N: write its record with the new name, then publish
+    Note over N: writes name on its own record, then publishes
     N-->>M: Applied (name held and published)
     M->>N: JoinMesh (a live node)
     N->>M: JoinNode under the new name
@@ -82,7 +82,23 @@ sequenceDiagram
     M-->>C: node.name.updated
 ```
 
-## Failure and receipts
+## States written
+
+This operation writes no state. The node writes the name on its own record (Q356), as `name` on a `node-record` line in `nodes.jsonl`, the one durable name move.
+
+| written | by | when |
+|---|---|---|
+| `name` | the node, on its own record | it holds no connection and accepted `UpdateName`, before it publishes the name |
+
+As stored:
+
+`name`:
+
+```json
+{"len":1373,"specversion":"1.0","id":"01a1ae8f-eeaf-78fc-a9b1-7c13f9f30511","source":"rdm://6r3bef8k2j70/dc3kwwjqbv52/9t78nw2kqte3","type":"node-record","subject":"dc3kwwjqbv52","time":"2026-11-06T01:53:50.762Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"dc3kwwjqbv52","path":"mesh2.node","name":"renamed","type":"node","incarnation":"9t78nw2kqte3","state":"connections-deleted","endpoint_id":"fa1d433228244817c9e3c45e7598fb08fa944018636f479c92f4a842125fca69","transport_addr":"127.0.0.1:58961","listeners":[],"runtime":{"deployment_id":"hcak92d1dx32","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1615535,"start":65863283}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793930030071,"expires_at":1794016430071,"issuer_expires_at":1796522029182,"renew_at":1793990875360},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1615231/i143-a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_primary_at_once-1615277-0/dc3kwwjqbv52"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"97380f0c084a0362952b6fd9fcdf6b0b540df4062d49bfd58c6502b33b48baee","image":null},"config":{},"tags":[]},"crc32":"8fcde176"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

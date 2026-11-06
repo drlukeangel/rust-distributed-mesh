@@ -76,22 +76,60 @@ sequenceDiagram
     participant N as Every node
     participant M as Every mesh (issuer)
     C->>F: 1. fabric.root.update { secret }
-    F-->>C: fabric.root.updated (row minted)
+    Note over F: writes roots minted
+    F-->>C: fabric.root.updated
     F->>N: 2. node.roots.update [old, new]
     N-->>F: node.roots.updated
-    Note over F: row distributed
+    Note over F: writes roots distributed
     Note over F: 3. fabric.ca.renew under the new anchor
     F->>M: mesh.issuer.renew under the new CA
-    Note over F: row ca-rotated; members renew at their own points
+    Note over F: writes roots ca-rotated; members renew at their own points
     Note over F: 4. every cert row chains to the new anchor
     F->>N: 5. node.roots.update [new]
     N-->>F: node.roots.updated
-    Note over F: row updated; old secret destroyed
+    Note over F: writes roots updated; old secret destroyed
 ```
 
 An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots.update`.
 
-## Failure and receipts
+## States written
+
+The fabric-primary writes each phase on the fabric's record, as `roots` on a whole `fabric-record` line in `fabric.jsonl`. The fabric's `state` does not move.
+
+| written | by | when |
+|---|---|---|
+| `roots.phase` `minted` | the fabric-primary | `fabric.root.update` is accepted, before it answers `fabric.root.updated` |
+| `roots.phase` `distributed` | the fabric-primary | every node answered `node.roots.updated` with both anchors |
+| `roots.phase` `ca-rotated` | the fabric-primary | `fabric.ca.renew` and each mesh's `mesh.issuer.renew` are done under the new anchor |
+| `roots.phase` `updated` | the fabric-primary | every node answered `node.roots.updated` with the new anchor alone |
+
+As stored:
+
+`minted`:
+
+```json
+{"len":677,"specversion":"1.0","id":"01a1ae91-3f7f-7564-9e8b-23de06f214b2","source":"rdm://3mzzwp10jvv2/q67txq1kwe7r/v3505rcz0m64","type":"fabric-record","subject":"3mzzwp10jvv2","time":"2026-11-06T01:55:16.990Z","datacontenttype":"application/json","dataschema":"fabric-record/3","data":{"fabric_id":"3mzzwp10jvv2","name":"fabric1","state":"pending","types":[],"provider":"process","topology_storage_provider":"file","previous_topology_storage_providers":[],"roots":{"phase":"minted","roots":["0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0","feff263c7d04dd57f80133aee0d16a2601c84305e371fc3429fcda5a5a0ceade"],"expires_at":1825466116504}},"crc32":"38c6156a"}
+```
+
+`distributed`:
+
+```json
+{"len":682,"specversion":"1.0","id":"01a1ae91-40f6-7627-8dbf-465bd153ed82","source":"rdm://3mzzwp10jvv2/q67txq1kwe7r/v3505rcz0m64","type":"fabric-record","subject":"3mzzwp10jvv2","time":"2026-11-06T01:55:17.365Z","datacontenttype":"application/json","dataschema":"fabric-record/3","data":{"fabric_id":"3mzzwp10jvv2","name":"fabric1","state":"pending","types":[],"provider":"process","topology_storage_provider":"file","previous_topology_storage_providers":[],"roots":{"phase":"distributed","roots":["0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0","feff263c7d04dd57f80133aee0d16a2601c84305e371fc3429fcda5a5a0ceade"],"expires_at":1825466116504}},"crc32":"e79641f9"}
+```
+
+`ca-rotated`:
+
+```json
+{"len":772,"specversion":"1.0","id":"01a1ae91-42e3-7b90-adde-3643817d35fa","source":"rdm://3mzzwp10jvv2/q67txq1kwe7r/v3505rcz0m64","type":"fabric-record","subject":"3mzzwp10jvv2","time":"2026-11-06T01:55:17.858Z","datacontenttype":"application/json","dataschema":"fabric-record/3","data":{"fabric_id":"3mzzwp10jvv2","name":"fabric1","state":"pending","types":[],"provider":"process","topology_storage_provider":"file","previous_topology_storage_providers":[],"ca":{"expires_at":1825466117858,"previous_expires_at":1825466116504,"issuer_receipts":{}},"roots":{"phase":"ca-rotated","roots":["0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0","feff263c7d04dd57f80133aee0d16a2601c84305e371fc3429fcda5a5a0ceade"],"expires_at":1825466116504}},"crc32":"9756e655"}
+```
+
+`updated`:
+
+```json
+{"len":790,"specversion":"1.0","id":"01a1ae91-6224-704e-951f-30c07e48f342","source":"rdm://3mzzwp10jvv2/q67txq1kwe7r/v3505rcz0m64","type":"fabric-record","subject":"3mzzwp10jvv2","time":"2026-11-06T01:55:25.859Z","datacontenttype":"application/json","dataschema":"fabric-record/3","data":{"fabric_id":"3mzzwp10jvv2","name":"fabric1","state":"pending","types":[],"provider":"process","topology_storage_provider":"file","previous_topology_storage_providers":[],"ca":{"expires_at":1825466117858,"previous_expires_at":1825466116504,"issuer_receipts":{"mesh1":1796522117859}},"roots":{"phase":"updated","roots":["0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0","feff263c7d04dd57f80133aee0d16a2601c84305e371fc3429fcda5a5a0ceade"],"expires_at":1825466116504}},"crc32":"8efd6b39"}
+```
+
+## Failure
 
 A node not reached in a phase is marked by its spent call and sent again once the mark ends or its re-created birth is held; the phase does not advance without it, and
 nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from

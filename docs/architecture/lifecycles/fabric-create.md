@@ -58,15 +58,51 @@ sequenceDiagram
     participant F as First node-admin (fabric-primary)
     participant M as Other mesh's first node-admin
     P->>F: start with no mesh, no durable topology
-    Note over F: mint fabric id (pending), create fabric row and own mesh row
+    Note over F: mint fabric id; writes fabric pending, own mesh pending
     F->>M: node.create (first node-admin of each other mesh)
     M-->>F: node.created
     Note over F: every mesh ready
-    Note over F: ready; on_fabric_ready
+    Note over F: writes fabric ready; on_fabric_ready
     F-->>P: fabric.created
 ```
 
-## Failure and receipts
+## States written
+
+The fabric-primary writes the fabric's record and its own mesh's record, each a whole line, and an event beside each state.
+
+| written | by | when |
+|---|---|---|
+| fabric `pending`: a `fabric-record` line in `fabric.jsonl`, `rdm.fabric.pending` in `events.jsonl` | the fabric-primary | Day 0, when it mints the fabric id |
+| its own mesh `pending`: [mesh.create](mesh-create.md) | the fabric-primary | Day 0, with the fabric's record |
+| fabric `ready`: a `fabric-record` line, `rdm.fabric.ready` | the fabric-primary | every mesh the accepted Build names is ready |
+
+As stored:
+
+fabric `pending`:
+
+```json
+{"len":456,"specversion":"1.0","id":"01a1ae8e-ef69-763f-9426-283f52c50485","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"fabric-record","subject":"x8f5kgwpm730","time":"2026-11-06T01:52:45.416Z","datacontenttype":"application/json","dataschema":"fabric-record/3","data":{"fabric_id":"x8f5kgwpm730","name":"fabric1","state":"pending","types":[],"topology_storage_provider":null,"previous_topology_storage_providers":[]},"crc32":"4c3827f9"}
+```
+
+`rdm.fabric.pending`:
+
+```json
+{"len":308,"specversion":"1.0","id":"01a1ae8e-ef69-7afa-88e3-092c83935940","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"rdm.fabric.pending","time":"2026-11-06T01:52:45.416Z","datacontenttype":"application/json","dataschema":"event/1","data":{"fabric_id":"x8f5kgwpm730"},"crc32":"f49da151"}
+```
+
+fabric `ready`:
+
+```json
+{"len":762,"specversion":"1.0","id":"01a1ae8e-efd9-7e57-aa38-9ae7580a9152","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"fabric-record","subject":"x8f5kgwpm730","time":"2026-11-06T01:52:45.529Z","datacontenttype":"application/json","dataschema":"fabric-record/3","data":{"fabric_id":"x8f5kgwpm730","name":"fabric1","state":"ready","types":[{"name":"broker","storage_persistence":{"persistence":"persistent","disposition":"preserve"},"executable":null},{"name":"gateway","storage_persistence":{"persistence":"ephemeral"},"executable":null},{"name":"compute","storage_persistence":{"persistence":"ephemeral"},"executable":null}],"provider":"process","topology_storage_provider":"file","previous_topology_storage_providers":[]},"crc32":"2687f343"}
+```
+
+`rdm.fabric.ready`:
+
+```json
+{"len":306,"specversion":"1.0","id":"01a1ae8e-efda-7d8b-83a1-d2aa911dda88","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"rdm.fabric.ready","time":"2026-11-06T01:52:45.529Z","datacontenttype":"application/json","dataschema":"event/1","data":{"fabric_id":"x8f5kgwpm730"},"crc32":"a6cc9bde"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

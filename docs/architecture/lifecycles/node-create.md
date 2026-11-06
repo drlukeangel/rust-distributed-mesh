@@ -100,7 +100,8 @@ sequenceDiagram
     participant M as Mesh-primary (executor)
     C->>F: build.create(node.create spec)
     F->>M: build.section.run
-    Note over M: write the row, mint, launch; compose whole node.start with FirstStart (pre_node_ready, then on_node_ready)
+    Note over M: mint, launch; compose whole node.start with FirstStart (pre_node_ready, then on_node_ready); writes each step's rdm.build.step
+    Note over M: the launched node writes starting, pending, ready on its own record
     M-->>F: start events, node.started, node.created
     F-->>C: step frames, Complete
 ```
@@ -212,7 +213,44 @@ A member deleted while the node-admin joins is node recovery's node.delete: its 
 follows the step, recorded on the node record. It is not a mesh-death event; the mesh keeps its MeshId, and
 topology omission is never death.
 
-## Failure and receipts
+## States written
+
+The launched node writes each of its states on its own record (Q356), a `node-record` line in `nodes.jsonl`, whole. The executor writes each step of the Build as an `rdm.build.step` line in `events.jsonl`.
+
+| written | by | when |
+|---|---|---|
+| `starting` | the node | its launch: no process can acknowledge a create |
+| `pending` | the node | its join report is accepted |
+| `ready` | the node | `node.started`, after every start gate |
+| `rdm.build.step`, `state` `complete` | the executor | the step completes |
+
+As stored:
+
+`starting`:
+
+```json
+{"len":1452,"specversion":"1.0","id":"01a1ae8e-ef6d-7fe3-a822-15a3b3638e5d","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"node-record","subject":"0y38y18jejj4","time":"2026-11-06T01:52:45.420Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"0y38y18jejj4","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"4camrb86y7tw","state":"starting","endpoint_id":"ba493a5956dd6a7a414e4d689477c2d36e8c1801e2e8faaea20761a83bbe1a96","transport_addr":"127.0.0.1:40037","listeners":[],"runtime":{"deployment_id":"z3d3edy88m74","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1610241,"start":65856803}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793929965415,"expires_at":1794016365415,"issuer_expires_at":1796521965415,"renew_at":1793988420127},"signing_cert":{"issued_at":1793929965415,"expires_at":1796521965415,"renew_at":1795706339479},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1610161/i143-creating_a_mesh_hands_its_members_to_its_own_primary-1610233-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/rdm-node-admin","sha256":"8cb2122a53f91157b0e89b0cca40fbcb00822a487e44b9a71dc53cc14834ce5f","image":null},"config":{},"tags":[]},"crc32":"ff901e2e"}
+```
+
+`pending`:
+
+```json
+{"len":1451,"specversion":"1.0","id":"01a1ae8e-ef6d-7fe3-a822-15a3b3638e5e","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"node-record","subject":"0y38y18jejj4","time":"2026-11-06T01:52:45.421Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"0y38y18jejj4","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"4camrb86y7tw","state":"pending","endpoint_id":"ba493a5956dd6a7a414e4d689477c2d36e8c1801e2e8faaea20761a83bbe1a96","transport_addr":"127.0.0.1:40037","listeners":[],"runtime":{"deployment_id":"z3d3edy88m74","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1610241,"start":65856803}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793929965415,"expires_at":1794016365415,"issuer_expires_at":1796521965415,"renew_at":1793988420127},"signing_cert":{"issued_at":1793929965415,"expires_at":1796521965415,"renew_at":1795706339479},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1610161/i143-creating_a_mesh_hands_its_members_to_its_own_primary-1610233-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/rdm-node-admin","sha256":"8cb2122a53f91157b0e89b0cca40fbcb00822a487e44b9a71dc53cc14834ce5f","image":null},"config":{},"tags":[]},"crc32":"6f6e2727"}
+```
+
+`ready`:
+
+```json
+{"len":1449,"specversion":"1.0","id":"01a1ae8e-efd5-7029-9720-82d979110be9","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"node-record","subject":"0y38y18jejj4","time":"2026-11-06T01:52:45.524Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"0y38y18jejj4","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"4camrb86y7tw","state":"ready","endpoint_id":"ba493a5956dd6a7a414e4d689477c2d36e8c1801e2e8faaea20761a83bbe1a96","transport_addr":"127.0.0.1:40037","listeners":[],"runtime":{"deployment_id":"z3d3edy88m74","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1610241,"start":65856803}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793929965415,"expires_at":1794016365415,"issuer_expires_at":1796521965415,"renew_at":1793988420127},"signing_cert":{"issued_at":1793929965415,"expires_at":1796521965415,"renew_at":1795706339479},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1610161/i143-creating_a_mesh_hands_its_members_to_its_own_primary-1610233-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/rdm-node-admin","sha256":"8cb2122a53f91157b0e89b0cca40fbcb00822a487e44b9a71dc53cc14834ce5f","image":null},"config":{},"tags":[]},"crc32":"647b2bfd"}
+```
+
+`rdm.build.step`:
+
+```json
+{"len":492,"specversion":"1.0","id":"01a1ae8e-f225-7dad-a6eb-39824fb0d315","source":"rdm://x8f5kgwpm730/0y38y18jejj4/4camrb86y7tw","type":"rdm.build.step","subject":"q30r7znj1ff8","time":"2026-11-06T01:52:46.116Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-1132564795dfcfc3536eb95fa63c2266-b4b1d3efcb89589c-01","data":{"build_id":"yvbpmp15hydb","mesh":"mesh1","op":"node.create:q30r7znj1ff8","state":"complete","step":"AllocateIdentity"},"crc32":"1f9f3c62"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

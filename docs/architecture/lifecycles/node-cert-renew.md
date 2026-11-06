@@ -30,7 +30,7 @@ no gossip frame is published. A renewal is invisible to every other node.
    `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds.
 4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers
    `CertRenewed`. Every connection it opens from now presents the new cert.
-5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own.
+5. The node's own record holds the dates. The old cert expires on its own.
 
 ## Command and completion messages
 
@@ -52,12 +52,27 @@ sequenceDiagram
     Note over A: 1. tick: a cert row past renew_at
     Note over A: 2. sign a fresh cert
     A->>N: 3. RenewCert { node_id, incarnation, cert, cert_dates }
-    Note over N: 4. install; presented on every new connection
+    Note over N: 4. install; presented on every new connection; writes cert on its own record
     N-->>A: CertRenewed { expires_at }
-    Note over A: 5. write the expiry the node answered; nothing else moves
 ```
 
-## Failure and receipts
+## States written
+
+This operation writes no state. The node writes the cert's dates on its own record (Q356), as `cert` on a `node-record` line in `nodes.jsonl`.
+
+| written | by | when |
+|---|---|---|
+| `cert` | the node, on its own record | it installed the cert, before it answers `CertRenewed` |
+
+As stored:
+
+`cert`:
+
+```json
+{"len":1402,"specversion":"1.0","id":"01a1ae8c-ec21-73c0-9479-ba6a5711d2d9","source":"rdm://ysmfv4vw1kf5/f588axng119c/6m7gvt5yr8a0","type":"node-record","subject":"f588axng119c","time":"2026-11-06T01:50:33.505Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"f588axng119c","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"6m7gvt5yr8a0","state":"ready","endpoint_id":"babee7216b4204145d2e16726952ed50ad837a717eaa07aa5a4035d64fbd0291","transport_addr":"127.0.0.1:53841","listeners":[],"runtime":{"deployment_id":"cenec4vf1wsd","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1512764,"start":65842742}}},"is_primary":1,"is_fabric_primary":1,"cert":{"issued_at":1793929833503,"expires_at":1793929845503,"issuer_expires_at":1796521824989,"renew_at":1793929841608},"signing_cert":{"issued_at":1793929824989,"expires_at":1796521824989,"renew_at":1795772887740},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1512719/cert-renewal-renewed-402e0wx2gpsq"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/deps/main-43afc48aad99affc","sha256":"43f0ad77d7958fbdca5cbbeed875f9b1edc680b5fbccbe489401ab3dc82f28b6","image":null},"config":{},"tags":[]},"crc32":"27b98682"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that

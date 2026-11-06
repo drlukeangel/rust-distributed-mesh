@@ -152,7 +152,7 @@ pub(super) struct Admitted {
 }
 
 /// The one reason a dialer that presented no cert is refused under (node-connections-admit.md,
-/// Failure and receipts; empty and undecodable bytes alike).
+/// Failure; empty and undecodable bytes alike).
 pub(super) const NO_CREDENTIAL: &str = "no-credential";
 
 /// What the dialer presented on the control stream.

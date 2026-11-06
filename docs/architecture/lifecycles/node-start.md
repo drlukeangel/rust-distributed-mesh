@@ -25,12 +25,12 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    and rafka-time installed, the mesh channel joined (and the backbone, a node-admin), `node.mesh.joined`. FirstStart makes it the process's first
    outbound call; AfterStop rejoins the same `(node.id, incarnation)` over the endpoint and path of
    the call that commanded it, and learns who answered from the answer. Emit
-   `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records
-   pending from that frame. node.start clears NodeStopped at NodeJoined, or, for an executor whose
+   `NodeJoined` (Data) only after the accepted join and channel join; the node writes pending
+   on its own record (Q356) with that frame. node.start clears NodeStopped at NodeJoined, or, for an executor whose
    replayed start of a birth its view holds stopped is answered `AlreadyApplied`, at that answer: the
    join it did not see; it clears the mark in its overlay and publishes the clear as the mesh's
    primary (Q249). No state is written
-   before `CommandAccepted`; the mesh-primary records starting from that frame, the node's
+   before `CommandAccepted`; the node writes starting on its own record with that frame, its
    acknowledgement (a create's starting from the launch), and a query answers it ([states](states.md)).
    The join and the start stream are two calls with no order between them: a starting frame that
    reaches the mesh-primary after the same start's join has set pending, or its completion has set
@@ -54,9 +54,8 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    Preserve retained own properties. Do not fetch topology before
    the Build-floor check and do not issue a second topology request just to refresh time.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
-   `Pending` hook permits it. That frame is the node's report: the mesh-primary sets
-   Ready on that exact birth through the [node status](node-status.md) apply,
-   not a caller op. The node also declares Ready to its mesh-primary as an owed message, as it declares
+   `Pending` hook permits it. That frame is the node's report, and the node writes
+   ready on its own record (Q356). The node also declares Ready to its mesh-primary as an owed message, as it declares
    Stopped (Q36, Q87); frame and declaration apply once (Q49). A typed
    refusal of that apply completes no readiness.
 6. Start ends with `node.started`. The node then calls
@@ -71,10 +70,10 @@ The mesh-primary → exact-node hop uses NodeCommand 0x22:
 ```text
 StartNode { node_id, incarnation, operation }
   ← CommandAccepted (Started; admission, no lifecycle state)
-  ← NodeJoined (Data; mesh-primary records pending)
+  ← NodeJoined (Data; the node writes pending)
   [pre_node_ready]
   [required Build floor, one final node.topology.get with current Rafka-time]
-  ← NodeStarted (Terminal; mesh-primary records Ready)
+  ← NodeStarted (Terminal; the node writes ready)
   [on_node_ready, a notice]
   [the caller's node.start completes only after the Ready record]
 ```
@@ -102,20 +101,53 @@ sequenceDiagram
     participant M as Mesh-primary
     participant N as Node
     M->>N: node.start
+    N-->>M: CommandAccepted
+    Note over N: writes starting
     N->>M: join
     M-->>N: cert and rafka-time
     N-->>M: node.joined
+    Note over N: writes pending
     Note over N: pre_node_ready
     Note over N: Satisfy Build floor from committed Build storage records (Q292)
     N->>M: one final node.topology.get
     M-->>N: complete topology and current Rafka-time
     N-->>M: node.started
+    Note over N: writes ready
     Note over N: on_node_ready (notice)
-    Note over M: sets Ready
     N-->>M: Complete
 ```
 
-## Failure and receipts
+## States written
+
+The node writes each state on its own record (Q356), a `node-record` line in `nodes.jsonl`, whole.
+
+| written | by | when |
+|---|---|---|
+| `starting` | the node | it admits the command; its `CommandAccepted` frame |
+| `pending` | the node | its join report is accepted; its `NodeJoined` frame |
+| `ready` | the node | every start gate passed; its `NodeStarted` frame, the stream's terminal |
+
+As stored:
+
+`starting`:
+
+```json
+{"len":1335,"specversion":"1.0","id":"01a1ae4b-29fe-775e-9fdf-28054cd82c9f","source":"rdm://gtba9750bpk7/a5xkb8pck5e6/rnqs4tgmfj0b","type":"node-record","subject":"a5xkb8pck5e6","time":"2026-11-06T00:38:43.962Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"a5xkb8pck5e6","path":"mesh1.node","name":"1","type":"node","incarnation":"rnqs4tgmfj0b","state":"starting","endpoint_id":"2300ba7e329edc5c2c1fecc9c725692e7bb5f8ff5edfa86809f256b74afebf7a","transport_addr":"127.0.0.1:43943","listeners":[],"runtime":{"deployment_id":"dr9323hp16mj","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":744666,"start":65412649}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793925523755,"expires_at":1794011923755,"issuer_expires_at":1796517523088,"renew_at":1793984400156},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-744446/i143-a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth-744518-0/a5xkb8pck5e6"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"6c5e453782e6b611128637e8952c26a706558054d75f83259a2e13d3056484df","image":null},"config":{},"tags":[]},"crc32":"928482c0"}
+```
+
+`pending`:
+
+```json
+{"len":1334,"specversion":"1.0","id":"01a1ae4b-2a05-7cb0-b99a-1c0a280a0a34","source":"rdm://gtba9750bpk7/a5xkb8pck5e6/rnqs4tgmfj0b","type":"node-record","subject":"a5xkb8pck5e6","time":"2026-11-06T00:38:43.969Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"a5xkb8pck5e6","path":"mesh1.node","name":"1","type":"node","incarnation":"rnqs4tgmfj0b","state":"pending","endpoint_id":"2300ba7e329edc5c2c1fecc9c725692e7bb5f8ff5edfa86809f256b74afebf7a","transport_addr":"127.0.0.1:43943","listeners":[],"runtime":{"deployment_id":"dr9323hp16mj","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":744666,"start":65412649}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793925523968,"expires_at":1794011923968,"issuer_expires_at":1796517523088,"renew_at":1793984960390},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-744446/i143-a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth-744518-0/a5xkb8pck5e6"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"6c5e453782e6b611128637e8952c26a706558054d75f83259a2e13d3056484df","image":null},"config":{},"tags":[]},"crc32":"cfdf9a8a"}
+```
+
+`ready`:
+
+```json
+{"len":1332,"specversion":"1.0","id":"01a1ae4b-2a10-715f-9ae0-e139b2125503","source":"rdm://gtba9750bpk7/a5xkb8pck5e6/rnqs4tgmfj0b","type":"node-record","subject":"a5xkb8pck5e6","time":"2026-11-06T00:38:43.981Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"a5xkb8pck5e6","path":"mesh1.node","name":"1","type":"node","incarnation":"rnqs4tgmfj0b","state":"ready","endpoint_id":"2300ba7e329edc5c2c1fecc9c725692e7bb5f8ff5edfa86809f256b74afebf7a","transport_addr":"127.0.0.1:43943","listeners":[],"runtime":{"deployment_id":"dr9323hp16mj","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":744666,"start":65412649}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793925523968,"expires_at":1794011923968,"issuer_expires_at":1796517523088,"renew_at":1793984960390},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-744446/i143-a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth-744518-0/a5xkb8pck5e6"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"6c5e453782e6b611128637e8952c26a706558054d75f83259a2e13d3056484df","image":null},"config":{},"tags":[]},"crc32":"1fbdec1a"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

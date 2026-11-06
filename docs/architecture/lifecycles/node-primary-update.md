@@ -63,6 +63,35 @@ and recording it are separate for every type.
    primary change.
 6. The commander continues on the primary's `node.primary.updated { node_id }`, never on gossip: step 5 is the recording of a change that has already happened, and the commander waits for neither the digest nor the record. The fabric-primary and the mesh-primary each record the answer in their atlas, for the update it sent or the answer streamed back to it (Q355). The action's next command goes to the old primary's mesh-primary as it stands now: for the `node-admin` type, the new mesh-primary `node_id` names, which runs the old primary's connections delete, stop or delete as for any node of its mesh; for any other type, the mesh-primary, which runs it itself.
 
+## States written
+
+This operation writes no state. Each node writes the role on its own record (Q356), as `is_primary`, and `is_fabric_primary` for the fabric-primary, on a `node-record` line in `nodes.jsonl`.
+
+| written | by | when |
+|---|---|---|
+| `is_primary`, `is_fabric_primary` set | the successor | it installed itself from the election |
+| `is_primary`, `is_fabric_primary` cleared | the departing primary | it handed the role away |
+
+As stored:
+
+`is_primary` set:
+
+```json
+{"len":1483,"specversion":"1.0","id":"01a1ae8e-c3a3-7bf8-9a28-9d8ab707d649","source":"rdm://91hevmvygqh5/dhnskbng7mjk/vh0j3qm4nyge","type":"node-record","subject":"dhnskbng7mjk","time":"2026-11-06T01:52:34.211Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"dhnskbng7mjk","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"vh0j3qm4nyge","state":"ready","endpoint_id":"93749fa2fc9c841abb7954b762bc2876e693f755806d206fc18fff09bd30f4d4","transport_addr":"127.0.0.1:43187","listeners":[],"runtime":{"deployment_id":"ysgfcfnxf6rn","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1600440,"start":65855650}}},"is_primary":1,"is_fabric_primary":null,"cert":{"issued_at":1793929954194,"expires_at":1794016354194,"issuer_expires_at":1796521954194,"renew_at":1793989053503},"signing_cert":{"issued_at":1793929954194,"expires_at":1796521954194,"renew_at":1795758514093},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1598342/i143-deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_then_deletes_it-1598886-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/faulted-node-admin","sha256":"18542a53453eac529615f7ef2eb437dcc1a7cc17b024a3c8f7d8fbeb795e6f8f","image":null},"config":{},"tags":[]},"crc32":"9d263b4d"}
+```
+
+`is_fabric_primary` set:
+
+```json
+{"len":1480,"specversion":"1.0","id":"01a1ae8e-c3a6-7353-9897-cbd48810bb32","source":"rdm://91hevmvygqh5/dhnskbng7mjk/vh0j3qm4nyge","type":"node-record","subject":"dhnskbng7mjk","time":"2026-11-06T01:52:34.214Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"dhnskbng7mjk","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"vh0j3qm4nyge","state":"ready","endpoint_id":"93749fa2fc9c841abb7954b762bc2876e693f755806d206fc18fff09bd30f4d4","transport_addr":"127.0.0.1:43187","listeners":[],"runtime":{"deployment_id":"ysgfcfnxf6rn","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1600440,"start":65855650}}},"is_primary":1,"is_fabric_primary":1,"cert":{"issued_at":1793929954194,"expires_at":1794016354194,"issuer_expires_at":1796521954194,"renew_at":1793989053503},"signing_cert":{"issued_at":1793929954194,"expires_at":1796521954194,"renew_at":1795758514093},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1598342/i143-deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_then_deletes_it-1598886-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/faulted-node-admin","sha256":"18542a53453eac529615f7ef2eb437dcc1a7cc17b024a3c8f7d8fbeb795e6f8f","image":null},"config":{},"tags":[]},"crc32":"51ff57e0"}
+```
+
+`is_fabric_primary` cleared:
+
+```json
+{"len":1483,"specversion":"1.0","id":"01a1ae8e-d683-7290-95a4-6f025c9664f5","source":"rdm://91hevmvygqh5/dhnskbng7mjk/vh0j3qm4nyge","type":"node-record","subject":"dhnskbng7mjk","time":"2026-11-06T01:52:39.043Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"dhnskbng7mjk","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"vh0j3qm4nyge","state":"ready","endpoint_id":"93749fa2fc9c841abb7954b762bc2876e693f755806d206fc18fff09bd30f4d4","transport_addr":"127.0.0.1:43187","listeners":[],"runtime":{"deployment_id":"ysgfcfnxf6rn","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1600440,"start":65855650}}},"is_primary":1,"is_fabric_primary":null,"cert":{"issued_at":1793929954194,"expires_at":1794016354194,"issuer_expires_at":1796521954194,"renew_at":1793989053503},"signing_cert":{"issued_at":1793929954194,"expires_at":1796521954194,"renew_at":1795758514093},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1598342/i143-deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_then_deletes_it-1598886-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/faulted-node-admin","sha256":"18542a53453eac529615f7ef2eb437dcc1a7cc17b024a3c8f7d8fbeb795e6f8f","image":null},"config":{},"tags":[]},"crc32":"eacb30e7"}
+```
+
 ## Failure contract
 
 - **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by
@@ -205,7 +234,7 @@ sequenceDiagram
     NA1-->>FP: node.primary.updating, then node.primary.updated { node_id }
     Note over FP,NA2: FP sends NA1's next command to NA2, which runs it as NA1's mesh-primary
     NA2->>G: Digest (is_primary, next revision)
-    Note over NA2: records is_primary on its own row; TopologyFull projection carries it
+    Note over NA2: writes is_primary on its own record; TopologyFull projection carries it
 ```
 
 ## Observability contract

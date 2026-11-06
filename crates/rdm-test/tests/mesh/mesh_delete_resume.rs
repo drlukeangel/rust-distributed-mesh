@@ -357,7 +357,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &PathName, roster: usize) -> Value
     let handed: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-exit-for-writer").into_iter().filter(|sp| at_location(sp, &lost.0)).collect();
     let writer = if handed.is_empty() { Estate::path("mesh1.node-admin", "1") } else { next.clone() };
     assert!(lost_rows.len() == 1 && at_location(lost_rows[0], &writer), "the lost primary's Deleted row is written once, by {writer:?}: {lost_rows:?}");
-    // An exit inside the mesh.delete belongs to it (node-recovery.md "Failure and receipts"): the
+    // An exit inside the mesh.delete belongs to it (node-recovery.md "Failure"): the
     // deleted mesh's mesh-primary submits no recovery of a mesh2 birth, the lost primary included.
     let mesh2_ids: BTreeSet<String> = ids.iter().filter(|(at, _)| at.path.starts_with("mesh2.")).map(|(_, id)| id.clone()).chain([last_id.clone()]).collect();
     let recoveries: Vec<String> = named(spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| mesh2_ids.contains(&s(&sp["attributes"]["submitter"])) || mesh2_ids.contains(&s(&sp["attributes"]["node_id"]))).map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node_id"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();

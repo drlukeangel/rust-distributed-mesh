@@ -16,10 +16,10 @@ neither scope touches them: a node that has had its connections deleted is still
 |---|---|
 | Caller / executor | Typed caller / mesh-primary and exact target node |
 | Request | `node.connection.delete { scope }`, where `scope` is `All` or `Connections([connection id, …])` |
-| `All` | Graceful node-wide closure: close every open connection of the node. Status connections-deleting once the node reports it on the command's stream, then connections-deleted from its `Established` completion, each set by the node's mesh-primary |
+| `All` | Graceful node-wide closure: close every open connection of the node. Status connections-deleting once the node reports it on the command's stream, then connections-deleted from its `Established` completion, each written by the node on its own record (Q356) |
 | `Connections([id, …])` | Close exactly the named connections, each by the minted id of its open entry as `node.connection.get` returns it. Sets no node-wide status and does not make the node non-routable. An empty list is refused by name. An id the node does not know, or finds already closed, is named in the completion, never ignored |
 | Identity | Same node.id, incarnation, endpoint, port, name and data dir |
-| Entry (`All`) | The [connections-deleting](states.md#who-sets-each-state) status, set by the mesh-primary when the node reports `ConnectionsDeleting` on the command's stream, its block on new application work in force. A command that never reached the node changes no state |
+| Entry (`All`) | The [connections-deleting](states.md#who-sets-each-state) status, written by the node on its own record when it reports `ConnectionsDeleting` on the command's stream, its block on new application work in force. A command that never reached the node changes no state |
 | End event | `node.connection.deleted`, naming every connection id it closed |
 | Receipt (`All`) | A `ConnectionsReceipt`: `Established { in_flight, closed }`, or at the bound `Deadline { last_in_flight, closed, held }`, `held` being the connections still open |
 | Bound | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` |
@@ -68,7 +68,7 @@ not complete this stream or replace its receipt.
    sequence ends here.
 3. `All`, in this order:
    1. The node blocks admission of new application work and reports `ConnectionsDeleting` on the
-      command's stream; its mesh-primary then sets connections-deleting. Peers hear it later; the
+      command's stream, and writes connections-deleting on its own record. Peers hear it later; the
       node's own block stops new work at once.
    2. Let admitted work finish, including its downstream connections: they belong to the same
       closure.
@@ -76,7 +76,7 @@ not complete this stream or replace its receipt.
    4. Close every open connection, each open Direct or Proxy connection of the node.
    5. Queue the drop rows under the node's current name (Q169); they land behind the answer.
    6. Return `node.connection.deleted` carrying `Established` and the closed ids.
-4. The node's mesh-primary sets connections-deleted from that completion. Graceful success is never
+4. The node writes connections-deleted on its own record with that completion. Graceful success is never
    reported after interrupting work, and connections-deleted is never published while a covered
    connection is open.
 5. At `RDM_CONNECTIONS_DELETE_DEADLINE_MS` an `All` that has not reached zero returns incomplete
@@ -101,14 +101,37 @@ sequenceDiagram
     N-->>M: CommandAccepted
     Note over N: block new application work
     N-->>M: ConnectionsDeleting
-    Note over M: connections-deleting
+    Note over N: writes connections-deleting
     Note over N: finish admitted work, close every open connection
     N-->>M: node.connection.deleted with receipt and closed ids
-    Note over M: connections-deleted (Established only)
+    Note over N: writes connections-deleted (Established only)
     M-->>C: node.connection.deleted
 ```
 
-## Failure and receipts
+## States written
+
+The node writes each state on its own record (Q356), a `node-record` line in `nodes.jsonl`, whole.
+
+| written | by | when |
+|---|---|---|
+| `connections-deleting` | the node | it reports `ConnectionsDeleting` on the command's stream, its block on new application work in force |
+| `connections-deleted` | the node | its completion carries `Established`; a `Deadline` completion moves no state |
+
+As stored:
+
+`connections-deleting`:
+
+```json
+{"len":1001,"specversion":"1.0","id":"01a1ae8c-01f3-7f1e-bd34-5fb152cf9026","source":"rdm://tngwfrd0p9vv/9rgap8z13kty/pze496vbjh1n","type":"node-record","subject":"9rgap8z13kty","time":"2026-11-06T01:49:33.552Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"9rgap8z13kty","path":"mesh1.node","name":"1","type":"node","incarnation":"pze496vbjh1n","state":"connections-deleting","endpoint_id":"b8c03c61bb182d7b41402d182888a1eba21895f3ee2ea3bd0a0e5bd207845eee","transport_addr":"127.0.0.1:45458","listeners":[],"runtime":{"deployment_id":"k2ryj3ypad1n","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1506148,"start":65837629}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1506098/stop-start-ymgd6qjpp569"},"executable":null,"config":{},"tags":[]},"crc32":"c2e9c2c9"}
+```
+
+`connections-deleted`:
+
+```json
+{"len":999,"specversion":"1.0","id":"01a1ae8c-01f4-7d46-a64d-3f5c9fba3b11","source":"rdm://tngwfrd0p9vv/9rgap8z13kty/pze496vbjh1n","type":"node-record","subject":"9rgap8z13kty","time":"2026-11-06T01:49:33.553Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"9rgap8z13kty","path":"mesh1.node","name":"1","type":"node","incarnation":"pze496vbjh1n","state":"connections-deleted","endpoint_id":"b8c03c61bb182d7b41402d182888a1eba21895f3ee2ea3bd0a0e5bd207845eee","transport_addr":"127.0.0.1:45458","listeners":[],"runtime":{"deployment_id":"k2ryj3ypad1n","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1506148,"start":65837629}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1506098/stop-start-ymgd6qjpp569"},"executable":null,"config":{},"tags":[]},"crc32":"c963e31a"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

@@ -23,7 +23,7 @@ work, never a timer. An unreachable target schedules no report. The exact-instan
 [node.tickle](node-tickle.md)'s probe, `ProbeNodeState`; its Current reply reasserts held
 status and does not manufacture a transition or a new change timestamp.
 
-A node reports to its mesh's primary, which sets its status. A report is an owed message
+A node writes its status on its own record (Q356) and reports it to its mesh's primary. A report is an owed message
 ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)) and names the operation that
 produced the state when one did ([DeclaredOperation](../node-rpc-envelope.md#status-op-0x1b-rdm)): a stop's
 `Stopped`, from which the mesh-primary publishes NodeStopped ([node.stop](node-stop.md) step 5), and a
@@ -34,6 +34,10 @@ start's `Pending` and `Ready`.
 ## Status apply
 
 No node status is applied downward. A node declares its own `Pending` and `Ready` ([Status report](#status-report)); `connections-deleting` is entered only by [node.connection.delete](node-connections-delete.md) with `{ scope: All }`; a stop is [node.stop](node-stop.md); how a node leaves the stopped status is [Stopped nodes](states.md#stopped-nodes). `ApplyNodeState` is reserved on the [Status schema](../node-rpc-envelope.md#status-op-0x1b-rdm) and refused by name.
+
+## States written
+
+This page writes no state. A node writes its status on its own record (Q356), on the page of the operation that moved it: [states](states.md#who-sets-each-state) lists each.
 
 ## Observability contract
 

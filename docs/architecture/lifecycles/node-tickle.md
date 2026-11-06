@@ -134,7 +134,11 @@ sequenceDiagram
 Checked against the numbered sequence: direct before the peers; the two peer probes concurrent;
 the first answer from the node, under the probed incarnation, ends the ladder; `unreached` only when nothing answered.
 
-## Failure and receipts
+## States written
+
+This operation writes no state. Its result is told to its caller.
+
+## Failure
 
 The primitive has no failure of its own: `unreached` is a result, not an error, and it is never
 recorded as the node's death. Evidence of exit is [node.runtime.inspect](node-runtime-inspect.md)'s, which node investigation reads before the tickle. Budgets and the certainty of each call

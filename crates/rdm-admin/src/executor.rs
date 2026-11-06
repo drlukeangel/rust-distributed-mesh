@@ -28,7 +28,7 @@ pub enum RunEnd {
     /// A participant of the operation was lost, or the proof its resume needs is not in yet: the
     /// operation is incomplete and its receipts stand. Its section ends incomplete, no terminal
     /// verdict of the operation is recorded, and a resubmit of the Build resumes it from the receipts
-    /// (Q346; R-BI4; mesh-delete.md, "Failure and receipts").
+    /// (Q346; R-BI4; mesh-delete.md, "Failure").
     Incomplete(String),
 }
 

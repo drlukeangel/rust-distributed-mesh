@@ -69,7 +69,23 @@ sequenceDiagram
     Note over D: 5. reads the verdict first; its reconnect rule decides what follows
 ```
 
-## Failure and receipts
+## States written
+
+This operation writes no state. A refusal is a connection fact, a whole `node-connection` line in `connections.jsonl`. A `Refused` line has this `Connected` line's fields, with `state` `Refused` and its `reason`.
+
+| written | by | when |
+|---|---|---|
+| `Refused` | the acceptor | it refused a dialer a topology view names |
+
+As stored:
+
+a `Connected` line:
+
+```json
+{"len":816,"specversion":"1.0","id":"01a1ae8c-2f06-74e4-b5eb-6be83130a7b2","source":"rdm://yp91jvvhj8a6/mddfj4ts5eft/d9th83avjfg3","type":"node-connection","subject":"mddfj4ts5eft--qs3y0744ax8t--7261666b612d6e6f64652d7270632f31--direct","time":"2026-11-06T01:49:45.091Z","datacontenttype":"application/json","dataschema":"node-connection/3","data":{"id":"c49p885yfqez","source":{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"7","node_id":"mddfj4ts5eft","incarnation":"d9th83avjfg3"},"destination":{"mesh":"mesh1","type":"node-admin","path":"mesh1.node-admin","name":"1","node_id":"qs3y0744ax8t","incarnation":"8fysnsmwc0vt"},"kind":"Direct","alpn":[114,97,102,107,97,45,110,111,100,101,45,114,112,99,47,49],"state":"Connected","carrier":null,"reason":null,"logged_at_ms":1793929785094},"crc32":"90282bea"}
+```
+
+## Failure
 
 A dialer that writes no cert within the floor is `no-credential`. A read the acceptor cannot complete
 (the stream reset, the connection gone) is neither verdict: nothing is written and the connection is

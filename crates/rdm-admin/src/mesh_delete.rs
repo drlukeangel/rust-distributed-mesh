@@ -1246,7 +1246,7 @@ mod tests {
         complete.receipts.push(receipt(&last));
         assert_eq!(first_mismatch(&complete, &roster, &last, true), None);
     }
-    /// CONTRACT (mesh-delete.md "Failure and receipts"; node-rpc-envelope.md "Mesh delete command pair":
+    /// CONTRACT (mesh-delete.md "Failure"; node-rpc-envelope.md "Mesh delete command pair":
     /// "A lost handoff or missing exact receipt leaves the workflow incomplete, never successful"): the
     /// mesh-primary's MeshDeleted report is lost. The owner's bounded wait ends the section incomplete,
     /// its step events standing. The Build's rerun re-admits the same mesh.delete, and the mesh-primary

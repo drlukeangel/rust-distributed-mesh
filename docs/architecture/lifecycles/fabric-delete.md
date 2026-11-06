@@ -57,6 +57,22 @@ node.delete              the fabric-primary
                          in the fabric to show the exit
 ```
 
+## States written
+
+This operation writes no fabric state. Each mesh's states are written by [mesh.delete](mesh-delete.md) and each node's by [node.delete](node-delete.md). Every runtime the workflow deletes has its step event, the fabric-primary's own delete excepted.
+
+| written | by | when |
+|---|---|---|
+| `rdm.build.step` in `events.jsonl`, `state` `complete` | the executor of the step | the step completes |
+
+As stored:
+
+`rdm.build.step`, a node.delete step:
+
+```json
+{"len":488,"specversion":"1.0","id":"01a1ae8b-fcdd-7cc8-b8fb-a19e908a520c","source":"rdm://s0artk0pkmpp/bd7ebr4x2mng/zd4y41k3zta5","type":"rdm.build.step","subject":"h72998zyjysr","time":"2026-11-06T01:49:32.251Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-55bd55356d44f87c520f93b0bbfd3212-dbbf65d237c50ce6-01","data":{"build_id":"erskwynp44gw","mesh":"mesh2","op":"node.delete:h72998zyjysr","state":"complete","step":"NodeDeleting"},"crc32":"bde91f70"}
+```
+
 ## Failure
 
 A step that cannot complete ends its mesh's section, and the fabric.delete Build ends `incomplete`,

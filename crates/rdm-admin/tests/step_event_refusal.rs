@@ -1,5 +1,5 @@
 //! i143.e12.s33 functional: a step whose step event the Build state refuses is not complete. The
-//! step event is the step's durable commit (node-recovery.md "Failure and receipts": durable step
+//! step event is the step's durable commit (node-recovery.md "Failure": durable step
 //! outcomes are `Complete` or `Failed { step, reason }`), and a step event that is not written to the
 //! executor's own log (a targeted role, a failed local write) fails the
 //! step by name: its span, and the pipeline's error naming the step and the refusal. Nothing after
@@ -143,7 +143,7 @@ impl Refuses {
     }
 }
 
-/// CONTRACT (node-recovery.md "Failure and receipts"; CLAUDE.md "an error state carries every
+/// CONTRACT (node-recovery.md "Failure"; CLAUDE.md "an error state carries every
 /// non-leaking detail"): a standalone node.connection.delete whose `DeleteConnections` step event the Build state refuses (here
 /// as a Build state that refuses it) fails at `DeleteConnections`, the error naming the step and the refusal,
 /// under a `rdm.node_admin.deployment.reject.via-step-event-refused` span naming the Build,
@@ -381,7 +381,7 @@ async fn accepted(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: 
         .unwrap();
 }
 
-/// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connection.delete run through the fabric's
+/// CONTRACT (node-recovery.md "Failure"): a standalone node.connection.delete run through the fabric's
 /// real Build state whose local log refuses the `DeleteConnections` step event (a failed journal write) fails
 /// at `DeleteConnections`, the error naming the step and the failed write, under
 /// `rdm.node_admin.deployment.reject.via-step-event-refused`. Must NOT happen: the run going on as if

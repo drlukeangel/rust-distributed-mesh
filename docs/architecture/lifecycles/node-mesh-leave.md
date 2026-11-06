@@ -19,8 +19,8 @@ a fresh Node RPC dial for its rename, start or delete.
 | Entry | The exact `(node.id, incarnation)`, connections-deleted: the stop's `node.connection.delete { All }` completed with its receipt (`Established`, or `Deadline` with the held ids recorded) |
 | Leaves | Its gossip neighbours on its mesh (and the backbone, a node-admin) and its Node RPC pool; the control plane, which are not connections (R-CR5) |
 | Keeps | Its endpoint bound, node.id, incarnation, path and name, port, bin, data dir |
-| Progress | `leaving` from the step until the mesh is left (and the backbone, a node-admin): its `Leaving` frame on the stop's stream, from which the mesh-primary writes leaving on the node's row; the node publishes nothing in that state and nothing after it (R-ON1) |
-| Completion | `node.mesh.left`, the `StopMeshLeft` frame on the stop's stream, from which the mesh-primary writes left on the node's row; the stop's `Stopped { receipt }` or the delete's next step follows it |
+| Progress | `leaving` from the step until the mesh is left (and the backbone, a node-admin): its `Leaving` frame on the stop's stream, and the node writes leaving on its own record (Q356); the node publishes nothing in that state and nothing after it (R-ON1) |
+| Completion | `node.mesh.left`, the `StopMeshLeft` frame on the stop's stream, and the node writes left on its own record (Q356); the stop's `Stopped { receipt }` or the delete's next step follows it |
 | Gossip | None from the node. Its mesh-primary publishes NodeStopped from the stop's matching stopped frame, or NodeDeleted after node.delete's step event; a mesh's last admin after mesh.deleted has its final mesh topology instead ([mesh.delete](mesh-delete.md) step 7), and the fabric-primary publishes nothing for it. The reserved `NodeLeaving` / `NodeLeft` frame positions stay reserved and unpublished |
 | Wire | Its acknowledgement and completion are Data frames on the stop's stream, `Leaving` then `StopMeshLeft { left }` ([node.stop](node-stop.md) step 3). NodeCommand 0x22 request position 4 and reply positions 21 and 22, and Status 0x1B request position 29 and reply position 50, are reserved and refused by name |
 | Spans | `rdm.node.mesh.update.via-leaving` at the command, `via-left` once per mesh left, each naming mesh, MeshId and which (`own` or `backbone`) |
@@ -29,13 +29,12 @@ a fresh Node RPC dial for its rename, start or delete.
 
 1. The stop has completed `node.connection.delete { All }` on the node and holds its receipt: step 2
    of the stop; the leave is its step 3.
-2. `leaving`: the node reports `Leaving` on the stop's stream, and the mesh-primary writes leaving
-   from it.
+2. `leaving`: the node reports `Leaving` on the stop's stream, and writes leaving on its own record.
 3. The node leaves its mesh: its gossip neighbours on `f(FabricId, MeshId)`. A node-admin then
    leaves the backbone. Each one left emits `via-left`.
 4. The node cuts its Node RPC pool. Its endpoint stays bound, and the commanding call's stream and
    the connection to its mesh-primary its owed declarations ride stay open.
-5. `node.mesh.left`: `StopMeshLeft { left }`, and the mesh-primary writes left from it. The node
+5. `node.mesh.left`: `StopMeshLeft { left }`, and the node writes left on its own record. The node
    publishes nothing. `Stopped { receipt }` follows on the stop's stream and the mesh-primary
    publishes NodeStopped from it; inside a delete, the provider's
    [runtime inspect](node-runtime-inspect.md) follows. A node already left since its last start
@@ -64,17 +63,41 @@ sequenceDiagram
     participant N as Node
     Note over M,N: 1. the stop's node.connection.delete { All } complete, receipt held
     N-->>M: 2. Leaving on the stop's stream
-    Note over M: writes leaving
+    Note over N: writes leaving
     Note over N: 3. leave the mesh f(FabricId, MeshId), via-left, a node-admin also the backbone
     Note over N: 4. cut the Node RPC pool, endpoint stays bound
     N-->>M: 5. StopMeshLeft { left } (node.mesh.left)
-    Note over M: writes left; Stopped { receipt } follows and M publishes NodeStopped
+    Note over N: writes left
+    Note over M: Stopped { receipt } follows and M publishes NodeStopped
 ```
 
 Checked against the numbered sequence: the connections are deleted before the leave; the mesh (and
 the backbone) is left before the pool; the node publishes nothing at any step.
 
-## Failure and receipts
+## States written
+
+The node writes each state on its own record (Q356), a `node-record` line in `nodes.jsonl`, whole.
+
+| written | by | when |
+|---|---|---|
+| `leaving` | the node | it reports `Leaving` on the stop's stream |
+| `left` | the node | it reports `StopMeshLeft` |
+
+As stored:
+
+`leaving`:
+
+```json
+{"len":987,"specversion":"1.0","id":"01a1ae8c-01f5-741b-a731-3ed2f92b322f","source":"rdm://tngwfrd0p9vv/9rgap8z13kty/pze496vbjh1n","type":"node-record","subject":"9rgap8z13kty","time":"2026-11-06T01:49:33.554Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"9rgap8z13kty","path":"mesh1.node","name":"1","type":"node","incarnation":"pze496vbjh1n","state":"leaving","endpoint_id":"b8c03c61bb182d7b41402d182888a1eba21895f3ee2ea3bd0a0e5bd207845eee","transport_addr":"127.0.0.1:45458","listeners":[],"runtime":{"deployment_id":"k2ryj3ypad1n","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1506148,"start":65837629}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1506098/stop-start-ymgd6qjpp569"},"executable":null,"config":{},"tags":[]},"crc32":"1e4882ac"}
+```
+
+`left`:
+
+```json
+{"len":984,"specversion":"1.0","id":"01a1ae8c-01f5-7a4e-9a7b-0703df51279a","source":"rdm://tngwfrd0p9vv/9rgap8z13kty/pze496vbjh1n","type":"node-record","subject":"9rgap8z13kty","time":"2026-11-06T01:49:33.555Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"9rgap8z13kty","path":"mesh1.node","name":"1","type":"node","incarnation":"pze496vbjh1n","state":"left","endpoint_id":"b8c03c61bb182d7b41402d182888a1eba21895f3ee2ea3bd0a0e5bd207845eee","transport_addr":"127.0.0.1:45458","listeners":[],"runtime":{"deployment_id":"k2ryj3ypad1n","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1506148,"start":65837629}}},"is_primary":null,"is_fabric_primary":null,"cert":null,"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1506098/stop-start-ymgd6qjpp569"},"executable":null,"config":{},"tags":[]},"crc32":"8784d094"}
+```
+
+## Failure
 
 A mesh that cannot be left is reported by name with which one, the primitive stays `leaving`, and the workflow's rerun resumes it; the node never
 re-publishes meanwhile. Failures and stream certainty follow the

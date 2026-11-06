@@ -177,7 +177,7 @@ impl RecoverySubmitter {
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's view holds it
     /// now (node-recovery.md: recovery is drift reconciliation for a member that exits outside any
-    /// workflow; "Failure and receipts": an exit during a workflow belongs to that workflow): its
+    /// workflow; "Failure": an exit during a workflow belongs to that workflow): its
     /// node's departure (`node-deleted`), else an open `NodeDeleting` overlay naming the exact birth
     /// (`node-deleting`), else the mesh.delete of its mesh (mesh-delete.md: from mesh.deleting, the
     /// mesh's status deleting, to mesh.deleted, every member's removal is the mesh.delete's;

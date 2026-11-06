@@ -204,6 +204,7 @@ sequenceDiagram
         F->>F: node.fabric-primary.update → node.fabric-primary.updated
     end
     F->>M: build.section.run (the mesh's section)
+    Note over M: writes mesh deleting
     M->>B: mesh topology: mesh deleting (mesh.deleting)
     B-->>R: hold the mesh deleting and each member's own state
     loop tiers: ordinary nodes, then the other node-admins
@@ -216,7 +217,7 @@ sequenceDiagram
             M->>B: mesh topology: NodeDeleted in TopologyFull.deleted
         end
     end
-    M->>M: mesh row deleted
+    Note over M: writes mesh deleted
     M->>F: mesh.deleted (members' manifest + own exact birth)
     F-->>C: mesh.deleted
     M->>B: mesh topology: mesh deleted, itself the only member
@@ -234,7 +235,42 @@ sequenceDiagram
     Note over R: deleted mesh held until the deleted retention
 ```
 
-## Failure and receipts
+## States written
+
+A mesh's states are on its record, a whole `mesh-record` line in `meshes.jsonl`, each with an event in `events.jsonl`. Each member's states are [node.delete](node-delete.md)'s.
+
+| written | by | when |
+|---|---|---|
+| mesh `deleting`, `rdm.mesh.deleting` | the mesh-primary; the fabric-primary when no primary survived | the fabric-primary's DeleteMesh admission |
+| mesh `deleted`, `rdm.mesh.deleted` | the mesh-primary, still alive; the fabric-primary when no primary survived | every member's node.delete has its `complete` step event |
+
+As stored:
+
+mesh `deleting`:
+
+```json
+{"len":364,"specversion":"1.0","id":"01a1ae8b-fcd6-7a76-b7d5-9a9a487b655e","source":"rdm://s0artk0pkmpp/bd7ebr4x2mng/zd4y41k3zta5","type":"mesh-record","subject":"98kt6cc7asns","time":"2026-11-06T01:49:32.244Z","datacontenttype":"application/json","dataschema":"mesh-record/4","data":{"mesh_id":"98kt6cc7asns","name":"mesh2","state":"deleting"},"crc32":"a5440357"}
+```
+
+`rdm.mesh.deleting`:
+
+```json
+{"len":392,"specversion":"1.0","id":"01a1ae8b-fcd6-7eca-8087-5ae91e8d08f5","source":"rdm://s0artk0pkmpp/bd7ebr4x2mng/zd4y41k3zta5","type":"rdm.mesh.deleting","time":"2026-11-06T01:49:32.244Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-55bd55356d44f87c520f93b0bbfd3212-3cdc7d9477ea49df-01","data":{"mesh":"mesh2","mesh_id":"98kt6cc7asns"},"crc32":"3a9ff3c7"}
+```
+
+mesh `deleted`:
+
+```json
+{"len":363,"specversion":"1.0","id":"01a1ae8b-fd00-705d-a12b-f8bb4e684e71","source":"rdm://s0artk0pkmpp/bd7ebr4x2mng/zd4y41k3zta5","type":"mesh-record","subject":"98kt6cc7asns","time":"2026-11-06T01:49:32.286Z","datacontenttype":"application/json","dataschema":"mesh-record/4","data":{"mesh_id":"98kt6cc7asns","name":"mesh2","state":"deleted"},"crc32":"1fc0e465"}
+```
+
+`rdm.mesh.deleted`:
+
+```json
+{"len":391,"specversion":"1.0","id":"01a1ae8b-fd00-742e-8c95-ba983d4687d2","source":"rdm://s0artk0pkmpp/bd7ebr4x2mng/zd4y41k3zta5","type":"rdm.mesh.deleted","time":"2026-11-06T01:49:32.286Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-55bd55356d44f87c520f93b0bbfd3212-096fed2ebfbaf2d8-01","data":{"mesh":"mesh2","mesh_id":"98kt6cc7asns"},"crc32":"995d9ca5"}
+```
+
+## Failure
 
 A member whose node.delete has no `complete` step event leaves its tier incomplete, and mesh.deleted is not
 reported. A rerun resumes from the Build's events. The fabric-primary keeps the operation

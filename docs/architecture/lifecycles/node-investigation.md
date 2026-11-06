@@ -58,3 +58,31 @@ row deleted ([node.delete](node-delete.md), releasing the name) and reports it t
 | Result | `reached`, `running`, `os-stopped`, `exited` or `unproven` |
 | What follows | Reached: node.mesh.join. Any other verdict (except `running` from an investigator that hears no other node, Q153): re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
 | Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |
+
+## States written
+
+This operation writes no state. The primary that investigated writes its verdict as one `rdm.node.investigated` line in `events.jsonl`, `subject` the node.id.
+
+| written | by | when |
+|---|---|---|
+| `rdm.node.investigated` | the primary that investigated | the verdict is decided, except `running` from an investigator that hears no other node, which writes nothing |
+
+As stored:
+
+`running`:
+
+```json
+{"len":479,"specversion":"1.0","id":"01a1ae8d-f7ff-78e6-ae7a-39a947f345d3","source":"rdm://1x5fjsz93tvg/qn3q564n8162/e17kbs6jpr37","type":"rdm.node.investigated","subject":"2f24nqm969pk","time":"2026-11-06T01:51:42.078Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-f6d90ec5f0388ba0a08e7bd700fdcfbc-2af7920987bef87b-01","data":{"incarnation":"sj4z3ysdhycf","name":"2","next":"recreate","path":"mesh2.node","verdict":"running"},"crc32":"92311d5d"}
+```
+
+`exited`:
+
+```json
+{"len":478,"specversion":"1.0","id":"01a1ae8e-8303-7b68-a51e-7c18a3cda9d3","source":"rdm://r15rc3tfkg4r/hreemf4h5nvz/81sve0k0m8tj","type":"rdm.node.investigated","subject":"sxq64k0v26ft","time":"2026-11-06T01:52:17.663Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c8bb95b7d2b4fe23b91c4599eb7e3aef-2966089bcad66d63-01","data":{"incarnation":"tejwha92fdsb","name":"3","next":"recreate","path":"mesh1.node","verdict":"exited"},"crc32":"8be0c776"}
+```
+
+`os-stopped`:
+
+```json
+{"len":482,"specversion":"1.0","id":"01a1ae8d-e0cc-7129-9be0-4c3bdb204341","source":"rdm://3fe2gyr0vby2/3mfm6ref1hfp/2237s0fb95jf","type":"rdm.node.investigated","subject":"9mn1y1x703ft","time":"2026-11-06T01:51:36.138Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c493098f704d67cd64d1d14876e49e4a-abb790c9e3f739f1-01","data":{"incarnation":"psc6we56fj63","name":"1","next":"recreate","path":"mesh2.node","verdict":"os-stopped"},"crc32":"b88c01db"}
+```

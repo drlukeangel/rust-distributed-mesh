@@ -76,7 +76,7 @@ pub use session::*;
 mod tests {
     use super::*;
 
-    /// CONTRACT (node-recovery.md "Failure and receipts"): a recovery Build that ends `Failed { step,
+    /// CONTRACT (node-recovery.md "Failure"): a recovery Build that ends `Failed { step,
     /// reason }` is recorded as that failure on the submit span's outcome, and the submit ends in an
     /// error so the mesh-primary's next tick finds the member still proven exited and submits again.
     /// A Complete terminal is recorded as complete, and a stream that ends with no terminal is named.
@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md: "Node recovery is RDM's drift reconciliation for a member that
-    /// exits outside any workflow"; "Failure and receipts": "An exit during a workflow belongs to
+    /// exits outside any workflow"; "Failure": "An exit during a workflow belongs to
     /// that workflow"): a birth whose removal the mesh primary's view holds announced (a delete's
     /// `NodeDeleting` overlay naming the exact birth, or its `NodeDeleted` departure) is not a
     /// member to recover, whatever its verdict: no recovery submit, one
@@ -1359,7 +1359,7 @@ mod tests {
         }
     }
 
-    /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
+    /// CONTRACT (node-recovery.md "Failure": "An exit during a workflow belongs to that
     /// workflow"; mesh-delete.md: from mesh.deleting, the mesh's status deleting, to mesh.deleted, every
     /// member's removal is the mesh.delete's): an exited member of a mesh whose status the mesh primary
     /// holds deleting or deleted is not a member to recover, a primary lost mid-delete included: no

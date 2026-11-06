@@ -317,7 +317,7 @@ mod tests {
             "mesh2's channel f(FabricId, MeshId) is distinct from mesh1's"
         );
 
-        // Name & Failure and receipts (lines 19, 24, 175-177): a name held by a different MeshId answers
+        // Name & Failure (lines 19, 24, 175-177): a name held by a different MeshId answers
         // NameHeld, receipts ClaimMeshName as Failed, and writes nothing of the mesh; when free, the
         // mesh row is written and the fabric-primary writes mesh2.node-admin.1's node row until mesh2 has a
         // primary, after which mesh2.node-admin.1 writes mesh2's node rows.

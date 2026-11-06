@@ -66,8 +66,9 @@ Those pages link here and restate nothing.
    joined emits `via-joined`. A mesh with no live listener is created again under its own MeshId
    by this first listener.
 9. `node.mesh.joined`. The node's first `Digest` heartbeat follows.
-10. The node's mesh-primary (the fabric-primary for a mesh with no primary) records and publishes
-    the node once as Pending when it accepts the node's join report, before it answers it. Every
+10. The node's mesh-primary (the fabric-primary for a mesh with no primary) publishes the node once as
+    Pending when it accepts the node's join report, before it answers it, and the node writes pending on
+    its own record (Q356). Every
     later report of that join, its retries and its `NodeJoined` included, belongs to that Pending
     and starts no other; the node publishes no Pending of its own. What follows, the hook, the topology
     read, the Build floor and rafka-time refreshed last, is
@@ -246,7 +247,8 @@ sequenceDiagram
         Note over N: 7. install the row's name, adopt rafka-time, install the cert (first start)
         Note over N: 8. join the mesh f(FabricId, MeshId), via-joined, a node-admin also the backbone
         Note over N: 9. node.mesh.joined, first Digest heartbeat on the mesh
-        Note over M: 10. records and publishes the node once as Pending when it accepts the node's join report, before it answers it
+        Note over M: 10. publishes the node once as Pending when it accepts the node's join report, before it answers it
+        Note over N: writes pending on its own record
         opt standalone
             N-->>M: MeshJoined { joined }
         end
@@ -258,7 +260,23 @@ precedes the report; one report, one answer; the first-start-only work in its ow
 after the answer; `node.mesh.joined` after the mesh (and the backbone) holds; the first Digest
 after it; the Pending publish from the mesh-primary, never from the node.
 
-## Failure and receipts
+## States written
+
+The node writes its state on its own record (Q356), a `node-record` line in `nodes.jsonl`, whole.
+
+| written | by | when |
+|---|---|---|
+| `pending` | the node | its join report is accepted, once per join |
+
+As stored:
+
+`pending`:
+
+```json
+{"len":1334,"specversion":"1.0","id":"01a1ae4b-2a05-7cb0-b99a-1c0a280a0a34","source":"rdm://gtba9750bpk7/a5xkb8pck5e6/rnqs4tgmfj0b","type":"node-record","subject":"a5xkb8pck5e6","time":"2026-11-06T00:38:43.969Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"a5xkb8pck5e6","path":"mesh1.node","name":"1","type":"node","incarnation":"rnqs4tgmfj0b","state":"pending","endpoint_id":"2300ba7e329edc5c2c1fecc9c725692e7bb5f8ff5edfa86809f256b74afebf7a","transport_addr":"127.0.0.1:43943","listeners":[],"runtime":{"deployment_id":"dr9323hp16mj","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":744666,"start":65412649}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793925523968,"expires_at":1794011923968,"issuer_expires_at":1796517523088,"renew_at":1793984960390},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-744446/i143-a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth-744518-0/a5xkb8pck5e6"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"6c5e453782e6b611128637e8952c26a706558054d75f83259a2e13d3056484df","image":null},"config":{},"tags":[]},"crc32":"cfdf9a8a"}
+```
+
+## Failure
 
 A refused report fails the primitive by the refusal's name, nothing joined. An uncertain answer
 is not `Joined`: the node retries the identical report and the primary's installed report

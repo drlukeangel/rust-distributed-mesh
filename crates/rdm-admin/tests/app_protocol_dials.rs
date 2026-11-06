@@ -306,7 +306,7 @@ fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
     });
 }
 
-/// CONTRACT (fabric-certs.md §On a connection; node-connections-admit.md, Failure and receipts): the
+/// CONTRACT (fabric-certs.md §On a connection; node-connections-admit.md, Failure): the
 /// Day-0 root and a node it launched dial each other on a registered app ALPN, each admitted on the
 /// other's root: the Day-0 admin to a node of its own mesh, and back.
 #[test]
@@ -331,7 +331,7 @@ fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_prot
     });
 }
 
-/// CONTRACT (node-connections-admit.md, Failure and receipts: a dialer that presents no cert is
+/// CONTRACT (node-connections-admit.md, Failure: a dialer that presents no cert is
 /// refused `no-credential`; Verification: an expired cert is refused by the chain's own check,
 /// `expired`): a node-admin's app protocol refuses, by name, a dialer holding no cert and a dialer whose
 /// cert expired more than a staleness floor ago; neither connection reaches the app.

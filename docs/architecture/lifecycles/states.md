@@ -170,3 +170,7 @@ A node's `config` and `tags` change by its own commands ([node.config.update](no
 A resize, a Create or a Delete, puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete. A new executable is a new node with a new NodeId and incarnation, a Build that adds it ([build-deployment.md](../build-deployment.md)); a stop and a start retain the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the Build's last planned node is ready.
 
 See [the fabric's ready](#the-fabrics-ready) and [mesh.delete](mesh-delete.md).
+
+## States written
+
+Each operation's page has a States written section: what it writes, who writes it and when, and each line as stored.

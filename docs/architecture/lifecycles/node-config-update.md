@@ -4,7 +4,7 @@
 
 `node.config.update` replaces the whole application config map: a PUT. RDM stores the values
 without interpreting them. A node owns its own part of its record and persists changes through its one
-serialized property writer. The node's properties and the status and role flags its mesh-primary writes are in the node's one record (Q323); node-side application mutates only properties and moves no primary role. Deferred acceptance
+serialized property writer. The node's properties and its status and role flags are in the node's one record (Q323), which the node writes (Q356); node-side application mutates only properties and moves no primary role. Deferred acceptance
 records its identified obligation separately in lifecycle state.
 
 ## Numbered end-to-end sequence
@@ -56,7 +56,23 @@ Launch properties initialize an absent own record. Existing durable properties s
 writer may read its retained state. Startup operations supply the lifecycle/topology context that
 an ordinary node needs, without requiring it to reconstruct another node's record.
 
-## Failure and receipts
+## States written
+
+This operation writes no state. The node writes the map on its own record (Q356), as `config` on a `node-record` line in `nodes.jsonl`.
+
+| written | by | when |
+|---|---|---|
+| `config` | the node, on its own record | it accepted the command, before `node.config.updated` |
+
+As stored:
+
+`config`:
+
+```json
+{"len":1485,"specversion":"1.0","id":"01a1ae8c-09ec-7853-b23f-6c9eace14f64","source":"rdm://9ct8f4h6006k/9demt04km0bq/10ftfnacwtxf","type":"node-record","subject":"9demt04km0bq","time":"2026-11-06T01:49:35.595Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"9demt04km0bq","path":"mesh1.node-admin","name":"1","type":"node-admin","incarnation":"10ftfnacwtxf","state":"ready","endpoint_id":"5bf719be9591c1288f32db4587d8a014985fb7b870854aff94f3c128e4814e1a","transport_addr":"127.0.0.1:35013","listeners":[],"runtime":{"deployment_id":"4drjw71rchk3","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1506281,"start":65837752}}},"is_primary":1,"is_fabric_primary":1,"cert":{"issued_at":1793929774901,"expires_at":1794016174901,"issuer_expires_at":1796521774901,"renew_at":1793989964798},"signing_cert":{"issued_at":1793929774901,"expires_at":1796521774901,"renew_at":1795703414510},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1506210/i143-a_lone_fabric_primary_keeps_its_own_config_across_its_restart-1506260-0/mesh1.node-admin.1"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/rdm-node-admin","sha256":"8cb2122a53f91157b0e89b0cca40fbcb00822a487e44b9a71dc53cc14834ce5f","image":null},"config":{"listener.data":"127.0.0.1:45007"},"tags":[]},"crc32":"e99e932d"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

@@ -69,13 +69,44 @@ sequenceDiagram
     participant M as Executor
     C->>F: build.create(Delete { node_ids })
     F->>M: build.section.run (the mesh's section)
+    Note over M: writes the node's deleting
     M-->>F: node.stop events for a live process
-    Note over M: the provider's Exited of the exact runtime; row deleted
+    Note over M: the provider's Exited of the exact runtime; writes the node's deleted
     M-->>F: node.deleted
     F-->>C: step frames, Complete
 ```
 
-## Failure and receipts
+## States written
+
+The node's mesh-primary writes these on the node's record, a `node-record` line in `nodes.jsonl`, whole (the fabric-primary for a mesh with no primary). The executor writes each step of the Build as an `rdm.build.step` line in `events.jsonl`. The stop inside the delete writes [node.stop](node-stop.md)'s states.
+
+| written | by | when |
+|---|---|---|
+| `deleting` | the node's mesh-primary | node.delete's admission |
+| `deleted` | the node's mesh-primary | the provider's Exited of the exact runtime |
+| `rdm.build.step`, `state` `complete` | the executor | the step completes |
+
+As stored:
+
+`deleting`:
+
+```json
+{"len":1386,"specversion":"1.0","id":"01a1ae8b-fe03-77d4-a556-738f5016d58e","source":"rdm://s0artk0pkmpp/zv17w9mxj8az/51w78g7kye7d","type":"node-record","subject":"5m5e1ve1pw74","time":"2026-11-06T01:49:32.547Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"5m5e1ve1pw74","path":"mesh1.node","name":"1","type":"node","incarnation":"3ny63e207fr3","state":"deleting","endpoint_id":"4c6c4ad10aaa4e1f5e44866271da78ad4dc9056791efcbec75300aa3f77057fa","transport_addr":"127.0.0.1:35605","listeners":[],"runtime":{"deployment_id":"qf3cjvdyfsza","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1505387,"start":65837354}}},"is_primary":1,"is_fabric_primary":null,"cert":{"issued_at":1793929770780,"expires_at":1794016170780,"issuer_expires_at":1796521770145,"renew_at":1793990769669},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1505235/i143-a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_own_run_from_an_outside_call_inside_the_bound-1505277-0/5m5e1ve1pw74"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"97380f0c084a0362952b6fd9fcdf6b0b540df4062d49bfd58c6502b33b48baee","image":null},"config":{},"tags":[]},"crc32":"e4215bb2"}
+```
+
+`deleted`:
+
+```json
+{"len":1385,"specversion":"1.0","id":"01a1ae8b-fe24-7bd1-bd67-4d2b234a37ca","source":"rdm://s0artk0pkmpp/zv17w9mxj8az/51w78g7kye7d","type":"node-record","subject":"5m5e1ve1pw74","time":"2026-11-06T01:49:32.579Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"5m5e1ve1pw74","path":"mesh1.node","name":"1","type":"node","incarnation":"3ny63e207fr3","state":"deleted","endpoint_id":"4c6c4ad10aaa4e1f5e44866271da78ad4dc9056791efcbec75300aa3f77057fa","transport_addr":"127.0.0.1:35605","listeners":[],"runtime":{"deployment_id":"qf3cjvdyfsza","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1505387,"start":65837354}}},"is_primary":1,"is_fabric_primary":null,"cert":{"issued_at":1793929770780,"expires_at":1794016170780,"issuer_expires_at":1796521770145,"renew_at":1793990769669},"signing_cert":null,"storage":{"persistence":{"persistence":"ephemeral"},"data_dir":"/dev/shm/rdm-lane-5/cells-1505235/i143-a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_own_run_from_an_outside_call_inside_the_bound-1505277-0/5m5e1ve1pw74"},"executable":{"launch_id":"node","executable":"/home/admin/rdm-lanes/5/target/debug/testkit-node","sha256":"97380f0c084a0362952b6fd9fcdf6b0b540df4062d49bfd58c6502b33b48baee","image":null},"config":{},"tags":[]},"crc32":"41d2a748"}
+```
+
+`rdm.build.step`:
+
+```json
+{"len":488,"specversion":"1.0","id":"01a1ae8b-fcdd-7cc8-b8fb-a19e908a520c","source":"rdm://s0artk0pkmpp/bd7ebr4x2mng/zd4y41k3zta5","type":"rdm.build.step","subject":"h72998zyjysr","time":"2026-11-06T01:49:32.251Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-55bd55356d44f87c520f93b0bbfd3212-dbbf65d237c50ce6-01","data":{"build_id":"erskwynp44gw","mesh":"mesh2","op":"node.delete:h72998zyjysr","state":"complete","step":"NodeDeleting"},"crc32":"bde91f70"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

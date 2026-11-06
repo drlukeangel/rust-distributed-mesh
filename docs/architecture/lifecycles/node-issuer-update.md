@@ -40,7 +40,23 @@ node.issuer.update { node_id, incarnation, key, cert }
   ← node.issuer.updated { node_id, incarnation, issuer_expires_at }
 ```
 
-## Failure and receipts
+## States written
+
+This operation writes no state. The admin writes the signing cert's dates on its own record (Q356), as `signing_cert` on a `node-record` line in `nodes.jsonl`.
+
+| written | by | when |
+|---|---|---|
+| `signing_cert` | the admin, on its own record | it installed the issuer |
+
+As stored:
+
+`signing_cert`:
+
+```json
+{"len":1458,"specversion":"1.0","id":"01a1ae8c-3ff3-7823-b0d7-f69fa460afdc","source":"rdm://xy07jkt4hj3a/k9sryj6v7e24/p0hkkgfz890n","type":"node-record","subject":"k9sryj6v7e24","time":"2026-11-06T01:49:49.424Z","datacontenttype":"application/json","dataschema":"node-record/2","data":{"node_id":"k9sryj6v7e24","path":"mesh2.node-admin","name":"2","type":"node-admin","incarnation":"p0hkkgfz890n","state":"ready","endpoint_id":"ea2d28c89d7f6a5fe5b8efedd571581d085a192e79eab07466166b188e3f1e18","transport_addr":"127.0.0.1:58183","listeners":[],"runtime":{"deployment_id":"4y7qqdk28h1w","provider":"process","control_domain":"process:e152f7e9-9c84-4260-8679-e39839d273ff:4026531836","locator":{"process":{"pid":1509131,"start":65839164}}},"is_primary":null,"is_fabric_primary":null,"cert":{"issued_at":1793929788889,"expires_at":1793929833008,"issuer_expires_at":1793929833008,"renew_at":1793929818779},"signing_cert":{"issued_at":1793929788008,"expires_at":1793929833008,"renew_at":1793929819822},"storage":{"persistence":{"persistence":"persistent","disposition":"preserve"},"data_dir":"/dev/shm/rdm-lane-5/cells-1508883/i143-an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary-1508926-0/k9sryj6v7e24"},"executable":{"launch_id":"node-admin","executable":"/home/admin/rdm-lanes/5/target/debug/rdm-node-admin","sha256":"8cb2122a53f91157b0e89b0cca40fbcb00822a487e44b9a71dc53cc14834ce5f","image":null},"config":{},"tags":[]},"crc32":"d9802d65"}
+```
+
+## Failure
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A launched admin

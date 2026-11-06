@@ -359,7 +359,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
 
 /// CONTRACT (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again by
 /// the next check that finds the node still lost; its calls retry only under their `Send` (Q344)";
-/// "Failure and receipts": keyed on the exited birth, never a second recovery; D48): the directory a
+/// "Failure": keyed on the exited birth, never a second recovery; D48): the directory a
 /// member's new data dir is allocated in is made read-only and the member is killed. Its recovery's
 /// node.delete completes (the exited birth departs, node.deleted once) and its node.create refuses by
 /// name at PrepareStorage, so the recovery ends failed. While the directory stays read-only the

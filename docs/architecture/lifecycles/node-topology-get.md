@@ -100,3 +100,7 @@ sequenceDiagram
 |---|---|---|---|
 | Held member → own mesh-primary | node.topology.get on delta gap | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm) | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read` |
 | Held member | complete topology install | complete source snapshot; no partial install | `rdm.mesh.topology.update.via-read-install` |
+
+## States written
+
+This operation writes no state. It is a read.

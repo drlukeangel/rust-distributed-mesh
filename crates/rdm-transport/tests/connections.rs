@@ -663,7 +663,7 @@ async fn closed_by_acceptor(conn: &iroh::endpoint::Connection, from: tokio::time
     }
 }
 
-/// CONTRACT (node-connections-admit.md, Failure and receipts; decided 2026-10-19): a dialer that
+/// CONTRACT (node-connections-admit.md, Failure; decided 2026-10-19): a dialer that
 /// presents nothing within one staleness floor of the accept is refused `no-credential`, the 412
 /// close carrying the reason, and an empty or undecodable presentation is `no-credential` at once;
 /// the `Refused` fact names the birth the acceptor's topology view names for the dialer's key, and a
