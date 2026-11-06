@@ -13,7 +13,14 @@ A 5,000 x 256 B burst on an application channel delivers 13-25% when the publish
 
 ### 3. Flame
 
-M11's exported run at `3f2e731dd`, the 5,000 burst: http://192.168.68.99:16687/trace/928652ff8755e7d85bf02a4065b225c4 is one message that survived, `m11-2/0`. Across that burst ClickHouse holds receipts for 938 distinct messages: 18 of 19 receivers hold exactly 827 and one 938, in runs `0-63`, `576-639`, `1216-1279`, `3201-3264`, `3566-3629`, `3682-3745`, `4030-4093`, `4606-4669` (each 64), `1796-1918`, `2319-2621`. M11's row: 24.66% at the far node, publish to receipt p50 90.5 ms against 5.6 ms for the 1,000 burst: 5 ms IHave dispatch plus the 80 ms Graft timer.
+M11's exported run at `3f2e731dd`, the 5,000 burst, is one trace: http://192.168.68.99:16687/trace/928652ff8755e7d85bf02a4065b225c4
+
+```
+rdm.mesh.channel.update.via-publish      5000   19:42:15.659276 .. 19:42:15.716816
+rdm.testkit.channel.update.via-received 15824   19:42:15.749663 .. 19:42:15.988425
+```
+
+Every publish ended in 57 ms; the first receipt is at +90 ms, 33 ms after the last publish, and nothing arrived before it: 5 ms IHave dispatch plus the 80 ms Graft timer. Receipts hold 938 distinct messages: 18 of 19 receivers hold exactly 827 and one 938, in runs `0-63`, `576-639`, `1216-1279`, `3201-3264`, `3566-3629`, `3682-3745`, `4030-4093`, `4606-4669` (each 64), `1796-1918`, `2319-2621`. That run's row: 16.54%, publish to receipt p50 179 ms. The 5 such L1 rows in the ledger read 16.54-24.66%, p50 90-179 ms. The 1,000 burst's p50 reads 5-12 ms in three runs and 94-100 ms in two, the two that started with no eager peer by that signature.
 
 The Graft and the drop are not spans: `span_export_filter` turns every third-party crate off. The evidence for them is iroh's own debug log (`RUST_LOG=iroh_gossip::net=debug`) on every node but the first node-admin, the line after a `SendMessage` naming its drop:
 
