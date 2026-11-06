@@ -3627,3 +3627,4 @@ rdm#174 with the lead's conforming text.
 - 2026-11-06 (D51, D52): every stream op's request is resent until acked, the framework's rule, landed 42e6c9c9c; the soaks at b0bb9f3d4 were stopped and the chain runs at the new tip, then the pin to Rafka. Open for Luke: the handover differs from §34 (D52).
 - 2026-11-06 (D53): the release red at 1577625f2 is fixed at 4604c328e: a repair's NodeDeleting left by a former primary holds no recovery. The chain restarts at the new tip.
 - 2026-11-06 (D54): 80279b0a8 lands the driver soak's line-by-line span read and the stream span fix. The chain restarts at the new tip.
+- 2026-11-06 (D55): the release red at 9bdc82054 is fixed at aaa21a307: the atlas holds a primary update's answer when the new primary's gossip came first. For Luke's review. The chain restarts at the new tip.
