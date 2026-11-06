@@ -866,9 +866,10 @@ where
     if kind != ReplyKind::Success {
         return Err(format!("the caller got {name}, expected the handler's success"));
     }
-    let resent = DeliveryStats::get(&r.server.delivery().stats().responses_resent);
-    if resent == 0 {
-        return Err("the caller has the reply but no response frame was resent".into());
+    // The count moves after the write, so the caller can hold the reply first.
+    let d = r.server.delivery().clone();
+    if !eventually(FRAME_BOUND, || DeliveryStats::get(&d.stats().responses_resent) >= 1).await {
+        return Err(format!("the caller has the reply but no response frame was resent within {FRAME_BOUND:?}"));
     }
     r.dispatched_exactly(1)?;
     r.owes_nothing("the resent reply").await

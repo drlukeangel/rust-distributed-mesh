@@ -712,8 +712,7 @@ async fn a_lost_ack_of_a_response_frame_is_repaired_by_its_resend() {
     cd.seams().drop_next_response_ack();
     let (out, _) = client.call::<Command>(&s.target(), &run(10, Mode::Apply), &budget(Duration::from_secs(5))).await;
     assert_eq!(ran(&out), Some((10, 1)), "{out:?}");
-    eventually("the response frame is resent and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
-    assert!(get(&s.delivery.stats().responses_resent) >= 1);
+    eventually("the response frame is resent and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0 && get(&s.delivery.stats().responses_resent) >= 1).await;
     assert!(get(&cd.stats().responses_of_completed) >= 1, "the repeat of a completed invocation's frame is acked and dropped");
 }
 
@@ -745,7 +744,8 @@ fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
                 s.release();
                 let out = call.await.unwrap();
                 assert_eq!(ran(&out), Some((11, 1)), "{out:?}");
-                assert!(get(&s.delivery.stats().responses_resent) >= 1, "the response went out on a new stream");
+                // The count moves after the write, so the caller can hold the reply first.
+                eventually("the response went out on a new stream", Duration::from_secs(3), || get(&s.delivery.stats().responses_resent) >= 1).await;
                 assert_eq!(s.runs.load(Ordering::SeqCst), 1);
                 eventually("the resent response is acked", Duration::from_secs(2), || s.delivery.owed_frames() == 0).await;
             },
@@ -810,7 +810,7 @@ fn a_withheld_reply_whose_direction_a_lost_ack_write_ended_is_a_failed_late_repl
                 assert!(written.contains("a write on it failed"), "the late reply names the write that ended its direction: {late:?}");
                 let out = call.await.unwrap();
                 assert_eq!(ran(&out), Some((180, 0)), "{out:?}");
-                assert!(get(&s.delivery.stats().responses_resent) >= 1, "the reply went out on a new stream");
+                eventually("the reply went out on a new stream", Duration::from_secs(3), || get(&s.delivery.stats().responses_resent) >= 1).await;
                 assert_eq!(get(&s.stats.dispatched), 1, "the handler was dispatched once");
                 eventually("the resent reply is acked", Duration::from_secs(2), || s.delivery.owed_frames() == 0).await;
             },
