@@ -73,7 +73,10 @@ fn story(story: Story) {
         if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
         else { send(&backbone, &receiver, baseline.clone(), 1).await; }
         assert_eq!(installed(), Some(10));
-        let heard_before = receiver.digest_view.get(id.as_str()).unwrap().1;
+        // How long the node had gone unheard at one instant: asked again at that instant, the view answers
+        // the same age only if nothing heard the node since.
+        let heard_at = std::time::Instant::now();
+        let heard_before = receiver.digest_view.get_at(id.as_str(), heard_at).unwrap().1;
         let before = receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
         // The content a later version changes: the node's transport address (version eleven's).
         let mut changed = digest.clone(); changed.node.transport_addr = "127.0.0.1:12011".parse().unwrap();
@@ -85,9 +88,9 @@ fn story(story: Story) {
                     // read never replaces the author's publication, whose exact repeat is not heard again.
                     assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_)));
                 }
-                let full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, 0, 1, vec![if matches!(story, Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { let mut current = digest.clone(); if matches!(story, Story::NewPublication) { current.digest_seq += 1; } current } else { changed.clone() }], if matches!(story, Story::CrossRepeat) { 100 } else { 101 });
+                let full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, 0, 1, vec![if matches!(story, Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { digest.clone() } else { changed.clone() }], if matches!(story, Story::CrossRepeat) { 100 } else { 101 });
                 send(&backbone, &receiver, full, 2).await;
-                if matches!(story, Story::CrossRepeat) { assert_eq!(receiver.digest_view.get(id.as_str()).unwrap().1, heard_before, "a publication already installed on another channel is not heard again"); }
+                if matches!(story, Story::CrossRepeat) { assert_eq!(receiver.digest_view.get_at(id.as_str(), heard_at).unwrap().1, heard_before, "a publication already installed on another channel is not heard again"); }
                 if matches!(story, Story::NewPublication) {
                     assert!(receiver.digest_view.get(id.as_str()).unwrap().1 > heard_before, "a fresh publication at an unchanged material version carries new hearing evidence");
                 }
@@ -143,23 +146,28 @@ fn story(story: Story) {
                 expected=11;
             },
             Story::TwoForwarders => {
-                // Two authors at one version (a successor that continued mesh2's version, Q389, Q391): each
-                // chunk set is its (mesh, version, author), kept apart; each author's exact repeat is its own.
+                // Two authors at one version (an old mesh-primary's aggregate and its successor's): the mesh's
+                // version orders its topology, whichever mesh-primary sent it (Q389), so both list the same
+                // nodes. Each chunk set is its (mesh, version, author), kept apart; the second author's
+                // complete set is its own publication; each author's exact repeat is its own duplicate.
                 let author_b = Birth { fabric: receiver.fabric_id().clone(), node: NodeId::mint(), incarnation: IncarnationId::mint() };
-                let of_b = |index, count, digests: Vec<MeshDigest>| Frame::aggregate("mesh2", None, &author_b, 10, 100, index, count, digests);
+                let of_b = |index, count, digests: Vec<MeshDigest>| Frame::aggregate("mesh2", None, &author_b, 11, 120, index, count, digests);
                 let installs = || capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed").count();
                 let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.name = "2".into();
-                // The first author's chunk 0 of 2 and the second author's chunk 1 of 2 at the one version
-                // and time: neither completes the other's set.
-                send(&backbone, &receiver, snapshot(10, 0, 2, vec![digest.clone()], 120), 2).await;
+                // The first author's chunk 0 of 2 and the second author's chunk 1 of 2 at one version and
+                // time: neither completes the other's set.
+                send(&backbone, &receiver, snapshot(11, 0, 2, vec![changed.clone()], 120), 2).await;
                 send(&backbone, &receiver, of_b(1, 2, vec![second.clone()]), 3).await;
                 assert_eq!(installs(), 1, "two authors' chunks at one version are two sets: neither installs");
-                send(&backbone, &receiver, of_b(0, 2, vec![digest.clone()]), 4).await;
-                assert_eq!(installs(), 2, "the second author's set completes and installs");
-                send(&backbone, &receiver, of_b(0, 2, vec![digest.clone()]), 5).await;
-                assert_eq!(installs(), 2, "its exact repeat is a duplicate");
-                assert_eq!(role.as_ref().unwrap().held_source("mesh2").map(|(p, v)| (p.map(|p| p.node_id), v)), Some((Some(author_b.node.clone()), 10)), "the installed set names its author");
-                expected = 10;
+                assert_eq!(installed(), Some(10), "an unfinished set never advances the installed version");
+                send(&backbone, &receiver, snapshot(11, 1, 2, vec![second.clone()], 120), 4).await;
+                assert_eq!(installs(), 2, "the first author's set completes and installs");
+                send(&backbone, &receiver, of_b(0, 2, vec![changed.clone()]), 5).await;
+                assert_eq!(installs(), 3, "the second author's set, the same list at that version, completes and installs as its own publication");
+                send(&backbone, &receiver, of_b(0, 2, vec![changed.clone()]), 6).await;
+                assert_eq!(installs(), 3, "its exact repeat is a duplicate");
+                assert_eq!(role.as_ref().unwrap().held_source("mesh2").map(|(p, v)| (p.map(|p| p.node_id), v)), Some((Some(author_b.node.clone()), 11)), "the installed set names its author");
+                expected = 11;
             },
             Story::DeltaStale => send(&sender, &receiver, delta(8, 9, vec![], 200), 2).await,
         }
@@ -177,7 +185,7 @@ fn story(story: Story) {
         if matches!(story, Story::Gap | Story::ReadRepair) { assert_eq!(named["attributes"]["repair_requested"], "true"); }
         else if matches!(story, Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat) { assert_eq!(named["attributes"]["outcome"], "ignored"); }
     }
-    let snapshots=if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication | Story::TwoForwarders | Story::CrossRepeat) { 2 } else { 1 };
+    let snapshots=if matches!(story, Story::TwoForwarders) { 3 } else if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { 2 } else { 1 };
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.topology.update.via-snapshot-installed").count(),snapshots);
     let deltas=usize::from(matches!(story, Story::DeltaApply | Story::DeltaRepeat | Story::DeltaInconsistent | Story::ReadRepair | Story::CrossDeltaBase));
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.topology.update.via-delta").count(),deltas);

@@ -1055,8 +1055,8 @@ impl DigestView {
     /// is newer than that version, and the projection after it no longer carries the stop; then the
     /// stop ends here (`Some(true)`, [`Self::stop_ended_in_projection`]). A refresh at the version that
     /// carried it, or a projection that never carried it here, is refused by name (`Some(false)`). The
-    /// mesh's version orders them, whichever of its mesh-primaries sent either: a mesh-primary taking
-    /// the role continues the mesh's version (Q389, Q391).
+    /// mesh's version orders them, whichever mesh-primary published the projection or a read installed
+    /// it (Q389; a successor continues the version, Q391).
     /// Decided and taken under one hold of the stop marks: a node's backbone and mesh channel each
     /// apply their projections under their own receiver, and the stop ends on one of them, once.
     pub(crate) fn stopped_entry(&self, d: &MeshDigest, target: &Target) -> Option<bool> {

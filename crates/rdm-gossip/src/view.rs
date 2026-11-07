@@ -764,7 +764,16 @@ impl View {
                     }
                     continue;
                 }
-                (Side::Backbone, false) => self.digest_view.record_forwarded(d.clone()),
+                // An aggregate's entry carries no Digest sequence: the aggregate's version orders it
+                // (Q389), and the birth keeps the sequence this view accepted of it, a read's or a join's
+                // ("preserve accepted member sequence across reads and gossip").
+                (Side::Backbone, false) => {
+                    let mut d = d.clone();
+                    if let Some((held, _)) = self.digest_view.get(d.node.node_id.as_str()).filter(|(held, _)| held.node.incarnation == d.node.incarnation) {
+                        d.digest_seq = d.digest_seq.max(held.digest_seq);
+                    }
+                    self.digest_view.record_forwarded(d)
+                }
                 (Side::MeshChannel, false) => self.digest_view.record_topology(d.clone()),
                 // A read installs what an entry answer installed, by the rule `learn` applies
                 // (R-G2): a peer mesh's member is topology and refreshes no liveness; a node of this

@@ -66,7 +66,7 @@ fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
 /// then wait for the publication's wake with a 30 s anti-entropy deadline). After a publication has published,
 /// its mesh channel takes a member's `NodeStopped`: the overlay stops the member in the primary's
 /// view, the normalized projection moves, and the woken publication publishes it on the backbone at once.
-/// A peer mesh's admin holds the member stopped (its stop overlay open, `via-member-state
+/// A peer mesh's admin holds the member stopped (the aggregate lists it `stopped`, Q390; `via-member-state
 /// stopped=true`) within 5 s, long before the next anti-entropy publication.
 #[test]
 fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once() {
@@ -140,7 +140,8 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         src_bb.publish_status_event(StatusEvent::Stopped, &op).await;
 
         let held = loop {
-            let stopped = peer_m.digest_view.in_flight().iter().any(|o| o.key() == op.key());
+            // The aggregate lists the member `stopped` (Q390): the peer holds that exact birth stopped.
+            let stopped = peer_m.digest_view.holds_stopped(op.node_id.as_str(), &op.incarnation);
             if stopped {
                 break peer_bb.held_source("mesh2").map(|(_, v)| v);
             }
