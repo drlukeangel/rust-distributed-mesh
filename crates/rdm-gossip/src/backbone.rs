@@ -339,6 +339,14 @@ impl Backbone {
 
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
+        if primary {
+            // The mesh's version is the mesh's, whoever its primary is (Q389, Q391): taking the role,
+            // this node continues it from the last aggregate of its mesh it installed.
+            let held = self.channels.topology_view.view.order.lock().unwrap().installed_snapshot(&self.mesh).map(|(_, version, full, _)| (version, full.clone()));
+            if let Some((version, full)) = held {
+                self.version.lock().unwrap().continue_from(version, full);
+            }
+        }
         self.channels.topology_view.set_mesh_primary(primary);
         // A forwarder that takes (or loses) the role has published nothing into its Mesh: the
         // first publication of every source after taking it is a full (gossip.md §3.3). The role,

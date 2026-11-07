@@ -211,6 +211,17 @@ impl SourceVersion {
         Self { version: 0, last: None, snapshots }
     }
 
+    /// Continue the mesh's version from `version`, the last one this node holds of its mesh, with
+    /// `full` its topology (Q391: a node-admin taking the mesh-primary role continues the mesh's
+    /// version): an unchanged topology is published at `version`, a changed one at the next. A
+    /// version below the one this counter holds moves nothing.
+    pub fn continue_from(&mut self, version: u64, full: Full) {
+        if version > self.version {
+            self.version = version;
+            self.last = Some(full);
+        }
+    }
+
     /// The version of `full`: the held one, or the next when `full` is a different topology.
     pub fn observe(&mut self, full: &Full) -> u64 {
         if self.last.as_ref().is_none_or(|l| !l.same_topology(full)) {
@@ -1008,6 +1019,23 @@ impl Forwarder {
 
 #[cfg(test)]
 mod tests {
+
+    /// CONTRACT (Q389, Q391): a node-admin taking the mesh-primary role continues the mesh's version
+    /// from the last one it holds: an unchanged topology is published at that version, a changed one at
+    /// the next; a held version below its own count moves nothing. Must NOT happen: a new mesh-primary's
+    /// aggregate numbered from 1, below what every node holds.
+    #[test]
+    fn a_new_mesh_primary_continues_the_mesh_version_from_the_last_it_holds() {
+        let empty = Full::new(vec![], vec![], vec![]);
+        let mut v = SourceVersion::default();
+        v.continue_from(41, empty.clone());
+        assert_eq!(v.observe(&empty), 41, "the unchanged topology is published at the version held");
+        let changed = Full::new(vec![], vec![], vec![op("node.delete", &rdm_core::NodeId::mint(), &IncarnationId::mint())]);
+        assert_eq!(v.observe(&changed), 42, "a change is the next version");
+        v.continue_from(7, empty.clone());
+        assert_eq!(v.version(), 42, "a lower held version moves nothing");
+    }
+
     use super::*;
     use rdm_core::IncarnationId;
 
