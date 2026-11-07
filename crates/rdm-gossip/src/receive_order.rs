@@ -666,7 +666,7 @@ mod tests {
         assert!(order.admit_read("mesh2", 29, None).is_err());
     }
 
-    /// CONTRACT (gossip.md "Mesh delete": a mesh is never reborn; a later mesh of the same name is
+    /// CONTRACT (gossip.md "Mesh delete": a mesh is created once; a later mesh of the same name is
     /// another mesh, known by the id its node-admins' entries carry): a node holding the deleted mesh2
     /// at v33 takes a recreated mesh2's aggregate at v1, a read of it and its first differential, at the
     /// receive path, in the receiver and in the forwarder, while the deleted mesh's own lower versions

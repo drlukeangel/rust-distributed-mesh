@@ -318,7 +318,7 @@ pub fn mesh_id_of(digests: &[MeshDigest]) -> Option<rdm_core::MeshId> {
     digests.iter().find_map(|d| d.mesh_id.clone())
 }
 
-/// Whether `offered` is another mesh than `held` under the same name: a mesh is never reborn, so a
+/// Whether `offered` is another mesh than `held` under the same name: a mesh is created once, so a
 /// later mesh of that name has another id, and the held mesh's version orders nothing of it (gossip.md
 /// "Mesh delete"). An id unknown on either side is the same mesh.
 pub fn another_mesh(held: Option<&rdm_core::MeshId>, offered: Option<&rdm_core::MeshId>) -> bool {
