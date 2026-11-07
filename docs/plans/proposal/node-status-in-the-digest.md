@@ -22,6 +22,8 @@ Luke, 2026-11-06 and 2026-11-07, in his words:
 - "ALSO NODE"; "endpoints should also not be in the digest"; "and digest_seq and emited at time?"
 - "pending is the status its been the status / its the status before ready"
 - "pending-reconnect is the status of node-under investigation"
+- "the different frmo the bcakbone gossip of hte topology peeer mesh is MP just publishes the
+  differential from the last status"
 
 ## Why
 
@@ -87,9 +89,13 @@ Luke, 2026-11-06 and 2026-11-07, in his words:
 - **R-DS4: inside its mesh, a node's own status comes only from its own Digest.** The statuses its
   mesh-primary writes, `PendingReconnect`, deleting and deleted, are on the node's record; deleting
   and deleted ride `NodeDeleting` and `NodeDeleted` as today.
-- **R-DS5: the mesh-primary forwards only peer meshes.** It publishes its mesh's `TopologyFull` on the
-  backbone only. Onto its own mesh channel it publishes only `TopologyDelta`s of peer meshes, never
-  its own mesh's nodes, which publish themselves; neighbour-up replays only peer meshes' fulls.
+- **R-DS5: the mesh-primary forwards only peer meshes, and only the differential.** It publishes its
+  mesh's `TopologyFull`, the aggregate, on the backbone only. Onto its own mesh channel it publishes,
+  for each peer mesh, only the differential from the last status it published of that mesh: the
+  nodes whose status changed, were added or were removed since, each a projection entry (R-DS7), no
+  loads (`TopologyDelta`). It never publishes its own mesh's nodes there, which publish themselves,
+  and never a peer mesh's full: neighbour-up on the mesh channel replays nothing, since a joining node
+  takes its view by its read (R-DS6); the backbone's replay of fulls is unchanged.
 - **R-DS6: the mesh-primary's view of its own mesh reaches a node only by a read.** At create, join
   and start (the start read) and on a sync issue (the top-up). A Digest from a birth the receiver
   does not hold is a sync issue: the receiver has no endpoints for it until the read.
@@ -205,7 +211,9 @@ Exact old and new text. Nothing is applied before Luke's yes.
    Old: "In `changed`, each member is a projection entry `{ digest, status }`, the status authored by
    the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's
    versioned member projection."
-   New: "In `changed`, each node is a projection entry, as in `TopologyFull`."
+   New: "In `changed`, each node of the peer Mesh whose status changed, or that was added, since the
+   forwarder's last delta of that Mesh, a projection entry as in `TopologyFull`: the differential from
+   the last status, never the aggregate."
    Old: "For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its
    Digest and status from the projection; NodeStopped and NodeDeleting stay immediate events."
    New: "For an own-mesh birth, its status comes from its Digest and its identity and
