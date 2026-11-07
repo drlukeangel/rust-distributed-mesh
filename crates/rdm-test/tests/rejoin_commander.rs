@@ -37,7 +37,7 @@ pub(crate) async fn read_until(running: &node::RunningNode, primary: &crate::com
                 let chunks = rdm_gossip::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| rdm_gossip::frame::Frame::TopologyFull {
                     mesh: s.mesh.clone(), publisher: s.publisher.clone(), forwarded_by: None, topology_version: s.topology_version,
                     published_at_rafka_ms: 1, snapshot_id: s.topology_version, chunk_index, chunk_count, digests, in_flight, deleted,
-                });
+                }.authored(&rdm_gossip::envelope::Birth::publisher(&primary.fabric, &s.publisher), 0, 1));
                 for f in chunks {
                     if let rdm_gossip::frame::Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() {
                         let _ = running.channels.take_read_chunk(rdm_gossip::snapshot::Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }, "mesh1");

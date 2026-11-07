@@ -214,6 +214,15 @@ impl View {
                 let channel = if via == "mesh-channel" { format!("mesh:{}", self.mesh) } else { via.to_string() };
                 let fresh = self.digest_view.record_with(digest.clone(), Instant::now(), &self.current_name(), &channel);
                 if !fresh {
+                    // A node held stopped heard again: its mesh-primary's view is pulled (a sync issue).
+                    // Each such Digest pulls again until a read moves past the stop.
+                    if self.digest_view.stopped_heard_again(digest) {
+                        if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::StoppedBirthHeard) {
+                            tracing::info_span!("rdm.mesh.topology.update.via-stopped-birth-heard", node = %self.current_name(), node_id = %digest.node.node_id, incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq)
+                                .in_scope(|| tracing::info!("a node held stopped is heard again: its mesh-primary's view is pulled"));
+                        }
+                        self.desync.notify_one();
+                    }
                     return (Vec::new(), false);
                 }
                 self.note(digest, via);

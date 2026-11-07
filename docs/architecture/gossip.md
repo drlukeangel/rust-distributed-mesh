@@ -275,7 +275,10 @@ The announcement is not node.deleted or the provider's inspect answer and refres
 The stop ends at the stopped node's own mesh-primary by its `node.joined`; at every other node of
 its mesh by the node's own Digest of its next cycle, `starting` or `pending`, sent after every
 Digest of it held or refused since the stop (`rdm.mesh.topology.update.via-next-cycle-digest`); and
-at a peer mesh's nodes when its mesh's projection moves past the version that carried the stop.
+at a peer mesh's nodes when its mesh's projection moves past the version that carried the stop. Any
+other Digest of the stopped node newer than its stop is a sync issue (`stopped-birth-heard`): the node
+pulls its mesh-primary's view by a read (§3.3), and that read ends the stop once the primary took the
+node's `node.joined` (`rdm.mesh.topology.update.via-stopped-birth-heard`).
 
 node.restart is removed (Q183): callers run node.stop then node.start, and the stop's stopped is
 published as NodeStopped. An exit and a new birth under a new node.id are the [recover steps](lifecycles/node-recovery.md), not a restart. No other gossip frame is renamed here.

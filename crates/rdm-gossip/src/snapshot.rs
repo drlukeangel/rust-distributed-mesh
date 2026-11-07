@@ -445,6 +445,10 @@ pub enum Gap {
     },
     /// The source was already desynchronized: its deltas are not applied until a snapshot or a top-up.
     AlreadyDesynced,
+    /// A node of this mesh held stopped is heard again, by a Digest newer than its stop: a sync issue,
+    /// pulled from the mesh-primary by a read, which ends the stop once that primary took its
+    /// `node.joined` (gossip.md §3.3, Q387).
+    StoppedBirthHeard,
 }
 
 impl std::fmt::Display for Gap {
@@ -454,6 +458,7 @@ impl std::fmt::Display for Gap {
             Gap::OtherRevision { .. } => f.write_str("other-revision"),
             Gap::Version { .. } => f.write_str("version-gap"),
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
+            Gap::StoppedBirthHeard => f.write_str("stopped-birth-heard"),
         }
     }
 }
@@ -735,6 +740,18 @@ impl SnapshotReceiver {
             h.desynced = Some(gap.clone());
         }
         Moved::Desynced { mesh: mesh.to_string(), gap: if already { Gap::AlreadyDesynced } else { gap } }
+    }
+
+    /// Mark the held source `mesh` desynchronized by `gap`, so a top-up pulls it: `false` when it holds
+    /// no source of `mesh` or the source is desynchronized already.
+    pub fn mark_desynced(&mut self, mesh: &str, gap: Gap) -> bool {
+        match self.held.get_mut(mesh) {
+            Some(h) if h.desynced.is_none() => {
+                h.desynced = Some(gap);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Forget the source projection held of `mesh`: the mesh left, and nothing of it is kept.

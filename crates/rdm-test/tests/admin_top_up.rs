@@ -137,21 +137,16 @@ async fn gossip_node() -> GossipNode {
 }
 
 /// CONTRACT (gossip.md §3.3): a Day-0 node-admin (mesh1.node-admin.1, mesh1's primary) and mesh1.node-admin.2,
-/// launched by it, both ready. mesh1.node-admin.2 holds mesh1's projection from mesh1.node-admin.1's publications
-/// on mesh1's channel, among them the publication that carries its own Ready, and the Digest
-/// of the primary its primary record names. The gap is forged only then: a top-up read answered older than
-/// a full this node installed on another channel is refused (R-RX3), so a gap forged before the
-/// primary's Ready publication can be topped up from a read the backbone's full has overtaken (gate
-/// gates-e4s2-ca0d0046). A delta of mesh1 under
-/// mesh1.node-admin.1's revision whose base is not the version mesh1.node-admin.2 holds reaches it on that channel
-/// (`via-version-gap`): mesh1.node-admin.2 marks the source desynchronized and tops up from its own Mesh's
-/// primary (`rdm.mesh.entry.update.via-top-up`, served by mesh1.node-admin.1). Afterwards it holds no
-/// desynchronized source and its topology serves mesh1 again. mesh1.node-admin.1 hears the same delta with no
-/// baseline of its own mesh on that channel; it is the Mesh's primary, so it has no primary to top up
-/// from and says so by name (`rdm.mesh.entry.reject.via-top-up`,
+/// launched by it, both ready; mesh1.node-admin.2 holds mesh1 from its read and its own Mesh's primary
+/// from that primary's Digest. A delta of a peer mesh, mesh9, whose base mesh1.node-admin.2 holds no copy
+/// of, reaches it on mesh1's channel (`via-gap`): it marks the source desynchronized and tops up from its
+/// own Mesh's primary (`rdm.mesh.entry.update.via-top-up`, served by mesh1.node-admin.1). That primary
+/// holds no source of mesh9, so mesh9 alone stays desynchronized, and mesh1.node-admin.2 serves mesh1
+/// under its primary's revision. mesh1.node-admin.1 hears the same delta; it is the Mesh's primary, so it
+/// has no primary to top up from and says so by name (`rdm.mesh.entry.reject.via-top-up`,
 /// `reason=this-node-is-the-mesh-primary`), dialing nobody. Must NOT happen: a node-admin holding a
-/// desynchronized source with no top-up (its `TopologyService` answering `unknown-mesh` for its own mesh),
-/// or a primary dialing itself for a top-up.
+/// desynchronized source with no top-up, or a primary dialing itself for a top-up (gate 784e5974: only the
+/// testkit node spawned the top-up).
 #[test]
 fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
     let cell = "a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary";
@@ -204,41 +199,42 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let channels = rdm_gossip::channel::Channels::new(&probe.gossip, &probe.ep, &topology_view).expect("the cell joins mesh1's channel");
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channels);
-        until("the cell's endpoint to hold the primary's replayed full", WRONG, || topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
-        // mesh1.node-admin.2's own Ready moves the primary's projection, which the primary then
-        // publishes on the backbone and on mesh1's channel. A top-up read older than a full installed on
-        // another channel is refused, so the gap waits for mesh1.node-admin.2 to hold, on mesh1's channel,
-        // the publication that carries its Ready: the cell's endpoint shows which version that is.
-        until("the primary to publish mesh1.node-admin.2's Ready on mesh1's channel", WRONG, || {
-            topology_view.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == NodeStatus::Ready)
+        // A sync issue mesh1.node-admin.2 can meet on mesh1's channel (gossip.md §3.3, Q387: nothing of its own
+        // mesh reaches it there but its nodes' own Digests and lifecycle frames): a node of mesh1 its primary
+        // stopped, heard again by a Digest newer than its stop. mesh1.node-admin.2 marks its own mesh's source
+        // desynchronized and pulls its primary's view.
+        let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.node-admin.2 holds mesh1 from its read");
+        let (stopped_id, stopped_inc) = (NodeId::mint(), IncarnationId::mint());
+        let stop = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "81ey2zm6h456".into(), operation: rdm_core::OperationId::new("node.stop", rdm_core::OperationSubject::Birth { node_id: stopped_id.clone(), incarnation: stopped_inc.clone() }), node_id: stopped_id.clone(), incarnation: stopped_inc.clone(), path: "mesh1.node".into(), name: "9".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let stopped = rdm_gossip::status::StatusEvent::Stopped.frame(stop, root_publisher.clone(), held + 1).authored(&rdm_gossip::envelope::Birth::publisher(&root_digest.fabric_id, &root_publisher), 0, 1);
+        channels.wait_for_neighbour().await;
+        let mut heard_again = root_digest.clone();
+        heard_again.node.node_id = stopped_id.clone();
+        heard_again.node.incarnation = stopped_inc.clone();
+        heard_again.node.r#type = "node".into();
+        heard_again.node.path = "mesh1.node".into();
+        heard_again.node.name = "9".into();
+        heard_again.node.endpoint_id = rdm_core::EndpointId(iroh::SecretKey::generate().public().to_string());
+        heard_again.digest_seq = 1;
+        heard_again.status = NodeStatus::Ready;
+        let (gap_base, gap_version) = (held, held + 1);
+        let stopped_s = stopped_id.to_string();
+        let gap = |f: &BTreeMap<String, String>| f.get("node_id") == Some(&stopped_s);
+        tokio::time::timeout(WRONG, async {
+            loop {
+                let _ = channels.forward(&stopped).await;
+                let _ = channels.forward(&Frame::Digest { digest: heard_again.clone() }).await;
+                heard_again.digest_seq += 1;
+                if !spans_named(&spans, "rdm.mesh.topology.update.via-stopped-birth-heard", &gap).is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         })
-        .await;
-        let (_, ready_at) = topology_view.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");
-        until("mesh1.node-admin.2 to hold the primary's publication of its Ready", WRONG, || {
-            admin.topology_view.held_source_version("mesh1").is_some_and(|(p, v)| p == root_publisher && v >= ready_at)
-        })
-        .await;
+        .await
+        .expect("mesh1.node-admin.2 took the stopped node's newer Digest as a sync issue");
 
-        // A delta of mesh1 under the primary's revision whose base is not what mesh1.node-admin.2 holds.
-        let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.node-admin.2 holds mesh1");
-        let (gap_base, gap_version) = (held + 5, held + 6);
-        let delta = Frame::TopologyDelta {
-            mesh: "mesh1".into(),
-            source_publisher: root_publisher.clone(),
-            base_version: gap_base,
-            topology_version: gap_version,
-            published_at_rafka_ms: root.rafka_time.now_ms(),
-            changed: vec![],
-            removed: vec![],
-            in_flight: vec![],
-            deleted: vec![],
-        };
-        channels.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
-        let base_s = gap_base.to_string();
-        let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
-        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.topology.update.via-gap", gap)).await.expect("mesh1.node-admin.2 took the delta as a version gap");
-
-        // The top-up: mesh1.node-admin.2 reads mesh1 from its own Mesh's primary and resumes the source.
+        // The top-up: mesh1.node-admin.2 reads from its own Mesh's primary.
         let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));
         if tokio::time::timeout(TOP_UP, spans.recorded("rdm.mesh.entry.update.via-top-up", topped)).await.is_err() {
             let rejected = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()));
@@ -251,20 +247,17 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let root_at = root_digest.node.location();
         let field = |k: &str| top_up.get(k).cloned().unwrap_or_default();
         assert_eq!(
-            (field("mesh_primary_path"), field("mesh_primary_name"), field("served_by_path"), field("served_by_name"), field("still_desynced")),
-            (root_at.path.clone(), root_at.name.clone(), root_at.path.clone(), root_at.name.clone(), String::new()),
-            "served by its own Mesh's primary, nothing left desynchronized: {top_up:?}"
+            (field("mesh_primary_path"), field("mesh_primary_name"), field("served_by_path"), field("served_by_name")),
+            (root_at.path.clone(), root_at.name.clone(), root_at.path.clone(), root_at.name.clone()),
+            "served by its own Mesh's primary: {top_up:?}"
         );
-        assert!(top_up["reasons"].contains("mesh1:"), "the span names the gap it repaired: {top_up:?}");
-        assert!(admin.topology_view.desynced_sources().is_empty(), "no source stays desynchronized: {:?}", admin.topology_view.desynced_sources());
+        assert!(top_up["reasons"].contains("mesh1:stopped-birth-heard"), "the span names the sync issue it pulled for: {top_up:?}");
         let own = admin.digest.lock().unwrap().clone();
         let served = admin.topology_view.held_topology(&own);
         assert!(served.iter().any(|s| s.mesh == "mesh1" && s.publisher == root_publisher), "mesh1.node-admin.2 serves mesh1 again under the primary's revision: {:?}", served.iter().map(|s| (&s.mesh, &s.publisher, s.topology_version)).collect::<Vec<_>>());
 
-        // The primary heard the same delta with no baseline of its own mesh on its channel: it is the
-        // Mesh's primary, so it names that and dials nobody.
-        let primary_says = |f: &BTreeMap<String, String>| f.get("node") == Some(&root_id) && f.get("reason").map(String::as_str) == Some("this-node-is-the-mesh-primary");
-        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.entry.reject.via-top-up", primary_says)).await.expect("the primary named why it has no top-up to make");
+        // The primary decides its own mesh from its nodes' reports (Q197): a stopped node's Digest pulls
+        // nothing there.
         let root_pulls = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node") == Some(&root_id) && f.get("reason").map(String::as_str) == Some("pull-refused"));
         assert!(root_pulls.is_empty(), "the primary never dials itself for a top-up: {root_pulls:?}");
         let root_topped = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", |f| f.get("node") == Some(&root_id));

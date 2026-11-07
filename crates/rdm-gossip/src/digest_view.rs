@@ -1010,6 +1010,15 @@ impl DigestView {
         .in_scope(|| tracing::info!("an own-mesh node's status, from its own Digest"));
     }
 
+    /// Whether `d` is a Digest of a birth of this view's own mesh this view holds stopped, newer than
+    /// every Digest of it this view held when the stop was taken: the stopped node is heard again, and
+    /// its mesh-primary's view is pulled by a read (gossip.md §3.3, Q387).
+    pub(crate) fn stopped_heard_again(&self, d: &MeshDigest) -> bool {
+        self.own_mesh_member(d)
+            && !self.primary_of(&d.node.mesh)
+            && self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|m| m.incarnation == d.node.incarnation && d.digest_seq > m.held_seq)
+    }
+
     /// Whether this view's holder is the primary of `mesh` now: its own mesh, while it holds the role.
     pub fn primary_of(&self, mesh: &str) -> bool {
         self.primary.load(std::sync::atomic::Ordering::Relaxed) && *self.own_mesh.lock().unwrap() == mesh
