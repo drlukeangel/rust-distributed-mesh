@@ -10,6 +10,9 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
+#[allow(dead_code)]
+#[path = "../../../tools/test-support/in_process_provider.rs"]
+mod in_process_provider;
 
 /// The binary's process environment, set once, here, before `main` and before any thread exists
 /// (one binary is one process): a cell never sets or removes a variable. The gate's cadence

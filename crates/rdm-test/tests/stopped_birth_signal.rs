@@ -3,18 +3,20 @@
 //! node.delete"; node-identity-and-state.md: "SIGINT and SIGTERM run the node's own stop steps", the
 //! signal stop of a live node).
 //!
-//! The mesh's primary is a real Day-0 node-admin in this process; it launches a node and commands
-//! its stop. Its own process: the cell holds process-wide state (the stopped process's flag).
+//! The mesh's primary is a real Day-0 node-admin in this process; once its Day-0 Build is complete it
+//! creates a node through its `node.create`, started in this process
+//! ([`crate::in_process_provider`]), and commands its stop. Its own process: the cell holds
+//! process-wide state (the stopped process's flag).
 
+use crate::in_process_provider::{self as in_process, InProcessProvider};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::node_hooks::{NodeHooks, HookOutcome};
-use rdm_admin::join::Deployed;
+use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::launch::{Launch, Launcher};
-use rdm_core::runtime::RuntimeFact;
+use rdm_core::launch::Launch;
 use rdm_core::status::{NodeState, StatusReply, StatusRequest};
-use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId};
-use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
+use rdm_core::{model::NodeStatus, MeshDigest, NodeId};
+use rdm_node::node::RunningNode;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// What a step that ends at once on a correct node is given before the cell fails by name.
@@ -32,49 +34,19 @@ pub(crate) fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path) -> Launch {
-    let d = root.digest.lock().unwrap().clone();
-    std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
-    Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-        fabric: "fabric1".into(),
-        fabric_id: d.fabric_id.clone(),
-        mesh: "mesh1".into(),
-        r#type: "node".into(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        supersedes: None,
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: vec![],
-        seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-        data_dir: dir.to_path_buf(),
-        store_dir: dir.to_path_buf(),
-        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-        issuing: None,
-        roots: Vec::new(),
-        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-        declared: Default::default(),
-    }
+/// The Day-0 admin of `fabric1` with its data dir and store at `dir`, every node its `node.create`
+/// creates started in this process with a passing `pre_node_ready` hook ([`crate::common::passing_start`]).
+pub(crate) async fn day0_root(dir: &std::path::Path) -> (Running, Arc<InProcessProvider>) {
+    let provider = InProcessProvider::new(crate::common::passing_start());
+    let root = start_with(day0_config(dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+    (root, provider)
 }
 
-/// What `root` verifies the join of `launch`'s birth against.
-pub(crate) fn deployed(launch: &Launch) -> Deployed {
-    let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
-        data_dir: launch.data_dir.display().to_string(),
-        last_accepted_name: None,
-        held: false,
-        listeners: Vec::new(),
-    }
+/// The ordinary node `at` of mesh1, created by `root`'s `node.create` once its Day-0 Build is complete,
+/// its executable's file in `dir`: the launch the pipeline resolved for it and the node, started.
+pub(crate) async fn created(root: &Running, provider: &InProcessProvider, at: rdm_core::PathName, dir: &std::path::Path) -> (Launch, RunningNode) {
+    in_process::create(root, vec![in_process::node_spec(&at, "mesh1", "node", dir)]).await;
+    (provider.launch(&at), provider.node(&at).await)
 }
 
 pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
@@ -119,16 +91,10 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         let base = std::env::temp_dir().join(format!("stopped-birth-signal-{}", NodeId::mint()));
         let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        // The mesh's primary: a Day-0 node-admin that does not reconcile (it would delete the node this
-        // cell launches in its own process).
-        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        // The mesh's primary: a Day-0 node-admin that creates mesh1.node.1 and then reconciles nothing.
+        let (root, provider) = day0_root(&root_dir).await;
+        let (launch, rpc) = created(&root, &provider, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir).await;
         root.stop_reconciling().await;
-        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir);
-        let _ = root.runner.joins.expect(deployed(&launch));
-        let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
-        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the node comes up");
         until_ready("mesh1.node.1", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
@@ -191,14 +157,9 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         let base = std::env::temp_dir().join(format!("live-birth-signal-{}", NodeId::mint()));
         let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let (root, provider) = day0_root(&root_dir).await;
+        let (launch, rpc) = created(&root, &provider, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir).await;
         root.stop_reconciling().await;
-        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), &rpc_dir);
-        let _ = root.runner.joins.expect(deployed(&launch));
-        let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
-        let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the node comes up");
         until_ready("mesh1.node.1", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();

@@ -13,7 +13,7 @@
 //! CONTRACT: the four start paths run the same six start steps in that order, each a child of its
 //! start's root span (`rdm.mesh.node.create.via-boot` for a first start,
 //! `rdm.mesh.node.update.via-start` for a start after a stop), and each step begins only after the
-//! step before it has closed: a node-admin's first start (launched by another admin), the same
+//! step before it has closed: a node-admin's first start (created by another admin through its `node.create`), the same
 //! node-admin's start after its stop, a node's first start and the same node's start after
 //! its stop. The steps are the join (`via-join-admitted`), the mesh channel, node.joined
 //! (`via-topology-joined`), the `pre_node_ready` attempt (`via-pre-node-ready-attempt`), the Build
@@ -27,17 +27,16 @@
 //! on its own, so that a step is missing from its trace, runs outside its start's root, overlaps the
 //! step before it, or comes in another order than in the other paths.
 //!
-//! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
-//! node, and commands their stops and starts over Node RPC, so each start after a stop joins it back
+//! The authority is a real Day-0 node-admin in this process; it creates the second admin and the rpc
+//! node through its `node.create` once its Day-0 Build is complete (each started in this process), and commands their stops and starts over Node RPC, so each start after a stop joins it back
 //! through its call (node-start.md step 2). Its own process: the cell holds process-wide state (the
 //! stop flag).
 
-use rdm_core::launch::{Launch, Launcher};
-use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId, PathName};
+use crate::in_process_provider::{self as in_process, InProcessProvider};
+use rdm_core::launch::Launch;
+use rdm_core::{model::NodeStatus, MeshDigest, NodeId, PathName};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
-use rdm_admin::join::Deployed;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{StatusReply, StatusRequest};
 use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
@@ -87,54 +86,6 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// A hook that passes at once: every start runs exactly one attempt.
 fn passing() -> NodeHooks {
     NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)))
-}
-
-/// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-/// A launch of `name` by `root` over its own data dir `dir`, on the fabric's store root `store` (the
-/// root's): every admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: PathName, r#type: &str, dir: &std::path::Path, store: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
-    let d = root.digest.lock().unwrap().clone();
-    std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
-    Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-        fabric: "fabric1".into(),
-        fabric_id: d.fabric_id.clone(),
-        mesh: "mesh1".into(),
-        r#type: r#type.to_string(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        supersedes: None,
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners,
-        seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-        data_dir: dir.to_path_buf(),
-        store_dir: store.to_path_buf(),
-        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-        issuing: None,
-        roots: Vec::new(),
-        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-        declared: Default::default(),
-    }
-}
-
-/// What `root` verifies the join of `launch`'s birth against: at its first start (`held: false`), or
-/// at its start after a stop (`held: true`, the name it last accepted for the birth).
-fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
-    let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
-        data_dir: launch.data_dir.display().to_string(),
-        last_accepted_name: held.cloned(),
-        held: held.is_some(),
-        listeners: Vec::new(),
-    }
 }
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
@@ -232,24 +183,24 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let (root_dir, admin_dir, rpc_dir) = (base.join("admin1"), base.join("admin2"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        // The authority: a Day-0 node-admin. Its accepted Build names only itself, and a reconciling
-        // root would delete the nodes this cell launches in its own process: it does not reconcile.
-        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling().await;
-        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+        // The authority: a Day-0 node-admin that creates each node through its node.create once its Day-0
+        // Build is complete, each started in this process with a passing hook.
+        let provider = InProcessProvider::new(crate::common::passing_start());
+        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
 
-        // A node-admin's first start: launched by the root.
-        let admin_launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
-        let _ = root.runner.joins.expect(deployed(&admin_launch, None));
-        let env = admin_launch.to_env();
-        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { node_hooks: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        // A node-admin's first start: created by the root.
+        let admin_at = PathName::new("mesh1.node-admin", "2").unwrap();
+        provider.create(&root, vec![in_process::node_spec(&admin_at, "mesh1", "node-admin", &admin_dir)]).await;
+        let admin_launch = provider.launch(&admin_at);
+        let admin = provider.admin(&admin_at).await;
         until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
-        // A node's first start: launched by the root.
-        let rpc_launch = launch_by(&root, PathName::new("mesh1.node", "1").unwrap(), "node", &rpc_dir, &root_dir, vec![]);
-        let _ = root.runner.joins.expect(deployed(&rpc_launch, None));
-        let rpc = rdm_test::node::start_pre_node_ready(&rpc_launch, passing(), |b, _| b).await.expect("the node comes up");
+        // A node's first start: created by the root. The root then reconciles nothing.
+        let rpc_at = PathName::new("mesh1.node", "1").unwrap();
+        provider.create(&root, vec![in_process::node_spec(&rpc_at, "mesh1", "node", &rpc_dir)]).await;
+        root.stop_reconciling().await;
+        let rpc_launch = provider.launch(&rpc_at);
+        let rpc = provider.node(&rpc_at).await;
         until_ready("mesh1.node.1 (first start)", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();
@@ -258,15 +209,15 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         .await;
 
         // The node-admin's stop and its start after the stop, commanded by the root over Node RPC.
-        assert!(matches!(command(&root, &admin_launch, &stop(&admin_launch)).await, StatusReply::Stopped { .. }), "the launched admin stops");
-        let _ = root.runner.joins.expect(deployed(&admin_launch, Some(&admin_launch.location())));
+        assert!(matches!(command(&root, &admin_launch, &stop(&admin_launch)).await, StatusReply::Stopped { .. }), "the created admin stops");
+        let _ = root.runner.joins.expect(crate::common::held_join(&admin_launch));
         let started = tokio::time::timeout(WRONG, command(&root, &admin_launch, &start(&admin_launch))).await.expect("the admin's start answers");
-        assert_eq!(started, StatusReply::Started, "the launched admin starts after its stop");
+        assert_eq!(started, StatusReply::Started, "the created admin starts after its stop");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
         // The node's stop and its start after the stop, commanded by the root over Node RPC.
         assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the node stops");
-        let _ = root.runner.joins.expect(deployed(&rpc_launch, Some(&rpc_launch.location())));
+        let _ = root.runner.joins.expect(crate::common::held_join(&rpc_launch));
         let started = tokio::time::timeout(WRONG, command(&root, &rpc_launch, &start(&rpc_launch))).await.expect("the node's start answers");
         assert_eq!(started, StatusReply::Started, "the node starts after its stop");
 
@@ -384,24 +335,26 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
             let held = held.clone();
             move |inner: Arc<dyn BuildStateAdapter>| -> Arc<dyn BuildStateAdapter> { Arc::new(NoCurrentWhileHeld { inner, held }) }
         };
+        // The node-admin it creates through its node.create once its Day-0 Build is complete: its start is
+        // held until the pipeline has launched it, and its current Build reads as none from then.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let provider = InProcessProvider::new(in_process::held(crate::common::passing_start(), release.clone()));
         let wiring = Wiring {
             node_hooks: NodeHooks::none(),
             fabric_hooks: FabricHooks::no_app_work(),
             builds: Some(Box::new(wrap)),
+            provider: provider.wiring(),
             ..Wiring::no_certs()
         };
         let root = start_with(day0_config(&root_dir), wiring).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        held.store(true, Ordering::SeqCst);
 
-        // A node-admin's first start, launched by the root: its join is answered with no Build.
-        let admin_launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
-        let _ = root.runner.joins.expect(deployed(&admin_launch, None));
-        let env = admin_launch.to_env();
-        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { node_hooks: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
-
+        // A node-admin's first start, created by the root: its join is answered with no Build.
+        let admin_at = PathName::new("mesh1.node-admin", "2").unwrap();
+        let ((), admin_launch) = tokio::join!(provider.create(&root, vec![in_process::node_spec(&admin_at, "mesh1", "node-admin", &admin_dir)]), async {
+            let admin_launch = provider.arrived(&admin_at).await;
+            held.store(true, Ordering::SeqCst);
+            release.notify_one();
         // Its Build floor reports the no-pointer blocker and acts on it: the first read of it (or a
         // repeat of the entry, which must not happen) has ended.
         let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node_path") == Some(&admin_launch.path) && f.get("node_name") == Some(&admin_launch.name) && f.contains_key("outcome");
@@ -437,6 +390,11 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
 
         // The start completes on the storage's current Build, read whole.
         held.store(false, Ordering::SeqCst);
+            admin_launch
+        });
+        root.stop_reconciling().await;
+        let admin = provider.admin(&admin_at).await;
+        let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node_path") == Some(&admin_launch.path) && f.get("node_name") == Some(&admin_launch.name) && f.contains_key("outcome");
         until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let (joins, absorbed) = {
             let all = spans.0.lock().unwrap();

@@ -9,18 +9,17 @@
 //! it declares Stopped (Q36, Q87); frame and declaration apply once (Q49)." Q93 supersedes Q47's line
 //! "The open start sends no separate readiness declaration."
 //!
-//! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
+//! The mesh's primary is a real Day-0 node-admin in this process; it creates the second admin through
+//! its `node.create` once its Day-0 Build is complete (started in this process) and
 //! commands its stop and start. Its own process: the cell holds process-wide state (the stop flag).
 
-use rdm_core::launch::{Launch, Launcher};
-use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId, PathName};
+use crate::in_process_provider::{self as in_process, InProcessProvider};
+use rdm_core::launch::Launch;
+use rdm_core::{model::NodeStatus, MeshDigest, NodeId, PathName};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
-use rdm_admin::join::Deployed;
+use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{StatusReply, StatusRequest};
-use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -39,53 +38,6 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
         _ => None,
     })
     .expect("a readable environment")
-}
-
-/// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-/// A launch of `name` by `root` over its own data dir `dir`, on the root's store root `store`: every
-/// admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: PathName, dir: &std::path::Path, store: &std::path::Path) -> Launch {
-    let d = root.digest.lock().unwrap().clone();
-    std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
-    Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-        fabric: "fabric1".into(),
-        fabric_id: d.fabric_id.clone(),
-        mesh: "mesh1".into(),
-        r#type: "node-admin".into(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        supersedes: None,
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-        seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-        data_dir: dir.to_path_buf(),
-        store_dir: store.to_path_buf(),
-        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-        issuing: None,
-        roots: Vec::new(),
-        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-        declared: Default::default(),
-    }
-}
-
-/// What `root` verifies the join of `launch`'s birth against.
-fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
-    let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
-        data_dir: launch.data_dir.display().to_string(),
-        last_accepted_name: held.cloned(),
-        held: held.is_some(),
-        listeners: Vec::new(),
-    }
 }
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
@@ -134,10 +86,10 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         let base = std::env::temp_dir().join(format!("admin-start-declares-{}", NodeId::mint()));
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        // The mesh's primary: a Day-0 node-admin that does not reconcile (it would delete the admin this
-        // cell launches in its own process).
-        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling().await;
+        // The mesh's primary: a Day-0 node-admin that creates mesh1.node-admin.2 through its node.create once
+        // its Day-0 Build is complete, then reconciles nothing.
+        let provider = InProcessProvider::new(crate::common::passing_start());
+        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(WRONG, async {
             while root.topology_view.primaries().mesh("mesh1").is_none() {
@@ -148,12 +100,11 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         .expect("the Day-0 admin takes mesh1's primary role");
         let root_id = root.digest.lock().unwrap().node.node_id.to_string();
 
-        let launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
-        let _ = root.runner.joins.expect(deployed(&launch, None));
-        let env = launch.to_env();
-        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
-        let admin = start_with(admin_cfg, Wiring { node_hooks: passing, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let at = PathName::new("mesh1.node-admin", "2").unwrap();
+        provider.create(&root, vec![in_process::node_spec(&at, "mesh1", "node-admin", &admin_dir)]).await;
+        root.stop_reconciling().await;
+        let launch = provider.launch(&at);
+        let admin = provider.admin(&at).await;
         until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let first = tokio::time::timeout(DECLARED, async {
             loop {
@@ -168,9 +119,9 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         .expect("mesh1.node-admin.2 declares its first start's node.started");
         assert_eq!(first.iter().map(|f| f["to_node_id"].clone()).collect::<Vec<_>>(), vec![root_id.clone()], "to its mesh's primary: {first:#?}");
 
-        assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the launched admin stops");
-        let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.location())));
-        assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
+        assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the created admin stops");
+        let _ = root.runner.joins.expect(crate::common::held_join(&launch));
+        assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the created admin starts after its stop");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
         let status_service = root.status_service().unwrap();

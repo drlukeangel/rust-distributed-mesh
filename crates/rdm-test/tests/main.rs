@@ -41,6 +41,9 @@ pub fn node_recovery_due() -> std::time::Duration {
 
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
+#[allow(dead_code)]
+#[path = "../../../tools/test-support/in_process_provider.rs"]
+mod in_process_provider;
 mod build_log;
 #[path = "chaos/restored_faults.rs"]
 mod restored_faults;

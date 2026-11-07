@@ -9,15 +9,14 @@
 //! an object another writer was still writing, so the read was refused `not-ready` ("the stored map
 //! could not be read: ... an unended object") and the start failed at `node.rafka-time`.
 
+use crate::in_process_provider::{self as in_process, InProcessProvider};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::join::Deployed;
-use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
+use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::launch::{Launch, Launcher};
-use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId};
-use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
+use rdm_core::launch::Launch;
+use rdm_core::{model::NodeStatus, MeshDigest, NodeId};
 use std::io::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// What a step that ends at once on a correct node is given before the cell fails by name.
@@ -35,51 +34,9 @@ pub(crate) fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, store: &std::path::Path) -> Launch {
-    let d = root.digest.lock().unwrap().clone();
-    std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
-    Launch {
-        initial_properties: Default::default(),
-        topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-        fabric: "fabric1".into(),
-        fabric_id: d.fabric_id.clone(),
-        mesh: "mesh1".into(),
-        r#type: "node-admin".into(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        supersedes: None,
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-        seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-        data_dir: dir.to_path_buf(),
-        store_dir: store.to_path_buf(),
-        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-        issuing: None,
-        roots: Vec::new(),
-        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-        declared: Default::default(),
-    }
-}
-
-/// What `root` verifies the first join of `launch`'s birth against.
-pub(crate) fn deployed(launch: &Launch) -> Deployed {
-    let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
-        data_dir: launch.data_dir.display().to_string(),
-        last_accepted_name: None,
-        held: false,
-        listeners: Vec::new(),
-    }
+/// mesh1's second node-admin, which the cells create through the Day-0 admin's `node.create`.
+pub(crate) fn admin2() -> rdm_core::PathName {
+    rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()
 }
 
 pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
@@ -107,7 +64,7 @@ fn nodes_file(store: &std::path::Path, root: &Running) -> std::path::PathBuf {
 // @feature: node-lifecycle
 /// CONTRACT (Q227, Q234; node-topology-get.md; node-rpc-envelope.md Topology: "OwnRow is served from
 /// the node's record (Q237, Q323)"): a Day-0 node-admin (mesh1.node-admin.1, the fabric-primary and mesh1's
-/// mesh-primary) and mesh1.node-admin.2, launched by it, both ready. mesh1.node-admin.2 reads the topology of its
+/// mesh-primary) and mesh1.node-admin.2, created by it through its `node.create`, both ready. mesh1.node-admin.2 reads the topology of its
 /// mesh-primary while the nodes store reads: its own row is answered, read from its record. The
 /// fabric's nodes store then ends in an object another writer has not finished writing (an unended
 /// final line, as the gate's store held it). mesh1.node-admin.2 reads the topology of its mesh-primary,
@@ -126,17 +83,16 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        // The primary: a Day-0 node-admin that does not reconcile (its Build names only itself).
-        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        // The primary: a Day-0 node-admin that creates mesh1.node-admin.2 through its node.create once its
+        // Day-0 Build is complete, then reconciles nothing.
+        let provider = InProcessProvider::new(crate::common::passing_start());
+        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        provider.create(&root, vec![in_process::node_spec(&admin2(), "mesh1", "node-admin", &admin_dir)]).await;
         root.stop_reconciling().await;
-        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
 
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
-        let _ = root.runner.joins.expect(deployed(&launch));
-        let env = launch.to_env();
-        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let launch = provider.launch(&admin2());
+        let admin = provider.admin(&admin2()).await;
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         // Its start's hydration sync carried its own whole row from its mesh-primary's atlas (Q234).
         let own = admin.own_writer.as_ref().and_then(|w| w.own_row()).expect("mesh1.node-admin.2 holds its own row from its hydration sync");
@@ -225,32 +181,36 @@ fn unreadable_from_byte_0(store: &std::path::Path, files: &[&str]) -> Vec<(std::
         .collect()
 }
 
-/// A Day-0 node-admin that does not reconcile, ready, and the launch of mesh1.node-admin.2 by it, its first
-/// join expected: the base dir, the root, the launch and the fabric's store root dir.
-async fn root_and_launch(tag: &str) -> (std::path::PathBuf, Running, Launch, std::path::PathBuf) {
+/// A Day-0 node-admin (mesh1.node-admin.1) that creates mesh1.node-admin.2 through its `node.create` once its
+/// Day-0 Build is complete, the new admin's start held until `before_start` has run on the fabric's
+/// store root dir (the pipeline has launched it; nothing of it has started), and that then reconciles
+/// nothing: the base dir, the root, mesh1.node-admin.2's launch, the store root dir, mesh1.node-admin.2
+/// started and ready, and what `before_start` answered.
+async fn root_and_created<T>(tag: &str, before_start: impl FnOnce(&std::path::Path) -> T) -> (std::path::PathBuf, Running, Launch, std::path::PathBuf, Running, T) {
     let base = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
     std::fs::create_dir_all(&root_dir).unwrap();
-    let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider = InProcessProvider::new(in_process::held(crate::common::passing_start(), release.clone()));
+    let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+    let (_, (store, before)) = tokio::join!(provider.create(&root, vec![in_process::node_spec(&admin2(), "mesh1", "node-admin", &admin_dir)]), async {
+        provider.arrived(&admin2()).await;
+        let store = nodes_file(&root_dir, &root).parent().unwrap().to_path_buf();
+        let before = before_start(&store);
+        release.notify_one();
+        (store, before)
+    });
     root.stop_reconciling().await;
-    until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-    let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
-    let _ = root.runner.joins.expect(deployed(&launch));
-    let store = nodes_file(&root_dir, &root).parent().unwrap().to_path_buf();
-    (base, root, launch, store)
-}
-
-async fn start_launched(launch: &Launch) -> Result<Running, String> {
-    let env = launch.to_env();
-    let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-    start_with(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await
+    let launch = provider.launch(&admin2());
+    let admin = provider.admin(&admin2()).await;
+    (base, root, launch, store, admin, before)
 }
 
 // @feature: node-lifecycle
 /// CONTRACT (Q227: "no node reads anything from the store on create, start or rejoin"; rdm#89: a
 /// node-admin's topology stores open without folding): a Day-0 node-admin (mesh1.node-admin.1) is ready, then
 /// the first line of the fabric's `fabric.jsonl` no longer matches its checksum, so no fold from byte 0
-/// reads it (mesh1.node-admin.1 has read past it), and mesh1.node-admin.2, launched by it, starts. Its start opens
+/// reads it (mesh1.node-admin.1 has read past it), and mesh1.node-admin.2, created by it through its `node.create`, starts. Its start opens
 /// all four topology stores and folds no `fabric.jsonl` (its Fabric identity is its entry pull's, Q227):
 /// it comes up Ready, holding its own row from its mesh-primary's hydration sync, and makes no other
 /// start read of a topology store either ([`start_folds`]). A reader's
@@ -264,11 +224,7 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        let (base, root, launch, store) = root_and_launch("admin-unread-stores").await;
-        let written = unreadable_from_byte_0(&store, &["fabric.jsonl"]);
-        let folds_before = topology_folds(&spans).len();
-
-        let admin = start_launched(&launch).await.unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts with its fabric store unreadable: {e}"));
+        let (base, root, launch, store, admin, (written, folds_before)) = root_and_created("admin-unread-stores", |store| (unreadable_from_byte_0(store, &["fabric.jsonl"]), topology_folds(&spans).len())).await;
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let own = admin.own_writer.as_ref().and_then(|w| w.own_row()).expect("mesh1.node-admin.2 holds its own row from its hydration sync");
         assert_eq!(own.node_id, launch.node_id, "the row held is the node's own: {own:?}");
@@ -303,7 +259,7 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
 /// longer matches its checksum, so no fold from byte 0 reads either (mesh1.node-admin.1, their one writer,
 /// has read past it); the Build records are the one store a starting admin reads (Q292). The `nodes`
 /// store is not one of them: each node writes its own record there and its primaries read it (Q356,
-/// storage.md §2), so mesh1.node-admin.1 reads mesh1.node-admin.2's record at its join. mesh1.node-admin.2, launched by it,
+/// storage.md §2), so mesh1.node-admin.1 reads mesh1.node-admin.2's record at its join. mesh1.node-admin.2, created by it through its `node.create`,
 /// starts: it comes up Ready, holding its own row from its hydration sync, the fabric-primary's and
 /// mesh1's mesh-primary's records naming mesh1.node-admin.1's birth (the recorded primaries its
 /// mesh-primary serves), and the current Build the join named, its committed records read from the
@@ -319,12 +275,12 @@ fn a_launched_admin_is_ready_with_its_fabric_and_meshes_stores_unreadable() {
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        let (base, root, launch, store) = root_and_launch("admin-unread-all").await;
+        let (base, root, launch, _store, admin, folds_before) = root_and_created("admin-unread-all", |store| {
+            unreadable_from_byte_0(store, &TOPOLOGY_STORES[..2]);
+            topology_folds(&spans).len()
+        })
+        .await;
         let root_birth = root.digest.lock().unwrap().node.clone();
-        unreadable_from_byte_0(&store, &TOPOLOGY_STORES[..2]);
-        let folds_before = topology_folds(&spans).len();
-
-        let admin = start_launched(&launch).await.unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts with its fabric and meshes stores unreadable: {e}"));
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let since = start_folds(&spans, folds_before);
 

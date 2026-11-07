@@ -72,53 +72,32 @@ fn a_node_joins_a_channel_naming_its_node_admin_and_the_node_admins_application_
         let dir = std::env::temp_dir().join(format!("app-channel-{}", NodeId::mint()));
         let member_dir = dir.join("member");
         let admin_app = Arc::new(JoinsMembers::default());
-        let root = start_with(config(&dir), Wiring { node_hooks: NodeHooks::new(admin_app.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.unwrap();
-        root.stop_reconciling().await;
+        // The member: created by the node-admin's node.create once its Day-0 Build is complete, started in
+        // this process with its own app.
+        let member_app = Arc::new(JoinsMembers::default());
+        let start: crate::in_process_provider::Start = {
+            let member_app = member_app.clone();
+            Arc::new(move |launch, _env| {
+                let member_app = member_app.clone();
+                Box::pin(async move {
+                    rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), NodeHooks::new(member_app), |s| s, None, |b, _| b, &[])
+                        .await
+                        .map(crate::in_process_provider::Started::Node)
+                        .map_err(|e| format!("{e:#}"))
+                })
+            })
+        };
+        let provider = crate::in_process_provider::InProcessProvider::new(start);
+        let root = start_with(config(&dir), Wiring { node_hooks: NodeHooks::new(admin_app.clone()), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.unwrap();
         tokio::time::timeout(BOUND, root.pre_node_ready().unwrap().settled()).await.unwrap();
         assert_eq!(admin_app.named.lock().unwrap().clone(), Some(Vec::new()), "the node-admin, alone in its mesh, names no peer");
 
         let d = root.digest.lock().unwrap().clone();
-        std::fs::create_dir_all(&member_dir).unwrap();
-        let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-channel")).unwrap();
-        runtime.write_record(&member_dir).unwrap();
-        let key = rdm_test::node::load_or_mint_key(&member_dir).unwrap();
-        let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-            fabric: config(&dir).fabric,
-            fabric_id: d.fabric_id.clone(),
-            mesh: "mesh1".into(),
-            r#type: "node".into(),
-            path: "mesh1.node".into(), name: "1".into(),
-            node_id: NodeId::mint(),
-            incarnation: IncarnationId::mint(),
-            supersedes: None,
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
-            listeners: vec![],
-            seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-            launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-            data_dir: member_dir.clone(),
-            store_dir: dir.clone(),
-            mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-            issuing: None,
-            roots: Vec::new(),
-            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-            declared: Default::default(),
-        };
-        let _report = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-            path: launch.path.clone(), name: launch.name.clone(),
-            node_id: launch.node_id.clone(),
-            incarnation: launch.incarnation.clone(),
-            supersedes: None,
-            endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-            runtime,
-            data_dir: member_dir.display().to_string(),
-            last_accepted_name: None,
-            held: false,
-            listeners: Vec::new(),
-        });
-        let member_app = Arc::new(JoinsMembers::default());
-        let member = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), NodeHooks::new(member_app.clone()), |s| s, None, |b, _| b, &[])
-            .await
-            .expect("the member starts");
+        let at = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        provider.create(&root, vec![crate::in_process_provider::node_spec(&at, "mesh1", "node", &member_dir)]).await;
+        root.stop_reconciling().await;
+        let launch = provider.launch(&at);
+        let member = provider.node(&at).await;
         assert_eq!(member_app.named.lock().unwrap().clone(), Some(vec![d.node.endpoint_id.0.clone()]), "the node named its mesh-primary, the node-admin that answered its join");
 
         // The channel's neighbours are up on both sides (a protocol event).

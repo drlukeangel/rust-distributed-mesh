@@ -6,7 +6,8 @@
 //! - A node reads nothing from the nodes store at its start, join or create (Q227); the launch and
 //!   the join's answer carry what it writes.
 
-use crate::admin_reads_from_atlas::{day0_config, deployed, launch_by, until_ready};
+use crate::admin_reads_from_atlas::{admin2, day0_config, until_ready};
+use crate::in_process_provider::{self as in_process, InProcessProvider, Started};
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
 use rdm_admin::storage::{NodeRecord, NodesStorage};
@@ -108,7 +109,8 @@ fn recorded(store: &Path, calls: &Calls) -> TopologyStorageProviders {
 /// CONTRACT (node-identity-and-state.md §2.5: "A node writes every field of its own record itself
 /// (Q356). Its mesh-primary, or the fabric-primary for a mesh with no mesh-primary, writes a node's
 /// record only when the node cannot: a node that is lost, killed or deleted"; Q227): a Day-0 node-admin
-/// (mesh1's primary, and the fabric-primary) and mesh1.node-admin.2, launched by it, which joins; both
+/// (mesh1's primary, and the fabric-primary) and mesh1.node-admin.2, created by it through its `node.create`
+/// once its Day-0 Build is complete, which joins; both
 /// ready, and the fabric left to settle. Each admin wrote only its own record: mesh1.node-admin.2 its
 /// first line before it was ready, and the mesh-primary no line of mesh1.node-admin.2, a live node.
 /// mesh1.node-admin.2 read nothing from the nodes store before it was ready. Must NOT happen: a node's
@@ -123,16 +125,25 @@ fn each_node_admin_writes_only_its_own_record_and_reads_nothing_at_its_start() {
         std::fs::create_dir_all(&root_dir).unwrap();
         let (root_calls, admin_calls) = (Calls::default(), Calls::default());
 
-        // The Day-0 admin does not reconcile: its Build names only itself, and mesh1.node-admin.2 is launched here.
-        let root = start_on(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &root_calls)).await.expect("the Day-0 admin comes up");
+        // The Day-0 admin creates mesh1.node-admin.2 through its node.create, started in this process on the
+        // store recording its calls, then reconciles nothing.
+        let start: in_process::Start = {
+            let admin_calls = admin_calls.clone();
+            Arc::new(move |launch, env| {
+                let admin_calls = admin_calls.clone();
+                Box::pin(async move {
+                    let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).map_err(|e| format!("the launch is not a readable environment: {e}"))?;
+                    let wiring = Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
+                    start_on(admin_cfg, wiring, recorded(&launch.store_dir, &admin_calls)).await.map(Started::Admin).map_err(|e| format!("{e:#}"))
+                })
+            })
+        };
+        let provider = InProcessProvider::new(start);
+        let root = start_on(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }, recorded(&root_dir, &root_calls)).await.expect("the Day-0 admin comes up");
+        provider.create(&root, vec![in_process::node_spec(&admin2(), "mesh1", "node-admin", &admin_dir)]).await;
         root.stop_reconciling().await;
-        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
-        let _ = root.runner.joins.expect(deployed(&launch));
-        let env = launch.to_env();
-        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_on(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, recorded(&root_dir, &admin_calls)).await.expect("the launched admin comes up");
+        let launch = provider.launch(&admin2());
+        let admin = provider.admin(&admin2()).await;
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let at_ready: Vec<Call> = admin_calls.0.lock().unwrap().clone();
         // Every heard birth's view change has run: a write that follows a birth heard has been made.

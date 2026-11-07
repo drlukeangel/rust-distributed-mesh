@@ -6,8 +6,10 @@
 //! to every later admin in its entry pull; a stall is surfaced on `fabric.get`.
 //!
 //! The cells run a real Day-0 node-admin in this process, holding the testkit's fabric root, and
-//! births deployed by hand (the admin reconciles nothing): its ticks and `StatusService` are the
-//! product's. Members register a product ALPN and are launched with the testkit's root set, so
+//! births it creates through its `node.create` once its Day-0 Build is complete, started in this
+//! process (`crate::in_process_provider`); once a cell has created its births the admin reconciles
+//! nothing: its ticks and `StatusService` are the product's. Members register a product ALPN and are
+//! launched with the testkit's root set, so
 //! their dials are admitted by `node.connection.create` on it. A cell that needs a member's Node RPC
 //! to fail cuts its admin's calls to it (the client's admission block, its pooled connection to the
 //! member closed): the member gossips on, so nothing but the renewal is told about it.
@@ -24,6 +26,7 @@ use rdm_core::filter::{Entity, Filter};
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_core::views::{FabricView, NodeStatus, NodeView, Renewals};
 use rdm_core::{IncarnationId, NodeId};
+use crate::in_process_provider::{self as in_process, InProcessProvider};
 use rdm_node::node::RunningNode;
 use rdm_test::test_certs::{root_choice, test_root_public};
 use rdm_transport::connections::{Alpn, Birth};
@@ -76,12 +79,35 @@ fn day0_config(dir: &Path, policy: &[(&'static str, String)]) -> AdminConfig {
     .expect("a readable environment")
 }
 
+/// The start of every node the cells' Day-0 admin creates through its `node.create`, in this process:
+/// an ordinary node with the product ALPN registered and no hook; a node-admin from its launch's
+/// environment alone, its cert material the launch's, reconciling nothing.
+fn start() -> crate::in_process_provider::Start {
+    std::sync::Arc::new(|launch, env| {
+        Box::pin(async move {
+            if launch.r#type == "node-admin" {
+                let cfg = AdminConfig::from_env(|k| env.get(k).cloned()).map_err(|e| format!("the launch is not a readable environment: {e}"))?;
+                let certs = CertChoice::from_material(&launch.data_dir, &launch.mesh, false, |k| env.get(k).cloned()).map_err(|e| format!("the launch carries no admin cert material: {e}"))?;
+                let admin = start_with(cfg, Wiring { certs, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.map_err(|e| format!("{e:#}"))?;
+                admin.stop_reconciling().await;
+                return Ok(crate::in_process_provider::Started::Admin(admin));
+            }
+            rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[app_alpn()])
+                .await
+                .map(crate::in_process_provider::Started::Node)
+                .map_err(|e| format!("{e:#}"))
+        })
+    })
+}
+
 /// The Day-0 admin of `fabric1`, holding the testkit's fabric root, its fabric committed (its store
-/// root is the cells' shared store, `dir`), reconciling nothing.
-async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
+/// root is the cells' shared store, `dir`), every node it creates through its `node.create` started in
+/// this process ([`start`]). A cell stops its reconciling once it has created its nodes.
+async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> (Running, std::sync::Arc<InProcessProvider>) {
     let cfg = day0_config(dir, policy);
     let identity = dir.join(cfg.fabric_id.to_string()).join(rdm_admin::store_root::FABRIC_FILE);
-    let root = start_with(cfg, Wiring { certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
+    let provider = InProcessProvider::new(start());
+    let root = start_with(cfg, Wiring { certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
     tokio::time::timeout(BOUND, async {
         while rdm_admin::store_log::read_record(&identity, "fabric-record", None).is_none() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -89,12 +115,31 @@ async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
     })
     .await
     .expect("the Day-0 admin writes the fabric identity");
-    root.stop_reconciling().await;
-    root
+    (root, provider)
+}
+
+/// mesh1's node `ordinal`, created by `root`'s `node.create` once its Day-0 Build is complete, with the
+/// product ALPN registered, started and joined.
+async fn member(root: &Running, provider: &InProcessProvider, ordinal: &str) -> RunningNode {
+    let name = PathName::new("mesh1.node", ordinal).unwrap();
+    provider.create(root, vec![in_process::node_spec(&name, "mesh1", "node", &cell_dir(&format!("rpc-{ordinal}")))]).await;
+    provider.node(&name).await
+}
+
+/// `mesh1.node-admin.2`, created by `root`'s `node.create` once its Day-0 Build is complete: its
+/// environment is its launch's alone, and it holds no cert policy but the one its entry pull carries.
+/// Returns it with that environment.
+async fn launched_admin(root: &Running, provider: &InProcessProvider) -> (Running, BTreeMap<String, String>) {
+    let name = PathName::new("mesh1.node-admin", "2").unwrap();
+    provider.create(root, vec![in_process::node_spec(&name, "mesh1", "node-admin", &cell_dir("admin-2"))]).await;
+    (provider.admin(&name).await, provider.env(&name))
 }
 
 /// The launch of a birth at `name` deployed by `by` (the admin that answers its JoinNode), with the
 /// testkit's root set, on the fabric's shared `store`.
+///
+/// Only for a member deployed by mesh1.node-admin.2, which is not mesh1's primary, so no `node.create`
+/// launches through it (the two cells that use it are named in the unit's hand-off).
 fn launch_by(by: &Running, store: &Path, dir: &Path, name: &PathName, r#type: &str) -> Launch {
     let d = by.digest.lock().unwrap().clone();
     Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
@@ -120,8 +165,13 @@ fn launch_by(by: &Running, store: &Path, dir: &Path, name: &PathName, r#type: &s
     }
 }
 
-/// `launch` told to `by` as the exact birth it deployed, the birth's runtime record and key in its dir.
-fn deployed(by: &Running, launch: &Launch) {
+/// mesh1's node `ordinal`, deployed by hand by `by`, which is not mesh1's primary ([`launch_by`]):
+/// its deployment told to `by` as the exact birth it deployed, with the product ALPN registered,
+/// started and joined.
+async fn member_by(by: &Running, store: &Path, ordinal: &str) -> RunningNode {
+    let dir = cell_dir(&format!("rpc-{ordinal}"));
+    let name = PathName::new("mesh1.node", ordinal).unwrap();
+    let launch = launch_by(by, store, &dir, &name, "node");
     let fact = RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cert-renewal")).unwrap();
     fact.write_record(&launch.data_dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(&launch.data_dir).unwrap();
@@ -137,34 +187,9 @@ fn deployed(by: &Running, launch: &Launch) {
         held: false,
         listeners: Vec::new(),
     });
-}
-
-/// mesh1's node `ordinal`, deployed by `by`, with the product ALPN registered, started and joined.
-async fn member(by: &Running, store: &Path, ordinal: &str) -> RunningNode {
-    let dir = cell_dir(&format!("rpc-{ordinal}"));
-    let name = PathName::new("mesh1.node", ordinal).unwrap();
-    let launch = launch_by(by, store, &dir, &name, "node");
-    deployed(by, &launch);
     rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[app_alpn()])
         .await
         .unwrap_or_else(|e| panic!("{name:?} starts: {e}"))
-}
-
-/// `mesh1.node-admin.2`, launched by `root` with its mesh's issuing material and the root beside it, the
-/// testkit's root set and the fabric's shared store. Its environment is its launch's alone: it holds
-/// no cert policy but the one its entry pull carries. Returns it with that environment.
-async fn launched_admin(root: &Running, store: &Path) -> (Running, BTreeMap<String, String>) {
-    let dir = cell_dir("admin-2");
-    let mut launch = launch_by(root, store, &dir, &PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin");
-    launch.listeners = vec![("control".into(), "127.0.0.1:0".parse().unwrap())];
-    launch.issuing = root.runner.issuer.issuing_material("mesh1").expect("the root holder hands mesh1's issuing material");
-    deployed(root, &launch);
-    let env = launch.to_env();
-    let cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-    let certs = CertChoice::from_material(&dir, "mesh1", false, |k| env.get(k).cloned()).expect("the launch carries the admin's cert material");
-    let admin = start_with(cfg, Wiring { certs, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("mesh1.node-admin.2 comes up");
-    admin.stop_reconciling().await;
-    (admin, env)
 }
 
 fn birth_of(n: &RunningNode) -> Birth {
@@ -297,8 +322,9 @@ fn a_joined_node_writes_its_cert_dates_on_its_record_and_node_get_shows_them() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("row");
-        let root = boot_root(&dir, &[]).await;
-        let a = member(&root, &dir, "1").await;
+        let (root, provider) = boot_root(&dir, &[]).await;
+        let a = member(&root, &provider, "1").await;
+        root.stop_reconciling().await;
         let issued = join_issue(&spans, "mesh1.node.1");
         let held = signed(&a.member_cert);
         let issued_at = num(&issued, "issued_at_rafka_ms");
@@ -366,9 +392,10 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("renewed");
-        let root = boot_root(&dir, &policy(&[])).await;
-        let a = member(&root, &dir, "1").await;
-        let b = member(&root, &dir, "2").await;
+        let (root, provider) = boot_root(&dir, &policy(&[])).await;
+        let a = member(&root, &provider, "1").await;
+        let b = member(&root, &provider, "2").await;
+        root.stop_reconciling().await;
         let first = signed(&a.member_cert);
         let issued_at = num(&join_issue(&spans, "mesh1.node.1"), "issued_at_rafka_ms");
         assert_eq!(first.cert.expiry_ms - issued_at, MEMBER_TTL_SECS * 1000, "the join's cert lives the policy's member TTL");
@@ -412,9 +439,10 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("control");
-        let root = boot_root(&dir, &policy(&[])).await;
-        let a = member(&root, &dir, "1").await;
-        let b = member(&root, &dir, "2").await;
+        let (root, provider) = boot_root(&dir, &policy(&[])).await;
+        let a = member(&root, &provider, "1").await;
+        let b = member(&root, &provider, "2").await;
+        root.stop_reconciling().await;
         let (opener, _) = a.connections(ALPN).unwrap().split();
         let (_, mut accepts) = b.connections(ALPN).unwrap().split();
         // One open, paired with its accept by the connection row's id (the same at both ends). An open
@@ -531,8 +559,9 @@ fn a_renewal_its_own_admin_blocks_is_spent_nowhere_marks_nothing_and_is_sent_aga
         let dir = cell_dir("not-sent");
         // A 24 s TTL: the renewal is sent by each tick from its point to the held cert's expiry, which leaves
         // seconds to send it again once the calls reach the member.
-        let root = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 24)])).await;
-        let b = member(&root, &dir, "1").await;
+        let (root, provider) = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 24)])).await;
+        let b = member(&root, &provider, "1").await;
+        root.stop_reconciling().await;
         cut_calls(&root, &b);
         let tries = until("two not-sent renewals of mesh1.node.1", BOUND, async || {
             let not_sent: Vec<_> = renewals_of(&spans, "mesh1.node.1").into_iter().filter(|f| f["outcome"] == "not-sent").collect();
@@ -578,9 +607,10 @@ fn a_cert_for_another_birth_is_refused_by_name() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("another-birth");
-        let root = boot_root(&dir, &[]).await;
-        let a = member(&root, &dir, "1").await;
-        let b = member(&root, &dir, "2").await;
+        let (root, provider) = boot_root(&dir, &[]).await;
+        let a = member(&root, &provider, "1").await;
+        let b = member(&root, &provider, "2").await;
+        root.stop_reconciling().await;
         let to_a = |cert: Vec<u8>| StatusRequest::RenewCert { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone(), cert, cert_dates: None };
 
         match call(&root, &a, &to_a(b.member_cert.clone())).await {
@@ -753,10 +783,10 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
     cap.run(crate::common::Threads::Workers(4), async move {
         const ISSUING_TTL_SECS: u64 = 48;
         let dir = cell_dir("rotation");
-        let root = boot_root(&dir, &policy(&[(certs::ENV_ISSUING_CERT_TTL_SECS, ISSUING_TTL_SECS), (certs::ENV_MEMBER_CERT_TTL_SECS, 120)])).await;
+        let (root, provider) = boot_root(&dir, &policy(&[(certs::ENV_ISSUING_CERT_TTL_SECS, ISSUING_TTL_SECS), (certs::ENV_MEMBER_CERT_TTL_SECS, 120)])).await;
         // The mesh's first join mints its issuer (`mesh.issuer.create`) and puts the issuer row.
-        let first = member(&root, &dir, "3").await;
-        let (admin2, env) = launched_admin(&root, &dir).await;
+        let first = member(&root, &provider, "3").await;
+        let (admin2, env) = launched_admin(&root, &provider).await;
         let old = certs::decode_issuing_cert(&env[rdm_core::launch::ENV_ISSUING_CERT]).expect("mesh1's issuing cert");
         let minted_at = old.cert.expiry_ms - ISSUING_TTL_SECS * 1000;
         // The primary of the old issuer's cert joins halfway through its issuer's life. The issuer is
@@ -765,7 +795,8 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         // the issuer's expiry, is renewed at 67-72 % of what is left (84-86 % of the issuer's life),
         // after its calls are cut below.
         until("rafka-time is 50 % into the old issuer's life", BOUND, async || (root.rafka_time.now_ms() >= minted_at + ISSUING_TTL_SECS * 500).then_some(())).await;
-        let holder = member(&root, &dir, "1").await;
+        let holder = member(&root, &provider, "1").await;
+        root.stop_reconciling().await;
         assert_eq!(signed(&holder.member_cert).issuer, old, "it joined under the old issuer");
 
         let rotated = until("the fabric-primary re-mints mesh1's issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.create.via-renewal").into_iter().find(|f| f.get("mesh").map(String::as_str) == Some("mesh1") && f.contains_key("outcome"))).await;
@@ -781,7 +812,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         .await;
         assert_eq!(num(&update, "issuer_expires_at"), num(&rotated, "issuer_expires_at"));
 
-        let newer = member(&admin2, &dir, "2").await;
+        let newer = member_by(&admin2, &dir, "2").await;
         let new_issuer = signed(&newer.member_cert).issuer;
         assert_ne!(new_issuer.cert.issuer_pub, old.cert.issuer_pub, "mesh1.node-admin.2 signs with the new issuing key");
         assert_eq!((new_issuer.cert.expiry_ms, new_issuer.cert.mesh.as_str()), (num(&rotated, "issuer_expires_at"), "mesh1"));
@@ -811,13 +842,14 @@ fn two_admins_read_the_same_policy_from_the_entry_pull() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("policy");
-        let root = boot_root(&dir, &policy(&[])).await;
-        let (admin2, env) = launched_admin(&root, &dir).await;
+        let (root, provider) = boot_root(&dir, &policy(&[])).await;
+        let (admin2, env) = launched_admin(&root, &provider).await;
         for k in [certs::ENV_MEMBER_CERT_TTL_SECS, certs::ENV_ISSUING_CERT_TTL_SECS, certs::ENV_CA_CERT_TTL_SECS, certs::ENV_CERT_RENEW_AT] {
             assert!(!env.contains_key(k), "mesh1.node-admin.2's launch names no policy ({k})");
         }
-        let by_root = member(&root, &dir, "1").await;
-        let by_admin2 = member(&admin2, &dir, "2").await;
+        let by_root = member(&root, &provider, "1").await;
+        root.stop_reconciling().await;
+        let by_admin2 = member_by(&admin2, &dir, "2").await;
         for (node, by) in [("mesh1.node.1", "mesh1.node-admin.1"), ("mesh1.node.2", "mesh1.node-admin.2")] {
             let issued = join_issue(&spans, node);
             assert_eq!(num(&issued, "expires_at_rafka_ms") - num(&issued, "issued_at_rafka_ms"), MEMBER_TTL_SECS * 1000, "{by} issued {node} a cert of the bootstrap admin's member TTL: {issued:?}");
@@ -849,8 +881,9 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         let dir = cell_dir("stall");
         // A 40 s TTL: the stall shows one floor past the renew point, and the renewal is still retried
         // until the held cert expires, seconds later.
-        let root = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 40)])).await;
-        let b = member(&root, &dir, "1").await;
+        let (root, provider) = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 40)])).await;
+        let b = member(&root, &provider, "1").await;
+        root.stop_reconciling().await;
         let joined = signed(&b.member_cert).cert.expiry_ms;
         let mesh1 = |f: &FabricView| f.meshes.iter().find(|m| m.name == "mesh1").map(|m| m.renewals.clone());
         let me = root.birth();
@@ -1124,9 +1157,10 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
     cap.run(crate::common::Threads::Workers(4), async move {
         use rdm_core::status::{RootSecretHex, RootsPhase};
         let dir = cell_dir("root-rotation");
-        let root = boot_root(&dir, &policy(&[])).await;
-        let (second, second_env) = launched_admin(&root, &dir).await;
-        let a = member(&root, &dir, "1").await;
+        let (root, provider) = boot_root(&dir, &policy(&[])).await;
+        let (second, second_env) = launched_admin(&root, &provider).await;
+        let a = member(&root, &provider, "1").await;
+        root.stop_reconciling().await;
         let status_service = root.status_service().expect("the fabric-primary's StatusService");
         let new = certs::mint_key();
         let hex = |k: &certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());

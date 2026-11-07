@@ -503,7 +503,7 @@ fn spans_of(spans: &crate::common::Spans, name: &str) -> Vec<std::collections::B
 // @feature: fabric-build
 /// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `build.get` caller → fabric-primary;
 /// Luke: "only FP reads the builds"): a Day-0 node-admin, mesh1.node-admin.1 (the fabric-primary), and
-/// mesh1.node-admin.2, launched by it, both ready. A caller that enters at mesh1.node-admin.2 reads `build.get`:
+/// mesh1.node-admin.2, created by it through its `node.create` once its Day-0 Build is complete, both ready. A caller that enters at mesh1.node-admin.2 reads `build.get`:
 /// mesh1.node-admin.2 serves no Build read, refusing it NotFabricPrimary naming mesh1.node-admin.1, and the
 /// carrier follows to it. The fabric-primary answers from its own Build log: every Build it holds,
 /// newest first, each whole, its current Build marked, header, topology (mesh1.node-admin.1's create spec)
@@ -515,7 +515,8 @@ fn spans_of(spans: &crate::common::Spans, name: &str) -> Vec<std::collections::B
 /// current Build unmarked, or a Build answered without its topology or receipts.
 #[test]
 fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current_one_marked() {
-    use crate::admin_reads_from_atlas::{day0_config as launch_day0, deployed, launch_by, until_ready};
+    use crate::admin_reads_from_atlas::{admin2, day0_config as launch_day0, until_ready};
+    use crate::in_process_provider::{self as in_process, InProcessProvider};
     use rdm_admin::build_state::BuildStateAdapter as _;
     if crate::own_process::delegated(module_path!(), "builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current_one_marked") {
         return;
@@ -526,15 +527,11 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         let base = std::env::temp_dir().join(format!("builds-get-{}", NodeId::mint()));
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        let root = start_with(launch_day0(&root_dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let provider = InProcessProvider::new(crate::common::passing_start());
+        let root = start_with(launch_day0(&root_dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        provider.create(&root, vec![in_process::node_spec(&admin2(), "mesh1", "node-admin", &admin_dir)]).await;
         root.stop_reconciling().await;
-        until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        let launch = launch_by(&root, PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
-        let _ = root.runner.joins.expect(deployed(&launch));
-        let env = launch.to_env();
-        let admin = start_with(AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment"), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() })
-            .await
-            .unwrap_or_else(|e| panic!("mesh1.node-admin.2 starts: {e}"));
+        let admin = provider.admin(&admin2()).await;
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         let (fp, other) = (root.digest.lock().unwrap().node.clone(), admin.digest.lock().unwrap().node.clone());
         let resolved = |n: &rdm_core::MeshNode| ResolvedNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.0.parse().unwrap(), incarnation: n.incarnation.clone(), transport_addr: n.transport_addr };
@@ -557,7 +554,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         assert_eq!((format!("{:?}", got.phase), got_steps), (format!("{:?}", held.state), held.steps.len()), "the header and the step events are the log's: {got:#?}");
         let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
         assert_eq!(got.nodes, specs, "the topology is every node's create spec");
-        assert!(got.nodes.iter().any(|s| s.location() == fp.location()), "the Day-0 Build names mesh1.node-admin.1: {:?}", got.nodes);
+        assert!(got.nodes.iter().any(|s| s.location() == fp.location()), "the current Build's topology names mesh1.node-admin.1: {:?}", got.nodes);
 
         let one = get(Filter::new().eq("current", ["true"])).await.unwrap_or_else(|e| panic!("build.get [current: true]: {e}"));
         assert_eq!(one.iter().map(|b| (b.build_id.clone(), b.current)).collect::<Vec<_>>(), vec![(held.build_id.clone(), true)], "[current: true] is the current Build alone");

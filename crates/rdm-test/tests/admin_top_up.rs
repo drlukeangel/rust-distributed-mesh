@@ -14,18 +14,15 @@
 //! answered `unknown-mesh` for mesh1 until the run ended.
 
 use iroh::protocol::Router;
-use rdm_core::launch::{Launch, Launcher};
-use rdm_core::runtime::RuntimeFact;
+use crate::in_process_provider::{self as in_process, InProcessProvider};
 use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId};
 use rdm_gossip::location::{gossip_addr, learn_addresses};
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::PublisherId;
-use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
-use rdm_admin::join::Deployed;
+use rdm_admin::admin::{start_with, AdminConfig};
+use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -45,53 +42,6 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
         _ => None,
     })
     .expect("a readable environment")
-}
-
-/// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-/// A launch of `name` by `root` over its own data dir `dir`, on the root's store root `store`: every
-/// admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, store: &std::path::Path) -> Launch {
-    let d = root.digest.lock().unwrap().clone();
-    std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
-    Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-        fabric: "fabric1".into(),
-        fabric_id: d.fabric_id.clone(),
-        mesh: "mesh1".into(),
-        r#type: "node-admin".into(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        supersedes: None,
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-        seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-        data_dir: dir.to_path_buf(),
-        store_dir: store.to_path_buf(),
-        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-        issuing: None,
-        roots: Vec::new(),
-        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-        declared: Default::default(),
-    }
-}
-
-/// What `root` verifies the first join of `launch`'s birth against.
-fn deployed(launch: &Launch) -> Deployed {
-    let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
-        data_dir: launch.data_dir.display().to_string(),
-        last_accepted_name: None,
-        held: false,
-        listeners: Vec::new(),
-    }
 }
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
@@ -137,7 +87,7 @@ async fn gossip_node() -> GossipNode {
 }
 
 /// CONTRACT (gossip.md §3.3): a Day-0 node-admin (mesh1.node-admin.1, mesh1's primary) and mesh1.node-admin.2,
-/// launched by it, both ready; mesh1.node-admin.2 holds mesh1 from its read and its own Mesh's primary
+/// created by it through its `node.create` once its Day-0 Build is complete, both ready; mesh1.node-admin.2 holds mesh1 from its read and its own Mesh's primary
 /// from that primary's Digest. A delta of a peer mesh, mesh9, whose base mesh1.node-admin.2 holds no copy
 /// of, reaches it on mesh1's channel (`via-gap`): it marks the source desynchronized and tops up from its
 /// own Mesh's primary (`rdm.mesh.entry.update.via-top-up`, served by mesh1.node-admin.1). That primary
@@ -158,21 +108,21 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        // The primary: a Day-0 node-admin. Its accepted Build names only itself, and a reconciling root
-        // would delete the admin this cell launches in its own process: it does not reconcile.
-        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        root.stop_reconciling().await;
+        // The primary: a Day-0 node-admin that creates mesh1.node-admin.2 through its node.create once its
+        // Day-0 Build is complete, then reconciles nothing.
+        let provider = InProcessProvider::new(crate::common::passing_start());
+        let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
         let root_id = root_digest.node.node_id.to_string();
         let root_publisher = PublisherId { incarnation: root_digest.node.incarnation.clone(), node_id: root_digest.node.node_id.clone() };
 
-        // mesh1.node-admin.2: launched by the root, a node-admin that is not its mesh's primary.
-        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), &admin_dir, &root_dir);
-        let _ = root.runner.joins.expect(deployed(&launch));
-        let env = launch.to_env();
-        let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { node_hooks: NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        // mesh1.node-admin.2: created by the root's node.create, a node-admin that is not its mesh's primary.
+        let at = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        provider.create(&root, vec![in_process::node_spec(&at, "mesh1", "node-admin", &admin_dir)]).await;
+        root.stop_reconciling().await;
+        let launch = provider.launch(&at);
+        let admin = provider.admin(&at).await;
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
         until("mesh1.node-admin.2 to hold mesh1's projection under the primary's revision", WRONG, || admin.topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.node-admin.2 is not its mesh's primary");

@@ -65,57 +65,42 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// The Day-0 root: the fabric's first node-admin, holding the root, with the app protocol registered.
-async fn day0_root(dir: &std::path::Path) -> Running {
-    let running = start_with(day0_config(dir), Wiring { alpns: vec![app_alpn()], certs: CertChoice::Ca { secret: root(), issuing: None }, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() })
-        .await
-        .expect("the Day-0 admin comes up");
-    running.stop_reconciling().await;
-    running
+/// The start of each birth the Day-0 root creates through its `node.create`, in this process: an
+/// ordinary node with the app protocol registered and no hook; a node-admin from its launch's
+/// environment with the app protocol registered and no certs of its own, reconciling nothing.
+fn start() -> crate::in_process_provider::Start {
+    Arc::new(|launch, env| {
+        Box::pin(async move {
+            if launch.r#type == "node-admin" {
+                let cfg = AdminConfig::from_env(|k| env.get(k).cloned()).map_err(|e| format!("the launch is not a readable environment: {e}"))?;
+                let admin = start_with(cfg, Wiring { alpns: vec![app_alpn()], certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.map_err(|e| format!("{e:#}"))?;
+                admin.stop_reconciling().await;
+                return Ok(crate::in_process_provider::Started::Admin(admin));
+            }
+            rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[app_alpn()])
+                .await
+                .map(crate::in_process_provider::Started::Node)
+                .map_err(|e| format!("{e:#}"))
+        })
+    })
 }
 
-/// A launch of `name` by `launcher` into its mesh, admitting on the fabric's root (`RDM_ROOTS`), its
-/// deployment expected by the launcher's `JoinService`.
-fn launched_by(launcher: &Running, name: rdm_core::PathName, r#type: &str, launcher_dir: &std::path::Path) -> (rdm_core::launch::Launch, std::path::PathBuf) {
-    let d = launcher.digest.lock().unwrap().clone();
-    let dir = temp_dir("app-dials-launched");
-    let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-dials")).unwrap();
-    runtime.write_record(&dir).unwrap();
-    let key = rdm_node::node::load_or_mint_key(&dir).unwrap();
-    let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
-        fabric: "fabric1".into(),
-        fabric_id: d.fabric_id.clone(),
-        mesh: "mesh1".into(),
-        r#type: r#type.to_string(),
-        path: name.path.clone(), name: name.name.clone(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        supersedes: None,
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: if r#type == "node-admin" { vec![("control".into(), "127.0.0.1:0".parse().unwrap())] } else { vec![] },
-        seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
-        data_dir: dir.clone(),
-        store_dir: launcher_dir.to_path_buf(),
-        mesh_id: launcher.topology_view.digest_view.mesh_id_of(&d.node.mesh),
-        issuing: None,
-        roots: vec![root_public()],
-        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-        declared: Default::default(),
-    };
-    let _ = launcher.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: EndpointId(key.public().to_string()),
-        runtime,
-        data_dir: dir.display().to_string(),
-        last_accepted_name: None,
-        held: false,
-        listeners: Vec::new(),
-    });
-    (launch, dir)
+/// The Day-0 root: the fabric's first node-admin, holding the root, with the app protocol registered,
+/// every birth it creates through its `node.create` started in this process ([`start`]). A cell stops
+/// its reconciling once it has created its births.
+async fn day0_root(dir: &std::path::Path) -> (Running, Arc<crate::in_process_provider::InProcessProvider>) {
+    let provider = crate::in_process_provider::InProcessProvider::new(start());
+    let running = start_with(day0_config(dir), Wiring { alpns: vec![app_alpn()], certs: CertChoice::Ca { secret: root(), issuing: None }, fabric_hooks: FabricHooks::no_app_work(), provider: provider.wiring(), ..Wiring::default() })
+        .await
+        .expect("the Day-0 admin comes up");
+    (running, provider)
+}
+
+/// The birth `name` of `type` in mesh1, created by `root`'s `node.create` once its Day-0 Build is
+/// complete, its executable's file in a dir of its own.
+async fn created(root: &Running, provider: &crate::in_process_provider::InProcessProvider, name: &rdm_core::PathName, r#type: &str) {
+    provider.create(root, vec![crate::in_process_provider::node_spec(name, "mesh1", r#type, &temp_dir("app-dials-created"))]).await;
+    root.stop_reconciling().await;
 }
 
 /// One end of the matrix: a birth with the app protocol registered on its own registry.
@@ -247,7 +232,8 @@ fn rt() -> tokio::runtime::Runtime {
 fn a_day0_root_holds_a_chained_member_cert_and_its_app_protocol_dials_are_admitted_both_ways() {
     rt().block_on(async {
         let dir = temp_dir("app-dials-day0");
-        let root = day0_root(&dir).await;
+        let (root, _provider) = day0_root(&dir).await;
+        root.stop_reconciling().await;
         let end = End::of_admin(&root);
         assert_holds_chained_cert(&end);
         assert_both_directions_with_a_peer(end).await;
@@ -263,16 +249,11 @@ fn a_day0_root_holds_a_chained_member_cert_and_its_app_protocol_dials_are_admitt
 fn a_launched_admin_holds_its_joins_member_cert_and_its_app_protocol_dials_are_admitted_both_ways() {
     rt().block_on(async {
         let dir = temp_dir("app-dials-launched-admin");
-        let root = day0_root(&dir).await;
-        let (launch, admin_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", &dir);
-        let env = launch.to_env();
-        let admin = start_with(
-            AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment"),
-            Wiring { alpns: vec![app_alpn()], certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() },
-        )
-        .await
-        .expect("the launched admin comes up");
-        admin.stop_reconciling().await;
+        let (root, provider) = day0_root(&dir).await;
+        let at = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        created(&root, &provider, &at, "node-admin").await;
+        let admin_dir = provider.launch(&at).data_dir;
+        let admin = provider.admin(&at).await;
         let end = End::of_admin(&admin);
         assert_holds_chained_cert(&end);
         assert_both_directions_with_a_peer(end).await;
@@ -290,11 +271,11 @@ fn a_launched_admin_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
 fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_admitted_both_ways() {
     rt().block_on(async {
         let dir = temp_dir("app-dials-node");
-        let root = day0_root(&dir).await;
-        let (launch, node_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", &dir);
-        let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[app_alpn()])
-            .await
-            .expect("the node starts");
+        let (root, provider) = day0_root(&dir).await;
+        let at = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        created(&root, &provider, &at, "node").await;
+        let node_dir = provider.launch(&at).data_dir;
+        let node = provider.node(&at).await;
         let end = End::of_node(&node);
         assert_holds_chained_cert(&end);
         assert_both_directions_with_a_peer(end).await;
@@ -312,11 +293,11 @@ fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
 fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_protocol() {
     rt().block_on(async {
         let dir = temp_dir("app-dials-day0-node");
-        let root = day0_root(&dir).await;
-        let (launch, node_dir) = launched_by(&root, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", &dir);
-        let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[app_alpn()])
-            .await
-            .expect("the node starts");
+        let (root, provider) = day0_root(&dir).await;
+        let at = rdm_core::PathName::new("mesh1.node", "1").unwrap();
+        created(&root, &provider, &at, "node").await;
+        let node_dir = provider.launch(&at).data_dir;
+        let node = provider.node(&at).await;
         let mut a = End::of_admin(&root);
         let mut n = End::of_node(&node);
         a.resolver.apply(resolved(&n.birth), None);
@@ -338,7 +319,8 @@ fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_prot
 fn an_admins_app_protocol_refuses_a_dialer_holding_no_cert_or_an_expired_one_by_name() {
     rt().block_on(async {
         let dir = temp_dir("app-dials-refused");
-        let root = day0_root(&dir).await;
+        let (root, _provider) = day0_root(&dir).await;
+        root.stop_reconciling().await;
         let mut end = End::of_admin(&root);
         let skew = rdm_core::cadence::staleness_floor().as_millis() as u64;
         for (name, expiry, reason) in [(rdm_core::PathName::new("mesh1.node", "7").unwrap(), None, "no-credential"), (rdm_core::PathName::new("mesh1.node", "8").unwrap(), Some(now_ms() - 3 * skew), "expired")] {
