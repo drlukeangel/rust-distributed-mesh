@@ -418,7 +418,7 @@ pub struct TopUpDone {
 /// Reads the topology of `meshes` from a mesh primary and installs it into the given topology view
 /// (the topology read, over Node RPC): the topology view holds no Node RPC client, the process
 /// composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, Primary, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
