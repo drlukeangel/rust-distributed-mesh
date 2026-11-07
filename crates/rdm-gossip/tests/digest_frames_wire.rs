@@ -238,3 +238,56 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     assert!(chunks.iter().all(|f| f.encode().len() <= rdm_gossip::frame::MAX_FRAME));
     assert!(chunks.iter().all(|f| f.context().unwrap().tracestate.as_ref() == Some(&state)));
 }
+
+/// `n` characters of the path grammar's segments, each 64 characters, dot-joined: `None` when the
+/// `n`th character would be a dot (no path ends in one).
+fn path_of(n: usize) -> Option<String> {
+    let path: String = std::iter::repeat_n(format!("{}.", "p".repeat(64)), n / 65 + 1).collect::<String>().chars().take(n).collect();
+    (!path.ends_with('.')).then_some(path)
+}
+
+/// The largest details a Digest carries, at a path of `path`: a 64-character type (its grammar's
+/// bound, `status::type_refusal`), a 64-character name (`PathName`'s), a 64-character endpoint id, a V6
+/// transport address, a superseded incarnation, both primary roles at the largest revision, the
+/// largest digest sequence and a time in the last year of four digits; and the largest trace context
+/// its envelope carries (a traceparent and a tracestate of `MAX_TRACESTATE_BYTES`).
+fn largest(path: &str) -> Frame {
+    let mut d = digest("connections-deleting");
+    d.node.r#type = "t".repeat(64);
+    d.node.path = path.to_string();
+    d.node.name = "n".repeat(64);
+    d.node.endpoint_id = rdm_core::EndpointId("f".repeat(64));
+    d.node.transport_addr = "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535".parse().unwrap();
+    d.node.supersedes = Some(IncarnationId::parse(&rdm_core::fixture_crockford60("s")).unwrap());
+    d.set_primary(Some(u64::MAX));
+    d.set_fabric_primary(Some(u64::MAX));
+    (d.digest_seq, d.emitted_at_rafka_ms) = (u64::MAX, 253_402_300_799_999);
+    let mut frame = Frame::digest(&d, true);
+    let Frame::Authored { context, .. } = &mut frame else { panic!("a Digest is authored") };
+    context.traceparent = Some(format!("00-{}-{}-01", "a".repeat(32), "b".repeat(16)));
+    let state = format!("a={},b={}", "v".repeat(254), "w".repeat(253));
+    assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
+    context.tracestate = Some(state);
+    frame
+}
+
+/// CONTRACT (gossip.md §3.1 `Digest`; lead 0007 item 5): a Digest carrying the largest details, at a
+/// path of four 64-character segments, and the largest trace context its envelope carries, is one
+/// gossip message: its complete encoding is within `MAX_FRAME` and decodes to the same details. The
+/// cell prints the longest path at which that Digest still fits. What must NOT happen: such a Digest
+/// split or refused for its size. The ceiling the cell names: `PathName` bounds each segment, never
+/// the number of segments, so node.create admits a path whose first Digest can never be sent.
+#[test]
+fn a_digest_carrying_the_largest_details_fits_one_gossip_message() {
+    use rdm_gossip::frame::MAX_FRAME;
+    let path = path_of(4 * 64 + 3).expect("four segments");
+    assert_eq!(path.split('.').map(str::len).collect::<Vec<_>>(), vec![64; 4]);
+    let frame = largest(&path);
+    let bytes = frame.encode();
+    assert!(bytes.len() <= MAX_FRAME, "the largest Digest at a four-segment path is {} bytes, over MAX_FRAME {MAX_FRAME}", bytes.len());
+    let Frame::Digest { details: Some(back), primary, .. } = Frame::decode(&bytes).expect("the Digest decodes").into_data() else { panic!("not a Digest with its details") };
+    let Frame::Digest { details: Some(sent), .. } = frame.data() else { unreachable!() };
+    assert_eq!((&back, primary.len()), (sent, 2), "the details and both roles travel whole");
+    let longest = (path.len()..MAX_FRAME).filter_map(path_of).take_while(|p| largest(p).encode().len() <= MAX_FRAME).last().map_or(0, |p| p.len());
+    eprintln!("the largest Digest at a four-segment path ({} characters) is {} of {MAX_FRAME} bytes; the longest path at which it still fits is {longest} characters", path.len(), bytes.len());
+}
