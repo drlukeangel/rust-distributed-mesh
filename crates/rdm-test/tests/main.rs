@@ -27,7 +27,7 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 /// sequence): the silence (one staleness floor, marked on the pruner's gossip-interval sweep);
 /// half a floor after the mark, on the next tick, tickle ladder 1 (one direct connect, then the
 /// connects through up to `VIA_PEER_TICKLE_FANOUT` peers at once, each to a killed process and so
-/// spending the call's whole budget: `offline::tickle_ladder`); TRUE OFFLINE at its fold, the provider's
+/// spending the call's whole budget: `offline::tickle_ladder`); written dead at its fold, the provider's
 /// inspection and the submit on that tick (node-recovery.md steps 2-3: nothing holds); then the recovery
 /// Build's run (node.delete, node.create through the new node's start), one call budget. The bound keeps
 /// one floor and one ladder beyond that sequence, the second ladder the tick ran before Q181, as slack.

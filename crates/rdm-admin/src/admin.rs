@@ -80,10 +80,10 @@ mod tests {
     /// reason }` is recorded as that failure on the submit span's outcome, and the submit ends in an
     /// error so the mesh-primary's next tick finds the member still proven exited and submits again.
     /// A Complete terminal is recorded as complete, and a stream that ends with no terminal is named.
-    /// CONTRACT: the mesh primary's per-birth bookkeeping (the TRUE OFFLINE set, the silence-status
+    /// CONTRACT: the mesh primary's per-birth bookkeeping (the dead set, the silence-status
     /// memo) holds only births its view still watches at that exact incarnation. A birth deleted by
     /// its recovery (a new node.id at its path and name) and a birth superseded by a new incarnation of its
-    /// node are deleted; a watched TRUE OFFLINE birth keeps both. Must NOT happen: entries of gone births accumulating, one per recovered birth.
+    /// node are deleted; a watched birth written dead keeps both. Must NOT happen: entries of gone births accumulating, one per recovered birth.
     #[test]
     fn the_mesh_primarys_offline_bookkeeping_drops_deleted_and_superseded_births() {
         let watched_node = |path: PathName, mesh: &str, r#type: &str| {
@@ -100,7 +100,7 @@ mod tests {
         let watched: BTreeMap<String, Node> = [&kept, &restarted].into_iter().map(|n| (n.node_id.to_string(), n.clone())).collect();
         let mut offline: HashSet<_> = [kept_birth.clone(), superseded.clone(), deleted.clone()].into();
         clear_unwatched(&watched, &mut offline);
-        assert_eq!(offline, [kept_birth.clone()].into(), "only the watched TRUE OFFLINE birth stays offline");
+        assert_eq!(offline, [kept_birth.clone()].into(), "only the watched birth written dead stays offline");
     }
 
     /// CONTRACT (node-recovery.md step 1: "Each node's pruner marks a member `PendingReconnect` once it is
@@ -1076,7 +1076,7 @@ mod tests {
     }
 
     /// The mesh primary `mesh2.node-admin.1`'s recovery of its own mesh's births, over `digest_view`, `provider`
-    /// and `nodes_storage`, and the TRUE OFFLINE member `mesh2.node.1` of `view`.
+    /// and `nodes_storage`, and the member written dead `mesh2.node.1` of `view`.
     fn recovery_of(view: &Topology, digest_view: DigestView, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>) -> (RecoverySubmitter, Arc<dyn crate::storage::NodesStorage>, Node) {
         let member = view.node(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).cloned().expect("the node is in the view");
         let recovery = RecoverySubmitter {
@@ -1097,7 +1097,7 @@ mod tests {
         (recovery, nodes_storage, member)
     }
 
-    /// What the mesh primary's two ticks over one TRUE OFFLINE birth left: the verdict, the
+    /// What the mesh primary's two ticks over one birth written dead left: the verdict, the
     /// inspection spans and the submit spans.
     async fn two_ticks(recovery: &RecoverySubmitter, member: &Node, cell: &str) -> (Inspected, Vec<crate::span_capture::Captured>, Vec<crate::span_capture::Captured>) {
         let capture = crate::span_capture::Capture::new(cell);
@@ -1148,7 +1148,7 @@ mod tests {
     }
 
     /// CONTRACT (rdm#334, A; Luke: "the record is in the build and the atlas"): node recovery acts only on
-    /// a lost birth that wrote its record (Q356). A TRUE OFFLINE birth that never wrote its own record is
+    /// a lost birth that wrote its record (Q356). A birth written dead that never wrote its own record is
     /// its Build's in-flight create, which the Build runs: the tick spans it by name
     /// (`build.reject.via-in-flight-create`) and submits no recovery, so nothing is deleted or created.
     /// Must NOT happen: a recovery, a delete or a create of a birth that wrote no record.
@@ -1680,7 +1680,7 @@ mod tests {
     /// node-recovery.md step 2: an unheard peer mesh-primary is the fabric-primary's to investigate): a mesh-primary's offline tickle
     /// watches the silent members of its own mesh and nothing of a peer mesh, its node-admins
     /// included. A peer mesh's node-admins are reached by the investigation's probes alone. Must NOT
-    /// happen: a mesh-primary tickling, holding TRUE OFFLINE or writing a silence status for a peer
+    /// happen: a mesh-primary tickling, writing dead or writing a silence status for a peer
     /// mesh's node-admin on a per-member clock beside the investigation.
     #[test]
     fn a_mesh_primary_watches_only_its_own_meshs_silent_members() {
@@ -2099,14 +2099,14 @@ mod tests {
         assert!(heard.contains(&id), "a birth named only by durable rows is heard against: {heard:?}");
         let unknown = NodeId::mint().to_string();
         assert!(!heard.contains(&unknown), "a node id neither viewed nor watched is not");
-        // The ladder: the member held TRUE OFFLINE, then no longer silent while the view still lacks it.
+        // The ladder: the member written dead, then no longer silent while the view still lacks it.
         let mut t = crate::offline::OfflineTickle::new();
         let silent = |ids: &[&str]| ids.iter().map(|i| crate::offline::SilentNode { node_id: (*i).to_string(), path: rdm_core::PathName::new("mesh2.node", *i).unwrap(), incarnation: None, marked_at_ms: None, reason: crate::node_investigation::Reason::SelfHeal, status: NodeStatus::PendingReconnect }).collect::<Vec<_>>();
         let floor = 30_000u64;
         let mut report = crate::offline::OfflineTickReport::default();
         for (now, set) in [(0, silent(&[&id, &unknown])), (floor / 2, silent(&[&id, &unknown])), (floor / 2, silent(&[&id, &unknown])), (floor * 3 / 2, silent(&[&id, &unknown])), (floor * 3 / 2, silent(&[&id, &unknown])), (floor * 3 / 2 + 1, vec![])] {
             if set.is_empty() {
-                assert!(t.is_offline(&id) && t.is_offline(&unknown), "both held TRUE OFFLINE first");
+                assert!(t.is_offline(&id) && t.is_offline(&unknown), "both written dead first");
             }
             report = t
                 .tick(
@@ -3054,7 +3054,7 @@ mod tests {
 
     /// CONTRACT (Q254, Luke 2026-10-28: "no deadline sleep replaces a tick (a sleep is a timer)"): the
     /// view rebuild has no clock of its own. With nothing moved, an hour passes and no rebuild is due;
-    /// a record the projection reads changed at its setter (a birth held true offline is not, a launch
+    /// a record the projection reads changed at its setter (a birth written dead is not, a launch
     /// record published, the fabric state) makes it due, named `records`; a primary record taken makes it
     /// due, named `primaries`; the pruner's mark of a birth silent past the floor makes it due, named
     /// `silence`. A setter that changes nothing moves nothing. Must NOT happen: a rebuild due on the

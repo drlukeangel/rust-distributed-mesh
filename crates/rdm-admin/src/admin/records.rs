@@ -317,7 +317,7 @@ pub struct Records {
     /// status authority, the writer of its mesh's rows, its `NodeConfigs`, its offline tick and its cert
     /// renewal start every write of a node, mesh or Fabric record from.
     pub caches: crate::record_cache::Caches,
-    /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
+    /// The exact births the mesh primary's offline tickle holds written dead (`offline`): shown
     /// `Dead` while they stay silent. Shared with the tick's recovery followers, whose verdict rows
     /// stand only for a birth still in it (`RecoverySubmitter::offline`).
     pub offline: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
@@ -383,7 +383,7 @@ pub struct Records {
     pub(crate) view_tick: tokio::sync::watch::Sender<u64>,
     /// Moves each time a record the projection reads changes here, at its setter (Q254: each cause
     /// raises its own event at its source): a launch record published or removed, a mesh id held, a
-    /// birth held true offline or no longer, the planned births, the meshes heard ready or dead, a
+    /// birth written dead or no longer, the planned births, the meshes heard ready or dead, a
     /// mesh deleted, the fabric state, the entry read answered. What the view rebuild waits on beside the digest view's routing watch
     /// and the primary records the election reads ([`crate::admin::ViewWake`]); nothing is sent.
     pub(crate) inputs: tokio::sync::watch::Sender<u64>,

@@ -1742,7 +1742,7 @@ impl Driver {
             hold_rt = Some(rt);
         }
         // The container provider waits for the view to mark the held node unheard (pending-reconnect
-        // or dead). A true-offline mark there was measured at 81 s after the hold against the 79.5 s
+        // or dead). A dead mark there was measured at 81 s after the hold against the 79.5 s
         // the tickle's two ladders derive (spans of the i143-2787-soak-container run): the coin is
         // drawn all the same, so the schedule is the same on both providers.
         let coin = self.rng.next() % 2 == 0;
@@ -2315,7 +2315,7 @@ mod tests {
     }
 
     /// A held birth is marked unheard by its own row: `dead`, or `pending-reconnect` when the hold is
-    /// not judged true offline. Node recovery re-creates it at once on a verdict other than `reached`
+    /// not written dead. Node recovery re-creates it at once on a verdict other than `reached`
     /// (node-recovery.md step 3, Q110, Q111), so its `dead` stands only until recovery's delete (0.45 s
     /// in the routing soak at 119663355); the path's replacement, Pending or ready, is
     /// another birth and never makes the held one heard.

@@ -471,7 +471,7 @@ pub fn recovery_due(holds_role: bool, mesh: &str, watched: &BTreeMap<String, Nod
 
 /// The mesh primary's per-birth bookkeeping speaks only for the births it still watches: a birth
 /// whose node left the view (deleted, or recovered under a new node.id at its path and name) or whose
-/// node the view now holds at another incarnation (superseded) leaves the TRUE OFFLINE set. Run every
+/// node the view now holds at another incarnation (superseded) leaves the dead set. Run every
 /// tick, so nothing of a gone birth outlives one tick.
 pub(crate) fn clear_unwatched(watched: &BTreeMap<String, Node>, offline: &mut HashSet<(NodeId, IncarnationId)>) {
     offline.retain(|(node_id, incarnation)| watched.get(node_id.as_str()).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)));

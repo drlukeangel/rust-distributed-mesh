@@ -1887,7 +1887,7 @@ impl Run {
     /// [`Self::stable`] with its deadline given: a checkpoint that waits on a node's death being
     /// established is bound by the canon's detection ladder from the death (the staleness floor to
     /// mark it silent, half a floor to its one tickle, a floor to the second no-path that makes it
-    /// true offline: offline.rs module docs), not by the 30 s a settled fabric needs.
+    /// written dead: offline.rs module docs), not by the 30 s a settled fabric needs.
     async fn stable_by(&mut self, f: &mut Formed, label: &str, want_admins: &BTreeMap<String, usize>, inv: &mut Invariants, until: Instant) -> Stable {
         let t0 = Instant::now();
         let st = loop {

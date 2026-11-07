@@ -65,7 +65,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
         .unwrap();
     estate.kill_node(&killed).await;
     // The role vacates only on the provider's exited verdict, which node recovery takes at the killed
-    // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
+    // birth's dead mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
     // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
     // so the span is awaited.
     wait_for(&format!("{succ:?} ({succ_id}) announced as the broker successor to {killed_id}"), crate::node_recovery_due(), || async {

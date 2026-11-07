@@ -78,7 +78,7 @@ async fn two_mesh_estate(test: &str) -> (Estate, String) {
 }
 
 /// The mesh-primary's recovery submit for `node`, once exported (node-recovery.md: the tickle,
-/// the TRUE OFFLINE mark, the provider inspection and the submit each have a span on the
+/// the dead mark, the provider inspection and the submit each have a span on the
 /// mesh-primary).
 async fn recovery_span(estate: &Estate, node: &PathName, node_id: &Value) -> Value {
     wait_for(&format!("the mesh-primary's recovery submit for {node:?} is exported"), Duration::from_secs(60), || async {
@@ -160,7 +160,7 @@ async fn recovery_recorded(estate: &Estate, before: &Value) -> (Value, Value) {
 
 /// CONTRACT: a node whose mesh transport stops for good exits (reserved code 4, recorded in
 /// its data dir). Its mesh-primary (node-recovery.md), not the fabric-primary, proves the exit:
-/// it marks the node TRUE OFFLINE, asks the provider about the exact runtime, and on Exited runs the
+/// it writes the node dead, asks the provider about the exact runtime, and on Exited runs the
 /// recovery itself, its own workflow keyed on the exited birth (node-recovery.md "Execution", Q342):
 /// node.delete of the exited instance (node.deleted from the exited verdict, once, named by the exact
 /// birth), then node.create at the same (path, name), and nothing after it. Each step is recorded on
@@ -260,7 +260,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 
 /// CONTRACT (node-recovery.md): every other unplanned exit is a recovery like the transport stop.
 /// A node killed with SIGKILL leaves no recorded reason: its mesh-primary, which in a one-mesh
-/// fabric is also the fabric-primary, marks it TRUE OFFLINE, proves the exit from the provider alone
+/// fabric is also the fabric-primary, writes it dead, proves the exit from the provider alone
 /// (no exit code) and runs one recovery keyed on the exited birth, its own workflow (no Build written
 /// or minted, Q342), two operations in order (node-recovery.md "Steps"):
 /// node.delete of the exited instance (`node.delete:<path>`: no RPC to it, no stop frames,
@@ -756,7 +756,7 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 /// decided `exited` at the inspect with no ladder at all); once mesh2's primary has run tickle ladder 1 for it, that primary is
 /// stopped, which hands mesh2's role to its second admin. The new mesh-primary tickles on the window
 /// it has kept since before it took the role (its ladder names a `first_seen_ms` earlier than the
-/// role change by a probe delay or more, never a window opened at the role), reaches TRUE OFFLINE,
+/// role change by a probe delay or more, never a window opened at the role), is written dead,
 /// on the inspect's `running`, and its submit follows the one recovery to `complete`: a new node.id at the
 /// path over a newly allocated data dir, so a new endpoint key (node-investigation.md "Data dir"). The old primary is stopped mid-ladder, once its direct probe has
 /// ended and before its ladder is folded (node-recovery.md step 3: a ladder nobody answers is the
@@ -819,7 +819,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 
     let spans = estate.spans();
     let taken_ns = start(&role);
-    let new_round1 = tickle_span(&spans, &standby, &before["node_id"]).unwrap_or_else(|| panic!("{standby:?}'s TRUE OFFLINE for {node:?}"));
+    let new_round1 = tickle_span(&spans, &standby, &before["node_id"]).unwrap_or_else(|| panic!("{standby:?}'s written dead for {node:?}"));
     assert!(start(new_round1) > taken_ns, "{standby:?} tickles only once it holds the primary role");
     // The window it kept: the ladder runs on the instant it first saw the member silent, before the
     // role changed hands and a probe delay or more before it, never on a window opened at the role.
@@ -828,7 +828,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let first_seen_ms = num_attr(new_round1, "first_seen_ms");
     assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby:?}'s window began a probe delay or more before it took the role: first_seen {first_seen_ms} ms, role at {} ms", taken_ns / 1_000_000);
     let waited = Duration::from_nanos(start(new_round1) - taken_ns);
-    assert!(start(new_round1) < start(&recovery), "TRUE OFFLINE before the submit");
+    assert!(start(new_round1) < start(&recovery), "written dead before the submit");
     let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
         .into_iter()
         .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == standby.as_str())
@@ -838,7 +838,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(before["node_id"].as_str().unwrap_or("-"))).collect();
     assert!(drift.is_empty(), "the fabric-primary opened a drift Build for a member: {drift:?}");
     eprintln!(
-        "acceptance 2: old mp {mp} direct probe trace {} | role {standby:?} at {} ms | new TRUE OFFLINE {} (first_seen {first_seen_ms} ms, {waited:?} after the role) | recovery trace {} ({})",
+        "acceptance 2: old mp {mp} direct probe trace {} | role {standby:?} at {} ms | new written dead {} (first_seen {first_seen_ms} ms, {waited:?} after the role) | recovery trace {} ({})",
         round1["trace_id"].as_str().unwrap_or(""),
         taken_ns / 1_000_000,
         new_round1["trace_id"].as_str().unwrap_or(""),

@@ -10,7 +10,7 @@
 //! is not the mesh-primary each have their exact runtime hung (every task but the leader in a tracer's
 //! stop, so the provider reads it `running`: a SIGSTOP reads `os-stopped`, which node investigation's
 //! inspect takes as its verdict and recovery re-creates, Q273) past the staleness floor and released. While held, the view marks the birth `PendingReconnect` (or
-//! `Dead`, the ladder's TRUE OFFLINE); nothing re-births it or terminates it (silence is not death).
+//! `Dead`, the ladder's written dead); nothing re-births it or terminates it (silence is not death).
 //! Once released, the mesh-primary's tickle reaches it, the mesh-primary begins the birth's next
 //! cycle (`via-cycle-begun`) and commands `node.mesh.join` (`via-mesh-join-commanded`, answered
 //! `mesh-joined`); the node runs the start steps of node-start.md under one

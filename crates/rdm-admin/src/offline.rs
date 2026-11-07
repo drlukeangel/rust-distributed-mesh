@@ -754,7 +754,7 @@ pub fn ladder_of(finding: crate::node_investigation::Finding, tickled: Result<Ti
 /// One ladder of the ladder, running beside the loop: started by one tick, folded by a later one.
 #[derive(Debug)]
 struct LadderRun {
-    /// The clock of the tick that started it, named on the ladder's TRUE OFFLINE span beside the
+    /// The clock of the tick that started it, named on the ladder's dead span beside the
     /// ladder's verdict (`LadderEnd::Unreached::verdict_at_ms`).
     started_at_ms: u64,
     path: crate::model::PathName,
@@ -772,7 +772,7 @@ pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
     /// whether or not this node-admin holds the role.
     first_seen: HashMap<String, u64>,
-    /// Silent nodes whose tickle has settled (answered, or true offline): not tickled again until
+    /// Silent nodes whose tickle has settled (answered, or written dead): not tickled again until
     /// they leave and re-enter the silent set.
     settled: HashSet<String>,
     /// The nodes written dead now, by node id: an investigation of them concluded in failure.
@@ -833,7 +833,7 @@ impl OfflineTickle {
     /// `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `tickle` runs the one ladder ([`tickle`],
     /// node-tickle.md) over the birth. `observe` reads iroh's local view of a node once for the reachable-silent and
-    /// the TRUE OFFLINE span (`rdm_transport::iroh_obs`); it decides nothing.
+    /// the dead span (`rdm_transport::iroh_obs`); it decides nothing.
     ///
     /// A tick waits on no probe (node-recovery.md: one loop, on every gossip interval). Each ladder it
     /// starts runs beside the loop, at once for every member due, so each member's connect is made
@@ -1072,7 +1072,7 @@ impl OfflineTickle {
     }
 }
 
-/// The recovery of a TRUE OFFLINE birth (`follow`: the provider's proof, the submit, and the Build
+/// The recovery of a birth written dead (`follow`: the provider's proof, the submit, and the Build
 /// followed to its end, `RecoverySubmitter::recover_if_proven`), run beside the mesh-primary's loop.
 /// A stop cancels it where it stands, the view lock it holds or waits on included, and does not
 /// wait for it (`StopGate::until_stopped`); a submit it already made is answered AlreadyApplied or
@@ -1193,7 +1193,7 @@ pub(crate) mod tests {
 
     /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or failed ladder event,
     /// never on a tick that records neither, and the reports are the tickle's own: the answered node
-    /// is reachable-silent and the one ladder nobody answered is TRUE OFFLINE (node-recovery.md step 3,
+    /// is reachable-silent and the one ladder nobody answered is written dead (node-recovery.md step 3,
     /// Q181).
     #[tokio::test(start_paused = true)]
     async fn iroh_is_read_once_per_answered_or_failed_event_and_decides_nothing() {
@@ -1210,7 +1210,7 @@ pub(crate) mod tests {
         let mut t = OfflineTickle::new();
         tick_observed(&mut t, 0, true, silent("b"), false, no_path(), &reads).await;
         let r1 = tick_observed(&mut t, PROBE_DELAY, true, silent("b"), false, no_path(), &reads).await;
-        assert_eq!(r1.offline, vec!["b".to_string()], "the ladder nobody answered is TRUE OFFLINE, as without the read");
+        assert_eq!(r1.offline, vec!["b".to_string()], "the ladder nobody answered is written dead, as without the read");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the failed event");
         let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
         assert!(r2.tickled.is_empty() && r2.offline.is_empty(), "settled: no second ladder, no second event: {r2:?}");
@@ -1339,7 +1339,7 @@ pub(crate) mod tests {
             sleep(INTERVAL).await;
             let folded = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
             assert!(folded.tickled.is_empty(), "a birth whose ladder was folded with no path is not probed again");
-            assert_eq!(folded.offline, vec!["a".to_string(), "b".to_string()], "both ladders ended with no path: both are TRUE OFFLINE at the fold");
+            assert_eq!(folded.offline, vec!["a".to_string(), "b".to_string()], "both ladders ended with no path: both are written dead at the fold");
         }
 
         /// CONTRACT (node-stop deletes the work the loop runs beside it; the lead's decision: "a stop
@@ -1809,7 +1809,7 @@ pub(crate) mod tests {
         /// node-recovery.md step 2: "node.runtime.inspect (`exited` or `os-stopped` is the verdict, and no
         /// tickle is sent), node.tickle direct, the same tickle via up to two eligible live peers of the
         /// birth's mesh sent at once"; step 3: "Nothing holds"; Q181):
-        /// TRUE OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
+        /// written dead, the only tickle outcome that sends the mesh-primary to the provider
         /// (`recovery_due`), is reached at the fold of the one ladder, only after its direct probe and
         /// both its peer probes ended unanswered, the ladder costing the direct probe's budget plus one
         /// peer budget. Must NOT happen: the provider owed before every probe of the ladder ended, or a
@@ -1853,8 +1853,8 @@ pub(crate) mod tests {
             sleep(tickle_ladder(BUDGET) + Duration::from_millis(1)).await;
             assert_eq!(verdict_at.lock().unwrap()[0] - start, tickle_ladder(BUDGET), "ladder 1: the direct budget, then one budget for both peers");
             let r1 = ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + 1).await;
-            assert_eq!(r1.offline, vec![id.clone()], "the ladder nobody answered, folded, is TRUE OFFLINE: the provider is owed");
-            assert_eq!(rig.ended.load(Ordering::SeqCst), 3, "TRUE OFFLINE only once the direct and both peer probes of the ladder ended");
+            assert_eq!(r1.offline, vec![id.clone()], "the ladder nobody answered, folded, is written dead: the provider is owed");
+            assert_eq!(rig.ended.load(Ordering::SeqCst), 3, "written dead only once the direct and both peer probes of the ladder ended");
             assert!(ladder(&mut t, PROBE_DELAY + ms(tickle_ladder(BUDGET)) + FLOOR).await.tickled.is_empty(), "no second ladder: nothing holds");
             assert_eq!(verdict_at.lock().unwrap().len(), 1, "one ladder ran");
         }
@@ -1982,7 +1982,7 @@ pub(crate) mod tests {
     }
 
     /// CONTRACT (node-recovery.md step 2: the one ladder, half a floor after the mark; step 3: the
-    /// recovery at once; Q181): the TRUE OFFLINE mark names the instant no path was known, when the
+    /// recovery at once; Q181): the dead mark names the instant no path was known, when the
     /// ladder's probes ended, carried by the ladder to the tick that folds it, and the instant the ladder
     /// began, never the instant of the tick that folds it. The ladder starts at PROBE_DELAY and the tick
     /// waits on none of it; its direct connect and its via-peer step each spend a 10 s budget, so no path
@@ -2021,10 +2021,10 @@ pub(crate) mod tests {
         assert!(r1.offline.is_empty() && !t.is_offline("a"), "nothing is decided before a tick folds the ladder");
         tokio::time::sleep(ended).await;
         let folded = ladder(&mut t, verdict_at + 5_000).await;
-        assert_eq!(folded.offline, vec!["a".to_string()], "the tick after the ladder ended folds its no path: TRUE OFFLINE");
+        assert_eq!(folded.offline, vec!["a".to_string()], "the tick after the ladder ended folds its no path: written dead");
         assert!(ladder(&mut t, verdict_at + FLOOR).await.tickled.is_empty(), "no second ladder a floor later");
         let failed = capture.named("rdm.node_admin.node.update.via-dead");
-        assert_eq!(failed.len(), 1, "one TRUE OFFLINE span");
+        assert_eq!(failed.len(), 1, "one dead span");
         let at = |k: &str| failed[0].attributes.get(k).cloned().unwrap_or_default();
         assert_eq!((at("no_path_at_ms"), at("ladder_began_ms")), (verdict_at.to_string(), PROBE_DELAY.to_string()), "the mark names the ladder's verdict and its start, not the folding tick: {:?}", failed[0].attributes);
         assert!(capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened").is_empty(), "no hold-down");
@@ -2060,7 +2060,7 @@ pub(crate) mod tests {
     /// CONTRACT (Q153; node-investigation.md "Any other verdict"; node-recovery.md step 3): a birth
     /// whose runtime the inspect reads running and that nobody reached, investigated by a primary
     /// that hears no other node (every other birth it holds unheard past the floor, so it is the one
-    /// cut off), is unreachable from that investigator, not lost: it is not TRUE OFFLINE, so no
+    /// cut off), is unreachable from that investigator, not lost: it is not written dead, so no
     /// recovery, delete or create follows; one `rdm.node_admin.node.resolve.via-investigator-hears-none`
     /// span names it, and half a floor later the next investigation decides again. What must NOT
     /// happen: a cut-off primary re-creating a node only it cannot reach.
@@ -2075,12 +2075,12 @@ pub(crate) mod tests {
             tokio::task::yield_now().await;
         }
         let folded = running_unreached_with_no_peer(&mut t, PROBE_DELAY + 1, true).await;
-        assert!(folded.offline.is_empty() && !t.is_offline("a"), "an investigator that hears no other node: not TRUE OFFLINE, no recovery follows: {folded:?}");
+        assert!(folded.offline.is_empty() && !t.is_offline("a"), "an investigator that hears no other node: not written dead, no recovery follows: {folded:?}");
         assert!(folded.tickled.is_empty(), "no second ladder at the tick that folded the first");
         let spans = capture.named("rdm.node_admin.node.resolve.via-investigator-hears-none");
         assert_eq!(spans.len(), 1, "one span names the birth unreachable from this investigator");
         assert_eq!(spans[0].attributes.get("verdict").map(String::as_str), Some("running"), "{:?}", spans[0].attributes);
-        assert!(capture.named("rdm.node_admin.node.update.via-dead").is_empty(), "no TRUE OFFLINE span");
+        assert!(capture.named("rdm.node_admin.node.update.via-dead").is_empty(), "no dead span");
         assert_eq!(running_unreached_with_no_peer(&mut t, 2 * PROBE_DELAY + 1, true).await.tickled, vec!["a".to_string()], "the next investigation decides again half a floor on");
         eprintln!("span rdm.node_admin.node.resolve.via-investigator-hears-none trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
     }
@@ -2211,8 +2211,8 @@ pub(crate) mod tests {
         assert!(!t.is_offline("a"));
     }
 
-    /// CONTRACT (node-recovery.md "Detection and proof": the tickle and the TRUE OFFLINE mark are
-    /// the mesh-primary's own observations of a member): a TRUE OFFLINE node whose node id leaves
+    /// CONTRACT (node-recovery.md "Detection and proof": the tickle and the dead mark are
+    /// the mesh-primary's own observations of a member): a node written dead whose node id leaves
     /// the view (node.deleted, or a recovery that created a new node.id at its path and name) ends its
     /// tickle and its status as GONE, named apart from a node heard again.
     /// Must NOT happen: a deleted birth reported and spanned `via-offline-returned` ("heard again").

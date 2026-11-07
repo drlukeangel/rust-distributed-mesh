@@ -2617,7 +2617,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
                                                 let turn = stop.turn("offline-tickle").await;
                                                 heard_changes.borrow_and_update();
-                                                // The births held true offline are shown `Dead` by the projection: a change of
+                                                // The births written dead are shown `Dead` by the projection: a change of
                                                 // them this tick makes the view's rebuild due where it is made (Q254).
                                                 let offline_before = records.offline.lock().unwrap().clone();
                                                 let view = topology.read().await.clone();
@@ -2835,10 +2835,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if *records.offline.lock().unwrap() != offline_before {
                                                     records.inputs_moved();
                                                 }
-                                                // node-recovery.md step 3: on TRUE OFFLINE the mesh primary asks the provider about the
+                                                // node-recovery.md step 3: once a birth is written dead the mesh primary asks the provider about the
                                                 // exact runtime of each member of its own mesh, its secondary node-admins included
                                                 // (mesh-recovery.md:8-9), and the verdict opens the recovery at once, keyed on the
-                                                // birth. Re-evaluated every tick while the member stays TRUE OFFLINE, so a recovery
+                                                // birth. Re-evaluated every tick while the member stays written dead, so a recovery
                                                 // that ended failed is run again by the next tick that finds the node still lost, with
                                                 // no wait of its own: its calls retry only under their `Send` (node-recovery.md, Q344).
                                                 // A birth whose recovery is in flight is followed, never run again beside it

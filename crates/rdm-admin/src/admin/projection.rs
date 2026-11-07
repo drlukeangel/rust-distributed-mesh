@@ -145,7 +145,7 @@ impl ViewReads {
 /// node id, so it is the row's id index, `NodesStorage::node_row_name`: one read per birth). A birth
 /// that publishes names itself: its digest carries its row's name (R12: it publishes only the row's
 /// name, a live rename reaching it as `UpdateName`). One that does not (stopped, silent past the
-/// staleness floor, held true offline) may have had its row moved while it said
+/// staleness floor, written dead) may have had its row moved while it said
 /// nothing: a stopped node's `node.name.update` (R13: it is told nothing and reads the name at its next
 /// join), node.name.update's renames included. Beside the names: which births' rows released their
 /// name, read for every birth read here and for each birth that publishes a name another birth the
@@ -416,7 +416,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(provider);
         // Silent past the staleness floor: this node's own pruner marks it PendingReconnect in place;
-        // `Dead` only while the mesh primary's offline tickle holds this exact birth true offline.
+        // `Dead` only while the mesh primary's offline tickle holds this exact birth written dead (Q393).
         n.status = if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
         } else if !silent {

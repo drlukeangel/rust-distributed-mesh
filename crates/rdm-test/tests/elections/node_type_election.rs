@@ -189,7 +189,7 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Node
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
     // The role vacates only on the provider's exited verdict, which node recovery takes at the gone
-    // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
+    // birth's dead mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
     // winner it elected and the birth it replaced; the election's span is the only place that fact
     // lives (a view may already show the birth drift recovery brings back in the role's node type), so the
     // span is awaited.
