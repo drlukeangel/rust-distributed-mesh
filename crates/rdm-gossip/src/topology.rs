@@ -1148,6 +1148,60 @@ mod tests {
         assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
     }
 
+    /// CONTRACT (gossip.md §3.1 `Digest`: its details ride its first Digest, its pending at an accepted
+    /// join and a Digest whose details changed, and peers retain them; node-name-update.md: a stopped
+    /// node rejoins at its start under its new name): a birth renamed while stopped, whose Digests
+    /// carrying its new details were not heard here (node_stop
+    /// `a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_every_admin`, run
+    /// cells-3693124: seq 7-10 reached no peer). Its next Digest carries no details: it is refused
+    /// while the stop stands, named from the details held before the stop. The mesh-primary's
+    /// projection then lists it at its new name and the stop ends there: the birth is held again with
+    /// that Digest's status and sequence and the projection's details, and its next heartbeat is named
+    /// from them. Must NOT happen: the birth held again, or heard on, at the name it held before the
+    /// stop.
+    #[test]
+    fn a_birth_renamed_while_stopped_is_held_again_under_its_projections_details() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = test_view("mesh1", "mesh1.node-admin.2");
+        let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let at = |name: &str, status, seq| {
+            let mut d = digest(&id, &inc, None, status, seq);
+            d.node.name = name.into();
+            d
+        };
+        let stop = op(&id, &inc, "node.stop");
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>| Frame::TopologyFull {
+            mesh: "mesh1".into(),
+            mesh_id: None,
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: version,
+            snapshot_id: version * 10 + in_flight.len() as u64,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight,
+            deleted: Vec::new(),
+        };
+        let held = || view.digest_view.get(id.as_str()).map(|(d, _)| (d.node.name.clone(), d.digest_seq, d.status));
+        assert_eq!(view.take(&Frame::digest(&at("1", NodeStatus::Ready, 1), true), &fabric, "mesh-channel").len(), 1, "its first Digest, with its details");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![at("1", NodeStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
+        view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
+        view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
+        assert!(view.digest_view.get(id.as_str()).is_none() && view.digest_view.in_flight() == vec![stop.clone()], "stopped");
+
+        // Renamed while stopped, then started: its Digests with the new details reached no one here.
+        assert!(view.take(&Frame::digest(&at("renamed", NodeStatus::Ready, 5), false), &fabric, "mesh-channel").is_empty(), "a Digest with no details, while the stop stands, is refused");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(3, vec![at("renamed", NodeStatus::Pending, 4)], vec![]), &fabric, Side::Backbone);
+        assert!(view.digest_view.in_flight().is_empty(), "the projection moved past the stop: it is over");
+        assert_eq!(held(), Some(("renamed".to_string(), 5, NodeStatus::Ready)), "held again from the Digest it refused, with the projection's details");
+        let next = view.take(&Frame::digest(&at("renamed", NodeStatus::Ready, 6), false), &fabric, "mesh-channel");
+        assert_eq!(next.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec!["renamed".to_string()], "its next heartbeat is named from the details held again");
+        assert_eq!(held(), Some(("renamed".to_string(), 6, NodeStatus::Ready)));
+    }
+
     /// CONTRACT (gossip.md §3.1 `TopologyFull`): a node's own birth is its own word. The mesh-primary's
     /// projection lists every member, the receiving node among them; the status it holds of itself
     /// stays the one it published, whether the projection arrives before its first publication (its
