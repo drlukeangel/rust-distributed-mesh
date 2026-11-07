@@ -89,6 +89,14 @@ pub(crate) struct View {
 }
 
 impl View {
+    /// Whether this node is a node-admin that is not its mesh's primary: it manages its mesh's births
+    /// with the runtime fact of each, which their mesh-primary took from their join reports and which
+    /// reaches it by a read of its own mesh from that primary (Q400). The mesh-primary has no primary to
+    /// read from.
+    pub(crate) fn reads_runtime_facts(&self) -> bool {
+        !self.primary.load(Ordering::Relaxed) && self.digest_view.own_is_node_admin()
+    }
+
     /// The sources this node serves on a topology read, one per mesh: what it forwards as its
     /// mesh's primary, else the newer of what its two receivers hold (R-RX3, gossip.md §3.1: one held
     /// version per source, whichever channel or read it arrives by). A node-admin hears a peer mesh on
@@ -254,6 +262,21 @@ impl View {
                     return (Vec::new(), false);
                 }
                 self.note(digest, via);
+                // A node-admin that is not its mesh's primary manages its mesh's births with their runtime
+                // facts, which the mesh-primary took from their join reports and serves on a read (Q400): a
+                // Digest of a birth of its mesh it holds no runtime fact of is a sync issue, and each such
+                // Digest pulls its mesh-primary's view again until a read supplies the fact.
+                if digest.node.mesh == self.mesh
+                    && digest.status != rdm_core::model::NodeStatus::Leaving
+                    && !self.digest_view.holds_runtime_fact(&digest.node.node_id, &digest.node.incarnation)
+                    && self.reads_runtime_facts()
+                {
+                    if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::NoRuntimeFact) {
+                        tracing::info_span!("rdm.mesh.topology.update.via-no-runtime-fact", node = %self.current_name(), node_id = %digest.node.node_id, incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq)
+                            .in_scope(|| tracing::info!("a node-admin holds a birth of its mesh with no runtime fact of it: its mesh-primary's view is read"));
+                    }
+                    self.desync.notify_one();
+                }
                 tracing::info_span!(
                     "rdm.mesh.topology.update.via-digest",
                     node = %self.current_name(), node_id = %digest.node.node_id,

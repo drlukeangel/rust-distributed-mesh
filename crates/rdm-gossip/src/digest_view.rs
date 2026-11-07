@@ -1926,6 +1926,39 @@ impl DigestView {
         self.runtimes.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, r)| r.clone())
     }
 
+    /// Whether this view holds a runtime fact of the exact birth `node_id`, `incarnation`: what a
+    /// node-admin manages it with (a data dir alone is none).
+    pub(crate) fn holds_runtime_fact(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.runtimes.lock().unwrap().get(node_id.as_str()).is_some_and(|(inc, r)| inc == incarnation && r.runtime.is_some())
+    }
+
+    /// Whether this view's own birth, as its own Digest holds it, is a node-admin: a node that manages
+    /// its mesh's births with the runtime fact of each.
+    pub(crate) fn own_is_node_admin(&self) -> bool {
+        let Some(own) = self.own.lock().unwrap().clone() else { return false };
+        self.inner.lock().unwrap().get(own.as_str()).is_some_and(|(d, _, _)| rdm_core::is_node_admin(&d.node.r#type))
+    }
+
+    /// The births of `mesh` this view holds heard within the staleness floor, other than its own and
+    /// none held leaving, of which it holds no runtime fact: the births a node-admin's not-ready check
+    /// names "no runtime fact is held of it" (Q400). Read under the locks (Q268): only their ids are
+    /// copied.
+    pub(crate) fn without_runtime_fact(&self, mesh: &str) -> Vec<(NodeId, IncarnationId)> {
+        let own = self.own.lock().unwrap().clone();
+        let now = Instant::now();
+        let held: Vec<(NodeId, IncarnationId)> = self
+            .inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(d, at, heard)| {
+                d.node.mesh == mesh && own.as_deref() != Some(d.node.node_id.as_str()) && d.status != rdm_core::model::NodeStatus::Leaving && unheard(at, *heard, now) <= self.staleness_floor
+            })
+            .map(|(d, _, _)| (d.node.node_id.clone(), d.node.incarnation.clone()))
+            .collect();
+        held.into_iter().filter(|(id, inc)| !self.holds_runtime_fact(id, inc)).collect()
+    }
+
     /// The id of the mesh `mesh` whose births this view holds: its own mesh's, or the one the topology
     /// it took of the mesh named.
     pub fn mesh_id_of(&self, mesh: &str) -> Option<rdm_core::MeshId> {

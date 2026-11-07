@@ -884,6 +884,75 @@ mod tests {
         assert!(!carries_details(&published(&mut rpc_last, &rpc)), "a node-type primary of another type carries its status and roles only");
     }
 
+    /// CONTRACT (gossip.md §3.1 `Digest`: "a node-admin takes them from join reports, topology reads and
+    /// node records"; Q400): at a node-admin that is not its mesh's primary, a Digest of a birth of its
+    /// mesh it holds no runtime fact of is taken, names the gap `no-runtime-fact` on its own mesh with one
+    /// span and signals the top-up, a read of its mesh-primary's view; each further such Digest signals
+    /// it again; once a read holds the birth's runtime fact, its Digests signal nothing. A data dir alone
+    /// is no runtime fact. The mesh-primary (it took the fact from the join report and has nobody to
+    /// read from), a node that is no node-admin, and a birth held leaving signal nothing. Must NOT happen:
+    /// a node-admin holding a birth with no runtime fact that never reads it again, so its not-ready
+    /// check names "no runtime fact is held of it" until its Build's WaitForNodeReady ends (gate
+    /// 103bbe528: twelve cells, fabric_states `a_two_mesh_fabric_is_ready_once_every_mesh_is_ready`
+    /// mesh1.node-admin.2 among them).
+    #[test]
+    fn a_node_admin_reads_its_mesh_primarys_view_again_at_each_digest_of_a_birth_it_holds_no_runtime_fact_of() {
+        use rdm_core::{NodeRuntime, RuntimeFact, RuntimeLocator, RuntimeProvider};
+        let spans = OpenedSpans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        // A view whose own birth, as its own Digest holds it, is of `r#type`.
+        let view_of = |r#type: &str| {
+            let view = test_view("mesh1", "mesh1.node-admin.2");
+            let mut own = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Pending, 1);
+            (own.node.r#type, own.node.path, own.node.name) = (r#type.into(), format!("mesh1.{}", r#type), "2".into());
+            *view.digest_view.own.lock().unwrap() = Some(own.node.node_id.to_string());
+            assert!(view.digest_view.record(own));
+            view
+        };
+        let signalled = |view: &super::View| rt.block_on(async { tokio::time::timeout(Duration::from_millis(20), view.desync.notified()).await.is_ok() });
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let at = |seq: u64, status: NodeStatus| {
+            let mut d = digest(&id, &inc, None, status, seq);
+            d.node.name = "7".into();
+            d
+        };
+        let view = view_of("node-admin");
+        for seq in [1, 2] {
+            let carried = view.take(&Frame::digest(&at(seq, NodeStatus::Ready), true), &fabric, "mesh-channel");
+            assert_eq!(carried.len(), 1, "Digest {seq} of the birth is taken");
+            assert!(signalled(&view), "Digest {seq} of a birth with no runtime fact signals the top-up");
+        }
+        assert_eq!(view.mesh_rx.lock().unwrap().desynced(), vec![("mesh1".to_string(), Gap::NoRuntimeFact)], "the gap is named on its own mesh");
+        assert_eq!(view.digest_view.without_runtime_fact("mesh1"), vec![(id.clone(), inc.clone())], "the birth is owed its runtime fact");
+        let raised = spans.named("rdm.mesh.topology.update.via-no-runtime-fact");
+        assert_eq!(raised.len(), 1, "one span per gap: {raised:?}");
+        assert_eq!((raised[0]["node_id"].as_str(), raised[0]["digest_seq"].as_str()), (id.as_str(), "1"));
+        assert_eq!(Gap::NoRuntimeFact.to_string(), "no-runtime-fact", "the top-up's reasons name it");
+        // A data dir alone is no runtime fact.
+        assert!(view.digest_view.hold_runtime(&id, &inc, NodeRuntime { runtime: None, data_dir: Some("/data/7".into()) }));
+        view.take(&Frame::digest(&at(3, NodeStatus::Ready), false), &fabric, "mesh-channel");
+        assert!(signalled(&view), "a data dir alone leaves the fact owed");
+        // A read supplies the fact: the birth's Digests signal nothing more.
+        let fact = RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep"), provider: RuntimeProvider::Process, control_domain: "process:a:1".into(), locator: RuntimeLocator::Process { pid: 7, start: 7 } };
+        assert!(view.digest_view.hold_runtime(&id, &inc, NodeRuntime { runtime: Some(fact), data_dir: None }));
+        assert!(view.digest_view.without_runtime_fact("mesh1").is_empty(), "nothing is owed once the fact is held");
+        view.take(&Frame::digest(&at(4, NodeStatus::Ready), false), &fabric, "mesh-channel");
+        assert!(!signalled(&view), "a birth whose runtime fact is held signals nothing");
+        // The mesh-primary, a node that is no node-admin, and a birth held leaving signal nothing.
+        let primary = view_of("node-admin");
+        primary.primary.store(true, Ordering::Relaxed);
+        let node = view_of("node");
+        let leaving = view_of("node-admin");
+        for (what, v, status) in [("the mesh-primary", &primary, NodeStatus::Ready), ("a node that is no node-admin", &node, NodeStatus::Ready), ("a birth held leaving", &leaving, NodeStatus::Leaving)] {
+            assert_eq!(v.take(&Frame::digest(&at(1, status), true), &fabric, "mesh-channel").len(), 1, "{what}: the birth is taken");
+            assert!(!signalled(v), "{what}: nothing is signalled");
+            assert!(v.mesh_rx.lock().unwrap().desynced().is_empty(), "{what}: no gap");
+        }
+        assert_eq!(spans.named("rdm.mesh.topology.update.via-no-runtime-fact").len(), 1, "no other span");
+    }
+
     #[test]
     fn a_late_digest_never_refreshes_a_member_or_reverts_its_status() {
         let digest_view = DigestView::default();

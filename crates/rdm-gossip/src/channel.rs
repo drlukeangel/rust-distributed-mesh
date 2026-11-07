@@ -1305,7 +1305,8 @@ impl Channels {
                 // One attempt per signal: a delta heard on a desynchronized source signals again,
                 // so a top-up that failed is attempted when the primary next speaks. A pull that
                 // installed a copy older than a delta dropped while it was in flight pulls again
-                // (gossip.md §3.3, Q130), on the one backoff rule.
+                // (gossip.md §3.3, Q130), on the one backoff rule, and so does one that left a
+                // node-admin a birth of its mesh with no runtime fact (Q400).
                 if again == 0 {
                     me.topology_view.view.desync.notified().await;
                 } else {
@@ -1318,7 +1319,8 @@ impl Channels {
     }
 
     /// One pull of `gaps`: `true` when it installed a copy of a source older than a delta that
-    /// source dropped while the pull was in flight, so the source is still behind.
+    /// source dropped while the pull was in flight, so the source is still behind, or when it left a
+    /// node-admin holding a birth of its mesh with no runtime fact (Q400).
     pub(crate) async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) -> bool {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
@@ -1352,6 +1354,13 @@ impl Channels {
         let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
         match fetch(self.clone(), primary.clone(), names).await {
             Ok(done) => {
+                // A node-admin that still holds a birth of its mesh with no runtime fact once the read is
+                // installed (its mesh-primary held none of it yet) keeps its own mesh desynchronized: it
+                // pulls again, on the one backoff rule, until a read supplies the fact (Q400).
+                let owed = if self.topology_view.view.reads_runtime_facts() { self.topology_view.digest_view.without_runtime_fact(&mesh) } else { Vec::new() };
+                if !owed.is_empty() {
+                    self.topology_view.view.mesh_rx.lock().unwrap().mark_desynced(&mesh, Gap::NoRuntimeFact);
+                }
                 let still: Vec<String> = self.topology_view.desynced_sources().into_iter().map(|(m, _)| m).collect();
                 let behind = done.installed.iter().any(|(m, _)| still.contains(m));
                 tracing::info_span!(
@@ -1363,6 +1372,7 @@ impl Channels {
                     served_by_path = %path, served_by_name = %name,
                     installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
+                    runtime_facts_owed = owed.len(),
                     pulls_again = behind,
                 )
                 .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));
