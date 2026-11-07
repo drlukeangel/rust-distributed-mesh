@@ -663,7 +663,13 @@ impl View {
                 // A read installs what an entry answer installed, by the rule `learn` applies
                 // (R-G2): a peer mesh's member is topology and refreshes no liveness; a member of
                 // this node's own mesh is held as the answerer heard it, with its status.
-                (Side::Read, true) => self.digest_view.record_forwarded(d.clone()),
+                // Its status is ordered by the topology version the read just admitted, and its digest by
+                // its own heartbeat sequence (gossip.md §3.1, four orderings): a member's later
+                // heartbeat already held refuses the primary's older copy of the digest, never the status.
+                (Side::Read, true) => {
+                    self.digest_view.take_projected_status(&d, target);
+                    self.digest_view.record_forwarded(d.clone())
+                }
                 (Side::Read, false) | (Side::ReadPeer, false) => self.digest_view.record_topology(d.clone()),
                 (Side::ReadPeer, true) => false,
             };

@@ -2501,6 +2501,56 @@ mod tests {
         assert!(left_ready.is_empty(), "no member status moves off Ready: {left_ready:#?}");
     }
 
+    /// CONTRACT (gossip.md §3.1: "a topology read install move[s] the held source version and the digest
+    /// view under one hold ... A reader of that version never finds an older digest view"): a top-up read
+    /// moves the status of an own-mesh member a delta had held, as well as the version floor. Must NOT
+    /// happen: the member left at the old status, with the one delta that carried the change refused as
+    /// older than the read, until a later full (Rafka's seed red: 34 s Pending, trace
+    /// 93736c299b600c5b9ccad7115730355a).
+    #[test]
+    fn a_topology_read_moves_an_own_mesh_members_status_past_the_delta_it_makes_stale() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = test_view("mesh1", "mesh1.compute.1");
+        let hears = |f: &Frame| hear(&mut view.order.lock().unwrap(), &view, f, &fabric, Side::MeshChannel);
+        let publisher = birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1);
+        let ready = birth_at(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", 3);
+        let pending = MeshDigest { status: MemberStatus::Pending, ..ready.clone() };
+        let held = |d: &MeshDigest| view.digest_view.member_status(&d.node.node_id, &d.node.incarnation);
+        let read_at = |version: u64, broker: &MeshDigest| crate::snapshot::Chunk {
+            mesh: "mesh1".into(),
+            publisher: publisher_of(&publisher),
+            forwarded_by: None,
+            topology_version: version,
+            snapshot_id: version,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests: vec![publisher.clone(), broker.clone()],
+            in_flight: vec![],
+            deleted: vec![],
+        };
+
+        assert!(matches!(view.take_read_chunk(read_at(5, &pending), Side::Read, &fabric), Taken::Installed(_)), "the read at v5 installs");
+        assert_eq!(held(&ready), Some(MemberStatus::Pending), "v5 holds the member Pending");
+
+        // The member's own heartbeats reach this node first: it holds a later one than the primary's copy.
+        let mut heard = pending.clone();
+        heard.digest_seq = ready.digest_seq + 2;
+        assert!(view.digest_view.record(heard), "the member's own later heartbeat is held");
+
+        // The top-up read at v7: the primary's status Ready, on its older copy of the heartbeat.
+        assert!(matches!(view.take_read_chunk(read_at(7, &ready), Side::Read, &fabric), Taken::Installed(_)), "the top-up read installs v7");
+        assert_eq!(held(&ready), Some(MemberStatus::Ready), "the read at v7 holds the member Ready: a reader of v7 finds no older view");
+
+        let v6 = stamped(snapshot_of("mesh1", &publisher_of(&publisher), None, 6, 6, vec![publisher.clone(), ready.clone()], vec![], vec![]), 60);
+        assert!(!hears(&v6), "the channel's v6 is older than the read's v7: refused");
+        assert_eq!(held(&ready), Some(MemberStatus::Ready), "the refused v6 costs nothing: v7 carried it");
+        let moved = spans.named("rdm.mesh.topology.update.via-projected-status");
+        assert!(moved.iter().any(|f| f["status"] == "Ready" && f["channel"] == "topology-read"), "the status moved by the read is named: {moved:#?}");
+    }
+
     /// CONTRACT (R-RX3, Luke 2026-10-12: "a message received out of order with a previous, earlier
     /// version is ignored", per mesh by `published_at_rafka_ms` then `topology_version`; R-RX2: one
     /// publisher per mesh, no cross-publisher rule; R-RX1: no refusal by who published): once a
