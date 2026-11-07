@@ -492,7 +492,7 @@ mod tests {
         let c = frame.context().expect("authored");
         assert_eq!((&c.source, c.kind.as_str(), c.subject.as_str(), c.sequence.as_deref(), c.id.as_str(), c.time_ms), (&forwarder, "rdm.mesh.members.delta", "mesh/mesh2", Some("00000000000000000008"), "rdm.mesh.members.delta/mesh2/7/8/1", 5));
         let (_, body): (Vec<(String, String)>, Vec<u8>) = wire::decode(&frame.encode()).unwrap();
-        let expected = wire::encode(&("mesh2", None::<rdm_core::MeshId>, 7u64, 1u32, 2u32, Vec::<rdm_core::wire::NodeEntry>::new(), vec![node], Vec::<rdm_core::framing::Birth>::new(), Vec::<rdm_core::LifecycleOp>::new(), Vec::<rdm_core::LifecycleOp>::new())).unwrap();
+        let expected = wire::encode(&("mesh2", None::<rdm_core::MeshId>, 7u64, 1u32, 2u32, Vec::<rdm_core::wire::NodeEntry>::new(), vec![node], Vec::<rdm_core::framing::Birth>::new())).unwrap();
         assert_eq!(body, expected, "the body is the mesh, its id, the base, the chunk and the lists: nothing of the envelope");
         let back = decode(&frame.encode()).unwrap();
         assert_eq!(back.encode(), frame.encode(), "it decodes to the same message");

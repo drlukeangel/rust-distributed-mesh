@@ -20,10 +20,9 @@
 //!
 //! R-NS1 (gossip.md, "Mesh delete"): after mesh.deleted the last admin, still its mesh's primary,
 //! keeps publishing its mesh topology with itself the only node not listed `deleted` and MeshStatus
-//! Dead, and every peer holds the deleted mesh with that one node while it lives. "From the stop on the fabric-primary
-//! is that mesh's publisher of record ... it publishes the deleted mesh's own mesh topology on
-//! the backbone, publisher itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped
-//! ... until ... a delete moves the birth to `deleted` as NodeDeleted." The
+//! Dead, and every peer holds the deleted mesh with that one node while it lives. "The separate
+//! node.delete of that admin, the fabric-primary as executor, ends its publishing: when the delete
+//! reaches it, its final mesh topology, the mesh deleted and itself deleting, is its last gossip." The
 //! role lands on the lowest NodeId among mesh2's and mesh3's primaries (the election's, never
 //! chosen here). Every receiver read is made at BOTH surviving meshes, the fabric-primary's own and
 //! the other, so every run covers both placements.
