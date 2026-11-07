@@ -660,8 +660,11 @@ impl Atlas {
     /// `stopped` exactly when that is stopped. Never a lifecycle effect laid over the view: a command the
     /// node has not acknowledged moved the row nowhere, so it moves the answer nowhere. Silence is not a
     /// state a command sets: a birth its row holds live (starting through connections-deleted) that the
-    /// view holds silent (`PendingReconnect`, `Dead`, observer-inferred, node-identity-and-state.md §7.3)
-    /// is answered as the view holds it, cleared the moment it is heard; a birth its row holds leaving,
+    /// view holds silent (`PendingReconnect`, `Dead`, node-identity-and-state.md §7.3) is answered as the
+    /// view holds it, cleared the moment it is heard; a row its mesh-primary wrote `PendingReconnect` as
+    /// it started the birth's self-heal is answered as the view holds the birth too, that status ending
+    /// when a digest of the exact birth arrives after it (node-recovery.md step 1, Q393), which the node,
+    /// its own record's writer, never writes over once it is ready again; a birth its row holds leaving,
     /// stopped or deleting is silent as expected (Q58) and answers its row. A birth with no record answers
     /// the view's status. `false` when an op deleted the birth: it is not answered. Build acceptance reads
     /// [`Self::answer`], not this.
@@ -675,7 +678,7 @@ impl Atlas {
             let of_birth = Some(&r.incarnation) == n.incarnation_id.as_ref();
             let live = matches!(r.state, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::Ready | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
             let silent = live && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
-            if of_birth && !silent {
+            if of_birth && !silent && r.state != NodeStatus::PendingReconnect {
                 n.status = r.state;
                 n.stopped = r.state == NodeStatus::Stopped;
             }
@@ -1250,4 +1253,38 @@ mod tests {
         assert_eq!(atlas.held.lock().unwrap().is_primary.len(), 1, "the same answer again is held once");
     }
 
+}
+
+#[cfg(test)]
+mod investigation_status_cells {
+    use super::*;
+
+    /// CONTRACT (node-recovery.md step 1, Q393: "its mesh-primary writes it `PendingReconnect` as it
+    /// starts the self-heal"; "`PendingReconnect` ... ends when a digest of the exact birth arrives
+    /// after it, when the birth answers its tickle, or when the view no longer holds that birth"): a
+    /// birth whose row its mesh-primary wrote `PendingReconnect` is answered as the view holds it: its
+    /// view status once it is heard again (the node, its record's writer, writes nothing over the row
+    /// while it is ready in its own copy), `PendingReconnect` while the view holds it silent; a row
+    /// written `dead` is answered dead. Must NOT happen: a birth heard again and ready answered
+    /// `PendingReconnect` from its row (lane 5's `node_heard_again` red, 2026-11-07).
+    // @feature: node-recovery
+    #[test]
+    fn a_row_written_pending_reconnect_is_answered_as_the_view_holds_the_birth() {
+        let atlas = Atlas::default();
+        let mut n = crate::model::Node::allocated(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin");
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(IncarnationId::mint());
+        let row = |state| rdm_node::nodes_storage::fixture_record(&n.location(), "node-admin", n.node_id.clone(), n.incarnation_id.clone().unwrap(), state);
+        for (view, recorded, answered) in [
+            (NodeStatus::Ready, NodeStatus::PendingReconnect, NodeStatus::Ready),
+            (NodeStatus::Pending, NodeStatus::PendingReconnect, NodeStatus::Pending),
+            (NodeStatus::PendingReconnect, NodeStatus::PendingReconnect, NodeStatus::PendingReconnect),
+            (NodeStatus::Ready, NodeStatus::Dead, NodeStatus::Dead),
+            (NodeStatus::Ready, NodeStatus::Stopped, NodeStatus::Stopped),
+        ] {
+            let mut held = crate::model::Node { status: view, ..n.clone() };
+            assert!(atlas.read(&mut held, Some(&row(recorded))));
+            assert_eq!(held.status, answered, "the view holds {view:?}, the row {recorded:?}");
+        }
+    }
 }
