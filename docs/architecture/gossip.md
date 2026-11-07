@@ -624,7 +624,7 @@ apply to the `rdm.*` types only. An event whose complete encoded frame, metadata
 and `data { i, n, bytes }`, `n` at most 16; the receiver assembles by `(source, event id)`, takes
 a duplicate chunk as nothing and a reordered one in its place, decodes the whole event once under
 its own `id`, and evicts an assembly still incomplete after `RDM_STALENESS_MS` by name
-(`rdm.mesh.topology.reject.via-chunk-incomplete`). Each channel's receive queue is bounded (1024
+(`rdm.mesh.topology.reject.via-chunk-incomplete`). Each channel's receive queue is bounded (8192
 events): a full queue drops the newest event by name (`rdm.mesh.channel.reject.via-queue-full`, with
 the count) and never holds the carrier, so a slow app stalls nothing but itself. Every event RDM loses
 locally on a channel, a drop or an assembly evicted incomplete, advances that channel's loss

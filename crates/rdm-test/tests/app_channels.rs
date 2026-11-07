@@ -469,3 +469,89 @@ fn an_event_a_mesh1_node_publishes_reaches_a_mesh2_node_through_the_node_admins_
     drop(kept);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// gossip.md §7 and §3.4 (Q383, Q385): a burst published in a tight loop reaches every node whole. The
+/// load is what finds the loss: a full send queue must repair through the peers, and neither buffer on
+/// the receive path may overflow. Must NOT happen: a node short of the burst, or a lagged subscription
+/// or a full channel queue named on any node.
+#[test]
+fn a_burst_a_node_publishes_reaches_every_node_whole() {
+    let cell = "a_burst_a_node_publishes_reaches_every_node_whole";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    const BURST: u32 = 5000;
+    let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
+    std::fs::create_dir_all(dir.join("spans")).unwrap();
+    std::fs::write(dir.join(APP_CHANNEL_KNOB), b"").unwrap();
+    let _launched = Launched(dir.join("store"));
+    let kept = Kept { spans: dir.join("spans"), to: rdm_test::estate::artifacts_root().join("app-channels").join(cell).join("spans") };
+    let capture = rdm_transport::EvidenceCapture::start(&dir.join("spans"), "app-channels-cell").unwrap();
+    capture.run(4, async {
+        let d = Day0::start(&dir).await;
+        d.resize(&[MeshDesired::of("mesh1", [("node-admin", 1), ("node", 6)])]).await;
+        let nodes: Vec<PathName> = (1..=6).map(|i| PathName::new("mesh1.node", i.to_string()).unwrap()).collect();
+        for n in &nodes {
+            d.until_ready(n).await;
+        }
+        d.until_fabric_ready().await;
+        let mut ids = Vec::new();
+        for n in &nodes {
+            ids.push(d.resolved(n).await.node_id);
+        }
+        let publisher = ids[0].clone();
+        let receivers = ids[1..].to_vec();
+        // Every receiver has a neighbour on the channel before the burst.
+        tokio::time::timeout(WRONG, async {
+            loop {
+                let files = span_files(&dir);
+                if receivers.iter().all(|r| neighbours(&spans_of(&files, r)) >= 1) && neighbours(&spans_of(&files, &publisher)) >= 1 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("every node's channel neighbours came up");
+
+        let req = OriginateRequest::PublishBurst { prefix: "whole".into(), count: BURST, size: 256 };
+        let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(60)), ..CallOptions::default() };
+        let (out, _) = d.running.node_rpc.client.call::<Originate>(&NodeTarget::ExactNode(publisher.clone()), &req, &opts).await;
+        match out {
+            rdm_core::outcome::RpcOutcome::Reply(r) => match r.into_value() {
+                OriginateReply::PublishedBurst { published, refused, .. } => assert_eq!((published, refused), (BURST, 0), "the channel took the whole burst"),
+                other => panic!("the burst ended {other:?}"),
+            },
+            other => panic!("the originate service ended {other:?}"),
+        }
+
+        let got = |files: &[Vec<Value>], node: &NodeId| spans_of(files, node).iter().filter(|s| s["name"] == "rdm.testkit.channel.update.via-received" && s["attributes"]["subject"].as_str().is_some_and(|x| x.starts_with("whole/"))).count();
+        let whole = tokio::time::timeout(WRONG, async {
+            loop {
+                let files = span_files(&dir);
+                if receivers.iter().all(|r| got(&files, r) == BURST as usize) {
+                    return true;
+                }
+                let stalled = files.iter().flatten().any(|s| s["name"] == "rdm.mesh.channel.reject.via-lagged" || s["name"] == "rdm.mesh.channel.reject.via-queue-full");
+                if stalled {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        })
+        .await;
+        let files = span_files(&dir);
+        let counts: Vec<usize> = receivers.iter().map(|r| got(&files, r)).collect();
+        let named = |n: &str| files.iter().flatten().filter(|s| s["name"] == n).count();
+        assert!(
+            matches!(whole, Ok(true)),
+            "every node holds the whole burst of {BURST}: {counts:?}; lagged {}, queue full {}",
+            named("rdm.mesh.channel.reject.via-lagged"),
+            named("rdm.mesh.channel.reject.via-queue-full"),
+        );
+        d.running.leave().await;
+    });
+    drop(capture);
+    drop(kept);
+    let _ = std::fs::remove_dir_all(&dir);
+}

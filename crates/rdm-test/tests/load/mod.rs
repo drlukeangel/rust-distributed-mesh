@@ -616,7 +616,7 @@ async fn data_load(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Row
 /// M13 (load-testing.md: management plane load, Luke 2026-11-04): Node RPC against one node-admin.
 /// Count: `node.topology.get` at 1, 16, 64 and 256 callers (M6's driver, 20 s each). Size:
 /// `node.config.update` of mesh1.node.1 sent to the fabric-primary with a config of 256 B, 1 KB and 3.5 KB,
-/// 20 each, and one over the 4 KB Status request frame, refused by name. Both: 64 callers, 5 updates each,
+/// 20 each, and one over the 4 KB NodeCommand request frame, refused `Malformed(TooLarge)` by name. Both: 64 callers, 5 updates each,
 /// at 3.5 KB. Completed of sent, p50, p99 and max; reported, no target.
 async fn management_load(estate: &Estate, meshes: &[String], admins: u32, rows: &mut Rows) {
     let at = rdm_core::PathName::new(format!("{}.node-admin", meshes.last().unwrap()), admins.to_string()).unwrap();
@@ -648,7 +648,7 @@ async fn management_load(estate: &Estate, meshes: &[String], admins: u32, rows: 
         }
     };
     for bytes in [256usize, 1024, 3584, 5000] {
-        let what = if bytes > 4096 { format!("size: config.update of {bytes} B, over the 4 KB Status request frame") } else { format!("size: config.update of {bytes} B") };
+        let what = if bytes > 4096 { format!("size: config.update of {bytes} B, over the 4 KB NodeCommand request frame") } else { format!("size: config.update of {bytes} B") };
         let n = if bytes > 4096 { 1 } else { 20 };
         let (mut done, mut refused, mut first) = (Vec::new(), 0usize, String::new());
         for _ in 0..n {

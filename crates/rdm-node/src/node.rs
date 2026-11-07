@@ -13,6 +13,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Bytes each peer's gossip send queue holds, shared by every topic, where iroh-gossip's default is
+/// 1 MiB. A control message that does not fit closes the connection, and the mesh shares it: at the
+/// default a 300,000 x 256 B flood closed 44 connections at L1, at this size none (Q383). It costs up to
+/// this much per peer, only while that peer is behind.
+const GOSSIP_SEND_QUEUE_BYTES: usize = 16 << 20;
+
 /// The node's transport key, kept in its data dir: a restart keeps it, a
 /// replacement (fresh data dir) gets a new one.
 pub fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey> {
@@ -593,7 +599,7 @@ async fn start_booted(
         .map_err(|e| anyhow!("protocol catalog refused to build: {e:?}"))?;
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node_path = %launch.path, node_name = %launch.name);
-    let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
+    let g = iroh_gossip::net::Gossip::builder().send_queue(iroh_gossip::net::QueueOptions::default().size(GOSSIP_SEND_QUEUE_BYTES)).spawn(ep0.clone());
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node_path = %launch.path, node_name = %launch.name, alpns = "node-rpc,gossip");
     let mut router_builder = Router::builder(ep0.clone())

@@ -1132,7 +1132,7 @@ impl ManifestReference {
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
 /// The bound every Status request fits in (node-rpc.md "Each protocol declares
-/// `MAX_REQUEST_FRAME_BYTES`"): a request past it, a config put's whole map included, is refused
+/// `MAX_REQUEST_FRAME_BYTES`"): a request past it is refused
 /// `Malformed(TooLarge)` before its body is read.
 const MAX_STATUS_REQUEST_BYTES: usize = 4 * 1024;
 

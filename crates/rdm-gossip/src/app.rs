@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::sync::{mpsc, watch, Notify};
 
-pub(crate) const QUEUE: usize = 1024;
+pub(crate) const QUEUE: usize = 8192;
 const PARTS: usize = 16;
 const MAX: usize = crate::frame::MAX_FRAME;
 const CHUNK: &str = crate::envelope::CHUNK_TYPE;

@@ -52,7 +52,7 @@ opentelemetry-semantic-conventions = "0.33"
 # (rafka-v2 keeps none and points there).
 iroh = { git = "https://github.com/drlukeangel/iroh", rev = "938633e5b5db478d33d5991fdb8453726e6b4221" }
 iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "938633e5b5db478d33d5991fdb8453726e6b4221" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "25f505a05f3ad7461344c5ba82e75ce1eb2e96ca" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "9a928f5346b6b9e50c673fa2ae19e66b55465dc8" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }

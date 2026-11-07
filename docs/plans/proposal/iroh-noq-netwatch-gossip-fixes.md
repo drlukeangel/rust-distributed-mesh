@@ -17,7 +17,7 @@ lands here in the same commit as the pin that takes it, with the measurement tha
 | noq | `9de1796d` | n0-computer/noq main `04807b67` (noq 1.5.0) | 1 | 0 |
 | netwatch, portmapper | `24417e8d` | n0-computer/net-tools main `c07b688f` (0.20.0) | 4 | 0 |
 | iroh, iroh-base | `938633e5` | n0-computer/iroh main `a5e39c44` (after v1.4.1) | 13 | 0 |
-| iroh-gossip | `25f505a0` | n0-computer/iroh-gossip main `a16f016c` (v0.102.0) | 2 | 2 |
+| iroh-gossip | `9a928f53` | n0-computer/iroh-gossip main `a16f016c` (v0.102.0) | 3 | 2 |
 
 ## noq
 
@@ -69,6 +69,11 @@ Each patch goes when upstream merges an equivalent, unless its line says otherwi
 - **cdylib crate-type dropped** (`05ef7c0`), as in iroh.
 - **iroh, iroh-base and noq by git from drlukeangel's forks** (`80fede4`). Remove with the iroh and
   noq forks.
+- **The topic event channel holds 8192 events, not 256** (`9a928f53`). 256 slots is 5-8 ms of a burst, and
+  a reader task off the CPU that long loses events to `Lagged` though the subscription's buffer behind
+  it is empty. Measured at L1 with 5,000 messages at 25-90k/s: 60-120 lag events per burst at 256, none at
+  8192, RDM's receive loop handling every message on every node. Remove when upstream sizes the channel
+  or takes its buffer from the subscription.
 - Dropped at the move, upstream's v0.102.0 closes the gap:
   - **The net actor never awaits a peer's full send queue** (`637a374`). Upstream's byte-bounded
     per-peer queue (#185) never waits. Its removal condition is met: our
@@ -104,4 +109,9 @@ Each patch goes when upstream merges an equivalent, unless its line says otherwi
 
 ## RDM
 
-- The pins in the workspace `Cargo.toml` move to the commits above. No RDM source changed.
+- The pins in the workspace `Cargo.toml` move to the commits above. No RDM source had to change for them.
+- With the move, on the same loss (Q383, Q385): `GOSSIP_SEND_QUEUE_BYTES`, 16 MiB per peer where the
+  default is 1 MiB (a 300,000 x 256 B flood closed 44 connections at L1 at the default, none at this size),
+  and the channel receive queue at 8192 events (`gossip.md` §3.4).
+- M11 at L1 and L2 after all of it: 100% of every burst in 3 L1 runs and 1 L2 run, and 95,000 of 95,000 and
+  235,000 of 235,000 receipts on every receiver for the 5,000 burst.
