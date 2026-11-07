@@ -16,7 +16,8 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, digest: MeshDigest, serial: u64) {
     // Neighbor delivery passes identical heartbeat bytes to RDM without waiting for swarm dedup
     // retention. A following status on the same channel proves receipt has finished.
-    sender.broadcast_neighbors(Frame::Digest { digest }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    // The Digest with its details: authored by its own birth, at its sequence (`Frame::digest`).
+    sender.broadcast_neighbors(Frame::digest(&digest, true).encode().into()).await.unwrap();
     sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -68,14 +69,14 @@ fn story(story: Story) {
         let counts = (*changes.borrow(), *births.borrow(), *overlays.borrow());
         let mut offered = digest.clone();
         match story {
-            Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; offered.data_dir = Some("obsolete=yes".into()); }
+            Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; }
             Story::Duplicate => {
                 // The same Digest again, its status included (Q387: the status is on the wire).
                 assert_eq!(Frame::digest(&offered.clone(), true).authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::digest(&digest.clone(), true).authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
                 receiver_channels.location_view().forget(key);
             }
             Story::Inconsistent => { offered.node.endpoint_id = EndpointId(other_key.to_string()); }
-            Story::Newer => { offered.digest_seq = 101; offered.node.transport_addr = "127.0.0.1:12002".parse().unwrap(); offered.data_dir = Some("new=yes".into()); }
+            Story::Newer => { offered.digest_seq = 101; offered.node.transport_addr = "127.0.0.1:12002".parse().unwrap(); }
             Story::NewBirth => { offered.digest_seq = 1; offered.node.incarnation = IncarnationId::mint(); offered.node.supersedes = Some(incarnation.clone()); }
         }
         send(&sender, &receiver, offered.clone(), 2).await;

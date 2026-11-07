@@ -1882,12 +1882,40 @@ impl DigestView {
 
     /// Hold `r` as the runtime and data dir of the exact birth `node_id`, `incarnation` (its join report,
     /// a topology read or this node's own launch): a later incarnation replaces an earlier one's, and
-    /// a report that names neither holds nothing.
-    pub fn hold_runtime(&self, node_id: &NodeId, incarnation: &IncarnationId, r: rdm_core::NodeRuntime) {
+    /// a report that names neither holds nothing. One birth has one runtime (deployment-provider.md:
+    /// "Changing the locator or control domain for the same incarnation is a named inconsistency and
+    /// refusal"): a runtime of the held incarnation that names another locator or control domain is
+    /// refused by name and the held one stays; what the held birth lacks (its data dir) is added. A
+    /// birth the held birth's Digest supersedes brings back nothing. `false` when refused.
+    pub fn hold_runtime(&self, node_id: &NodeId, incarnation: &IncarnationId, r: rdm_core::NodeRuntime) -> bool {
         if r.runtime.is_none() && r.data_dir.is_none() {
-            return;
+            return true;
         }
-        self.runtimes.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), r));
+        let superseded = self.inner.lock().unwrap().get(node_id.as_str()).is_some_and(|(d, _, _)| &d.node.incarnation != incarnation && d.node.supersedes.as_ref() == Some(incarnation));
+        if superseded {
+            return false;
+        }
+        let mut runtimes = self.runtimes.lock().unwrap();
+        let held = runtimes.get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, h)| h.clone());
+        let r = match held {
+            Some(held) => {
+                if let (Some(h), Some(o)) = (&held.runtime, &r.runtime) {
+                    if h != o {
+                        tracing::info_span!(
+                            "rdm.mesh.runtime.reject.via-locator-changed",
+                            node = %self.observer_name().unwrap_or_default(), node_id = %node_id, incarnation_id = %incarnation.as_str(),
+                            held_locator_fingerprint = %h.locator_fingerprint(), offered_locator_fingerprint = %o.locator_fingerprint(),
+                        )
+                        .in_scope(|| tracing::info!("a birth offered another runtime: refused, the held one stays"));
+                        return false;
+                    }
+                }
+                rdm_core::NodeRuntime { runtime: r.runtime.or(held.runtime), data_dir: r.data_dir.or(held.data_dir) }
+            }
+            None => r,
+        };
+        runtimes.insert(node_id.to_string(), (incarnation.clone(), r));
+        true
     }
 
     /// The runtime and data dir this view holds of the exact birth `node_id`, `incarnation`.

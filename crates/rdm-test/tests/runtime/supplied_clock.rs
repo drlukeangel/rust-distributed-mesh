@@ -115,21 +115,30 @@ impl Observer {
         self.seen.lock().unwrap().clone()
     }
 
-    /// The digests of `node` heard on the mesh channel, in arrival order.
+    /// The digests of `node` heard on the mesh channel, in arrival order: each Digest's envelope names
+    /// its birth, sequence and time, and the birth's details are the ones the observer heard of it, on
+    /// its first Digest or its mesh-primary's TopologyFull entry (gossip.md §3.1).
     fn heartbeats_of(&self, node: &rdm_core::NodeId) -> Vec<(Seen, MeshDigest)> {
-        self.all()
-            .into_iter()
+        let all = self.all();
+        let held = |b: &rdm_gossip::envelope::Birth| {
+            all.iter().find_map(|x| match x.frame.data() {
+                Frame::Digest { details: Some(d), .. } if x.frame.context().is_some_and(|c| &c.source == b) => Some(d.node(b.node.clone(), b.incarnation.clone(), "mesh1")),
+                Frame::TopologyFull { digests, .. } => digests.iter().find(|d| d.node.node_id == b.node && d.node.incarnation == b.incarnation).map(|d| d.node.clone()),
+                _ => None,
+            })
+        };
+        all.iter()
             .filter(|x| x.channel == "mesh1")
             .filter_map(|x| match x.frame.data() {
-                Frame::Digest { digest } if &digest.node.node_id == node => Some((x.clone(), digest.clone())),
+                Frame::Digest { .. } if x.frame.context().is_some_and(|c| &c.source.node == node) => Some((x.clone(), x.frame.digest_of("mesh1", &held)?)),
                 _ => None,
             })
             .collect()
     }
 
     async fn broadcast(&self, f: &Frame) {
-        let author = match f.data() { Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => self.author.clone() };
-        self.mesh_sender.broadcast(Bytes::from(f.clone().authored(&author, 0, 1).encode())).await.unwrap();
+        // A Digest is authored by its own birth (`Frame::digest`); any other frame by the observer.
+        self.mesh_sender.broadcast(Bytes::from(f.clone().authored(&self.author, 0, 1).encode())).await.unwrap();
     }
 }
 

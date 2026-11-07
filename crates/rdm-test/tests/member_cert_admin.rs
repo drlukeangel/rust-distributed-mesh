@@ -82,7 +82,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
 
         let (root_digest, root_mesh_id) = {
             let d = root.digest.lock().unwrap().clone();
-            (d.clone(), d.mesh_id.clone().expect("the root holds its mesh id"))
+            (d.clone(), root.topology_view.digest_view.mesh_id_of(&d.node.mesh).expect("the root holds its mesh id"))
         };
         std::fs::create_dir_all(&joiner_dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();

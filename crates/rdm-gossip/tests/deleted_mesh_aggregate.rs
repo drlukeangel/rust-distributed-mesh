@@ -47,9 +47,11 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
         incarnation: m3_a1.node.incarnation.clone(),
      node_id: m3_a1.node.node_id.clone(), };
     let mut rx = SnapshotReceiver::default();
+    // The deleted mesh's id rides its aggregate beside its name.
+    let mesh3_id = MeshId::mint();
     let chunk = rdm_gossip::snapshot::Chunk {
         mesh: "mesh3".into(),
-        mesh_id: None,
+        mesh_id: Some(mesh3_id.clone()),
         publisher: pub_id.clone(),
         forwarded_by: None,
         topology_version: 7,
@@ -65,7 +67,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
     assert!(matches!(taken, rdm_gossip::snapshot::Taken::Installed(_)));
     let _ = Frame::TopologyFull {
         mesh: "mesh3".into(),
-        mesh_id: None,
+        mesh_id: Some(mesh3_id),
         publisher: pub_id,
         forwarded_by: None,
         topology_version: 7,

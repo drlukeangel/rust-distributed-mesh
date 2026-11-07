@@ -398,17 +398,17 @@ fn a_first_start_whose_row_its_own_create_wrote_is_installed_once() {
     let dep = deployed();
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
-        let installed: Arc<Mutex<Vec<String>>> = Arc::default();
+        let installed: Arc<Mutex<Vec<(String, rdm_core::NodeRuntime)>>> = Arc::default();
         let log = installed.clone();
         let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Pending);
         let mut service = service_over(joins.clone(), Arc::default(), row);
-        service.install = Arc::new(move |d| log.lock().unwrap().push(d.node.node_id.to_string()));
+        service.install = Arc::new(move |d, runtime| log.lock().unwrap().push((d.node.node_id.to_string(), runtime.clone())));
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34570");
         let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(*installed.lock().unwrap(), vec![dep.node_id.to_string()], "the birth is installed once");
+        assert_eq!(*installed.lock().unwrap(), vec![(dep.node_id.to_string(), rdm_core::NodeRuntime { runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()) })], "the birth is installed once, with the runtime and data dir its join report carried");
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();

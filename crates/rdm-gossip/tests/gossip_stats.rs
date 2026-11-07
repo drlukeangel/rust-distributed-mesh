@@ -1,11 +1,12 @@
-//! A node's own digest tells how its mesh channel is doing.
+//! A node's own sample tells how its mesh channel is doing.
 //!
-//! CONTRACT: the digest a node publishes carries the members it holds as heard, its ACTIVE gossip
-//! neighbours on the mesh channel (never the seeded peer list), and the topology frames it sent
-//! and decoded since it started. A node whose neighbours all went away publishes `neighbours = 0`
-//! while still holding the members it heard; when delivery returns it publishes neighbours again.
-//! What must NOT happen: a neighbour count read from the seeded peer list (it would stay 1 through
-//! the isolation), or counters that do not move when frames flow.
+//! CONTRACT (node-identity-and-state.md §2.5, Q394): the in-memory sample a node takes of itself, the
+//! one its `node.get` serves, counts the members it holds as heard, its ACTIVE gossip neighbours on the
+//! mesh channel (never the seeded peer list), and the topology frames it sent and decoded since it
+//! started; its Digest carries none of them. A node whose neighbours all went away samples
+//! `neighbours = 0` while still holding the members it heard; when delivery returns it samples
+//! neighbours again. What must NOT happen: a neighbour count read from the seeded peer list (it would
+//! stay 1 through the isolation), counters that do not move when frames flow, or a counter on gossip.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -49,13 +50,13 @@ fn addr_of(n: &Node) -> iroh::EndpointAddr {
     iroh::EndpointAddr::new(n.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], n.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())))
 }
 
-/// Publish `m` repeatedly until its own sampled stats satisfy `ok`; the last sampled stats.
+/// Publish `m` repeatedly until its own sample satisfies `ok`; the last sample.
 async fn published_until(m: &rdm_gossip::channel::Channels, own: &MeshDigest, ok: impl Fn(&GossipStats) -> bool) -> GossipStats {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         m.publish(own).await.unwrap();
-        let mine = m.topology_view().digest_view.current(m.topology_view().digest_view.staleness_floor()).into_iter().find(|d| d.node.node_id == own.node.node_id).expect("the node holds its own digest");
-        let g = mine.gossip.expect("a published digest carries gossip stats");
+        assert!(m.topology_view().digest_view.current(m.topology_view().digest_view.staleness_floor()).into_iter().any(|d| d.node.node_id == own.node.node_id), "the node holds its own digest");
+        let (_, g) = m.own_sample();
         if ok(&g) {
             return g;
         }
@@ -65,8 +66,8 @@ async fn published_until(m: &rdm_gossip::channel::Channels, own: &MeshDigest, ok
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
-    if crate::own_process::delegated_with_env(module_path!(), "node_digest_counts_active_neighbours_through_isolation_and_return", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
+async fn node_own_sample_counts_active_neighbours_through_isolation_and_return() {
+    if crate::own_process::delegated_with_env(module_path!(), "node_own_sample_counts_active_neighbours_through_isolation_and_return", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
         return;
     }
     let (a, b) = (node().await, node().await);
@@ -80,7 +81,10 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
     mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
 
-    // Joined: A has a neighbour, has heard B, and frames flowed both ways.
+    // Joined: A has a neighbour, has heard B, and frames flowed both ways. B's first Digest carries its
+    // details and its later ones its status only (gossip.md §3.1): A holds B from that first Digest, so
+    // B publishes once A is its neighbour.
+    mb_channels.wait_for_neighbour().await;
     let pb = mb_channels.publish_every(Duration::from_millis(200), move || db.clone());
     let joined = published_until(&ma_channels, &da, |g| g.neighbours == 1 && g.heard >= 2 && g.frames_received >= 1).await;
     assert!(joined.frames_sent >= 1, "{joined:?}");
@@ -99,6 +103,7 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
     let mc_channels = rdm_gossip::channel::Channels::new(&c.gossip, &c.ep, &mc).unwrap();
     mc_channels.join(rdm_gossip::channel::ChannelId::mesh(mc.fabric_id(), mc.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let dc = digest(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", &c.ep);
+    mc_channels.wait_for_neighbour().await;
     let pc = mc_channels.publish_every(Duration::from_millis(200), move || dc.clone());
     let returned = published_until(&ma_channels, &da, |g| g.neighbours >= 1 && g.frames_received > isolated.frames_received).await;
     assert!(returned.heard >= 1, "{returned:?}");

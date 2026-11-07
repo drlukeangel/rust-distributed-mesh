@@ -97,7 +97,7 @@ fn a_node_joins_a_channel_naming_its_node_admin_and_the_node_admins_application_
             launcher: Some(rdm_core::launch::Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
             data_dir: member_dir.clone(),
             store_dir: dir.clone(),
-            mesh_id: d.mesh_id.clone(),
+            mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,

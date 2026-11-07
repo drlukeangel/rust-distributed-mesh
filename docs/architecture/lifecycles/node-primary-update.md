@@ -53,7 +53,7 @@ and recording it are separate for every type.
    the birth the mesh-primary's command names (step 2). The successor becomes
    primary: it installs the election's result the call carries in its own topology view, answers
    `node.primary.updated { node_id }` on that call, and it gossips the change on its mesh channel and on the backbone: its next `Digest` carries it
-   (`is_primary`, and `is_fabric_primary` when both moved, at the next revision), its normal
+   (its role in `primary`, and the fabric-primary role when both moved, at the next revision, Q392), its normal
    announcement and the only one ([gossip.md §3.1](../gossip.md#31-frame-catalog)). It waits for nothing from the old primary. A non-admin primary
    then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
    moment.
@@ -209,7 +209,7 @@ primary → successor       node.primary.update (PrimaryUpdate)
 successor                 becomes primary: installs the election's result in its topology view
   ← node.primary.updated { node_id }   (PrimaryUpdated)
 primary → commander  node.primary.updating, then node.primary.updated { node_id }; the next command goes to the node's mesh-primary as it stands after the update
-successor → mesh channel  its next Digest carries is_primary (its normal announcement)
+successor → mesh channel  its next Digest carries its role in primary (its normal announcement)
 mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next TopologyFull projection carries it
 ```
 

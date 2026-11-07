@@ -882,10 +882,10 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
 /// CONTRACT (R11 form (b); node-recovery.md step 2-3, run by the primary watch: "A node-admin watching
 /// a silent primary (primary watch) runs this same ladder", then "the provider about the exact
 /// runtime recorded at launch"): the node-admin the fabric-primary created for a leaving mesh holds
-/// the lost primary's primary record but never heard its digest (the primary was gone before the admin
-/// was born). Its primary watch reads the holder's runtime from the runtime row handed into its
-/// nodes.storage at its create, the exact runtime recorded at launch. With no digest and no row the
-/// finding is unproven.
+/// the lost primary's primary record but holds no runtime of its birth (the primary was gone before the
+/// admin was born, and gossip never carries a runtime: Q387). Its primary watch reads the holder's
+/// runtime from the runtime row handed into its nodes.storage at its create, the exact runtime recorded
+/// at launch. With no runtime held and no row the finding is unproven.
 #[test]
 fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row() {
     use rdm_admin::primary_watch::{inspect_birth, Finding};
@@ -901,7 +901,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
         let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
-    assert!(matches!(&without_row, Finding::Dead { reason } if reason.contains("no digest") && reason.contains("no node record")), "no digest and no record: not proven, naming both: {without_row:?}");
+    assert!(matches!(&without_row, Finding::Dead { reason } if reason.contains("no runtime fact of this exact birth") && reason.contains("no node record")), "no runtime held and no record: not proven, naming both: {without_row:?}");
     assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
 }
 

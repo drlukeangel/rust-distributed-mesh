@@ -16,8 +16,8 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip) {
     (ep, gossip)
 }
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64, author: &rdm_gossip::envelope::Birth) {
-    let source = match frame.data() { Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => author.clone() };
-    sender.broadcast_neighbors(frame.authored(&source, 10, 1).encode().into()).await.unwrap();
+    // A Digest is authored by its own birth (`Frame::digest`); any other frame by `author`.
+    sender.broadcast_neighbors(frame.authored(author, 10, 1).encode().into()).await.unwrap();
     sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: author.node.to_string(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -96,7 +96,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let (births,changes,overlays,roles)=(receiver.digest_view.birth_changes(),receiver.digest_view.digest_changes(),receiver.digest_view.overlay_changes(),receiver.primaries().subscribe());
         let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*roles.borrow());
         let bad=iroh::SecretKey::generate().public();
-        let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());stale.data_dir = Some("obsolete=yes".into());
+        let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());
         let mut frames=vec![
             Frame::digest(&stale.clone(), true),
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},

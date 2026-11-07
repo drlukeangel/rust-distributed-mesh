@@ -148,13 +148,13 @@ local Instant         silence and elapsed time                    (receiver-loca
 
 | frame | channel | author | forwarded by | identity / dedup | retained | use |
 |---|---|---|---|---|---|---|
-| `Digest { node, incarnation, endpoints with freshness, status, runtime, digest_seq, emitted_at_rafka_ms }` | own mesh channel | every node, at once when its status changes and on its heartbeat timer | nobody | same exact birth: higher `digest_seq` is newer, equal or lower is not taken; a new incarnation is taken only along its lineage and only for a NodeId not accepted as `NodeDeleted`; its `digest_seq` starts again at 1 | until silent for the silence window, or until `NodeDeleted` | that node's current identity, endpoints, runtime fact and status ([states](lifecycles/states.md)), as the node writes it on its own record (Q356); its arrival is its liveness. The first status a Digest carries on the mesh channel is pending, from the node's accepted join ([node-mesh-join](lifecycles/node-mesh-join.md) step 10); a receiver never gives a birth a status it has not published. Inside its mesh, a status the node writes comes only from its own Digest, ordered by `digest_seq`, except at its mesh-primary, which takes it from the node's reports, the op stream the node sends it, and decides from them, never from gossip (Q197); `PendingReconnect`, deleting and deleted are its mesh-primary's, on the node's record, and deleting and deleted ride `NodeDeleting` and `NodeDeleted` |
-| `TopologyFull { mesh, publisher (exact identity), forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }` | backbone | the source Mesh's current primary; after mesh.deleted its last node-admin, still its primary, until it is stopped or deleted; nobody else, ever: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's `TopologyFull` projection (the fabric-primary never publishes a mesh as its acting primary, R-RX4) | nobody as is; a receiving primary derives the two frames below from it | `(mesh, publisher, topology_version, snapshot_id)`; a receiving admin installs the snapshot atomically once it holds every chunk, and only then advances the held source version or derives a delta; the version bumps on a material change of the normalized projection below and not on an unchanged republish; the version is the Mesh's, whichever of its mesh-primaries publishes it, and a node-admin taking the role continues it (Q389, Q391) | `digests`: as held; `in_flight`: while the operation is claimed and has no completed receipt (derived from Build facts at each publication, never stored), and NodeStopped until the next lifecycle op on that exact birth; `deleted`: local age since accepted, up to the deleted retention | the complete Mesh with loads: what every node-admin holds of every Mesh for routing and control decisions. In `digests`, each node is its latest Digest as the mesh-primary holds it, status included. One mesh has one publisher on the backbone, its mesh-primary, and none while it has no primary (R-RX4), so a receiver takes its TopologyFull and TopologyDelta as they arrive. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, all of it comes from its own Digest: a copy of it no later than the Digest held moves nothing; NodeStopped and NodeDeleting stay immediate events. |
-| `TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted }` | the forwarding primary's own mesh channel | the local mesh primary, when a peer Mesh it holds moved from one version to another | nobody | `(mesh, base_version, topology_version)`; applied only when the receiver holds exactly `base_version` of that Mesh, whichever mesh-primary or forwarder sent it (Q389); a `base_version` of 0 is the Mesh's first differential into this mesh channel, applied by a node that holds nothing of it | not retained as a frame | transforms the held remote projection from `base_version` into `topology_version`: births added or changed, identities removed, overlay and deleted changes, loads omitted. In `changed`, each node is its latest Digest as the forwarder holds it, status included. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). A delta whose base version the receiver does not hold triggers GetTopology repair. Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, all of it comes from its own Digest: a copy of it no later than the Digest held moves nothing; NodeStopped and NodeDeleting stay immediate events. |
+| `Digest { status, primary, details }` | own mesh channel | every node, at once when its status changes and on its heartbeat timer | nobody | the envelope's `source` is the birth and its `sequence` the birth's `digest_seq`: higher is newer, equal or lower is not taken; a new incarnation is taken only along its lineage and only for a NodeId not accepted as `NodeDeleted`; `sequence` starts again at 1 | until silent for the silence window, or until `NodeDeleted` | that node's status ([states](lifecycles/states.md)), as the node writes it on its own record (Q356), and the primary roles it holds, each with its revision (Q392); its arrival is its liveness. `details` (type, path, name, `endpoint_id`, `transport_addr`, `supersedes`) ride the birth's first Digest, its pending at an accepted join, and any Digest whose details changed; peers retain them, and a receiver that hears a birth whose details it does not hold tops up by a read (`via-unknown-birth`). Runtime, data dir and other management metadata never ride gossip: a node-admin takes them from join reports, topology reads and node records. The first status a Digest carries on the mesh channel is pending, from the node's accepted join ([node-mesh-join](lifecycles/node-mesh-join.md) step 10); a receiver never gives a birth a status it has not published. Inside its mesh, a status the node writes comes only from its own Digest, ordered by `digest_seq`, except at its mesh-primary, which takes it from the node's reports, the op stream the node sends it, and decides from them, never from gossip (Q197); `PendingReconnect`, deleting and deleted are its mesh-primary's, on the node's record, and deleting and deleted ride `NodeDeleting` and `NodeDeleted` |
+| `TopologyFull { mesh, publisher (exact identity), forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }` | backbone | the source Mesh's current primary; after mesh.deleted its last node-admin, still its primary, until it is stopped or deleted; nobody else, ever: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's `TopologyFull` projection (the fabric-primary never publishes a mesh as its acting primary, R-RX4) | nobody as is; a receiving primary derives the two frames below from it | `(mesh, publisher, topology_version, snapshot_id)`; a receiving admin installs the snapshot atomically once it holds every chunk, and only then advances the held source version or derives a delta; the version bumps on a material change of the normalized projection below and not on an unchanged republish; the version is the Mesh's, whichever of its mesh-primaries publishes it, and a node-admin taking the role continues it (Q389, Q391) | `digests`: as held; `in_flight`: while the operation is claimed and has no completed receipt (derived from Build facts at each publication, never stored), and NodeStopped until the next lifecycle op on that exact birth; `deleted`: local age since accepted, up to the deleted retention | the complete Mesh: what every node-admin holds of every Mesh for routing and control decisions. In `digests`, each node is its latest Digest as the mesh-primary holds it, status included. One mesh has one publisher on the backbone, its mesh-primary, and none while it has no primary (R-RX4), so a receiver takes its TopologyFull and TopologyDelta as they arrive. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, all of it comes from its own Digest: a copy of it no later than the Digest held moves nothing; NodeStopped and NodeDeleting stay immediate events. |
+| `TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted }` | the forwarding primary's own mesh channel | the local mesh primary, when a peer Mesh it holds moved from one version to another | nobody | `(mesh, base_version, topology_version)`; applied only when the receiver holds exactly `base_version` of that Mesh, whichever mesh-primary or forwarder sent it (Q389); a `base_version` of 0 is the Mesh's first differential into this mesh channel, applied by a node that holds nothing of it | not retained as a frame | transforms the held remote projection from `base_version` into `topology_version`: births added or changed, identities removed, overlay and deleted changes. In `changed`, each node is its latest Digest as the forwarder holds it, status included. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). A delta whose base version the receiver does not hold triggers GetTopology repair. Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, all of it comes from its own Digest: a copy of it no later than the Digest held moves nothing; NodeStopped and NodeDeleting stay immediate events. |
 | [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone TopologyFull.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped; none for a mesh's last admin after mesh.deleted ([Mesh delete](#mesh-delete)) | peer mesh primaries preserve op | `(type, build_id, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not the provider's `Exited`. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting, connections-deleted and stopping reach the node's own mesh in its own Digest, and peer meshes in its mesh-primary's `TopologyFull` and the deltas derived from it; node.connection.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node's last Digest carries stopping, and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
-| [`NewFabricPrimary { primary, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: a primary change rides the successor's `Digest` and the mesh-primary's `TopologyFull` projection, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `TopologyFull` projection | — | — | — | — |
+| [`NewFabricPrimary { primary, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: this frame position remains reserved. Contact fields are supplied with the node's first gossip, retained in its projection and recoverable by read. Primary records remain governed by the leadership workflow; they are not inferred from `status`. | — | — | — | — |
 | `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the author's own mesh channel; then each peer mesh channel | the mesh primary when its Mesh's status changes | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Mesh's status projection |
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Fabric's status projection |
 | [`NodeRestarting { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#reserved-lifecycle-frame-positions) (position 7) | reserved position (Q183); never published | none: node.restart is removed; callers run node.stop then node.start, and the stop's stopped is published as [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
@@ -175,14 +175,13 @@ DOES bump topology_version
     a birth added, its incarnation or lineage changed, or removed
     an endpoint slot added, removed, or its freshness moved
     a status that routing reads
-    RuntimeFact or required current runtime metadata
+    a primary role taken or given up, or its revision moved
     an in_flight overlay added or cleared
     a deleted identity added or expired
 
 DOES NOT bump topology_version
     digest_seq alone
     emitted_at_rafka_ms alone
-    loads alone
     an unchanged anti-entropy republish
 ```
 
@@ -292,8 +291,7 @@ No timer expires it.
 
 #### A primary change on gossip
 
-[node.primary.update](lifecycles/node-primary-update.md) has no frame of its own. The successor's next
-`Digest` carries `is_primary` (and `is_fabric_primary`) at the next revision, its normal announcement;
+[node.primary.update](lifecycles/node-primary-update.md) has no frame of its own. The successor's next `Digest` carries the role in `primary` (and the fabric-primary role when both moved) at the next revision, its normal announcement (Q392);
 the mesh-primary records it on the node's row and its next `TopologyFull` projection carries it, its normal
 publication. The election's result is the fact and the row records it; a node that hears a digest
 installs a member fact, never a primary by advertisement. A primary the staleness-floor rule elects is
@@ -400,6 +398,7 @@ removal in `in_flight`:
 {
   "frame": "mesh-topology",
   "mesh": "mesh1",
+  "mesh_id": "<mesh1's id>",
   "publisher": {
     "node": "mesh1.node-admin.1",
     "incarnation": "0000000000000008"
@@ -414,23 +413,20 @@ removal in `in_flight`:
     {
       "fabric_id": "fabric1",
       "node": {
+        "mesh": "mesh1",
+        "type": "node",
         "node_id": "k8pag1qx95gw",
-        "name": "mesh1.node.1",
-        "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+        "path": "mesh1.node",
+        "name": "1",
+        "endpoint_id": "7a7a…",
         "transport_addr": "127.0.0.1:54473",
-        "incarnation": "0000000000000008",
-        "supersedes": null,
-        "runtime": null
+        "incarnation": "000000000008",
+        "supersedes": null
       },
       "status": "ready",
-      "admin_api_base": null,
+      "primary": [],
       "digest_seq": 42,
-      "emitted_at_rafka_ms": 1718290000050,
-      "data_dir": null,
-      "mesh_id": "mesh1",
-      "in_flight": null,
-      "load": null,
-      "gossip": null
+      "emitted_at_rafka_ms": 1718290000050
     }
   ],
   "in_flight": [
@@ -447,9 +443,7 @@ removal in `in_flight`:
 }
 ```
 
-The same birth's own `Digest` heartbeat on its mesh channel is
-`{ "frame": "digest", "digest": { … } }`, where the `digest` object is the
-[`MeshDigest`](node-rpc-envelope.md#join-op-0x1d-rdm) shown as the one entry of `digests` above.
+The same birth's own `Digest` heartbeat on its mesh channel is `{ "status": "ready", "primary": [] }` under its envelope (`source` the birth, `sequence` its `digest_seq`, `time` its emitted time). Its first publication into the mesh, its pending at the accepted join, adds its details: `{ "status": "pending", "primary": [], "details": { "type": "node", "path": "mesh1.node", "name": "1", "endpoint_id": "7a7a…7a7a", "transport_addr": "127.0.0.1:54473", "supersedes": null } }`.
 
 #### Receive rules: stale, duplicate and gap, per frame
 
@@ -525,15 +519,15 @@ birth ([node recovery](lifecycles/node-recovery.md) step 1).
 
 ### 3.3 Cross-Mesh topology inside a Mesh: deltas, full snapshots and the top-up
 
-The backbone stays the rich source: every node-admin holds every Mesh complete, loads included,
-because routing and control decisions are an admin's. Inside a Mesh, ordinary nodes need a remote
-Mesh's identity, endpoints with freshness, status, overlays and deletions, and not its loads; one
+The backbone stays the rich source: every node-admin holds every Mesh complete, because
+routing and control decisions are an admin's. Inside a Mesh, ordinary nodes need a remote Mesh's
+identity, endpoints, status, overlays and deletions; one
 node changing in a remote Mesh of a hundred must not make every other Mesh re-broadcast all
 hundred.
 
 ```text
-NODE -> OWN MESH            Digest heartbeat, full local facts, <= 2 s, and at once on its status change
-MESH PRIMARY -> BACKBONE    TopologyFull, the complete Mesh with loads, versioned, anti-entropy + change
+NODE -> OWN MESH            Digest: status, <= 2 s, and at once on its status change
+MESH PRIMARY -> BACKBONE    TopologyFull, the complete Mesh, versioned, anti-entropy + change
 PEER PRIMARY -> OWN MESH    TopologyDelta, base_version -> topology_version, no loads, on change
 ORDINARY NODE -> OWN PRIMARY   top-up: pull the current full fabric topology it holds
 ```
@@ -591,9 +585,7 @@ coming up on a mesh channel (a join, a heal, a refeed) hears its mesh-primary's 
 each peer Mesh again: a node at its base applies it, one that holds it takes nothing, and one further
 behind tops up.
 
-**Loads are omitted from the ordinary-node cross-Mesh projection, not from the protocol.** They
-remain on the backbone. If ordinary nodes are ever made responsible for load-aware remote target
-selection, the forwarded frames carry loads again; nothing here makes their absence a law.
+**No load rides gossip** (Q394): neither the backbone nor a mesh channel carries a node's load or gossip counters; `node.get` serves them only for the node that answers it ([node identity and state §2.5](node-identity-and-state.md)).
 
 **Status frames keep the fast path, and recover two different ways.** `NodeDeleting` and `NodeDeleted`
 are immediate events on the executor's own mesh channel and in the next mesh topology;
@@ -967,7 +959,7 @@ At minimum:
 26. a forwarder that becomes the primary continues from what its Mesh holds, as a differential, never a full; a new source primary continues the Mesh's version, and its next delta applies at the held base (Q389, Q391);
 27. a full missing a chunk is never applied, on the backbone or from a read; the held projection and the held source version survive until a complete snapshot or a top-up, and no delta is derived from an incomplete one;
 28. a stale copy is repaired by the holder's own pull on a noticed gap, never by a periodic push; a mesh-primary's sources are the backbone's complete TopologyFull snapshots, replaced by the source's next publication;
-29. the forwarded cross-Mesh projection carries no loads while the backbone mesh topology does;
+29. no frame carries a node's load or gossip counters, on the backbone or a mesh channel (Q394);
 30. two heartbeats of one birth are ordered by `digest_seq` alone: a stalled or repeated Rafka-time never makes a newer heartbeat look older;
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
 32. a source Mesh whose nodes only heartbeat does not bump `topology_version`, and no delta travels;

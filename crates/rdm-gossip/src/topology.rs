@@ -418,7 +418,7 @@ pub struct TopUpDone {
 /// Reads the topology of `meshes` from a mesh primary and installs it into the given topology view
 /// (the topology read, over Node RPC): the topology view holds no Node RPC client, the process
 /// composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, Primary, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -552,8 +552,8 @@ mod tests {
         let (a, ai) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let (b, bi) = (NodeId::parse("000000000001").unwrap(), IncarnationId::mint());
         let mut da = digest(&a, &ai, None, NodeStatus::Ready, 1);
-        da.is_primary = Some(3);
-        da.is_fabric_primary = Some(7);
+        da.set_primary(Some(3));
+        da.set_fabric_primary(Some(7));
         assert!(digest_view.record(da.clone()));
         let held = |role| match role { PrimaryRole::FabricPrimary => digest_view.primaries.fabric(), _ => digest_view.primaries.node_type_primary("mesh1", "node") };
         assert_eq!(held(PrimaryRole::NodePrimary("node".into())), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
@@ -561,11 +561,11 @@ mod tests {
         let mut db = digest(&b, &bi, None, NodeStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); db.node.path = at.path; db.node.name = at.name; }
         db.node.mesh = "mesh1".into();
-        db.is_primary = Some(2);
+        db.set_primary(Some(2));
         assert!(digest_view.record(db.clone()));
         assert_eq!(held(PrimaryRole::NodePrimary("node".into())).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
         db.digest_seq += 1;
-        db.is_primary = Some(4);
+        db.set_primary(Some(4));
         assert!(digest_view.record(db));
         assert_eq!(held(PrimaryRole::NodePrimary("node".into())).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
         assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
@@ -589,7 +589,7 @@ mod tests {
         let (other, other_inc) = (NodeId::parse("000000000003").unwrap(), IncarnationId::mint());
         assert!(view.digest_view.record(digest(&me, &my_inc, None, NodeStatus::Ready, 5)));
         let mut mine = digest(&me, &my_inc, None, NodeStatus::Ready, 3);
-        mine.is_primary = Some(1);
+        mine.set_primary(Some(1));
         let mut theirs = digest(&other, &other_inc, None, NodeStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); theirs.node.path = at.path; theirs.node.name = at.name; }
         theirs.node.mesh = "mesh1".into();
@@ -653,17 +653,22 @@ mod tests {
         assert_eq!(digest_view.superseded(), copied, "the same set as a copy of every digest");
     }
 
-    /// CONTRACT: the gossip stats a digest carries never reach the topology view the version
-    /// orders, so a changed count is no topology change.
+    /// CONTRACT (gossip.md §3.1 "DOES bump / DOES NOT bump"; Q394: load and the gossip counters never
+    /// ride gossip): the topology view the version orders drops a Digest's heartbeat order and stamp
+    /// alone, so a later heartbeat of the same birth, status and primary roles is no topology change,
+    /// and a changed status or primary role is one. Must NOT happen: every heartbeat moving the version.
     #[test]
-    fn topology_view_of_a_digest_with_gossip_stats_equals_the_view_without() {
+    fn a_later_heartbeat_of_the_same_birth_is_no_topology_change_and_a_changed_status_or_role_is_one() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let plain = digest(&id, &inc, None, NodeStatus::Ready, 1);
-        let mut with = plain.clone();
-        with.gossip = Some(rdm_core::GossipStats { heard: 3, neighbours: 2, frames_sent: 10, frames_received: 12 });
-        assert_ne!(plain, with);
-        assert_eq!(crate::snapshot::topology_view(&with), crate::snapshot::topology_view(&plain));
-        assert_eq!(crate::snapshot::without_load(&with).gossip, None);
+        let first = digest(&id, &inc, None, NodeStatus::Ready, 1);
+        let later = digest(&id, &inc, None, NodeStatus::Ready, 2);
+        assert_ne!(first, later);
+        assert_eq!(crate::snapshot::topology_view(&later), crate::snapshot::topology_view(&first), "a heartbeat is no topology change");
+        let moved = digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 2);
+        assert_ne!(crate::snapshot::topology_view(&moved), crate::snapshot::topology_view(&first), "a status change is one");
+        let mut primary = later.clone();
+        primary.set_primary(Some(1));
+        assert_ne!(crate::snapshot::topology_view(&primary), crate::snapshot::topology_view(&first), "a primary role taken is one");
     }
 
     /// CONTRACT (rafka-v2 `register_peer_location_if_fresher`): a restart keeps the key and binds a
@@ -719,35 +724,95 @@ mod tests {
         assert_eq!(addrs(&lookup), vec![port_new], "a digest of the deleted incarnation is refused: {port_old} is not restored");
     }
 
+    /// CONTRACT (deployment-provider.md: "Changing the locator or control domain for the same
+    /// incarnation is a named inconsistency and refusal"; Q387: a runtime is taken from the join report,
+    /// a topology read or the node's own launch, never from gossip): a birth's runtime held once stays
+    /// its runtime; another locator or control domain for the same incarnation is refused by name and
+    /// its data dir, unknown until then, is added; a restart's new birth brings a new runtime, and the
+    /// superseded birth's never returns. Must NOT happen: a held birth's runtime replaced by another.
     #[test]
     fn a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one() {
-        use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+        use rdm_core::{NodeRuntime, RuntimeFact, RuntimeLocator, RuntimeProvider};
+        let spans = OpenedSpans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let fact = |pid: u32, domain: &str| RuntimeFact {
             deployment_id: rdm_core::fixture_crockford60("dep"),
             provider: RuntimeProvider::Process,
             control_domain: domain.into(),
             locator: RuntimeLocator::Process { pid, start: 7 },
         };
+        let of = |f: RuntimeFact, dir: Option<&str>| NodeRuntime { runtime: Some(f), data_dir: dir.map(String::from) };
         let digest_view = DigestView::default();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        let mut first = digest(&id, &birth, None, NodeStatus::Ready, 100);
-        first.node.runtime = Some(fact(11, "process:a:1"));
+        let first = digest(&id, &birth, None, NodeStatus::Ready, 100);
         assert!(digest_view.record(first.clone()));
-        // Same birth, another locator or another control domain: refused, the held one stays.
+        assert!(digest_view.hold_runtime(&id, &birth, of(fact(11, "process:a:1"), None)));
+        // Same birth, another locator or another control domain: refused by name, the held one stays.
         for other in [fact(12, "process:a:1"), fact(11, "process:b:1")] {
-            let mut moved = digest(&id, &birth, None, NodeStatus::Ready, 200);
-            moved.node.runtime = Some(other.clone());
-            assert!(!digest_view.record(moved.clone()), "{other:?}");
-            assert!(!digest_view.record_forwarded(moved));
+            assert!(!digest_view.hold_runtime(&id, &birth, of(other.clone(), Some("/data/other"))), "{other:?}");
         }
-        assert_eq!(digest_view.get(id.as_str()).unwrap().0.node.runtime, Some(fact(11, "process:a:1")));
+        assert_eq!(digest_view.runtime_of(&id, &birth), Some(of(fact(11, "process:a:1"), None)));
+        let refused = spans.named("rdm.mesh.runtime.reject.via-locator-changed");
+        assert_eq!(refused.len(), 2, "each other runtime refused by name: {refused:?}");
+        assert!(refused.iter().all(|f| f["node_id"] == id.to_string() && f["incarnation_id"] == birth.as_str()));
+        // The same runtime again adds the data dir the held birth lacked.
+        assert!(digest_view.hold_runtime(&id, &birth, of(fact(11, "process:a:1"), Some("/data/a"))));
+        assert_eq!(digest_view.runtime_of(&id, &birth), Some(of(fact(11, "process:a:1"), Some("/data/a"))));
         // A restart: a new birth with a new runtime is current; the old birth's fact never returns.
         let next = IncarnationId::mint();
-        let mut restarted = digest(&id, &next, Some(birth.clone()), NodeStatus::Ready, 300);
-        restarted.node.runtime = Some(fact(13, "process:a:1"));
-        assert!(digest_view.record(restarted));
-        assert!(!digest_view.record(first), "the superseded birth and its runtime are refused");
-        assert_eq!(digest_view.get(id.as_str()).unwrap().0.node.runtime, Some(fact(13, "process:a:1")));
+        assert!(digest_view.record(digest(&id, &next, Some(birth.clone()), NodeStatus::Ready, 300)));
+        assert!(digest_view.hold_runtime(&id, &next, of(fact(13, "process:a:1"), None)));
+        assert!(!digest_view.record(first), "the superseded birth is refused");
+        assert!(!digest_view.hold_runtime(&id, &birth, of(fact(11, "process:a:1"), Some("/data/a"))), "and so is its runtime");
+        assert_eq!(digest_view.runtime_of(&id, &next), Some(of(fact(13, "process:a:1"), None)));
+        assert_eq!(digest_view.runtime_of(&id, &birth), None, "the old birth's runtime is not held");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `Digest`: "peers retain them, and a receiver that hears a birth whose
+    /// details it does not hold tops up by a read (`via-unknown-birth`)"; §3.3): a Digest of a birth
+    /// this node holds no details of is taken as nothing, names the gap `unknown-birth` on its own mesh
+    /// with one span, and signals the top-up; each further such Digest signals it again (a pull refused
+    /// while the node holds no primary record yet is attempted at the next one) and opens no second
+    /// span; the primary roles it carries are held, a record naming only the exact birth. The birth's
+    /// first publication, its details, supplies it, and its later heartbeats are named from the details
+    /// retained. Must NOT happen: an unknown birth's Digest held with details it never carried, its
+    /// primary record dropped, or the gap signalled once and never again (cert_renewal: a first top-up
+    /// refused `no-primary-record-held` left mesh1.node.1 never holding mesh1.node.2, and the
+    /// mesh-primary's later Digests, of a birth it held no details of, never gave it the record).
+    #[test]
+    fn an_unknown_births_digest_signals_the_top_up_at_every_heartbeat_until_its_details_are_held() {
+        let spans = OpenedSpans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = test_view("mesh1", "mesh1.node.1");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let signalled = || rt.block_on(async { tokio::time::timeout(Duration::from_millis(20), view.desync.notified()).await.is_ok() });
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let at = |seq: u64| {
+            let mut d = digest(&id, &inc, None, NodeStatus::Ready, seq);
+            d.node.name = "2".into();
+            d
+        };
+        for seq in [2, 3] {
+            // The second carries the node-type primary role it holds: a record names only the exact birth.
+            let mut d = at(seq);
+            if seq == 3 {
+                d.set_primary(Some(4));
+            }
+            assert!(view.take(&Frame::digest(&d, false), &fabric, "mesh-channel").is_empty(), "heartbeat {seq} of an unknown birth is taken as nothing");
+            assert!(signalled(), "heartbeat {seq} signals the top-up");
+        }
+        assert!(view.digest_view.get(id.as_str()).is_none(), "no birth is held from a Digest without its details");
+        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision: 4 }), "the primary record its Digest carries is held: the node tops up from the primary it names");
+        assert_eq!(view.mesh_rx.lock().unwrap().desynced(), vec![("mesh1".to_string(), Gap::UnknownBirth)], "the gap is named on its own mesh");
+        let raised = spans.named("rdm.mesh.topology.update.via-unknown-birth");
+        assert_eq!(raised.len(), 1, "one span per gap: {raised:?}");
+        assert_eq!((raised[0]["node_id"].as_str(), raised[0]["digest_seq"].as_str()), (id.as_str(), "2"));
+        // Its first publication supplies the birth; a later heartbeat is named from the details retained.
+        assert_eq!(view.take(&Frame::digest(&at(4), true), &fabric, "mesh-channel").len(), 1, "the details supply the birth");
+        assert_eq!(view.take(&Frame::digest(&at(5), false), &fabric, "mesh-channel").len(), 1, "a heartbeat of a held birth is named from its details");
+        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.node.clone(), d.digest_seq)), Some((at(5).node, 5)));
+        assert!(!signalled(), "a held birth's heartbeat signals nothing");
     }
 
     #[test]
@@ -1270,7 +1335,7 @@ mod tests {
         assert!(digest_view.routable(id.as_str()));
         assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 102)), "a Digest delivered late");
         assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "sets nothing back");
-        let Frame::Digest { digest: heard } = Frame::decode(&Frame::digest(&digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120), true).clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
+        let heard = Frame::decode(&Frame::digest(&digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120), true).encode()).unwrap().digest_of("mesh1", |_| None).expect("a Digest with its details names its birth");
         assert_eq!(heard.status, NodeStatus::ConnectionsDeleting, "the Digest carries its status on the wire");
         assert!(digest_view.record(heard));
         assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "nor does one from the wire");
@@ -1667,36 +1732,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn digests_carrying_the_largest_runtime_fact_still_pack_within_one_message() {
-        use rdm_core::runtime::MAX_FACT_BYTES;
-        use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
-        // The largest fact a birth may publish: a container id in a long domain.
-        let mut fact = RuntimeFact {
-            deployment_id: "d".repeat(12),
-            provider: RuntimeProvider::Container,
-            control_domain: String::new(),
-            locator: RuntimeLocator::Container { id: "f".repeat(64) },
-        };
-        let base = serde_json::to_vec(&fact).unwrap().len();
-        fact.control_domain = "c".repeat(MAX_FACT_BYTES - base);
-        assert_eq!(fact.validate(), Ok(()), "exactly at the bound");
-        let ds: Vec<MeshDigest> = (0..40)
-            .map(|i| {
-                let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, i);
-                d.node.runtime = Some(fact.clone());
-                d.data_dir = Some(format!("/var/lib/rafka/{}", "x".repeat(64)));
-                d
-            })
-            .collect();
-        let frame = |digests| mesh_topology("mesh1", "mesh1.node-admin.1", Some("mesh2.node-admin.1"), digests, Vec::new(), Vec::new());
-        let runs = pack(ds, |run| frame(run).authored(&test_author(), 0, 1));
-        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels with its runtime");
-        for r in &runs {
-            assert!(frame(r.clone()).clone().authored(&test_author(), 0, 1).encode().len() <= MAX_FRAME, "a run fits one message");
-        }
-    }
-
     /// CONTRACT (R-G2): a member known only from topology forwarded onto the mesh channel is held
     /// and never ages to silent; a forwarded copy of a member already heard leaves when it was
     /// heard alone, so a forwarded word is never liveness.
@@ -1764,7 +1799,7 @@ mod tests {
         assert!(digests.has_changed().unwrap(), "the first digest ticks");
         digests.borrow_and_update();
         let mut renamed = digest(&id, &birth, None, NodeStatus::Ready, 101);
-        renamed.data_dir = Some("d".into());
+        renamed.node.name = "2".into();
         assert!(digest_view.record(renamed));
         assert!(digests.has_changed().unwrap(), "a fresher digest of the same birth and status ticks");
         digests.borrow_and_update();
@@ -2010,12 +2045,11 @@ mod tests {
         assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty());
     }
 
-    fn born(mesh: &str, r#type: &str, ordinal: u32, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
+    fn born(mesh: &str, r#type: &str, ordinal: u32, at: u64) -> MeshDigest {
         let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, at);
         { let at = rdm_core::PathName::numbered(mesh, r#type, ordinal); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = mesh.into();
         d.node.r#type = r#type.to_string();
-        d.mesh_id = mesh_id.cloned();
         d
     }
 
@@ -2035,11 +2069,11 @@ mod tests {
     fn a_node_joining_after_the_leaving_meshs_members_said_connections_deleting_and_leaving_installs_their_own_states_and_routes_none_of_them() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
-        let (admin, connections_deleting, leaving) = (born("mesh1", "node-admin", 1, Some(&m1), 1), born("mesh1", "node", 1, None, 1), born("mesh1", "node", 2, None, 1));
+        let (admin, connections_deleting, leaving) = (born("mesh1", "node-admin", 1, 1), born("mesh1", "node", 1, 1), born("mesh1", "node", 2, 1));
         let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::TopologyFull {
             mesh: "mesh1".into(),
-            mesh_id: None,
+            mesh_id: Some(m1.clone()),
             publisher: publisher.clone(),
             forwarded_by: None,
             topology_version: version,
@@ -2076,7 +2110,7 @@ mod tests {
         for s in primary.forwarder.lock().unwrap().snapshots() {
             for f in crate::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
                 mesh: s.mesh.clone(),
-                mesh_id: None,
+                mesh_id: s.mesh_id.clone(),
                 publisher: s.publisher.clone(),
                 forwarded_by: None,
                 topology_version: s.topology_version,
@@ -2088,8 +2122,8 @@ mod tests {
                 in_flight,
                 deleted,
             }.authored(&test_author(), 0, 1)) {
-                let Frame::TopologyFull { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() else { unreachable!() };
-                let chunk = crate::snapshot::Chunk { mesh, mesh_id: None, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), };
+                let Frame::TopologyFull { mesh, mesh_id, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() else { unreachable!() };
+                let chunk = crate::snapshot::Chunk { mesh, mesh_id, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), };
                 let prior = Prior::of(&joiner.mesh_rx.lock().unwrap(), &chunk.mesh);
                 let installed = joiner.mesh_rx.lock().unwrap().take_chunk(chunk);
                 if let crate::snapshot::Taken::Installed(i) = installed {
@@ -2380,7 +2414,7 @@ mod tests {
         let mut d = digest(&id, &inc, None, NodeStatus::Leaving, 100);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = "mesh1".into();
-        d.mesh_id = Some(mesh_id.clone());
+        digest_view.hold_mesh_id(&d.node.mesh, Some(&mesh_id));
         assert!(digest_view.record(d));
         assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), ..op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.delete") }));
         let late_stop = op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.stop");
@@ -2413,7 +2447,7 @@ mod tests {
         let mut d = digest(&id, &inc, None, NodeStatus::Leaving, 100);
         { let at = rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = "mesh2".into();
-        d.mesh_id = Some(mesh_id.clone());
+        digest_view.hold_mesh_id(&d.node.mesh, Some(&mesh_id));
         assert!(digest_view.record(d));
         assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") }));
         let replaced = LifecycleOp { build_id: "b2".into(), ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") };
@@ -3314,10 +3348,11 @@ mod tests {
         agree(&rx);
         assert!(matches!(rx.take_delta("mesh1", &p1, 2, 3, &Delta { removed: vec![c.to_string(), b.to_string()], ..Delta::default() }), Moved::Applied { .. }));
         agree(&rx);
-        // A load-free copy finds what its full finds.
+        // A full rebuilt from its members (a source snapshot's, a read's) finds what its full finds.
         let full = rx.held_full("mesh1").unwrap().clone();
+        let rebuilt = Full::new(full.digests(), full.in_flight(), full.deleted());
         for key in keys {
-            assert_eq!(full.without_loads().member_at(key).map(|d| d.node.node_id.clone()), full.member_at(key).map(|d| d.node.node_id.clone()));
+            assert_eq!(rebuilt.member_at(key).map(|d| d.node.node_id.clone()), full.member_at(key).map(|d| d.node.node_id.clone()));
         }
         rx.remove("mesh2");
         agree(&rx);

@@ -92,22 +92,9 @@ fn publisher(node_id: &NodeId) -> PublisherId {
 
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
 fn hold(m: &rdm_gossip::channel::Channels, s: &SourceSnapshot) {
-    for r in snapshot_replies(s, 1) {
-        let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: deleted } = r else { unreachable!() };
-        let t = m.take_read_chunk(Chunk {
-            mesh,
-            mesh_id: None,
-            publisher,
-            forwarded_by: Some("topology-read".into()),
-            topology_version,
-            snapshot_id,
-            chunk_index,
-            chunk_count,
-            digests: digests.into_iter().map(MeshDigest::from).collect(),
-            in_flight,
-            deleted,
-            runtimes: Vec::new(),
-        }, "peer");
+    for r in snapshot_replies(s, 1, &|_| None) {
+        let c: Chunk = rdm_admin::topology_read::chunk_of(r, m.topology_view().fabric_id()).expect("a snapshot reply is one chunk");
+        let t = m.take_read_chunk(c, "peer");
         assert!(!matches!(t, Taken::Refused(_)), "{t:?}");
     }
 }
@@ -268,18 +255,30 @@ async fn a_read_of_a_snapshot_older_than_the_held_one_reports_the_snapshot_the_c
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a topology larger than one message is chunked by the one packing gossip uses, every
-/// chunk under the reply ceiling and the gossip message bound, and the caller installs the mesh
-/// whole: every member, once.
+/// CONTRACT (gossip.md §3.3: reads initialise and repair views; Q387: a node-admin takes a birth's
+/// runtime and data dir from a topology read, never from gossip): a topology larger than one message
+/// is chunked by the one packing gossip uses, every chunk under the reply ceiling and the gossip
+/// message bound with each node's runtime at the largest fact a birth may record and a long data dir,
+/// and the caller installs the mesh whole: every member, once, each with the runtime and data dir the
+/// read carried. Must NOT happen: a chunk over a bound, or a read that leaves a node-admin without
+/// the runtime it manages a birth with.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole() {
+    use rdm_core::runtime::MAX_FACT_BYTES;
+    use rdm_core::{NodeRuntime, RuntimeFact, RuntimeLocator, RuntimeProvider};
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
     open(&server, &fabric);
     hold(&server.channels, &snap("mesh1", &publisher(&NodeId::parse("100000000001").unwrap()), 1, vec![]));
     let big: Vec<MeshDigest> = (1..=300).map(|k| member_of(&fabric, "mesh2", "node", k)).collect();
     let source = snap("mesh2", &publisher(&NodeId::parse("200000000001").unwrap()), 3, big);
-    let chunks = snapshot_replies(&source, 1);
+    // The largest fact a birth may record: a container id in a long domain.
+    let mut fact = RuntimeFact { deployment_id: "d".repeat(12), provider: RuntimeProvider::Container, control_domain: String::new(), locator: RuntimeLocator::Container { id: "f".repeat(64) } };
+    let base = serde_json::to_vec(&fact).unwrap().len();
+    fact.control_domain = "c".repeat(MAX_FACT_BYTES - base);
+    assert_eq!(fact.validate(), Ok(()), "exactly at the bound");
+    let runtime = NodeRuntime { runtime: Some(fact), data_dir: Some(format!("/var/lib/rafka/{}", "x".repeat(64))) };
+    let chunks = snapshot_replies(&source, 1, &|_| Some(runtime.clone()));
     assert!(chunks.len() > 2, "{} chunks", chunks.len());
     for c in &chunks {
         let len = Topology::encode_reply(c).unwrap().len();
@@ -287,6 +286,9 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
         assert!(len <= rdm_gossip::frame::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
     }
     hold(&server.channels, &source);
+    for d in &source.digests {
+        assert!(server.topology_view.digest_view.hold_runtime(&d.node.node_id, &d.node.incarnation, runtime.clone()));
+    }
     let t = target_of(&caller, &server);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), None).await.unwrap();
     let m = &read.installed[0];
@@ -294,6 +296,9 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     ids.sort();
     ids.dedup();
     assert_eq!((m.members.len(), ids.len()), (300, 300), "every member, once");
+    for d in &source.digests {
+        assert_eq!(caller.topology_view.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).as_ref(), Some(&runtime), "the read carried {}'s runtime and data dir", d.node.node_id);
+    }
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -317,12 +322,13 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
                 let mut sink = sink.started(TopologyReply::Started).await.unwrap();
                 sink.data(TopologyReply::Snapshot {
                     mesh: "mesh2".into(),
+                    mesh_id: None,
                     publisher: publisher(&NodeId::parse("200000000001").unwrap()),
                     topology_version: 1,
                     snapshot_id: 1,
                     chunk_index: 0,
                     chunk_count: 2,
-                    digests: vec![],
+                    nodes: vec![],
                     in_flight: vec![],
                     deleted: vec![],
                 })
@@ -751,10 +757,11 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         // The member stands far ahead of the primary's 5 000 000 ms: an adoption would stall it.
         caller.time.adopt(9_000_000);
         let _ = target_of(&caller, &server);
-        let mut primary = own_digest(&server, &fabric);
-        primary.node.name = server.resolved.name.clone();
+        // The top-up reads from the primary its record names: the mesh and the exact birth.
+        let primary = own_digest(&server, &fabric);
+        let record = rdm_core::Primary { mesh: primary.node.mesh.clone(), node_id: primary.node.node_id.clone(), incarnation: primary.node.incarnation.clone(), revision: 1 };
         let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
-        let done = fetch(caller.channels.clone(), primary, vec!["mesh2".into()]).await.unwrap();
+        let done = fetch(caller.channels.clone(), record, vec!["mesh2".into()]).await.unwrap();
         assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
         let before = caller.time.now_ms();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

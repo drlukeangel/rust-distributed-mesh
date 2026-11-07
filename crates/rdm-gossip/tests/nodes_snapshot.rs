@@ -7,8 +7,8 @@
 //! chunk of it, and only then advances the held source version; chunks interleaved, duplicated
 //! or missed never produce a partial install, a version move or a delta. The source Mesh's
 //! `topology_version` bumps on a material change of the normalized projection (a birth, an
-//! endpoint, a routing status, a runtime fact, an overlay or a departure) and never on
-//! `digest_seq`, a Rafka-time stamp, a load or an unchanged republish. The forwarding primary
+//! endpoint, a routing status, a primary role, an overlay or a departure) and never on
+//! `digest_seq`, a Rafka-time stamp or an unchanged republish. The forwarding primary
 //! derives the delta from the two fulls it holds, so one change is one delta from the version it
 //! last published into its Mesh, a missed intermediate version is one delta not a replay, a
 //! heartbeat-only Mesh produces no delta, and a role change publishes a full first. A delta
@@ -96,7 +96,7 @@ fn publisher(node: &str) -> PublisherId {
 fn topology_full_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id: u64, forwarded_by: Option<&str>) -> Vec<Frame> {
     chunks_of(full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: "mesh2".into(),
-        mesh_id: None,
+        mesh_id: full.mesh_id(),
         publisher: p.clone(),
         forwarded_by: forwarded_by.map(String::from),
         topology_version: version,
@@ -112,8 +112,8 @@ fn topology_full_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id:
 
 fn chunk_of(f: &Frame) -> Chunk {
     match f.clone().into_data() {
-        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
-            Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), }
+        Frame::TopologyFull { mesh, mesh_id, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
+            Chunk { mesh, mesh_id, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), }
         }
         other => panic!("not a TopologyFull chunk: {other:?}"),
     }
@@ -121,8 +121,8 @@ fn chunk_of(f: &Frame) -> Chunk {
 
 fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
     match f.clone().into_data() {
-        Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted, .. } => {
-            (mesh, source_publisher, base_version, topology_version, Delta { changed, removed, in_flight, deleted })
+        Frame::TopologyDelta { mesh, mesh_id, source_publisher, base_version, topology_version, changed, removed, in_flight, deleted, .. } => {
+            (mesh, source_publisher, base_version, topology_version, Delta { changed, removed, in_flight, deleted, mesh_id })
         }
         other => panic!("not a TopologyDelta: {other:?}"),
     }
@@ -194,8 +194,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let mut heartbeat = mesh2.digests(900);
         heartbeat.iter_mut().for_each(|d| d.emitted_at_rafka_ms = 5_000_000);
         bumps.push(("heartbeats: digest_seq and emitted_at_rafka_ms alone", v.observe(&Full::new(heartbeat.clone(), vec![], vec![]))));
-        heartbeat.iter_mut().for_each(|d| d.in_flight = Some(17));
-        bumps.push(("loads alone", v.observe(&Full::new(heartbeat.clone(), vec![], vec![]))));
         bumps.push(("an unchanged republish", v.observe(&base)));
         let mut connections_deleting = mesh2.digests(2);
         connections_deleting[1].status = NodeStatus::ConnectionsDeleting;
@@ -214,7 +212,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         bumps.push(("a deleted identity expired", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![]))));
         bumps.push(("a birth added", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)], vec![], vec![]))));
         let versions: Vec<u64> = bumps.iter().map(|(_, n)| *n).collect();
-        assert_eq!(versions, vec![1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8], "only material changes bump: {bumps:?}");
+        assert_eq!(versions, vec![1, 1, 1, 2, 3, 4, 5, 6, 7, 8], "only material changes bump: {bumps:?}");
         result.insert("topology_version_by_observation".into(), json!(bumps.iter().map(|(w, n)| json!({ "observation": w, "topology_version": n })).collect::<Vec<_>>()));
 
         // ---- 2. a snapshot is chunked under one snapshot_id, every chunk fits one message ------
@@ -315,7 +313,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let d78 = f7.delta_to(&f8);
         assert_eq!((d78.changed.len(), d78.removed.len(), d78.in_flight.len(), d78.deleted.len()), (1, 0, 0, 0), "one remote change is one changed member");
         assert_eq!(d78.changed[0].node.node_id, changed_member[3].node.node_id);
-        assert!(d78.changed.iter().all(|d| d.in_flight.is_none()), "loads are omitted");
         assert!(matches!(rx.take_delta("mesh2", &p, 7, 8, &d78), Moved::Applied { topology_version: 8, .. }));
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 8)));
         assert!(matches!(rx.take_delta("mesh2", &p, 7, 8, &d78), Moved::Duplicate { held_version: 8 }), "a delta delivered twice is not a gap");
@@ -386,7 +383,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let f41 = Full::new(mesh2.digests(10), vec![], vec![]);
         let mut d43 = mesh2.digests(900);
         d43[1].status = NodeStatus::ConnectionsDeleting;
-        d43[2].in_flight = Some(3);
         let f43 = Full::new(d43, vec![], vec![]);
         let mut fwd = Forwarder::default();
         fwd.set_author(crate::gossip_wire::author());
@@ -394,21 +390,18 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let Forward::Delta(first_frame) = first else { panic!("the first publication of a peer mesh is a differential") };
         let (_, _, first_base, first_to, first_parts) = delta_of(&first_frame);
         assert_eq!((first_base, first_to, first_parts.changed.len()), (0, 41, f41.member_count()), "from 0: every node of the peer mesh is an addition");
-        assert!(first_parts.changed.iter().all(|d| d.in_flight.is_none()), "a forwarded differential omits loads");
         // The forwarder never held 42; it holds 43. One delta from what it last published.
         let Forward::Delta(delta) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 43, &f43, 2) else { panic!("a moved source is a delta") };
         let (mesh, source, base, to, parts) = delta_of(&delta);
         assert_eq!((mesh.as_str(), base, to), ("mesh2", 41, 43), "base_version is what the forwarder last published, not the version before");
         assert_eq!(source, src);
-        assert_eq!((parts.changed.len(), parts.removed.len()), (1, 0), "the one member whose routing status moved; a load alone is not a change");
-        assert!(parts.changed[0].in_flight.is_none());
-        let mut rebuilt = f41.without_loads();
+        assert_eq!((parts.changed.len(), parts.removed.len()), (1, 0), "the one member whose routing status moved; a heartbeat alone is not a change");
+        let mut rebuilt = f41.clone();
         rebuilt.apply(&parts);
         assert!(rebuilt.same_topology(&f43), "the delta carries exactly the difference between the two fulls");
         // A heartbeat-only Mesh produces no delta; an older or equal version produces none.
         let mut beating = mesh2.digests(5_000);
         beating[1].status = NodeStatus::ConnectionsDeleting;
-        beating.iter_mut().for_each(|d| d.in_flight = Some(99));
         assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 43, &Full::new(beating, vec![], vec![]), 3), Forward::Nothing(_)));
         assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 40, &f41, 3), Forward::Nothing(_)));
         // A version bump that changes nothing a Mesh member holds sends nothing and keeps the base.
@@ -508,12 +501,11 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             .await
         };
         assert_eq!(at_member, (held_by_fwd.0.clone(), v1));
-        // Heartbeats alone: many more of them, digest_seq and load moving, no version, no delta.
+        // Heartbeats alone: many more of them, digest_seq and emitted_at moving, no version, no delta.
         for beat in 0..12u64 {
             let mut hb = remote.digests(100 + beat);
             hb.iter_mut().for_each(|d| {
                 d.emitted_at_rafka_ms = 9_000_000 + beat;
-                d.in_flight = Some(beat);
             });
             src_bb.publish(&src_m, hb).await;
             tokio::time::sleep(Duration::from_millis(60)).await;
@@ -534,7 +526,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // The member's view holds the changed member as the delta stated it.
         let seen = mem_m.digest_view.get(changed_id.as_str()).expect("the ordinary member holds the remote member").0;
         assert_eq!(seen.status, NodeStatus::ConnectionsDeleting, "the delta's change is applied to the member's projection");
-        assert!(seen.in_flight.is_none(), "the ordinary member holds no load of a remote member");
 
         drop(src_bb);
         drop(fwd_bb);
@@ -568,7 +559,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
                 "deltas_forwarded": deltas_sent.len(),
                 "delta": { "changed_member": changed_name, "base_version": attr(deltas_sent[1], "base_version"), "topology_version": attr(deltas_sent[1], "topology_version"), "trace_id": deltas_sent[1]["trace_id"], "span_id": deltas_sent[1]["span_id"] },
                 "member_applied_spans": applied.iter().map(|s| json!({ "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),
-                "member_loads_held": false,
             }),
         );
         result.insert("cell".into(), json!(CELL));

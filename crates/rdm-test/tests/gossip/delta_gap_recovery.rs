@@ -17,7 +17,7 @@
 //! member pulls the current fabric topology from mesh1's own primary by a topology read (Node RPC op 0x1E),
 //! installs it atomically at the version that primary last published into mesh1, and the next real
 //! delta applies at that baseline. mesh2's primary is never asked: no topology read of mesh2 answers
-//! the member. The frames the member hears omit loads while the backbone mesh topology carries them.
+//! the member. No frame carries a node's load (Q394).
 
 use rdm_core::PathName;
 use bytes::Bytes;
@@ -230,21 +230,15 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
 
     // Joined: the observer is a new neighbour of mesh1's primary, which replays its last differential
     // of each peer mesh into the Mesh (gossip.md §3.3).
-    // The backbone mesh topology carries loads: a member's load is its own digest's, so the first backbone
-    // topology published before mesh2's nodes published theirs carries none yet.
-    until_arrival("the observer hears a differential of mesh2 on mesh1's channel and the backbone mesh topology carrying loads", Duration::from_secs(60), &observer.arrivals, || {
-        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
+    // The backbone mesh topology of mesh2 carries its nodes once they published themselves.
+    until_arrival("the observer hears a differential of mesh2 on mesh1's channel and the backbone mesh topology of mesh2's nodes", Duration::from_secs(60), &observer.arrivals, || {
+        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" && !digests.is_empty()));
         (!observer.deltas_of("mesh2").is_empty() && backbone).then_some(())
     })
     .await;
     // Nothing full of a peer mesh goes on the mesh channel: mesh2 reaches mesh1 as differentials only.
     assert!(observer.forwarded_fulls_of("mesh2").is_empty(), "no full of mesh2 on mesh1's channel");
     let differentials: Vec<Seen> = observer.all().into_iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::TopologyDelta { mesh, .. } if mesh == "mesh2")).collect();
-    // A forwarded differential omits loads; the backbone mesh topology carries them.
-    let loads_forwarded = differentials.iter().any(|x| matches!(x.frame.data(), Frame::TopologyDelta { changed, .. } if changed.iter().any(|d| d.in_flight.is_some())));
-    let loads_on_backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
-    assert!(!loads_forwarded, "the forwarded cross-Mesh differential carries no loads");
-    assert!(loads_on_backbone, "the backbone mesh topology carries loads");
     let publisher = observer
         .all()
         .iter()
@@ -300,14 +294,17 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The newest version the primary has published into mesh1 for mesh2, from the real frames.
     let latest = observer.deltas_of("mesh2").iter().map(|d| d.2).max().unwrap();
     assert_eq!(latest, version_after_a);
+    // mesh2 reaches mesh1's channel as differentials only (no full there), and the observer hears only
+    // the last one replayed to it: the node as mesh2's own aggregate on the backbone carries it.
     let real_digest: MeshDigest = observer
-        .forwarded_fulls_of("mesh2")
+        .all()
         .iter()
+        .filter(|x| x.channel == "backbone")
         .find_map(|x| match x.frame.data() {
-            Frame::TopologyFull { digests, .. } => digests.iter().find(|d| d.node.location() == Estate::path("mesh2.node", "1")).cloned(),
+            Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" => digests.iter().find(|d| d.node.location() == Estate::path("mesh2.node", "1")).cloned(),
             _ => None,
         })
-        .expect("mesh2.node.1 is in the forwarded full");
+        .expect("mesh2.node.1 is in mesh2's aggregate on the backbone");
     let mut forged = real_digest.clone();
     forged.status = NodeStatus::ConnectionsDeleting;
     let gap_frame = Frame::TopologyDelta {
@@ -478,9 +475,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         "top_up_install_span": { "trace_id": topup_install["trace_id"], "span_id": topup_install["span_id"], "topology_version": num(topup_install, "topology_version") },
         "forwarded_deltas_by_mesh1_primary": deltas_forwarded.len(),
         "topology_version_bumps_by_mesh2_primary": bumps,
-        "measured_bytes": { "largest_differential_of_mesh2_on_mesh1_channel": differential_bytes, "backbone_aggregate_of_mesh2_with_loads": backbone_full_bytes, "mesh2_members": 3 },
-        "loads_on_forwarded_full": loads_forwarded,
-        "loads_on_backbone_aggregate": loads_on_backbone,
+        "measured_bytes": { "largest_differential_of_mesh2_on_mesh1_channel": differential_bytes, "backbone_aggregate_of_mesh2": backbone_full_bytes, "mesh2_members": 3 },
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();

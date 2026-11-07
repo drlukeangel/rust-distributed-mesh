@@ -660,26 +660,25 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md "Mesh delete": a mesh is created once; a later mesh of the same name is
-    /// another mesh, known by the id its node-admins' entries carry): a node holding the deleted mesh2
+    /// another mesh, known by the id its topology frames name beside its name): a node holding the deleted mesh2
     /// at v33 takes a recreated mesh2's aggregate at v1, a read of it and its first differential, at the
     /// receive path, in the receiver and in the forwarder, while the deleted mesh's own lower versions
     /// stay ignored. Must NOT happen: a recreated mesh's every publication ignored below the deleted
     /// mesh's version (canonical_ids red at b6f75c432: 67 via-stale at the fabric-primary, held 33).
     #[test]
     fn a_later_mesh_of_the_same_name_is_another_mesh_which_the_held_version_orders_nothing_of() {
-        let admin_of = |id: &rdm_core::MeshId| {
-            let mut d = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin");
-            d.mesh_id = Some(id.clone());
-            d
-        };
+        let admin_of = || birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin");
         let (old_id, new_id) = (rdm_core::MeshId::mint(), rdm_core::MeshId::mint());
-        let (old_admin, new_admin) = (admin_of(&old_id), admin_of(&new_id));
+        let (old_admin, new_admin) = (admin_of(), admin_of());
         let (old, new) = (publisher("mesh2.node-admin.1"), publisher("mesh2.node-admin.1"));
-        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| Frame::TopologyFull { mesh: "mesh2".into(), mesh_id: None, publisher: p.clone(), forwarded_by: None, topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
+        // The mesh's id rides each topology frame beside its name: old_id on the deleted mesh's
+        // publications, new_id on the recreated one's.
+        let id_of = |p: &PublisherId| if p == &old { old_id.clone() } else { new_id.clone() };
+        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| Frame::TopologyFull { mesh: "mesh2".into(), mesh_id: Some(id_of(p)), publisher: p.clone(), forwarded_by: None, topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
 
         // The receive path.
         let mut order = ReceiveOrder::default();
-        order.installed_projection("mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin.clone()], vec![], vec![]), None);
+        order.installed_projection("mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin.clone()], vec![], vec![]).of_mesh(Some(old_id.clone())), None);
         assert!(order.admit(&full_of(&old, 32, &old_admin)).is_err(), "the deleted mesh's own lower version is still older");
         assert_eq!(order.admit(&full_of(&new, 1, &new_admin)), Ok(()), "the recreated mesh2's aggregate is another mesh's");
         assert_eq!(order.admit_read("mesh2", 1, Some(&new_id)), Ok(()));
@@ -687,21 +686,21 @@ mod tests {
 
         // The receiver.
         let mut rx = crate::snapshot::SnapshotReceiver::default();
-        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: None, publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
+        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: Some(id_of(p)), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
         assert!(matches!(rx.take_chunk(chunk_of(&old, 33, &old_admin)), crate::snapshot::Taken::Installed(_)));
         let taken = rx.take_chunk(chunk_of(&new, 1, &new_admin));
         assert!(matches!(&taken, crate::snapshot::Taken::Installed(i) if i.first && i.topology_version == 1), "the recreated mesh installs as a first topology: {taken:?}");
         let mut members = crate::snapshot::SnapshotReceiver::default();
-        assert!(matches!(members.take_delta("mesh2", &old, 0, 33, &crate::snapshot::Delta { changed: vec![old_admin.clone()], ..Default::default() }), crate::snapshot::Moved::Applied { .. }));
-        let first = members.take_delta("mesh2", &new, 0, 1, &crate::snapshot::Delta { changed: vec![new_admin.clone()], ..Default::default() });
+        assert!(matches!(members.take_delta("mesh2", &old, 0, 33, &crate::snapshot::Delta { changed: vec![old_admin.clone()], mesh_id: Some(old_id.clone()), ..Default::default() }), crate::snapshot::Moved::Applied { .. }));
+        let first = members.take_delta("mesh2", &new, 0, 1, &crate::snapshot::Delta { changed: vec![new_admin.clone()], mesh_id: Some(new_id.clone()), ..Default::default() });
         assert!(matches!(first, crate::snapshot::Moved::Applied { topology_version: 1, .. }), "the recreated mesh's first differential starts from nothing: {first:?}");
         assert_eq!(members.held_full("mesh2").map(|f| f.member_count()), Some(1), "nothing of the deleted mesh is kept");
 
         // The forwarder.
         let mut fwd = crate::snapshot::Forwarder::default();
         fwd.set_author(crate::envelope::Birth { fabric: rdm_core::FabricId::parse("fab000000001").unwrap(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() });
-        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin], vec![], vec![]), 1), crate::snapshot::Forward::Delta(_)));
-        let crate::snapshot::Forward::Delta(frame) = fwd.source("mesh1.node-admin.1", "mesh2", &new, 1, &crate::snapshot::Full::new(vec![new_admin], vec![], vec![]), 2) else { panic!("the recreated mesh goes in") };
+        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin], vec![], vec![]).of_mesh(Some(old_id.clone())), 1), crate::snapshot::Forward::Delta(_)));
+        let crate::snapshot::Forward::Delta(frame) = fwd.source("mesh1.node-admin.1", "mesh2", &new, 1, &crate::snapshot::Full::new(vec![new_admin], vec![], vec![]).of_mesh(Some(new_id.clone())), 2) else { panic!("the recreated mesh goes in") };
         assert!(matches!(frame.data(), Frame::TopologyDelta { base_version: 0, topology_version: 1, .. }), "from nothing: {:?}", frame.data());
     }
 

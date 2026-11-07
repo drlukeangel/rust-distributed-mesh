@@ -345,10 +345,8 @@ mod trace_context;
 /// Encoding arguments for a synthetic sender: its supplied owned birth and declared fixture revision.
 async fn forward_gossip_probe(channels: &rdm_gossip::channel::Channels, frame: &rdm_gossip::frame::Frame) -> anyhow::Result<()> {
     if frame.context().is_some() { return channels.forward(frame).await; }
-    let author = match frame.data() {
-        rdm_gossip::frame::Frame::Digest { digest } => rdm_gossip::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
-        _ => channels.author_birth().expect("the synthetic publisher supplied its owned birth"),
-    };
+    // A Digest is authored by its own birth (`Frame::digest`), so it arrives here with its context.
+    let author = channels.author_birth().expect("the synthetic publisher supplied its owned birth");
     channels.forward(&frame.clone().authored(&author, 1, 1)).await
 }
 

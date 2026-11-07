@@ -69,7 +69,7 @@ fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, st
         launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
-        mesh_id: d.mesh_id.clone(),
+        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
@@ -193,7 +193,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let probe = gossip_node().await;
         let admin_addr = gossip_addr(&admin_digest).expect("mesh1.node-admin.2's digest names its endpoint");
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
-        let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
+        let mesh_id = root.topology_view.digest_view.mesh_id_of(&root_digest.node.mesh).expect("the root holds its mesh id");
         let observer_id = NodeId::mint();
         let topology_view = rdm_gossip::topology::TopologyView::new(&root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&probe.gossip, &probe.ep, &topology_view).expect("the cell joins mesh1's channel");

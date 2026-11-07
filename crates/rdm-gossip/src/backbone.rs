@@ -351,6 +351,13 @@ impl Backbone {
         // node holds goes in as the differential from there.
         let held_in_mesh: Vec<(String, PublisherId, u64, Full)> = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources_in_mesh().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
         let forwarder_changed = self.channels.forward_path.set_role(primary, &held_in_mesh);
+        // The role's span opens as the role switches, before the forward path sends anything under it:
+        // the held peer meshes go in after it, on the forward path's own task.
+        if forwarder_changed {
+            let role = if primary { "start" } else { "stop" };
+            tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.current_name(), mesh = %self.mesh, role)
+                .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
+        }
         if forwarder_changed && primary {
             self.forward_held_now();
         }
@@ -359,11 +366,6 @@ impl Backbone {
             self.published_as_primary.store(false, Ordering::Relaxed);
             tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.current_name(), mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh topology publication"));
-        }
-        if forwarder_changed {
-            let role = if primary { "start" } else { "stop" };
-            tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.current_name(), mesh = %self.mesh, role)
-                .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
         }
     }
 

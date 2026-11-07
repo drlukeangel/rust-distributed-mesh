@@ -52,7 +52,7 @@ pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::pat
         launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: dir.to_path_buf(),
-        mesh_id: d.mesh_id.clone(),
+        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,

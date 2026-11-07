@@ -128,7 +128,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // The admin it launches: registered with the root as a deployment, then started.
         let (root_digest, root_mesh_id) = {
             let d = root.digest.lock().unwrap().clone();
-            (d.clone(), d.mesh_id.clone().expect("the root holds its mesh id"))
+            (d.clone(), root.topology_view.digest_view.mesh_id_of(&d.node.mesh).expect("the root holds its mesh id"))
         };
         std::fs::create_dir_all(&joiner_dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();

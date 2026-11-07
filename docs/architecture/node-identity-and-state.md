@@ -213,7 +213,9 @@ which are there because one of those two put them there.
 | | where | written by |
 |---|---|---|
 | identity (`id`, `endpoint_id`, `name`, `type`) and STATE CHANGES | the node record on `ops.nodes` | the node itself; its mesh-primary only for a node that is lost, killed or deleted |
-| per-heartbeat liveness — `cpu_used`, `ram_used`, reachability | gossip, in memory only | every node, about itself |
+| per-heartbeat liveness: the node's Digest arriving, carrying its status | gossip, in memory only | every node, about itself |
+
+Load and the gossip counters (`heard`, `neighbours`, `frames_sent`, `frames_received`) are in-memory diagnostics of the node itself: never gossiped (Q394), never written to the node record, storage or durable history; `node.get` serves them only for the node that answers it.
 
 A node holds its own record. Any node reads another node's record from the nodes store at runtime,
 a point read by its id or by its path and name (Q237), never at its create, start or join (Q227).

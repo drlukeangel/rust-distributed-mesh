@@ -57,7 +57,7 @@ pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::pat
         launcher: Some(Launcher { mesh: d.node.mesh.clone(), path: d.node.path.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
-        mesh_id: d.mesh_id.clone(),
+        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
@@ -143,7 +143,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         assert_eq!((own.node_id.clone(), own.name.clone()), (launch.node_id.clone(), launch.name.clone()), "the row held is the node's own: {own:?}");
         let target = rdm_transport::NodeTarget::ExactNode(root_digest.node.node_id.clone());
         // While the nodes store reads, its mesh-primary answers the reader its own row, read from its record.
-        let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, launch.node_id.as_str(), Some("mesh1"), None))
+        let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, &root_digest.fabric_id, launch.node_id.as_str(), Some("mesh1"), None))
             .await
             .expect("the read ends")
             .unwrap_or_else(|e| panic!("the mesh-primary refused the read of mesh1: {e}"));
@@ -155,7 +155,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"path":"mesh1.node","name":"9""#).unwrap();
 
         for mesh in [None, Some("mesh1")] {
-            let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, launch.node_id.as_str(), mesh, None))
+            let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, &root_digest.fabric_id, launch.node_id.as_str(), mesh, None))
                 .await
                 .expect("the read ends")
                 .unwrap_or_else(|e| panic!("the mesh-primary refused the read of {mesh:?} with its store unreadable: {e}"));

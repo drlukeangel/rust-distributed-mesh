@@ -24,7 +24,7 @@ Those pages link here and restate nothing.
 | Commander | Inside a start: the workflow itself. Standalone: the node's mesh-primary, after a tickle that reached the exact birth or a node.name.update the live node applied; the fabric-primary for a mesh-primary. Commands go down |
 | Executor | The node itself: it makes the report and joins the mesh |
 | Entry | The exact `(node.id, incarnation)` with its endpoint bound; its full `MeshDigest` for the report |
-| Report | `JoinNode { digest }` to the node-admin it reports to: an ordinary node's mesh-primary; a node-admin's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control snapshot, or refuses by field name |
+| Report | `JoinNode { digest, runtime, data_dir }` to the node-admin it reports to: an ordinary node's mesh-primary; a node-admin's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control snapshot, or refuses by field name |
 | Mesh | Join `f(FabricId, MeshId)`; a node-admin also joins the backbone. A mesh with no live listener is created again under its own MeshId by this first listener |
 | Order | Report accepted first, then the mesh; the handed name, rafka-time and cert installed before anything is published |
 | Progress | `joining` from the report until the mesh holds, and the backbone too for a node-admin; the node publishes nothing in that state |
@@ -38,7 +38,7 @@ Those pages link here and restate nothing.
 
 1. The node holds its bound endpoint; port 0 was bound at launch, or the stopped process still
    holds its port. Nothing predicts or reserves a port.
-2. `joining`: the node calls `JoinNode { digest }` on the node-admin it reports to. It serves calls on
+2. `joining`: the node calls `JoinNode { digest, runtime, data_dir }` on the node-admin it reports to. It serves calls on
    its bound endpoint while the report is outstanding, under the
    [Node RPC readiness gate](../node-rpc-envelope.md#node-rpc-readiness-gate).
 3. The primary verifies the digest against the deployment it recorded: exact birth, deployment
@@ -187,39 +187,14 @@ The completion on the commanding stream: standalone, `MeshJoined { node_id, inca
 `Failed { step: "node.mesh.join", reason }`, and no `node.mesh.joined`, `node.started` or later
 success follows it ([caller execution](../node-rpc-envelope.md#caller-execution-and-certainty)).
 
-The gossip after `node.mesh.joined`: the node's first heartbeat on its mesh, carrying the
-row's name and config from the answer:
+The gossip after `node.mesh.joined`: the node's first Digest on its mesh, under its envelope (`source` the birth, `sequence` its `digest_seq`, `time` its emitted time), carrying pending and its details, the name its row's from the answer:
 
 ```json
-{
-  "frame": "digest",
-  "digest": {
-    "fabric_id": "fab4m8n2p6q1",
-    "node": {
-      "node_id": "k8pag1qx95gw",
-      "name": "mesh1.node.1",
-      "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
-      "transport_addr": "127.0.0.1:54473",
-      "incarnation": "0000000000000001",
-      "supersedes": null,
-      "runtime": null
-    },
-    "status": "pending",
-    "admin_api_base": null,
-    "digest_seq": 2,
-    "emitted_at_rafka_ms": 1718290000090,
-    "data_dir": "/var/lib/rdm/mesh1.node.1",
-    "mesh_id": "mesh1",
-    "in_flight": null,
-    "config": { "log_level": "info" },
-    "load": null,
-    "gossip": null
-  }
-}
+{ "status": "pending", "primary": [], "details": { "type": "node", "path": "mesh1.node", "name": "1", "endpoint_id": "7a7a…7a7a", "transport_addr": "127.0.0.1:54473", "supersedes": null } }
 ```
 
 Ready is set by the mesh-primary after `node.started` ([node status](node-status.md)),
-never by the joiner. The mesh-primary's next backbone `TopologyFull` carries the digest as
+never by the joiner. The mesh-primary's next backbone `TopologyFull` carries the node as
 one entry of `digests` ([example](../gossip.md#examples)). A stopped node that rejoins keeps its
 `digest_seq` running and mints no incarnation.
 
@@ -233,7 +208,7 @@ sequenceDiagram
         M->>N: JoinMesh on 0x1B
     end
     Note over N: 1. endpoint bound
-    N->>M: 2. JoinNode { digest } on 0x1D (joining)
+    N->>M: 2. JoinNode { digest, runtime, data_dir } on 0x1D (joining)
     Note over M: 3. verify exact birth, deployment, path, mesh, name
     alt refused
         M-->>N: JoinMismatch / NotPrimary / DeploymentAbandoned / CertRefused
@@ -246,7 +221,7 @@ sequenceDiagram
         M-->>N: 6. Joined { served_by, control, statuses }
         Note over N: 7. install the row's name, adopt rafka-time, install the cert (first start)
         Note over N: 8. join the mesh f(FabricId, MeshId), via-joined, a node-admin also the backbone
-        Note over N: 9. node.mesh.joined, first Digest heartbeat on the mesh
+        Note over N: 9. node.mesh.joined; its heartbeats follow its pending Digest (step 10)
         Note over M: 10. records the node pending when it accepts the node's join report, before it answers it
         Note over N: writes pending on its own record
         opt standalone

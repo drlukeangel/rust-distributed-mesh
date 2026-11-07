@@ -68,7 +68,8 @@ fn story(story: Story) {
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)));
         let heard_before = receiver.digest_view.get(id.as_str()).unwrap().1;
         let before = receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
-        let mut changed = digest.clone(); changed.data_dir = Some("version=eleven".into());
+        // The content a later version changes: the node's transport address (version eleven's).
+        let mut changed = digest.clone(); changed.node.transport_addr = "127.0.0.1:12011".parse().unwrap();
         let mut expected = 10;
         match story {
             Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat => {
@@ -98,7 +99,7 @@ fn story(story: Story) {
                     send(&sender, &receiver, last.clone(), 3).await;
                 } else {
                     send(&sender, &receiver, first.clone(), 2).await;
-                    let mut wrong = changed.clone(); wrong.data_dir = Some("contradiction=yes".into());
+                    let mut wrong = changed.clone(); wrong.node.transport_addr = "127.0.0.1:12099".parse().unwrap();
                     send(&sender, &receiver, snapshot(11, 2, 0, 2, vec![wrong], 101), 3).await;
                 }
                 assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)), "unfinished publication never advances the installed floor");
@@ -127,7 +128,7 @@ fn story(story: Story) {
                 let frame = delta(10, 11, vec![changed.clone()], 101);
                 send(&sender, &receiver, frame.clone(), 2).await;
                 if matches!(story, Story::DeltaRepeat) { send(&sender, &receiver, frame, 3).await; }
-                if matches!(story, Story::DeltaInconsistent) { let mut wrong=changed.clone();wrong.data_dir = Some("contradiction=yes".into());send(&sender, &receiver, delta(10, 11, vec![wrong], 101), 3).await; }
+                if matches!(story, Story::DeltaInconsistent) { let mut wrong=changed.clone();wrong.node.transport_addr = "127.0.0.1:12099".parse().unwrap();send(&sender, &receiver, delta(10, 11, vec![wrong], 101), 3).await; }
                 expected=11;
             },
             Story::TwoForwarders => {
@@ -148,7 +149,7 @@ fn story(story: Story) {
         }
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher, expected)));
         let held=receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
-        assert_eq!(held.data_dir, if expected>=11 { changed.data_dir } else { before.data_dir }, "only a newer complete publication or applicable delta replaces content");
+        assert_eq!(held.node.transport_addr, if expected>=11 { changed.node.transport_addr } else { before.node.transport_addr }, "only a newer complete publication or applicable delta replaces content");
         drop(role);
         sender_ep.close().await; receiver_ep.close().await;
     });

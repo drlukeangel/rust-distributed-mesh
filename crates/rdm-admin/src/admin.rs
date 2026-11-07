@@ -1006,6 +1006,8 @@ mod tests {
         let digest_view = DigestView::default();
         for d in digests {
             digest_view.record(d.clone());
+            // Each mesh's id, as the topology of the mesh that carried its nodes named it.
+            digest_view.hold_mesh_id(&d.node.mesh, Some(&mesh_id(&d.node.mesh)));
         }
         project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default())
     }
@@ -1125,6 +1127,8 @@ mod tests {
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
+            // mesh2's id, as its mesh-primary's view holds its own mesh's.
+            digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: status.clone(), inspected: Default::default() });
             // The member wrote its own record at its start (Q356): node recovery acts only on such a birth.
@@ -1317,6 +1321,8 @@ mod tests {
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
+            // mesh2's id, as its mesh-primary's view holds its own mesh's.
+            digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
             // The tick's view, read before the announcement arrived.
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let op = rdm_core::LifecycleOp { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(),
@@ -1425,6 +1431,8 @@ mod tests {
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
+            // mesh2's id, as its mesh-primary's view holds its own mesh's.
+            digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
             digest_view.statuses.take(&rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -1476,6 +1484,8 @@ mod tests {
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
+            // mesh2's id, as its mesh-primary's view holds its own mesh's.
+            digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
             crate::storage::NodesStorage::put_node(&*nodes, &crate::storage::NodeRecord { runtime: fact.clone(), ..record_of(&member) }).await.unwrap();

@@ -1017,9 +1017,11 @@ joining birth.
 
 ```rust
 pub enum JoinRequest {
-    JoinNode { digest: MeshDigest, listeners: Vec<(String, SocketAddr)> },
+    JoinNode { digest: MeshDigest, runtime: Option<RuntimeFact>, data_dir: Option<String>, listeners: Vec<(String, SocketAddr)> },
 }
 ```
+
+`runtime` and `data_dir` are the birth's exact runtime and data dir, the management facts the join checks against the deployment; gossip never carries them (Q387).
 
 `listeners` is each listener the application's wiring declares on the birth's kind, by name, at the address the birth bound: the IP address node-admin assigned and a nonzero port the operating system chose (Q151). The serving node-admin validates the whole report before it installs any part of the join, and refuses it by name, installing nothing, unless it carries exactly the declared names, each once, on its assigned IP address with a nonzero OS-selected port; the node writes them in its own part of its record (Q333).
 
@@ -1054,9 +1056,7 @@ JoinNode is only a join. It does not re-read topology for an already-held member
 After acceptance and its `pre_node_ready` hook, the caller reads topology with [GetTopology](#topology-op-0x1e-rdm), in the order [node.start](lifecycles/node-start.md) sets.
 A fabric-primary recovered with durable topology follows [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery) without maker calls; its first topology read targets a node from that map.
 
-MeshDigest is the full gossip Digest, not an address-only report. Its MeshNode carries the
-real bound `transport_addr`, `endpoint_id`, exact `node_id` and `incarnation` together with
-its path and runtime fact. Its complete fields are the shared topology types below.
+MeshDigest is the node's birth, status and primary roles, not an address-only report. Its MeshNode carries the real bound `transport_addr`, `endpoint_id`, exact `node_id` and `incarnation` together with its mesh and path; its runtime fact and data dir ride the request beside it. Its complete fields are the shared topology types below.
 
 
 ```rust
@@ -1069,36 +1069,15 @@ pub struct MeshNode {
     pub transport_addr: std::net::SocketAddr,
     pub incarnation: IncarnationId,
     pub supersedes: Option<IncarnationId>,
-    pub runtime: Option<RuntimeFact>,
-}
-
-pub struct NodeLoad {
-    pub cpu_used_millicores: u32,
-    pub cpu_budget_millicores: u32,
-    pub ram_used_bytes: u64,
-    pub ram_budget_bytes: u64,
-}
-
-pub struct GossipStats {
-    pub heard: u32,
-    pub neighbours: u32,
-    pub frames_sent: u64,
-    pub frames_received: u64,
 }
 
 pub struct MeshDigest {
     pub fabric_id: FabricId,
     pub node: MeshNode,
     pub status: NodeStatus, // the record's status (States), carried by every frame that carries the node
-    pub admin_api_base: Option<String>,
+    pub primary: Vec<RoleRevision>,
     pub digest_seq: u64,
     pub emitted_at_rafka_ms: u64,
-    pub data_dir: Option<String>,
-    pub mesh_id: Option<MeshId>,
-    pub in_flight: Option<u64>,
-    pub config: BTreeMap<String, String>,
-    pub load: Option<NodeLoad>,
-    pub gossip: Option<GossipStats>,
 }
 ```
 
@@ -1154,12 +1133,13 @@ pub enum TopologyRequest {
 pub enum TopologyReply {
     Snapshot {
         mesh: String,
+        mesh_id: Option<MeshId>,
         publisher: PublisherId,
         topology_version: u64,
         snapshot_id: u64,
         chunk_index: u32,
         chunk_count: u32,
-        digests: Vec<WireDigest>,
+        nodes: Vec<ReadNode>,
         in_flight: Vec<LifecycleOp>,
         deleted: Vec<LifecycleOp>,
     },
@@ -1193,6 +1173,8 @@ pub struct Primary {
     pub revision: u64,
 }
 ```
+
+Each `ReadNode` is a node's identity, endpoint and lineage, its status and primary roles, the `digest_seq` of its Digest the answerer holds, and the runtime and data dir the answerer holds of it (hydration; gossip never carries them).
 
 `mesh=None` asks for every held or eligible stored mesh; Some(m) asks for one mesh.
 A matching held source version answers Unchanged. Accepted reads stream Started, then

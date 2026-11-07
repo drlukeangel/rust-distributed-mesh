@@ -5354,7 +5354,7 @@ impl Observer {
                 while let Some(ev) = receiver.next().await {
                     if let Ok(iroh_gossip::api::Event::Received(m)) = ev {
                         if let Ok(frame) = Frame::decode(&bytes::Bytes::copy_from_slice(&m.content)) {
-                            seen.lock().unwrap().push((channel, frame.into_data()));
+                            seen.lock().unwrap().push((channel, frame));
                         }
                     }
                 }
@@ -5519,12 +5519,38 @@ async fn control_run(cell: &str, shape: Shape) {
         for (p, seq) in &tv {
             assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{p}: topology_version went backward: {seq:?}");
         }
+        // A Digest names its birth and sequence in its envelope; the birth's path name rides its first
+        // Digest's details and every mesh-primary's TopologyFull entry of it (gossip.md §3.1).
+        let mut location_of: BTreeMap<(String, String), PathName> = BTreeMap::new();
+        for (_, fr) in &seen {
+            match (fr.data(), fr.context()) {
+                (Frame::Digest { details: Some(d), .. }, Some(c)) => {
+                    location_of.insert((c.source.node.to_string(), c.source.incarnation.to_string()), PathName::new(d.path.clone(), d.name.clone()).expect("a Digest's details name a path"));
+                }
+                (Frame::TopologyFull { digests, .. }, _) => {
+                    for d in digests {
+                        location_of.insert((d.node.node_id.to_string(), d.node.incarnation.to_string()), d.node.location());
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut digests: BTreeMap<(PathName, String), Vec<u64>> = BTreeMap::new();
+        let mut unnamed: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
         let mut members_versions: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         let mut status_frames = 0usize;
         for (_, fr) in &seen {
-            match fr {
-                Frame::Digest { digest } => digests.entry((digest.node.location(), digest.node.incarnation.to_string())).or_default().push(digest.digest_seq),
+            match fr.data() {
+                Frame::Digest { .. } => {
+                    let c = fr.context().expect("a Digest heard carries its envelope");
+                    let birth = (c.source.node.to_string(), c.source.incarnation.to_string());
+                    let seq = c.digest_seq().expect("a Digest's sequence");
+                    match location_of.get(&birth).cloned() {
+                        Some(at) => digests.entry((at, birth.1)).or_default().push(seq),
+                        // A birth the observer heard no details or TopologyFull entry of: its sequence is still checked.
+                        None => unnamed.entry(birth).or_default().push(seq),
+                    }
+                }
                 Frame::TopologyFull { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
                 Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
                 _ => {}
@@ -5534,6 +5560,9 @@ async fn control_run(cell: &str, shape: Shape) {
             let mut sorted = seq.clone();
             sorted.sort_unstable();
             assert!(!seq.is_empty() && sorted.first() >= Some(&1), "{birth:?}: a birth's digest_seq starts at 1: {seq:?}");
+        }
+        for (birth, seq) in &unnamed {
+            assert!(seq.iter().min() >= Some(&1), "{birth:?}: a birth's digest_seq starts at 1: {seq:?}");
         }
         let broker_births: BTreeSet<&String> = digests.keys().filter(|(n, _)| *n == broker_path).map(|(_, i)| i).collect();
         assert_eq!(broker_births, BTreeSet::from([&kept_incarnation, &current_incarnation]), "the observer heard the restarted broker under the incarnation its restart kept ({kept_incarnation}) and, when a recovery re-created it, its current birth ({current_incarnation}), and no other");

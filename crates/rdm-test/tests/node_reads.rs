@@ -171,7 +171,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         }
 
         // mesh.get: every mesh by name, one by name or by id, and the empty list for a mesh not held.
-        let mesh_id = me.mesh_id.clone().expect("the Day-0 admin holds its mesh id");
+        let mesh_id = running.topology_view.digest_view.mesh_id_of(&me.node.mesh).expect("the Day-0 admin holds its mesh id");
         for f in [Filter::new().eq("name", ["mesh1"]), Filter::new().eq("id", [mesh_id.to_string()])] {
             let one = meshes.get(&f).await.unwrap_or_else(|e| panic!("mesh.get {f:?}: {e}"));
             assert_eq!(one.iter().map(|m| (m.name.as_str(), m.primary_admin.clone(), m.nodes.clone())).collect::<Vec<_>>(), vec![("mesh1", Some(me.node.node_id.clone()), vec![me.node.node_id.clone()])], "{f:?}");

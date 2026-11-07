@@ -7,7 +7,7 @@
 //! bytes; a chunk the packers produce encodes under `MAX_MESSAGE_BYTES`; a frame this build does not
 //! read is refused with a named reason, a JSON frame included.
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::snapshot::{chunks_of, Full, PublisherId};
@@ -27,7 +27,7 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
+fn digest(ordinal: u32, full: bool) -> MeshDigest {
     MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
@@ -45,18 +45,17 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
     }
 }
 
-/// A member's heartbeat: the digest with no status, for a heartbeat carries none (gossip.md §3.1
-/// `Digest`); a decoded one holds `Pending`, the status of a birth its receiver was not told of.
-fn heartbeat(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
-    MeshDigest { status: NodeStatus::Pending, ..digest(ordinal, runtime, full) }
+/// A node's Digest at pending: its first into its mesh, at its accepted join (gossip.md §3.1 `Digest`).
+fn pending(ordinal: u32, full: bool) -> MeshDigest {
+    MeshDigest { status: NodeStatus::Pending, ..digest(ordinal, full) }
 }
 
-fn process_runtime() -> RuntimeFact {
-    RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep1"), provider: RuntimeProvider::Process, control_domain: "host-a".into(), locator: RuntimeLocator::Process { pid: 4242, start: 987_654 } }
-}
-
-fn container_runtime() -> RuntimeFact {
-    RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep2"), provider: RuntimeProvider::Container, control_domain: "docker-a".into(), locator: RuntimeLocator::Container { id: "f".repeat(64) } }
+/// A node-type primary that is also the fabric-primary, each role at its revision (Q392).
+fn primary(ordinal: u32) -> MeshDigest {
+    let mut d = digest(ordinal, false);
+    d.set_primary(Some(4));
+    d.set_fabric_primary(Some(300));
+    d
 }
 
 fn op(action: &str, name: PathName, mesh: &str, r#type: &str) -> LifecycleOp {
@@ -74,16 +73,16 @@ fn executor() -> rdm_core::framing::Birth {
     rdm_core::framing::Birth { node_id: NodeId::parse("100000000001").unwrap(), incarnation: IncarnationId::parse("100000000002").unwrap() }
 }
 
-/// Every `Frame` variant, each digest shape (absent and present optionals, both runtime locators).
+/// Every `Frame` variant, each Digest shape (details absent and present, a lineage, primary roles).
 fn frames() -> Vec<Frame> {
     let p = publisher();
     vec![
-        Frame::digest(&heartbeat(1, None, false), true),
-        Frame::digest(&heartbeat(2, Some(process_runtime()), true), true),
-        Frame::digest(&heartbeat(3, Some(container_runtime()), true), true),
+        Frame::digest(&pending(1, false), false),
+        Frame::digest(&pending(2, true), true),
+        Frame::digest(&primary(3), true),
         Frame::TopologyFull {
             mesh: "mesh2".into(),
-            mesh_id: None,
+            mesh_id: Some(MeshId::mint()),
             publisher: p.clone(),
             forwarded_by: Some(executor().node_id.to_string()),
             topology_version: 9,
@@ -91,7 +90,7 @@ fn frames() -> Vec<Frame> {
             snapshot_id: 5,
             chunk_index: 1,
             chunk_count: 3,
-            digests: vec![digest(1, None, false), digest(2, Some(process_runtime()), true)],
+            digests: vec![digest(1, false), digest(2, true), primary(5)],
             in_flight: vec![op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node")],
             deleted: vec![op("node.delete", PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node")],
         },
@@ -111,12 +110,12 @@ fn frames() -> Vec<Frame> {
         },
         Frame::TopologyDelta {
             mesh: "mesh2".into(),
-            mesh_id: None,
+            mesh_id: Some(MeshId::mint()),
             source_publisher: p.clone(),
             base_version: 8,
             topology_version: 9,
             published_at_rafka_ms: 12,
-            changed: vec![digest(4, Some(container_runtime()), true)],
+            changed: vec![digest(4, true)],
             removed: vec![NodeId::mint().to_string()],
             in_flight: vec![op("node.stop", PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node")],
             deleted: vec![],
@@ -150,7 +149,7 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     }
     result.insert("frame_variants_round_tripped".into(), json!(all_frames.len()));
 
-    let members: Vec<MeshDigest> = (1..=150).map(|k| digest(k, (k % 2 == 0).then(process_runtime), k % 3 == 0)).collect();
+    let members: Vec<MeshDigest> = (1..=150).map(|k| if k % 2 == 0 { primary(k) } else { digest(k, k % 3 == 0) }).collect();
     let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete", PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node")).collect();
     let full = Full::new(members.clone(), overlays.clone(), overlays.iter().take(5).cloned().collect());
     let p = publisher();
@@ -181,12 +180,17 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     assert_eq!(heard, members.len(), "the chunks carry every member");
     result.insert("nodes_snapshot".into(), json!({ "members": members.len(), "chunks": chunks.len(), "largest_bytes": chunks.iter().map(|c| c.encode().len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
 
-    // ---- sizes: one digest, postcard against the JSON-shaped MeshDigest ----
-    let one = digest(1, Some(process_runtime()), true);
-    let wire_bytes = crate::gossip_wire::authored(&Frame::digest(&one.clone(), true)).encode().len();
+    // ---- sizes: one Digest's data, postcard against the JSON-shaped MeshDigest; the envelope that
+    // carries either is the same CloudEvents metadata, measured beside them ----
+    let one = digest(1, true);
+    let first = Frame::digest(&one.clone(), true);
+    let data_bytes = crate::gossip_wire::data(&first).len();
+    let heartbeat_bytes = crate::gossip_wire::data(&Frame::digest(&one, false)).len();
+    let message_bytes = crate::gossip_wire::authored(&first).encode().len();
     let json_bytes = serde_json::to_vec(&one).unwrap().len();
-    assert!(wire_bytes < json_bytes, "postcard {wire_bytes} B against JSON {json_bytes} B");
-    result.insert("digest_bytes".into(), json!({ "postcard_frame": wire_bytes, "json_digest": json_bytes }));
+    assert!(data_bytes < json_bytes, "postcard {data_bytes} B against JSON {json_bytes} B");
+    assert!(heartbeat_bytes < data_bytes, "a heartbeat's data ({heartbeat_bytes} B) carries no details, the first Digest's ({data_bytes} B) does");
+    result.insert("digest_bytes".into(), json!({ "postcard_data": data_bytes, "postcard_heartbeat_data": heartbeat_bytes, "complete_message": message_bytes, "json_digest": json_bytes }));
 
     // ---- a frame this build does not read is refused by name ----
     let garbage = Frame::decode(&[0xff, 0xff, 0xff, 0xff]).unwrap_err().to_string();

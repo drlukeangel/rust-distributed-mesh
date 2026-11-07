@@ -455,12 +455,12 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// (`crate::rafka_time`), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
 pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFetch {
-    Arc::new(move |channels: rdm_gossip::channel::Channels, primary: MeshDigest, meshes: Vec<String>| {
+    Arc::new(move |channels: rdm_gossip::channel::Channels, primary: rdm_core::Primary, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
             let mut done = rdm_gossip::topology::TopUpDone::default();
             for mesh in meshes {
-                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.mesh, &channels, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
+                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node_id.clone()), &primary.mesh, &channels, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)

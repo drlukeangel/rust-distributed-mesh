@@ -698,7 +698,7 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
         assert_eq!(fabric_primary_of(&pv).as_ref(), Some(&f.n.resolved.node_id), "P's view names N fabric-primary");
         let mut d = digest_of(&f.n.resolved, &FabricId::mint());
         f.n.primary_update.digest_view.recorded_primaries(&mut d);
-        assert_eq!((d.is_primary, d.is_fabric_primary), (Some(4), Some(8)), "N's next digest carries both at their revisions");
+        assert_eq!((d.is_primary(), d.is_fabric_primary()), (Some(4), Some(8)), "N's next digest carries both at their revisions");
         let (finished, installed) = (spans.position(WRITES_FINISHED).expect("P finished its writes"), spans.position(UPDATED).expect("N installed"));
         assert!(finished < installed, "P finished its writes before N installed: {:?}", spans.names());
         assert_eq!(f.p.finished(), 1);
@@ -1274,7 +1274,7 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         let mut digest = digest_of(&f.n.resolved, &FabricId::mint());
         f.n.primary_update.digest_view.recorded_primaries(&mut digest);
         assert_eq!(
-            (digest.is_primary, digest.is_fabric_primary),
+            (digest.is_primary(), digest.is_fabric_primary()),
             (Some(4), Some(8)),
             "successor's digest carries its role at the next revisions without the old primary's survival"
         );

@@ -1,12 +1,11 @@
-//! Each published digest carries the process's CPU and RAM against the host or budget ceilings,
-//! and the backbone's `TopologyFull` snapshot retains those loads while the forwarding primary's
-//! cross-mesh projection omits them.
+//! Each process samples its own CPU and RAM against the host or budget ceilings, in memory, for its
+//! own `node.get`; no load rides gossip: neither its Digest nor the backbone's `TopologyFull` nor the
+//! forwarding primary's differential carries one (Q394).
 //!
-//! CONTRACT: `docs/architecture/gossip.md:151` "the complete Mesh with loads: what every node-admin
-//! holds of every Mesh for routing and control decisions" and `docs/architecture/gossip.md:152`
-//! "transforms the held remote projection from `base_version` into `topology_version`: births added
-//! or changed, identities removed, overlay and deleted changes, loads omitted."
-//! `crates/rdm-transport/src/load.rs:4-6` "The ceilings are the host's cores and memory unless the
+//! CONTRACT: `docs/architecture/lifecycles/node-identity-and-state.md` §2.5 "Load and the gossip
+//! counters ... are in-memory diagnostics of the node itself: never gossiped (Q394), never written to
+//! the node record, storage or durable history; `node.get` serves them only for the node that answers
+//! it." `crates/rdm-transport/src/load.rs:4-6` "The ceilings are the host's cores and memory unless the
 //! process was given a budget (`RDM_CPU_BUDGET_MILLICORES`, `RDM_RAM_BUDGET_BYTES`)."
 
 use iroh::protocol::Router;
@@ -62,19 +61,17 @@ fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
     iroh::EndpointAddr::new(ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.port())))
 }
 
-/// CONTRACT: `docs/architecture/gossip.md:151` "the complete Mesh with loads: what every node-admin
-/// holds of every Mesh for routing and control decisions" and `docs/architecture/gossip.md:574`
-/// "Loads are omitted from the ordinary-node cross-Mesh projection, not from the protocol. They
-/// remain on the backbone."
-/// When `RDM_CPU_BUDGET_MILLICORES` and `RDM_RAM_BUDGET_BYTES` are set in the process environment,
-/// `TopologyView::publish` stamps the sampled `NodeLoad` with those budget ceilings and positive
-/// resident memory, the backbone `TopologyFull` snapshot retains that load for the receiving
-/// node-admin, and the forwarded cross-mesh projection omits it for an ordinary member.
+/// CONTRACT (node-identity-and-state.md §2.5, Q394): when `RDM_CPU_BUDGET_MILLICORES` and
+/// `RDM_RAM_BUDGET_BYTES` are set in the process environment, the node's own sample (`own_sample`, what
+/// its `node.get` serves) carries those budget ceilings and positive resident memory; the node's
+/// Digest, the backbone `TopologyFull` that reaches the receiving node-admin and the forwarded
+/// differential that reaches an ordinary member deliver the node without any load. Must NOT happen:
+/// a remote node's load held from gossip.
 #[test]
-fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and_omits_it_for_remote_members() {
+fn a_node_samples_its_own_load_with_configured_budgets_and_gossip_delivers_it_without_load() {
     if crate::own_process::delegated_with_env(
         module_path!(),
-        "published_digest_carries_process_load_with_configured_budgets_to_backbone_and_omits_it_for_remote_members",
+        "a_node_samples_its_own_load_with_configured_budgets_and_gossip_delivers_it_without_load",
         &[
             ("RDM_CPU_BUDGET_MILLICORES", Some(std::ffi::OsStr::new("3500"))),
             ("RDM_RAM_BUDGET_BYTES", Some(std::ffi::OsStr::new("536870912"))),
@@ -127,12 +124,8 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
         fwd_bb.set_mesh_primary(true);
 
         src_m_channels.publish(&src_digest).await.unwrap();
-        let own_held = src_m
-            .digest_view
-            .get(src_digest.node.node_id.as_str())
-            .expect("the publisher holds its own digest")
-            .0;
-        let sampled: NodeLoad = own_held.load.expect("published digest carries sampled NodeLoad");
+        assert!(src_m.digest_view.get(src_digest.node.node_id.as_str()).is_some(), "the publisher holds its own digest");
+        let (sampled, _): (NodeLoad, _) = src_m_channels.own_sample();
         assert_eq!(sampled.cpu_budget_millicores, 3500, "{sampled:?}");
         assert_eq!(sampled.ram_budget_bytes, 536_870_912, "{sampled:?}");
         assert!(sampled.ram_used_bytes > 0, "{sampled:?}");
@@ -147,22 +140,20 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
             assert!(Instant::now() < deadline, "timed out waiting for backbone and member snapshots");
         }
 
+        // The node reaches both with its identity and status, and no load: a held digest has no place
+        // for one, and the frames that carried it have none (gossip.md §3.1).
         let admin_seen = fwd_m
             .digest_view
             .get(src_digest.node.node_id.as_str())
             .expect("receiving node-admin holds the remote member from the backbone")
             .0;
-        let admin_load = admin_seen.load.expect("backbone TopologyFull retains the member's NodeLoad");
-        assert_eq!(admin_load.cpu_budget_millicores, 3500, "{admin_load:?}");
-        assert_eq!(admin_load.ram_budget_bytes, 536_870_912, "{admin_load:?}");
-        assert_eq!(admin_load.ram_used_bytes, sampled.ram_used_bytes, "{admin_load:?}");
-
+        assert_eq!((admin_seen.node.incarnation.clone(), admin_seen.status), (src_digest.node.incarnation.clone(), NodeStatus::Ready), "{admin_seen:?}");
         let member_seen = mem_m
             .digest_view
             .get(src_digest.node.node_id.as_str())
             .expect("ordinary member holds the remote member from the forwarded differential")
             .0;
-        assert!(member_seen.load.is_none(), "the forwarded cross-mesh differential omits loads: {member_seen:?}");
+        assert_eq!((member_seen.node.incarnation.clone(), member_seen.status), (src_digest.node.incarnation.clone(), NodeStatus::Ready), "{member_seen:?}");
 
         drop(src_bb);
         drop(fwd_bb);

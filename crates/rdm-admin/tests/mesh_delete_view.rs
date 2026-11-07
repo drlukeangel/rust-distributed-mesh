@@ -25,7 +25,7 @@ use tracing::Instrument as _;
 
 
 
-fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str, mesh_id: &MeshId) -> MeshDigest {
+fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str) -> MeshDigest {
     let node_id = NodeId::mint();
     MeshDigest { 
         fabric_id: fabric.clone(),
@@ -76,8 +76,8 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let own = digest(&fabric, PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", &mesh3);
-        let last = digest(&fabric, PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &mesh1);
+        let own = digest(&fabric, PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin");
+        let last = digest(&fabric, PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
@@ -87,6 +87,8 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         assert!(topology_view.digest_view.record(own.clone()) && topology_view.digest_view.record(last.clone()), "the view holds both admins");
+        // mesh1's id, as the topology of mesh1 this admin took named it beside the mesh (its own mesh's is its view's).
+        topology_view.digest_view.hold_mesh_id("mesh1", Some(&mesh1));
         let digest_view = topology_view.digest_view.clone();
         let records = Records::default();
         let me = own.node.location();
