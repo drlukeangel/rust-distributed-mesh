@@ -146,11 +146,7 @@ impl View {
         view.primary = view.digest_view.primary.clone();
         view.forwarder.lock().unwrap().set_own_mesh(mesh);
         let forwarder = view.forwarder.clone();
-        *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| {
-            if let Ok(mut fw) = forwarder.try_lock() {
-                fw.remove(m);
-            }
-        }));
+        *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| forwarder.lock().unwrap().remove(m)));
         view
     }
 

@@ -2009,6 +2009,9 @@ impl DigestView {
     /// Depart every remaining birth of `mesh` this digest view still holds (in the view, projected or
     /// stopped by its stop), so a deleted mesh's final mesh topology or `MeshLeft` leaves no crashed
     /// predecessor birth of the mesh in the active topology and holds it deleted for the retention.
+    /// What the forwarder published of the mesh stays: the final mesh topology that departs them
+    /// goes into this primary's Mesh as the differential from it, and the forwarder forgets the mesh
+    /// only after that ([`Self::mesh_left`] at the `MeshLeft` receipt).
     pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, at_rafka_ms: u64) {
         let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName, String)> = BTreeMap::new();
         for d in self.all().into_iter().filter(|d| d.node.mesh == mesh) {
@@ -2036,11 +2039,18 @@ impl DigestView {
             }
         }
         self.statuses.forget_mesh(mesh);
-        if let Some(cb) = self.on_mesh_deleted.0.lock().unwrap().clone() {
-            cb(mesh);
-        }
         if changed {
             self.births.send_modify(|v| *v += 1);
+        }
+    }
+
+    /// `mesh` left (its `MeshLeft` receipt): every remaining birth of it departs
+    /// ([`Self::depart_mesh_births`]), then the mesh-left hook runs: the forwarder forgets what it
+    /// published of the mesh.
+    pub fn mesh_left(&self, mesh: &str, build_id: &str, at_rafka_ms: u64) {
+        self.depart_mesh_births(mesh, build_id, at_rafka_ms);
+        if let Some(cb) = self.on_mesh_deleted.0.lock().unwrap().clone() {
+            cb(mesh);
         }
     }
 

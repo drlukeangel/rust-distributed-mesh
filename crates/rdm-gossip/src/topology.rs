@@ -2333,6 +2333,81 @@ mod tests {
         assert!(joiner.digest_view.routable(admin.node.node_id.as_str()), "a member still saying Ready, of a mesh the joiner holds ready, is selected");
     }
 
+    /// CONTRACT (gossip.md §3.3: "`base_version` is the version the forwarder last published into its
+    /// Mesh"; "Mesh delete": the last admin's final mesh topology is its last gossip): a primary that
+    /// installs a deleted mesh's final mesh topology from the backbone puts it into its Mesh as the
+    /// differential from the version it last published of the mesh. The install departs the mesh's
+    /// births and leaves what the forwarder published; a node of the Mesh at that version applies the
+    /// differential and holds the last admin deleted. The forwarder forgets the mesh at its
+    /// `MeshLeft` receipt. Must NOT happen: the final differential from base 0, and a version gap at a
+    /// node that holds the version before it.
+    #[test]
+    fn a_deleted_meshs_final_mesh_topology_goes_into_the_mesh_as_the_differential_from_the_version_last_published() {
+        let spans = OpenedSpans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let m1 = MeshId::mint();
+        let (admin, rpc) = (born("mesh1", "node-admin", 1, 1), born("mesh1", "node", 1, 1));
+        let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, deleted: Vec<LifecycleOp>| Frame::TopologyFull {
+            mesh: "mesh1".into(),
+            mesh_id: Some(m1.clone()),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: version,
+            snapshot_id: version,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight,
+            deleted,
+        };
+        let delete_of = |d: &MeshDigest| LifecycleOp { build_id: "b9".into(), ..op_at(rdm_core::PathName::numbered("mesh1", &d.node.r#type, 1), "mesh1", &d.node.r#type, &d.node.node_id, &d.node.incarnation, "node.delete") };
+        let mut last = admin.clone();
+        last.status = NodeStatus::Leaving;
+        last.digest_seq += 1;
+        let primary = test_view("mesh2", "mesh2.node-admin.1");
+        primary.primary.store(true, Ordering::Relaxed);
+        primary.forwarder.lock().unwrap().set_role(true);
+        let member = test_view("mesh2", "mesh2.node.1");
+        // What the primary puts into its Mesh for a mesh topology it installed from the backbone (backbone.rs).
+        let forward = |frame: &Frame| -> Vec<Frame> {
+            let taken = primary.take_snapshot(frame, &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
+            let (mesh, _, version, full) = taken.source.expect("a complete source snapshot");
+            let held = primary.forwarder.lock().unwrap().published_version(&mesh);
+            assert_eq!(held, (version > 1).then_some(1), "the install leaves what the forwarder last published of {mesh}");
+            match primary.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, version, &full, version) {
+                crate::snapshot::Forward::Delta(frames) => frames,
+                crate::snapshot::Forward::Nothing(why) => panic!("mesh1 at v{version} goes into the Mesh: {why}"),
+            }
+        };
+        let base_of = |frames: &[Frame]| -> Vec<(u64, u64)> {
+            frames.iter().map(|f| match f.data() { Frame::TopologyDelta { base_version, .. } => (*base_version, f.delta_version().expect("an authored differential")), other => panic!("not a differential: {other:?}") }).collect()
+        };
+        let first = forward(&mesh_topology(1, vec![admin.clone(), rpc.clone()], vec![], vec![]));
+        assert_eq!(base_of(&first), vec![(0, 1)], "mesh1's first differential into the Mesh is from 0");
+        for f in &first {
+            member.take_snapshot(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
+        }
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(1));
+
+        // mesh1's last admin's final mesh topology: itself Leaving and its node.delete, the other node deleted.
+        let last_one = forward(&mesh_topology(2, vec![last.clone()], vec![delete_of(&admin)], vec![delete_of(&rpc)]));
+        assert_eq!(base_of(&last_one), vec![(1, 2)], "the final differential is from the version last published, never from 0");
+        assert!(primary.digest_view.is_deleted(admin.node.node_id.as_str()), "the primary's install holds the last admin deleted");
+        for f in &last_one {
+            member.take_snapshot(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
+        }
+        assert!(spans.named("rdm.mesh.topology.update.via-gap").is_empty(), "no node of the Mesh takes a version gap: {:?}", spans.named("rdm.mesh.topology.update.via-gap"));
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(2), "the member applied the final differential at its base");
+        assert!(member.digest_view.is_deleted(admin.node.node_id.as_str()), "the member holds the last admin deleted");
+
+        // The MeshLeft receipt: the forwarder forgets the mesh.
+        primary.digest_view.mesh_left("mesh1", "b9", 9);
+        assert_eq!(primary.forwarder.lock().unwrap().published_version("mesh1"), None, "at MeshLeft the forwarder forgets what it published of mesh1");
+    }
+
     /// CONTRACT (gossip.md, "Snapshot, delta and top-up agreement": after mesh-left the mesh is absent
     /// from the projection): a node of a peer mesh that joins after `mesh-left` installs nothing of
     /// the deleted mesh from its primary's topology read or neighbour-up replay, so it can route
