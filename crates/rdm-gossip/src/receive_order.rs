@@ -376,10 +376,12 @@ struct InstalledSource {
     snapshot_id: Option<u64>,
 }
 
-/// The mesh a `TopologyFull` or `TopologyDelta` is of and its `topology_version`.
-fn publication_of(f: &Frame) -> Option<(&str, u64)> {
+/// The mesh a `TopologyFull` or `TopologyDelta` is of, its `topology_version`, and the mesh's id as
+/// its node-admins' entries carry it.
+fn publication_of(f: &Frame) -> Option<(&str, u64, Option<rdm_core::MeshId>)> {
     match f.data() {
-        Frame::TopologyFull { mesh, topology_version, .. } | Frame::TopologyDelta { mesh, topology_version, .. } => Some((mesh, *topology_version)),
+        Frame::TopologyFull { mesh, topology_version, digests, .. } => Some((mesh, *topology_version, crate::snapshot::mesh_id_of(digests))),
+        Frame::TopologyDelta { mesh, topology_version, changed, .. } => Some((mesh, *topology_version, crate::snapshot::mesh_id_of(changed))),
         _ => None,
     }
 }
@@ -405,8 +407,8 @@ impl ReceiveOrder {
     /// ([`Self::installed`]), whichever mesh-primary sent it (Q389).
     pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
         let (frame, keys) = orders_of(f);
-        if let Some((mesh, version)) = publication_of(f) {
-            return self.below_installed(frame, mesh, version, || format!("topology_version={version}"));
+        if let Some((mesh, version, mesh_id)) = publication_of(f) {
+            return self.below_installed(frame, mesh, version, mesh_id.as_ref(), || format!("topology_version={version}"));
         }
         // Every key is judged before any is held: a frame ignored for one of its sources moves none.
         for (source, key) in &keys {
@@ -422,15 +424,15 @@ impl ReceiveOrder {
         Ok(())
     }
 
-    /// Whether a chunk of a topology read of `mesh` at `topology_version` is taken: only the version
-    /// installed of the mesh orders it.
-    pub(crate) fn admit_read(&self, mesh: &str, topology_version: u64) -> Result<(), Earlier> {
-        self.below_installed("topology-read", mesh, topology_version, || format!("topology_version={topology_version}"))
+    /// Whether a chunk of a topology read of `mesh` (whose node-admins' entries carry `mesh_id`) at
+    /// `topology_version` is taken: only the version installed of the mesh orders it.
+    pub(crate) fn admit_read(&self, mesh: &str, topology_version: u64, mesh_id: Option<&rdm_core::MeshId>) -> Result<(), Earlier> {
+        self.below_installed("topology-read", mesh, topology_version, mesh_id, || format!("topology_version={topology_version}"))
     }
 
     /// `Err` when the floor of `mesh` ([`Self::floor`]) is above `topology_version`.
-    fn below_installed(&self, frame: &'static str, mesh: &str, topology_version: u64, offered: impl FnOnce() -> String) -> Result<(), Earlier> {
-        match self.floor(mesh) {
+    fn below_installed(&self, frame: &'static str, mesh: &str, topology_version: u64, mesh_id: Option<&rdm_core::MeshId>, offered: impl FnOnce() -> String) -> Result<(), Earlier> {
+        match self.floor(mesh, mesh_id) {
             Some(held) if topology_version < held => Err(Earlier { frame, source: mesh.to_string(), held: format!("topology_version={held}"), offered: offered() }),
             _ => Ok(()),
         }
@@ -438,9 +440,10 @@ impl ReceiveOrder {
 
     /// The version of `mesh` that orders its publications and reads here, whichever mesh-primary sent
     /// them (Q389): the higher of the version installed and the version this node published itself.
-    /// `None` when neither is held.
-    pub(crate) fn floor(&self, mesh: &str) -> Option<u64> {
-        let installed = self.installed.get(mesh).map(|h| h.version);
+    /// `None` when neither is held. A later mesh of the same name (`mesh_id` another id than the
+    /// installed one's) is another mesh: the installed version orders nothing of it.
+    pub(crate) fn floor(&self, mesh: &str, mesh_id: Option<&rdm_core::MeshId>) -> Option<u64> {
+        let installed = self.installed.get(mesh).filter(|h| !crate::snapshot::another_mesh(h.full.as_ref().and_then(|f| f.mesh_id()).as_ref(), mesh_id)).map(|h| h.version);
         let published = self.published.get(mesh).copied();
         installed.max(published)
     }
@@ -633,11 +636,11 @@ mod tests {
         let held = "topology_version=9".to_string();
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 240, 8, 0)), Err(Earlier { frame: "mesh-topology", source: "mesh1".into(), held: held.clone(), offered: "topology_version=8".into() }));
         assert_eq!(order.admit(&delta("mesh1", &p, 245, 7, 8)).map_err(|e| (e.frame, e.held)), Err(("mesh-topology-delta", held.clone())));
-        assert_eq!(order.admit_read("mesh1", 8), Err(Earlier { frame: "topology-read", source: "mesh1".into(), held: held.clone(), offered: "topology_version=8".into() }));
-        assert_eq!(order.admit_read("mesh1", 9), Ok(()), "a read of the installed version is taken");
+        assert_eq!(order.admit_read("mesh1", 8, None), Err(Earlier { frame: "topology-read", source: "mesh1".into(), held: held.clone(), offered: "topology_version=8".into() }));
+        assert_eq!(order.admit_read("mesh1", 9, None), Ok(()), "a read of the installed version is taken");
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 250, 9, 0)), Ok(()), "a full at the installed version is taken");
         assert_eq!(order.admit(&mesh_topology("mesh1", &other, 260, 1, 0)).map_err(|e| e.held), Err(held), "another mesh-primary's lower version is older too (Q389)");
-        assert_eq!(order.admit_read("mesh2", 1), Ok(()), "another mesh is another source");
+        assert_eq!(order.admit_read("mesh2", 1, None), Ok(()), "another mesh is another source");
     }
 
     /// CONTRACT (gossip.md receive rules, `TopologyFull`: "`P(topology_version)` against the installed
@@ -653,14 +656,60 @@ mod tests {
         order.published("mesh2", 28);
         order.published("mesh2", 26);
         let held = "topology_version=28".to_string();
-        assert_eq!(order.admit_read("mesh2", 25), Err(Earlier { frame: "topology-read", source: "mesh2".into(), held: held.clone(), offered: "topology_version=25".into() }));
-        assert_eq!(order.floor("mesh2"), Some(28), "the floor never moves down");
+        assert_eq!(order.admit_read("mesh2", 25, None), Err(Earlier { frame: "topology-read", source: "mesh2".into(), held: held.clone(), offered: "topology_version=25".into() }));
+        assert_eq!(order.floor("mesh2", None), Some(28), "the floor never moves down");
         assert_eq!(order.admit(&mesh_topology("mesh2", &me, 1_000, 25, 0)).map_err(|e| e.held), Err(held), "a full below what it published is refused too");
-        assert_eq!(order.admit_read("mesh2", 28), Ok(()), "a read of the version it published is not refused for its order");
-        assert_eq!(order.admit_read("mesh1", 1), Ok(()), "another mesh is another source");
+        assert_eq!(order.admit_read("mesh2", 28, None), Ok(()), "a read of the version it published is not refused for its order");
+        assert_eq!(order.admit_read("mesh1", 1, None), Ok(()), "another mesh is another source");
         order.installed("mesh2", &me, 30);
-        assert_eq!(order.floor("mesh2"), Some(30), "the installed floor orders when it is the higher");
-        assert!(order.admit_read("mesh2", 29).is_err());
+        assert_eq!(order.floor("mesh2", None), Some(30), "the installed floor orders when it is the higher");
+        assert!(order.admit_read("mesh2", 29, None).is_err());
+    }
+
+    /// CONTRACT (gossip.md "Mesh delete": a mesh is never reborn; a later mesh of the same name is
+    /// another mesh, known by the id its node-admins' entries carry): a node holding the deleted mesh2
+    /// at v33 takes a recreated mesh2's aggregate at v1, a read of it and its first differential, at the
+    /// receive path, in the receiver and in the forwarder, while the deleted mesh's own lower versions
+    /// stay ignored. Must NOT happen: a recreated mesh's every publication ignored below the deleted
+    /// mesh's version (canonical_ids red at b6f75c432: 67 via-stale at the fabric-primary, held 33).
+    #[test]
+    fn a_later_mesh_of_the_same_name_is_another_mesh_which_the_held_version_orders_nothing_of() {
+        let admin_of = |id: &rdm_core::MeshId| {
+            let mut d = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin");
+            d.mesh_id = Some(id.clone());
+            d
+        };
+        let (old_id, new_id) = (rdm_core::MeshId::mint(), rdm_core::MeshId::mint());
+        let (old_admin, new_admin) = (admin_of(&old_id), admin_of(&new_id));
+        let (old, new) = (publisher("mesh2.node-admin.1"), publisher("mesh2.node-admin.1"));
+        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| Frame::TopologyFull { mesh: "mesh2".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
+
+        // The receive path.
+        let mut order = ReceiveOrder::default();
+        order.installed_projection("mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin.clone()], vec![], vec![]), None);
+        assert!(order.admit(&full_of(&old, 32, &old_admin)).is_err(), "the deleted mesh's own lower version is still older");
+        assert_eq!(order.admit(&full_of(&new, 1, &new_admin)), Ok(()), "the recreated mesh2's aggregate is another mesh's");
+        assert_eq!(order.admit_read("mesh2", 1, Some(&new_id)), Ok(()));
+        assert!(order.admit_read("mesh2", 1, Some(&old_id)).is_err());
+
+        // The receiver.
+        let mut rx = crate::snapshot::SnapshotReceiver::default();
+        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
+        assert!(matches!(rx.take_chunk(chunk_of(&old, 33, &old_admin)), crate::snapshot::Taken::Installed(_)));
+        let taken = rx.take_chunk(chunk_of(&new, 1, &new_admin));
+        assert!(matches!(&taken, crate::snapshot::Taken::Installed(i) if i.first && i.topology_version == 1), "the recreated mesh installs as a first topology: {taken:?}");
+        let mut members = crate::snapshot::SnapshotReceiver::default();
+        assert!(matches!(members.take_delta("mesh2", &old, 0, 33, &crate::snapshot::Delta { changed: vec![old_admin.clone()], ..Default::default() }), crate::snapshot::Moved::Applied { .. }));
+        let first = members.take_delta("mesh2", &new, 0, 1, &crate::snapshot::Delta { changed: vec![new_admin.clone()], ..Default::default() });
+        assert!(matches!(first, crate::snapshot::Moved::Applied { topology_version: 1, .. }), "the recreated mesh's first differential starts from nothing: {first:?}");
+        assert_eq!(members.held_full("mesh2").map(|f| f.member_count()), Some(1), "nothing of the deleted mesh is kept");
+
+        // The forwarder.
+        let mut fwd = crate::snapshot::Forwarder::default();
+        fwd.set_author(crate::envelope::Birth { fabric: rdm_core::FabricId::parse("fab000000001").unwrap(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() });
+        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin], vec![], vec![]), 1), crate::snapshot::Forward::Delta(_)));
+        let crate::snapshot::Forward::Delta(frame) = fwd.source("mesh1.node-admin.1", "mesh2", &new, 1, &crate::snapshot::Full::new(vec![new_admin], vec![], vec![]), 2) else { panic!("the recreated mesh goes in") };
+        assert!(matches!(frame.data(), Frame::TopologyDelta { base_version: 0, topology_version: 1, .. }), "from nothing: {:?}", frame.data());
     }
 
     /// CONTRACT (R-RX3: Digest orders by `digest_seq`, per birth; gossip.md §3.1: a new incarnation's

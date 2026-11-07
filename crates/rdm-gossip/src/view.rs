@@ -530,7 +530,8 @@ impl View {
             }
         };
         let mut order = self.order.lock().unwrap();
-        if let Err(e) = order.admit_read(&chunk.mesh, chunk.topology_version) {
+        let offered_id = crate::snapshot::mesh_id_of(&chunk.digests);
+        if let Err(e) = order.admit_read(&chunk.mesh, chunk.topology_version, offered_id.as_ref()) {
             tracing::info_span!(
                 "rdm.mesh.topology.reject.via-stale",
                 node = %self.current_name(),
@@ -542,7 +543,7 @@ impl View {
                 publisher = %chunk.publisher,
             )
             .in_scope(|| tracing::info!("a topology read of a version below the one this node installed of its source: ignored"));
-            let held_version = order.floor(&chunk.mesh).unwrap_or_default();
+            let held_version = order.floor(&chunk.mesh, offered_id.as_ref()).unwrap_or_default();
             drop(order);
             record_own(own_digests);
             return Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: chunk.topology_version });

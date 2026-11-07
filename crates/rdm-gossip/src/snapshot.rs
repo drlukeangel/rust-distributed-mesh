@@ -131,6 +131,12 @@ impl Full {
             && self.deleted == other.deleted
     }
 
+    /// The id of the mesh these births belong to, as its node-admins' entries carry it; `None` when
+    /// none carries one ([`mesh_id_of`]).
+    pub fn mesh_id(&self) -> Option<rdm_core::MeshId> {
+        mesh_id_of(&self.digests())
+    }
+
     /// This full without any member's load.
     pub fn without_loads(&self) -> Full {
         Full { digests: self.digests.iter().map(|(k, d)| (k.clone(), without_load(d))).collect(), in_flight: self.in_flight.clone(), deleted: self.deleted.clone(), by_endpoint: self.by_endpoint.clone() }
@@ -304,6 +310,19 @@ pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<Lifec
             shape(d, i, x, k as u32, count)
         })
         .collect()
+}
+
+/// The id of the mesh `digests` belong to, as its node-admins' entries carry it (a node-admin's own
+/// digest carries its mesh's id); `None` when none carries one.
+pub fn mesh_id_of(digests: &[MeshDigest]) -> Option<rdm_core::MeshId> {
+    digests.iter().find_map(|d| d.mesh_id.clone())
+}
+
+/// Whether `offered` is another mesh than `held` under the same name: a mesh is never reborn, so a
+/// later mesh of that name has another id, and the held mesh's version orders nothing of it (gossip.md
+/// "Mesh delete"). An id unknown on either side is the same mesh.
+pub fn another_mesh(held: Option<&rdm_core::MeshId>, offered: Option<&rdm_core::MeshId>) -> bool {
+    matches!((held, offered), (Some(h), Some(o)) if h != o)
 }
 
 /// One source Mesh's snapshot as a node holds or serves it: the entry answer's baseline
@@ -607,8 +626,10 @@ impl SnapshotReceiver {
             publication_duplicate("mesh-topology", &identity);
             Taken::Refused(Refusal::Duplicate)
         };
-        // The mesh's version orders its topology, whichever mesh-primary sent it (Q389).
-        if let Some(h) = self.held.get(&c.mesh) {
+        // The mesh's version orders its topology, whichever mesh-primary sent it (Q389); a later mesh of
+        // the same name is another mesh, which the held one's version orders nothing of.
+        let offered_id = mesh_id_of(&c.digests);
+        if let Some(h) = self.held.get(&c.mesh).filter(|h| !another_mesh(h.full.mesh_id().as_ref(), offered_id.as_ref())) {
             if c.topology_version < h.version {
                 publication_stale("mesh-topology", &c.mesh, &c.publisher, h.version, c.topology_version);
                 return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
@@ -644,10 +665,11 @@ impl SnapshotReceiver {
         let mut digests = Vec::new(); let mut in_flight = Vec::new(); let mut deleted = Vec::new();
         for (d, i, x) in publication.chunks.values() { digests.extend(d.clone()); in_flight.extend(i.clone()); deleted.extend(x.clone()); }
         let full = Full::new(digests, in_flight, deleted);
-        if let Some(h) = self.held.get(&c.mesh).filter(|h| h.version == c.topology_version) {
+        let offered_id = full.mesh_id();
+        if let Some(h) = self.held.get(&c.mesh).filter(|h| h.version == c.topology_version && !another_mesh(h.full.mesh_id().as_ref(), offered_id.as_ref())) {
             if !h.full.same_topology(&full) { return conflict(); }
         }
-        if let Some((_, _, installed_full, snapshot_id)) = installed.filter(|(_, v, _, _)| *v == c.topology_version) {
+        if let Some((_, _, installed_full, snapshot_id)) = installed.filter(|(_, v, f, _)| *v == c.topology_version && !another_mesh(f.mesh_id().as_ref(), offered_id.as_ref())) {
             if !installed_full.same_topology(&full) { return conflict(); }
             if !from_read && snapshot_id == Some(c.snapshot_id) { return duplicate(); }
         }
@@ -656,6 +678,11 @@ impl SnapshotReceiver {
 
     fn install(&mut self, mesh: String, publisher: PublisherId, publication: Pending, full: Full, from_read: bool) -> Taken {
         let version = publication.version; let snapshot_id = publication.snapshot_id;
+        // A later mesh of the same name is another mesh: what was held of the earlier one is dropped.
+        if self.held.get(&mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), full.mesh_id().as_ref())) {
+            self.held.remove(&mesh);
+            self.dropped.remove(&mesh);
+        }
         let unbased = self.unbased.contains_key(&mesh);
         let (first, resumed, refreshed) = match self.held.get(&mesh) {
             None => (true, unbased, false),
@@ -702,8 +729,10 @@ impl SnapshotReceiver {
     fn take_delta_at_base(&mut self, mesh: &str, source: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
         // A differential from version 0 is a mesh's first into this mesh channel: its forwarder held
         // nothing of it before, and a node that holds nothing of it starts from nothing.
-        if base_version == 0 && !self.held.contains_key(mesh) {
+        let another = self.held.get(mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), mesh_id_of(&delta.changed).as_ref()));
+        if base_version == 0 && (another || !self.held.contains_key(mesh)) {
             self.unbased.remove(mesh);
+            self.dropped.remove(mesh);
             self.held.insert(mesh.to_string(), Held { publisher: source.clone(), version: 0, full: Full::default(), desynced: None, publication: None, last_delta: None, peer_read: false });
         }
         let Some(h) = self.held.get_mut(mesh) else {
@@ -957,8 +986,10 @@ impl Forwarder {
             self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped, last: None });
             return Forward::Nothing("its own mesh: its nodes publish themselves");
         }
-        let first = !self.published.contains_key(mesh);
-        let basis = self.published.get(mesh).cloned().unwrap_or(Published { publisher: publisher.clone(), version: 0, full: Full::default(), last: None });
+        // Never published into this Mesh, or a later mesh of the same name (another id): from nothing.
+        let held = self.published.get(mesh).filter(|p| !another_mesh(p.full.mesh_id().as_ref(), stripped.mesh_id().as_ref()));
+        let first = held.is_none();
+        let basis = held.cloned().unwrap_or(Published { publisher: publisher.clone(), version: 0, full: Full::default(), last: None });
         if version == basis.version {
             return Forward::Nothing("the version is the one last published");
         }

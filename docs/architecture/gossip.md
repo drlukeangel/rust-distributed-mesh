@@ -317,7 +317,9 @@ own beyond the frames in the catalog:
   and writes its row deleted, and publishes nothing for the mesh or that admin: no `NodeStopped`, no
   `NodeDeleted`, never the mesh's topology (R-RX4);
 - receivers hold the mesh for the deleted retention from that final mesh topology, and after the
-  retention nothing refers to the mesh.
+  retention nothing refers to the mesh. A mesh is never reborn: a later mesh of the same name is
+  another mesh, known by the mesh id its node-admins' entries carry, and the deleted mesh's version
+  orders nothing of it.
 
 #### External topology when a mesh is deleted
 
