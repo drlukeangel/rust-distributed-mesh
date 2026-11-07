@@ -111,10 +111,18 @@ fn source_node_reconciler_dials_the_destination_an_accept_woke_and_deletes_activ
         while src_view.get(peer_launch.node_id.as_str()).is_none() {
             src_digests.changed().await.unwrap();
         }
-        let resolved_peer = src_seams
-            .resolver
-            .resolve(&NodeTarget::ExactNode(peer_launch.node_id.clone()))
-            .expect("source resolver holds peer");
+        // The resolver is fed from the view on its own task once the birth is held (Q387: the peer's
+        // own Digest is how the source first learns it): it is waited for, bounded.
+        let resolved_peer = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Ok(r) = src_seams.resolver.resolve(&NodeTarget::ExactNode(peer_launch.node_id.clone())) {
+                    break r;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("source resolver holds peer");
 
         let src_end = ConnectionEnd { mesh: src_launch.mesh.clone(), r#type: src_launch.r#type,
             path: src_launch.path.clone(), name: src_launch.name.clone(),

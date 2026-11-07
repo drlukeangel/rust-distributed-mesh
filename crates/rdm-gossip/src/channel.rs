@@ -1335,6 +1335,7 @@ impl Channels {
         let me = self.clone();
         tokio::spawn(async move {
             let mut last_heartbeat: Option<Instant> = None;
+            let mut stopped = me.mesh().stopped.subscribe();
             loop {
                 if !*me.mesh().stopped.borrow() {
                     let d = digest();
@@ -1344,7 +1345,18 @@ impl Channels {
                         me.heartbeat(&d);
                     }
                 }
-                tokio::time::sleep(every).await;
+                // The next heartbeat, or at once when this birth is back on its mesh channel: its Digest
+                // of its next cycle reaches its mesh as it rejoins (gossip.md, the NodeStopped overlay: it
+                // ends the stop at the other nodes of its mesh).
+                stopped.borrow_and_update();
+                tokio::select! {
+                    _ = tokio::time::sleep(every) => {}
+                    changed = stopped.changed() => {
+                        if changed.is_err() {
+                            tokio::time::sleep(every).await;
+                        }
+                    }
+                }
             }
         })
     }

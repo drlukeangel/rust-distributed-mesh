@@ -26,6 +26,34 @@ use std::time::Duration;
 /// What a step that is immediate on a correct node is given before the cell fails by name.
 pub(crate) const NEVER: Duration = Duration::from_secs(20);
 
+/// The node takes its primary's view of mesh1 by a read, the one way its mesh-primary's view reaches it
+/// (gossip.md §3.3, Q387: nothing of its own mesh on its mesh channel); then `holds` is asked of it, and
+/// again after each read until it holds.
+pub(crate) async fn read_until(running: &node::RunningNode, primary: &crate::common::AdminSide, what: &str, holds: impl Fn(&node::RunningNode) -> bool) {
+    tokio::time::timeout(NEVER, async {
+        loop {
+            let served = primary.observer.topology_view.held_topology(&primary.own_digest());
+            if let Some(s) = served.iter().find(|s| s.mesh == "mesh1") {
+                let chunks = rdm_gossip::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| rdm_gossip::frame::Frame::TopologyFull {
+                    mesh: s.mesh.clone(), publisher: s.publisher.clone(), forwarded_by: None, topology_version: s.topology_version,
+                    published_at_rafka_ms: 1, snapshot_id: s.topology_version, chunk_index, chunk_count, digests, in_flight, deleted,
+                });
+                for f in chunks {
+                    if let rdm_gossip::frame::Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() {
+                        let _ = running.channels.take_read_chunk(rdm_gossip::snapshot::Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }, "mesh1");
+                    }
+                }
+            }
+            if holds(running) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what}"));
+}
+
 pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
@@ -115,13 +143,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     // ahead of its predecessor is a gap, and the top-up's topology read installs the primary's whole
     // projection into the node's view, the commander included (gossip.md §3.3).
     let own_key = digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.node.endpoint_id.0.clone()).expect("the primary holds the node");
-    tokio::time::timeout(NEVER, async {
-        while running.topology_view.projected_member_at(&own_key).is_none_or(|d| d.status != NodeStatus::Ready) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the node never installed its primary's projection naming it Ready");
+    read_until(&running, &primary, "the node never installed its primary's projection naming it Ready", |r| r.topology_view.projected_member_at(&own_key).is_some_and(|d| d.status == NodeStatus::Ready)).await;
 
     // From here on the primary carries the commander in the member projection it publishes (when
     // `carry`); the commander itself says nothing on the mesh channel.
@@ -129,13 +151,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     let commander_id = commander.launcher.node_id.clone();
     let carried = carry.then(|| primary.carry_in_projection(&commander));
     if carry {
-        tokio::time::timeout(NEVER, async {
-            while running.topology_view.projected_member_at(&commander_key).is_none() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the node never installed a projection of its primary carrying the commander");
+        read_until(&running, &primary, "the node never installed a projection of its primary carrying the commander", |r| r.topology_view.projected_member_at(&commander_key).is_some()).await;
     } else {
         assert!(running.topology_view.projected_member_at(&commander_key).is_none(), "a projection the node holds names the commander: the cell proves nothing");
     }
@@ -270,13 +286,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let lost = crate::common::admin_side_silent_deaf_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap()).await;
         let _lost_carried = primary.carry_in_projection(&lost);
         let lost_key = lost.seed.0.clone();
-        tokio::time::timeout(NEVER, async {
-            while running.topology_view.projected_member_at(&lost_key).is_none() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the node never installed a projection of its primary carrying the lost commander");
+        read_until(&running, &primary, "the node never installed a projection of its primary carrying the lost commander", |r| r.topology_view.projected_member_at(&lost_key).is_some()).await;
         let (born, _) = primary.observer.topology_view.digest_view.get(node_id.as_str()).unwrap();
         lost.observer.resolver.insert(ResolvedNode { mesh: born.node.mesh.clone(), r#type: born.node.r#type,
             node_id: born.node.node_id.clone(),
