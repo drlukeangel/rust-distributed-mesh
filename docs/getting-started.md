@@ -54,7 +54,7 @@ Output:
 
 ```text
 fabric fabric-gg4wtw, meshes mesh-gg4wtw-1 and mesh-gg4wtw-2
-day-0 admin up: rdm://h38q5jqafmd8 (pid 3612540)
+day-0 admin up: h38q5jqafmd8 (pid 3612540)
 UI up: http://127.0.0.1:46571
 bootstrap: {"build_id":"f4q5rfcv0kxr"}
 topology after 4s: 20 of 20 ready
@@ -65,13 +65,14 @@ What `scripts/demo-estate.sh up` did:
 
 1. Started a Day-0 [`node-admin`](architecture/node-admin-lifecycle.md) process, which created the [fabric](architecture/lifecycles/fabric-create.md),
    the first [mesh](architecture/lifecycles/mesh-create.md) (`mesh-gg4wtw-1`), and its own
-   [birth](architecture/node-identity-and-state.md) (`mesh-gg4wtw-1.admin.1`) as
+   [birth](architecture/node-identity-and-state.md) (path `mesh-gg4wtw-1.node-admin`, name `1`) as
    [fabric-primary](architecture/fabric-primary.md).
 2. Started `rdm-admin-ui` attached to that Day-0 `node-admin`.
-3. Submitted a bootstrap [Build](architecture/build.md) (`y4qny3jg6n45`) through the
+3. Submitted a bootstrap [Build](architecture/build.md) (`f4q5rfcv0kxr`) through the
    `process` [deployment provider](architecture/deployment-provider.md) that created the remaining
    19 [nodes](architecture/lifecycles/node-create.md) across `mesh-gg4wtw-1` and `mesh-gg4wtw-2`
-   (3 `admin`, 2 `gateway`, 3 `broker`, and 2 `compute` nodes per mesh) and waited until all 20
+   (2 `node-admin`, 3 `gateway`, 3 `broker`, and 2 `compute` nodes per mesh, the Day-0 `node-admin`
+   one of `mesh-gg4wtw-1`'s two) and waited until all 20
    reached [`Ready`](architecture/lifecycles/states.md) in the [topology](architecture/gossip.md).
 
 Verify the cross-mesh [Node RPC](architecture/node-rpc.md) stream between nodes in the two meshes:
