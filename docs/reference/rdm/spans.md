@@ -384,14 +384,14 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.fabric.reject.via-atlas-unread` | `crates/rdm-admin/src/status_rpc.rs` | 1229 |
 | `rdm.node_admin.fabric.reject.via-filter` | `crates/rdm-admin/src/views.rs` | 346 |
 | `rdm.node_admin.fabric.resolve.via-atlas-call` | `crates/rdm-core/src/names.rs` | 149 |
-| `rdm.node_admin.fabric.resolve.via-atlas-row` | `crates/rdm-admin/src/atlas.rs` | 846 |
+| `rdm.node_admin.fabric.resolve.via-atlas-row` | `crates/rdm-admin/src/atlas.rs` | 849 |
 | `rdm.node_admin.fabric.resolve.via-call` | `crates/rdm-core/src/names.rs` | 148 |
 | `rdm.node_admin.fabric.serve.via-forward` | `crates/rdm-admin/src/node_config.rs` | 540 |
 | `rdm.node_admin.fabric.serve.via-get` | `crates/rdm-admin/src/views.rs` | 352 |
 | `rdm.node_admin.fabric.serve.via-read` | `crates/rdm-admin/src/read_op.rs` | 45 |
 | `rdm.node_admin.fabric.update.via-adoption-check` | `crates/rdm-admin/src/admin/adoption.rs` | 183 |
 | `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/admin/reconcile.rs` | 149 |
-| `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/atlas.rs` | 790 |
+| `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/atlas.rs` | 793 |
 | `rdm.node_admin.fabric.update.via-atlas-scope` | `crates/rdm-admin/src/admin/boot.rs` | 3165 |
 | `rdm.node_admin.fabric.update.via-blocked` | `crates/rdm-admin/src/fabric_status.rs` | 353 |
 | `rdm.node_admin.fabric.update.via-change` | `crates/rdm-admin/src/fabric_status.rs` | 396 |
