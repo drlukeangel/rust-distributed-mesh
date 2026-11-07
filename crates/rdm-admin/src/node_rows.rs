@@ -421,3 +421,23 @@ async fn write_record_deleted(storage: &dyn NodesStorage, node_id: &NodeId) -> R
 pub async fn birth_record(storage: &dyn NodesStorage, node_id: &NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<NodeRecord>, crate::storage_error::StorageError> {
     Ok(storage.node(node_id).await?.map(|l| l.record).filter(|r| r.incarnation == *incarnation))
 }
+
+/// The read a node-admin's top-up takes a birth's runtime fact with when no live primary holds it to
+/// read (Q404 A): each exact birth's record by [`birth_record`], a runtime point read of node-storage,
+/// never a call to the node; its runtime and data dir are the ones the node recorded at its start.
+pub fn runtime_read(storage: Arc<dyn NodesStorage>) -> rdm_gossip::topology::NodeRecordRead {
+    Arc::new(move |births: Vec<(NodeId, crate::model::IncarnationId)>| {
+        let storage = storage.clone();
+        Box::pin(async move {
+            let mut answers = Vec::with_capacity(births.len());
+            for (node_id, incarnation) in births {
+                let answer = birth_record(&*storage, &node_id, &incarnation)
+                    .await
+                    .map(|r| r.map(|r| rdm_core::NodeRuntime { runtime: Some(r.runtime), data_dir: r.storage.data_dir }))
+                    .map_err(|e| e.to_string());
+                answers.push((node_id, incarnation, answer));
+            }
+            answers
+        })
+    })
+}

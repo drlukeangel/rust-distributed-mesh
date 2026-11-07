@@ -17,7 +17,7 @@
 use rdm_transport::clock::SharedClock;
 use crate::snapshot::{Gap, PublisherId, SourceSnapshot};
 use anyhow::Result;
-use rdm_core::{FabricId, IncarnationId, MeshDigest, MeshId, Primary, PrimaryRole};
+use rdm_core::{FabricId, IncarnationId, MeshDigest, MeshId, NodeId, Primary, PrimaryRole};
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -352,6 +352,47 @@ impl TopologyView {
     pub fn mesh_primary(&self) -> Result<MeshDigest, NoMeshPrimary> {
         self.digest_view.mesh_primary(&self.view.mesh)
     }
+
+    /// A node-admin with no live primary to read its mesh's runtime facts from (`reason`: its primary
+    /// record names a birth proven gone, or it is its mesh's primary) takes the runtime fact of each
+    /// birth of its mesh it holds with none from that birth's record in node-storage, by `read` (Q404
+    /// A): it never calls the node. One span per birth read, `source=node-storage`. Once no birth is
+    /// owed its fact, the `no-runtime-fact` gap on its own mesh ends; `true` while one still is (no
+    /// record of that exact birth is stored yet, or the store did not answer), so it reads again on the
+    /// one backoff rule. A node that is no node-admin, or owes nothing, reads nothing.
+    pub async fn runtimes_from_node_records(&self, read: &NodeRecordRead, reason: &'static str) -> bool {
+        if !self.view.reads_runtime_facts() {
+            return false;
+        }
+        let mesh = self.view.mesh.clone();
+        let owed = self.digest_view.without_runtime_fact(&mesh);
+        if !owed.is_empty() {
+            let node = self.view.current_name();
+            for (node_id, incarnation, answer) in read(owed).await {
+                match answer {
+                    Ok(Some(runtime)) => {
+                        let data_dir = runtime.data_dir.clone().unwrap_or_default();
+                        let held = runtime.runtime.is_some() && self.digest_view.hold_runtime(&node_id, &incarnation, runtime);
+                        tracing::info_span!("rdm.mesh.runtime.update.via-node-record", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), source = "node-storage", reason, data_dir = %data_dir, held)
+                            .in_scope(|| tracing::info!("a birth's runtime fact is taken from its node record: no live primary holds it to read"));
+                    }
+                    Ok(None) => {
+                        tracing::info_span!("rdm.mesh.runtime.reject.via-no-node-record", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), source = "node-storage", reason)
+                            .in_scope(|| tracing::info!("node-storage holds no record of this exact birth: its runtime fact is read again"));
+                    }
+                    Err(error) => {
+                        tracing::info_span!("rdm.mesh.runtime.reject.via-node-record-unreadable", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), source = "node-storage", reason, error = %error)
+                            .in_scope(|| tracing::info!("the birth's node record could not be read: its runtime fact is read again"));
+                    }
+                }
+            }
+        }
+        let still = !self.digest_view.without_runtime_fact(&mesh).is_empty();
+        if !still {
+            self.view.mesh_rx.lock().unwrap().end_gap(&mesh, &Gap::NoRuntimeFact);
+        }
+        still
+    }
 }
 
 /// Why a node cannot address its Mesh's current primary: each a distinct fact.
@@ -419,6 +460,15 @@ pub struct TopUpDone {
 /// (the topology read, over Node RPC): the topology view holds no Node RPC client, the process
 /// composition hands it one.
 pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+
+/// One exact birth's runtime as its node record answers it: `Ok(None)` when node-storage holds no
+/// record of that exact birth, `Err` the store's failure.
+pub type RecordedRuntime = (NodeId, IncarnationId, Result<Option<rdm_core::NodeRuntime>, String>);
+
+/// Reads the runtime and data dir of each exact birth from its record in node-storage (Q404 A): a
+/// point read of each record, never a call to the node. The topology view holds no store: a
+/// node-admin's process composition hands it the read.
+pub type NodeRecordRead = std::sync::Arc<dyn Fn(Vec<(NodeId, IncarnationId)>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<RecordedRuntime>> + Send>> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -769,16 +819,17 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md §3.1 `Digest`: "a node-admin takes them from join reports, topology reads and
-    /// node records"; Q400): at a node-admin that is not its mesh's primary, a Digest of a birth of its
-    /// mesh it holds no runtime fact of is taken, names the gap `no-runtime-fact` on its own mesh with one
-    /// span and signals the top-up, a read of its mesh-primary's view; each further such Digest signals
-    /// it again; once a read holds the birth's runtime fact, its Digests signal nothing. A data dir alone
-    /// is no runtime fact. The mesh-primary (it took the fact from the join report and has nobody to
-    /// read from), a node that is no node-admin, and a birth held leaving signal nothing. Must NOT happen:
-    /// a node-admin holding a birth with no runtime fact that never reads it again, so its not-ready
-    /// check names "no runtime fact is held of it" until its Build's WaitForNodeReady ends (gate
-    /// 103bbe528: twelve cells, fabric_states `a_two_mesh_fabric_is_ready_once_every_mesh_is_ready`
-    /// mesh1.node-admin.2 among them).
+    /// node records"; Q400, Q404 A): at a node-admin, a Digest of a birth of its mesh it holds no runtime
+    /// fact of is taken, names the gap `no-runtime-fact` on its own mesh with one span and signals the
+    /// top-up, a read of its mesh-primary's view, or, with no live primary to read from, of the birth's
+    /// node record; each further such Digest signals it again; once a read holds the birth's runtime
+    /// fact, its Digests signal nothing. A data dir alone is no runtime fact. The mesh-primary signals
+    /// too: a birth whose join another primary took has its fact only in its node record. A node that is
+    /// no node-admin and a birth held leaving signal nothing. Must NOT happen: a node-admin holding a
+    /// birth with no runtime fact that never reads it again, so its not-ready check names "no runtime
+    /// fact is held of it" until its Build's WaitForNodeReady ends (gate 103bbe528: twelve cells,
+    /// fabric_states `a_two_mesh_fabric_is_ready_once_every_mesh_is_ready` mesh1.node-admin.2 among
+    /// them; gate c5a174e33: a restarted lone fabric-primary, mesh-primary of its mesh, in node_own_config).
     #[test]
     fn a_node_admin_reads_its_mesh_primarys_view_again_at_each_digest_of_a_birth_it_holds_no_runtime_fact_of() {
         use rdm_core::{NodeRuntime, RuntimeFact, RuntimeLocator, RuntimeProvider};
@@ -824,17 +875,132 @@ mod tests {
         assert!(view.digest_view.without_runtime_fact("mesh1").is_empty(), "nothing is owed once the fact is held");
         view.take(&Frame::digest(&at(4, NodeStatus::Ready)), &fabric, "mesh-channel");
         assert!(!signalled(&view), "a birth whose runtime fact is held signals nothing");
-        // The mesh-primary, a node that is no node-admin, and a birth held leaving signal nothing.
+        // The mesh-primary signals too (Q404 A: it reads the birth's node record).
         let primary = view_of("node-admin");
         primary.primary.store(true, Ordering::Relaxed);
+        assert_eq!(primary.take(&Frame::digest(&at(1, NodeStatus::Ready)), &fabric, "mesh-channel").len(), 1, "the mesh-primary takes the birth");
+        assert!(signalled(&primary), "the mesh-primary: a birth with no runtime fact signals the top-up");
+        assert_eq!(primary.mesh_rx.lock().unwrap().desynced(), vec![("mesh1".to_string(), Gap::NoRuntimeFact)], "the mesh-primary: the gap is named on its own mesh");
+        // A node that is no node-admin and a birth held leaving signal nothing.
         let node = view_of("node");
         let leaving = view_of("node-admin");
-        for (what, v, status) in [("the mesh-primary", &primary, NodeStatus::Ready), ("a node that is no node-admin", &node, NodeStatus::Ready), ("a birth held leaving", &leaving, NodeStatus::Leaving)] {
+        for (what, v, status) in [("a node that is no node-admin", &node, NodeStatus::Ready), ("a birth held leaving", &leaving, NodeStatus::Leaving)] {
             assert_eq!(v.take(&Frame::digest(&at(1, status)), &fabric, "mesh-channel").len(), 1, "{what}: the birth is taken");
             assert!(!signalled(v), "{what}: nothing is signalled");
             assert!(v.mesh_rx.lock().unwrap().desynced().is_empty(), "{what}: no gap");
         }
-        assert_eq!(spans.named("rdm.mesh.topology.update.via-no-runtime-fact").len(), 1, "no other span");
+        assert_eq!(spans.named("rdm.mesh.topology.update.via-no-runtime-fact").len(), 2, "one span per gap, the mesh-primary's included");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `Digest`: "a node-admin takes them from join reports, topology reads and
+    /// node records"; Q404 A: "The node-admin reads the missing runtime directly from that node's record
+    /// in `node-storage`. It does not contact the node."): a node-admin with no live primary to read
+    /// from (its primary record names a birth proven gone, or it is its mesh's primary) holds each birth
+    /// of its mesh it holds with no runtime fact with the runtime and data dir of that birth's node
+    /// record, one span per birth naming it and `source=node-storage`; a birth whose record is not
+    /// stored, or could not be read, stays owed and is read again; the `no-runtime-fact` gap on its own
+    /// mesh ends once none is owed, and a gap of another cause stays until a read. A birth whose fact is
+    /// held is not read; a node that is no node-admin reads nothing. Must NOT happen: a recovering admin
+    /// of a lost mesh, or a restarted lone fabric-primary, holding births whose runtime facts are only in
+    /// their node records, its not-ready check naming "no runtime fact is held of it" until it times out
+    /// (gate c5a174e33: node_records, fabric_delete, recovery_admin_adopts, node_own_config,
+    /// declared_secrets).
+    #[test]
+    fn a_node_admin_with_no_live_primary_takes_a_births_runtime_fact_from_its_node_record() {
+        use rdm_core::{NodeRuntime, RuntimeFact, RuntimeLocator, RuntimeProvider};
+        let spans = OpenedSpans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        // The topology view's own task runs on this runtime.
+        let _entered = rt.enter();
+        let fact = |pid: u32| RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep"), provider: RuntimeProvider::Process, control_domain: "process:a:1".into(), locator: RuntimeLocator::Process { pid, start: 7 } };
+        // A topology view whose own birth, as its own Digest holds it, is of `r#type`.
+        let view_of = |r#type: &str| {
+            let m = TopologyView::new(&fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.2", rdm_transport::clock::os_clock(), Default::default());
+            m.view.forwarder.lock().unwrap().set_author(test_author());
+            let mut own = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Pending, 1);
+            (own.node.r#type, own.node.path, own.node.name) = (r#type.into(), format!("mesh1.{}", r#type), "2".into());
+            *m.digest_view.own.lock().unwrap() = Some(own.node.node_id.to_string());
+            assert!(m.digest_view.record(own));
+            m
+        };
+        let birth = |name: &str| {
+            let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+            let mut d = digest(&id, &inc, None, NodeStatus::Ready, 1);
+            d.node.name = name.into();
+            (id, inc, d)
+        };
+        // node-storage: each node's record by its id; a birth with none is not stored.
+        let store: Arc<Mutex<HashMap<String, Result<NodeRuntime, String>>>> = Default::default();
+        let asked: Arc<Mutex<Vec<Vec<String>>>> = Default::default();
+        let read: NodeRecordRead = {
+            let (store, asked) = (store.clone(), asked.clone());
+            Arc::new(move |births: Vec<(NodeId, IncarnationId)>| {
+                let (store, asked) = (store.clone(), asked.clone());
+                Box::pin(async move {
+                    let mut ids: Vec<String> = births.iter().map(|(id, _)| id.to_string()).collect();
+                    ids.sort();
+                    asked.lock().unwrap().push(ids);
+                    let answers: Vec<RecordedRuntime> = births.into_iter().map(|(id, inc)| { let answer = store.lock().unwrap().get(id.as_str()).cloned().transpose(); (id, inc, answer) }).collect();
+                    answers
+                })
+            })
+        };
+        let sorted = |ids: &[&NodeId]| { let mut v: Vec<String> = ids.iter().map(|i| i.to_string()).collect(); v.sort(); v };
+        let m = view_of("node-admin");
+        let ((a, a_inc, a_d), (b, b_inc, b_d), (c, c_inc, c_d), (d, d_inc, d_d)) = (birth("1"), birth("2"), birth("3"), birth("4"));
+        for x in [&a_d, &b_d, &c_d, &d_d] {
+            assert_eq!(m.view.take(&Frame::digest(x), &fabric, "mesh-channel").len(), 1, "the birth is taken");
+        }
+        assert_eq!(m.desynced_sources(), vec![("mesh1".to_string(), Gap::NoRuntimeFact)], "the gap is named on its own mesh");
+        // c's fact is held (its join report): it is not read.
+        assert!(m.digest_view.hold_runtime(&c, &c_inc, NodeRuntime { runtime: Some(fact(3)), data_dir: None }));
+        store.lock().unwrap().insert(a.to_string(), Ok(NodeRuntime { runtime: Some(fact(1)), data_dir: Some("/data/a".into()) }));
+        store.lock().unwrap().insert(d.to_string(), Err("the store did not answer".into()));
+
+        // a's record holds its fact; b's is not stored yet; d's cannot be read: read again.
+        assert!(rt.block_on(m.runtimes_from_node_records(&read, "primary-gone")), "b and d are still owed: read again");
+        assert_eq!(asked.lock().unwrap().clone(), vec![sorted(&[&a, &b, &d])], "only the births owed a fact are read");
+        assert_eq!(m.digest_view.runtime_of(&a, &a_inc), Some(NodeRuntime { runtime: Some(fact(1)), data_dir: Some("/data/a".into()) }), "a is held with its record's runtime and data dir");
+        let taken = spans.named("rdm.mesh.runtime.update.via-node-record");
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        assert_eq!(
+            (taken[0]["node_id"].as_str(), taken[0]["incarnation_id"].as_str(), taken[0]["source"].as_str(), taken[0]["reason"].as_str(), taken[0]["held"].as_str()),
+            (a.as_str(), a_inc.as_str(), "node-storage", "primary-gone", "true"),
+            "the span names the birth and its source"
+        );
+        let missing = spans.named("rdm.mesh.runtime.reject.via-no-node-record");
+        assert_eq!((missing.len(), missing[0]["node_id"].as_str(), missing[0]["source"].as_str()), (1, b.as_str(), "node-storage"));
+        let unreadable = spans.named("rdm.mesh.runtime.reject.via-node-record-unreadable");
+        assert_eq!((unreadable.len(), unreadable[0]["node_id"].as_str(), unreadable[0]["error"].as_str()), (1, d.as_str(), "the store did not answer"));
+        assert_eq!(m.desynced_sources(), vec![("mesh1".to_string(), Gap::NoRuntimeFact)], "the gap stays while a fact is owed");
+
+        // b's record is stored and d's is readable now: both are held, and the gap ends.
+        store.lock().unwrap().insert(b.to_string(), Ok(NodeRuntime { runtime: Some(fact(2)), data_dir: None }));
+        store.lock().unwrap().insert(d.to_string(), Ok(NodeRuntime { runtime: Some(fact(4)), data_dir: None }));
+        assert!(!rt.block_on(m.runtimes_from_node_records(&read, "this-node-is-the-mesh-primary")), "nothing is owed");
+        assert_eq!(asked.lock().unwrap().last().cloned(), Some(sorted(&[&b, &d])));
+        assert!(m.digest_view.without_runtime_fact("mesh1").is_empty(), "every birth's fact is held");
+        assert_eq!(m.digest_view.runtime_of(&b, &b_inc).and_then(|r| r.runtime), Some(fact(2)));
+        assert_eq!(m.digest_view.runtime_of(&d, &d_inc).and_then(|r| r.runtime), Some(fact(4)));
+        assert!(m.desynced_sources().is_empty(), "the no-runtime-fact gap ends once none is owed");
+        let taken = spans.named("rdm.mesh.runtime.update.via-node-record");
+        assert_eq!(taken.len(), 3);
+        assert!(taken[1..].iter().all(|s| s["reason"] == "this-node-is-the-mesh-primary" && s["source"] == "node-storage"), "{taken:?}");
+
+        // Nothing owed: nothing is read. A gap of another cause stays until a read installs the mesh.
+        m.view.mesh_rx.lock().unwrap().mark_desynced("mesh1", Gap::Version { held: 1, base: 3 });
+        assert!(!rt.block_on(m.runtimes_from_node_records(&read, "primary-gone")));
+        assert_eq!(asked.lock().unwrap().len(), 2, "no birth is owed: no record is read");
+        assert_eq!(m.desynced_sources(), vec![("mesh1".to_string(), Gap::Version { held: 1, base: 3 })], "a version gap is not ended by a record read");
+
+        // A node that is no node-admin manages no runtime: it reads nothing.
+        let node = view_of("node");
+        let (_, _, e_d) = birth("5");
+        assert_eq!(node.view.take(&Frame::digest(&e_d), &fabric, "mesh-channel").len(), 1);
+        assert!(!rt.block_on(node.runtimes_from_node_records(&read, "primary-gone")));
+        assert_eq!(asked.lock().unwrap().len(), 2, "a node that is no node-admin reads no record");
     }
 
     #[test]

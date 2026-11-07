@@ -472,9 +472,11 @@ pub enum Gap {
     /// pulled from the mesh-primary by a read, which ends the stop once that primary took its
     /// `node.joined` (gossip.md §3.3, Q387).
     StoppedBirthHeard,
-    /// A node-admin that is not its mesh's primary holds a birth of its mesh with no runtime fact of
-    /// it: its mesh-primary took the fact from the birth's join report, and a read of its own mesh
-    /// from that primary serves it (Q400). Pulled again on the one backoff rule until it is held.
+    /// A node-admin holds a birth of its mesh with no runtime fact of it: its mesh-primary took the
+    /// fact from the birth's join report, and a read of its own mesh from that primary serves it
+    /// (Q400); with no live primary to read from (its primary record names a birth proven gone, or it
+    /// is its mesh's primary), the birth's record in node-storage holds it (Q404 A). Pulled or read
+    /// again on the one backoff rule until it is held.
     NoRuntimeFact,
 }
 
@@ -800,6 +802,24 @@ impl SnapshotReceiver {
                 self.unbased.insert(mesh.to_string(), gap);
                 true
             }
+        }
+    }
+
+    /// End the desynchronization of `mesh` when `gap` is what desynchronized it, its cause met by
+    /// something other than a read (a birth's runtime fact taken from its node record, Q404 A): a source
+    /// desynchronized by another gap stays so until a read installs it. `true` when it ended.
+    pub fn end_gap(&mut self, mesh: &str, gap: &Gap) -> bool {
+        match self.held.get_mut(mesh) {
+            Some(h) if h.desynced.as_ref() == Some(gap) => {
+                h.desynced = None;
+                true
+            }
+            Some(_) => false,
+            None if self.unbased.get(mesh) == Some(gap) => {
+                self.unbased.remove(mesh);
+                true
+            }
+            None => false,
         }
     }
 

@@ -1157,8 +1157,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // A delta that does not follow what this admin holds desynchronizes that source of its mesh
                 // channel; it tops up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each
                 // such mesh, as every node does. Held behind the gate: a stopped admin tops up nothing, and a
-                // gap signalled while it was stopped is topped up once it runs again.
-                tasks_early.push(stop_gate.spawn(channels.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
+                // gap signalled while it was stopped is topped up once it runs again. A runtime fact no live
+                // primary holds to read is taken from the birth's record in node-storage (Q404 A).
+                tasks_early.push(stop_gate.spawn(channels.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()), Some(crate::node_rows::runtime_read(nodes_storage.clone())))));
                 // The recorded primaries: an election input this admin enters with (elections §3), its own
                 // included. A launched admin reads no store (Q227): its mesh-primary's hydration sync serves
                 // them (`Primaries`, node.topology.get), a lost birth's record marked gone. A start with no

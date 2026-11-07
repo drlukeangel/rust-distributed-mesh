@@ -1260,15 +1260,17 @@ impl Channels {
     /// did not follow what is held, the node reads the current topology of each desynchronized
     /// mesh from its own mesh-primary (Node RPC op `0x1E`), installs it atomically, and resumes.
     /// Never the remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or
-    /// held for later; the next delta or full from the primary signals or resumes it again.
+    /// held for later; the next delta or full from the primary signals or resumes it again. The top-up
+    /// of a node that is no node-admin: it manages no birth's runtime, so it reads no node record.
     pub fn spawn_top_up(&self, fetch: TopUpFetch) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(self.top_ups(fetch))
+        tokio::spawn(self.top_ups(fetch, None))
     }
 
     /// The top-up of [`Self::spawn_top_up`] as a task for the caller to run: a node-admin runs it
     /// behind its stop gate, so a stopped admin tops up nothing and a gap signalled while it was stopped
-    /// is topped up once it runs again.
-    pub fn top_ups(&self, fetch: TopUpFetch) -> impl std::future::Future<Output = ()> + Send + 'static {
+    /// is topped up once it runs again. A node-admin hands it `records`, the read of a birth's record in
+    /// node-storage it takes a runtime fact from when no live primary holds it to read (Q404 A).
+    pub fn top_ups(&self, fetch: TopUpFetch, records: Option<NodeRecordRead>) -> impl std::future::Future<Output = ()> + Send + 'static {
         let me = self.clone();
         async move {
             let pacing = rdm_transport::delivery::Pacing::from_cadences();
@@ -1278,22 +1280,26 @@ impl Channels {
                 // so a top-up that failed is attempted when the primary next speaks. A pull that
                 // installed a copy older than a delta dropped while it was in flight pulls again
                 // (gossip.md §3.3, Q130), on the one backoff rule, and so does one that left a
-                // node-admin a birth of its mesh with no runtime fact (Q400).
+                // node-admin a birth of its mesh with no runtime fact (Q400), or a node record read that
+                // did not hold it (Q404 A).
                 if again == 0 {
                     me.topology_view.view.desync.notified().await;
                 } else {
                     tokio::time::sleep(pacing.after(again)).await;
                 }
                 let gaps = me.topology_view.desynced_sources();
-                again = if !gaps.is_empty() && me.top_up(&fetch, gaps).await { again + 1 } else { 0 };
+                again = if !gaps.is_empty() && me.top_up(&fetch, records.as_ref(), gaps).await { again + 1 } else { 0 };
             }
         }
     }
 
     /// One pull of `gaps`: `true` when it installed a copy of a source older than a delta that
     /// source dropped while the pull was in flight, so the source is still behind, or when it left a
-    /// node-admin holding a birth of its mesh with no runtime fact (Q400).
-    pub(crate) async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) -> bool {
+    /// node-admin holding a birth of its mesh with no runtime fact (Q400). With no live primary to
+    /// pull from (its primary record names a birth proven gone, or this node is its mesh's primary), a
+    /// node-admin handed `records` takes those runtime facts from the births' node records instead
+    /// (Q404 A), `true` while one is still owed.
+    pub(crate) async fn top_up(&self, fetch: &TopUpFetch, records: Option<&NodeRecordRead>, gaps: Vec<(String, Gap)>) -> bool {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
         let node = self.topology_view.view.current_name();
@@ -1303,15 +1309,25 @@ impl Channels {
             Err(no) => {
                 tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), primary = %no.primary().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
                     .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
-                return false;
+                // A primary proven gone holds nothing to read: a node-admin takes the runtime facts it is
+                // owed from the births' node records (Q404 A).
+                return match (&no, records) {
+                    (NoMeshPrimary::PrimaryGone { .. }, Some(read)) => self.topology_view.runtimes_from_node_records(read, no.reason()).await,
+                    _ => false,
+                };
             }
         };
         // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
-        // publishes and every peer mesh from the backbone, never from its mesh-channel sources.
+        // publishes and every peer mesh from the backbone, never from its mesh-channel sources. It takes
+        // the runtime facts it is owed from the births' node records (Q404 A).
         if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node.node_id.as_str()) {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = "this-node-is-the-mesh-primary")
+            const REASON: &str = "this-node-is-the-mesh-primary";
+            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = REASON)
                 .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
-            return false;
+            return match records {
+                Some(read) => self.topology_view.runtimes_from_node_records(read, REASON).await,
+                None => false,
+            };
         }
         let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
         match fetch(self.clone(), primary.clone(), names).await {

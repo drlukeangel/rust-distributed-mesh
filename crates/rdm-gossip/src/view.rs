@@ -93,12 +93,13 @@ pub(crate) struct View {
 }
 
 impl View {
-    /// Whether this node is a node-admin that is not its mesh's primary: it manages its mesh's births
-    /// with the runtime fact of each, which their mesh-primary took from their join reports and which
-    /// reaches it by a read of its own mesh from that primary (Q400). The mesh-primary has no primary to
-    /// read from.
+    /// Whether this node is a node-admin: it manages its mesh's births with the runtime fact of each,
+    /// which their mesh-primary took from their join reports and which reaches it by a read of its own
+    /// mesh from that primary (Q400), or, with no live primary to read from (its mesh's primary record
+    /// names a birth proven gone, or it is its mesh's primary), from each birth's record in node-storage
+    /// (Q404 A).
     pub(crate) fn reads_runtime_facts(&self) -> bool {
-        !self.primary.load(Ordering::Relaxed) && self.digest_view.own_is_node_admin()
+        self.digest_view.own_is_node_admin()
     }
 
     /// The sources this node serves on a topology read, one per mesh: what it forwards as its
@@ -243,10 +244,11 @@ impl View {
                     return (Vec::new(), false);
                 }
                 self.note(digest, via);
-                // A node-admin that is not its mesh's primary manages its mesh's births with their runtime
-                // facts, which the mesh-primary took from their join reports and serves on a read (Q400): a
-                // Digest of a birth of its mesh it holds no runtime fact of is a sync issue, and each such
-                // Digest pulls its mesh-primary's view again until a read supplies the fact.
+                // A node-admin manages its mesh's births with their runtime facts, which the mesh-primary
+                // took from their join reports and serves on a read (Q400): a Digest of a birth of its mesh
+                // it holds no runtime fact of is a sync issue, and each such Digest pulls its mesh-primary's
+                // view again until a read supplies the fact, or, with no live primary to read from, reads
+                // the birth's record in node-storage (Q404 A).
                 if digest.node.mesh == self.mesh
                     && digest.status != rdm_core::model::NodeStatus::Leaving
                     && !self.digest_view.holds_runtime_fact(&digest.node.node_id, &digest.node.incarnation)
