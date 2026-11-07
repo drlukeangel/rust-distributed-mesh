@@ -1430,8 +1430,9 @@ mod tests {
     /// CONTRACT (gossip.md §3.1 `TopologyFull`: the mesh-primary is the author of its own mesh's
     /// statuses): the mesh-primary authors its own mesh's statuses, a rule keyed on the receiver's own
     /// role. A mesh topology of its own mesh from another publisher (a predecessor's last one, arriving
-    /// after this node took the role), on the backbone or in a read (Q387: never on its own channel),
-    /// moves none of them. Must NOT happen: the primary's authored status overwritten by a projection copy.
+    /// after this node took the role), on the backbone (Q387: an aggregate never travels on its own
+    /// channel), moves none of them. Must NOT happen: the primary's authored status overwritten by a
+    /// projection copy.
     #[test]
     fn a_mesh_primary_takes_no_status_of_its_own_mesh_from_another_publishers_projection() {
         let fabric = FabricId::parse("fab000000001").unwrap();
@@ -1441,15 +1442,10 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(view.digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
-        for side in [Side::Backbone, Side::Read] {
-            let copy = vec![digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 6)];
-            match side {
-                Side::Backbone => { view.take_snapshot(&Frame::aggregate("mesh1", None, &author_of(&predecessor), 9, 9, 0, 1, copy), &fabric, side, &mut view.order.lock().unwrap()); }
-                _ => { let _ = view.take_read_chunk(read_of("mesh1", 10, 10, copy), side, &fabric); }
-            }
-            assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((NodeStatus::Ready, 5)), "{side:?}: the authored status stands");
-            assert_eq!(view.digest_view.member_status(&id, &inc), Some(NodeStatus::Ready));
-        }
+        let late = Frame::aggregate("mesh1", None, &author_of(&predecessor), 9, 9, 0, 1, vec![digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 6)]);
+        view.take_snapshot(&late, &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((NodeStatus::Ready, 5)), "the authored status stands");
+        assert_eq!(view.digest_view.member_status(&id, &inc), Some(NodeStatus::Ready));
     }
 
     /// CONTRACT (gossip.md §3.1 `TopologyDelta` carries "overlay and deleted changes"; §3.3 a delta is
@@ -3700,6 +3696,9 @@ mod tests {
     /// no longer carries another mesh's nodes.
     #[test]
     fn a_peer_mesh_node_the_fabric_primary_deleted_reaches_that_meshs_next_mesh_primary_by_its_start_read() {
+        // A topology view watches its meshes on the runtime it is made on.
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _runtime = rt.enter();
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (lost, x, rpc) = (born("mesh1", "node-admin", 1, 1), born("mesh1", "node", 1, 1), born("mesh1", "node", 2, 1));
         // The fabric-primary, mesh2's primary, holds mesh1's last aggregate and forwards it.

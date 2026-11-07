@@ -213,7 +213,7 @@ fn the_largest_complete_message_golden_fits_max_frame() {
 /// A body that fits by itself can overflow once its metadata and both prefixes are counted.
 #[test]
 fn members_chunks_are_sized_against_the_complete_message() {
-    let mut first = digest("ready"); first.node.endpoint_id = rdm_core::EndpointId("x".repeat(1800));
+    let mut first = digest("ready"); first.node.endpoint_id = rdm_core::EndpointId("x".repeat(1900));
     let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.path = "mesh1.node".into(); second.node.name = "2".into();
     let author = crate::gossip_wire::author();
     let shape = |nodes, chunk_index, chunk_count| Frame::aggregate("mesh1", None, &author, 1, 1, chunk_index, chunk_count, nodes);

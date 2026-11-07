@@ -216,18 +216,18 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         result.insert("topology_version_by_observation".into(), json!(bumps.iter().map(|(w, n)| json!({ "observation": w, "topology_version": n })).collect::<Vec<_>>()));
 
         // ---- 2. an aggregate is chunked under its (mesh, version, author), every chunk fits one message
-        // Sixty nodes, some under a removal or deleted: the number of chunks postcard needs is recorded as evidence.
-        let sixty = Mesh::new("mesh2", 60);
-        let sixty_full = with_removals(&sixty, 3);
+        // A hundred nodes, some under a removal or deleted: the number of chunks postcard needs is recorded as evidence.
+        let hundred = Mesh::new("mesh2", 100);
+        let hundred_full = with_removals(&hundred, 3);
         let p = publisher("mesh2.node-admin.1");
-        let sixty_chunks = topology_full_chunks(&sixty_full, &p, 5, 9);
-        assert!(sixty_chunks.len() > 1, "sixty members with overlays do not fit one message: {} chunks", sixty_chunks.len());
-        for c in &sixty_chunks {
+        let hundred_chunks = topology_full_chunks(&hundred_full, &p, 5, 9);
+        assert!(hundred_chunks.len() > 1, "a hundred nodes, some under a removal or deleted, do not fit one message: {} chunks", hundred_chunks.len());
+        for c in &hundred_chunks {
             assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
         }
         let empty = topology_full_chunks(&Full::default(), &p, 1, 1);
         assert_eq!(empty.len(), 1, "an empty Mesh is one empty chunk, a complete snapshot");
-        result.insert("chunks_of_sixty_members".into(), json!({ "chunks": sixty_chunks.len(), "largest_chunk_bytes": sixty_chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
+        result.insert("chunks_of_a_hundred_nodes".into(), json!({ "chunks": hundred_chunks.len(), "largest_chunk_bytes": hundred_chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
 
         // The receiver below needs a snapshot that spans more than two chunks.
         let big = Mesh::new("mesh2", BIG);
