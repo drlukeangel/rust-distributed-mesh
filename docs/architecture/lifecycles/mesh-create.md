@@ -108,8 +108,9 @@ not hold answers `RejectedStaleMesh { held }`; a state the mesh cannot move to a
 Three frames, all authored by the new mesh-primary once it is mesh-primary; nothing is published
 for `mesh2` before that, and the fabric-primary never publishes on its behalf (R-RX4).
 
-The primary the election named, on `mesh2`'s channel and the backbone
-([catalog](../gossip.md#31-frame-catalog), the node-admin's own `Digest`, `is_primary` at revision 1):
+The primary the election named, on `mesh2`'s channel ([catalog](../gossip.md#31-frame-catalog), the
+node-admin's own `Digest` under its envelope: `source` its birth, `sequence` 1; the mesh-primary role
+at revision 1):
 
 ```json
 { "status": "pending", "primary": [{ "role": "MeshPrimary", "revision": 1 }], "details": { "type": "node-admin", "path": "mesh2.node-admin", "name": "1", "endpoint_id": "7b7b…7b7b", "transport_addr": "127.0.0.1:54474", "supersedes": null } }

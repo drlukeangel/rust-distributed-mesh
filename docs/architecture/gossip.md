@@ -154,7 +154,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone TopologyFull.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped; none for a mesh's last admin after mesh.deleted ([Mesh delete](#mesh-delete)) | peer mesh primaries preserve op | `(type, build_id, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not the provider's `Exited`. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting, connections-deleted and stopping reach the node's own mesh in its own Digest, and peer meshes in its mesh-primary's `TopologyFull` and the deltas derived from it; node.connection.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node's last Digest carries stopping, and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
-| [`NewFabricPrimary { primary, endpoint_id, transport_addr }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: this frame position remains reserved. Contact fields are supplied with the node's first gossip, retained in its projection and recoverable by read. Primary records remain governed by the leadership workflow; they are not inferred from `status`. | — | — | — | — |
+| [`NewFabricPrimary { primary, endpoint_id, transport_addr }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: this frame position remains reserved. Contact fields ride every `Digest` of the node and its mesh's aggregate, and are recoverable by read. Primary records remain governed by the leadership workflow; they are not inferred from `status`. | — | — | — | — |
 | `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the author's own mesh channel; then each peer mesh channel | the mesh primary when its Mesh's status changes | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Mesh's status projection |
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Fabric's status projection |
 | [`NodeRestarting { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#reserved-lifecycle-frame-positions) (position 7) | reserved position (Q183); never published | none: node.restart is removed; callers run node.stop then node.start, and the stop's stopped is published as [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
@@ -443,7 +443,7 @@ removal in `in_flight`:
 }
 ```
 
-The same birth's own `Digest` heartbeat on its mesh channel is `{ "status": "ready", "primary": [] }` under its envelope (`source` the birth, `sequence` its `digest_seq`, `time` its emitted time). Its first publication into the mesh, its pending at the accepted join, adds its details: `{ "status": "pending", "primary": [], "details": { "type": "node", "path": "mesh1.node", "name": "1", "endpoint_id": "7a7a…7a7a", "transport_addr": "127.0.0.1:54473", "supersedes": null } }`.
+The same birth's own `Digest` heartbeat on its mesh channel is `{ "status": "ready", "primary": [], "details": { "type": "node", "path": "mesh1.node", "name": "1", "endpoint_id": "7a7a…7a7a", "transport_addr": "127.0.0.1:54473", "supersedes": null } }` under its envelope (`source` the birth, `sequence` its `digest_seq`, `time` its emitted time); its first publication into the mesh, its pending at the accepted join, is the same body at `"status": "pending"`.
 
 #### Receive rules: stale, duplicate and gap, per frame
 
@@ -549,8 +549,9 @@ A delta is an optimization. It is never the fact and never the only recovery.
 
 **Versions belong to the source Mesh.** `topology_version` is the Mesh's, whichever of its
 mesh-primaries publishes it: a node-admin taking the mesh-primary role continues it from the last
-aggregate of its Mesh it holds (Q391), and a receiver orders a Mesh's topology by its version alone,
-never by who sent it (Q389).
+aggregate of its Mesh it holds, or from a higher version of its Mesh a read installs after it took
+the role (Q391), and a receiver orders a Mesh's topology by its version alone, never by who sent it
+(Q389).
 
 **The forwarder diffs the fulls it holds.** A local primary that held source version 41 and now
 holds 43 emits one delta `base_version = 41, topology_version = 43`: the complete difference between
