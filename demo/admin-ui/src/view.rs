@@ -46,14 +46,15 @@ pub async fn overview(admin: &Admin) -> Value {
         Ok(f) => serde_json::to_value(f).unwrap_or(Value::Null),
         Err(e) => return json!({"fabric": null, "meshes": [], "nodes_total": 0, "build": null, "error": format!("node-admin unreadable: {e}")}),
     };
-    let nodes = nodes(admin).await.unwrap_or_default();
+    let nodes = admin.nodes().await.unwrap_or_default();
     let meshes: Vec<Value> = fabric["meshes"]
         .as_array()
         .map(|ms| {
             ms.iter()
                 .map(|m| {
                     let name = text(m, "name").unwrap_or_default();
-                    let count = nodes.iter().filter(|n| text(n, "mesh").as_deref() == Some(name.as_str())).count();
+                    // A node's mesh is its path's first location (Q366).
+                    let count = nodes.iter().filter(|n| n.mesh() == name).count();
                     json!({"name": name, "status": m["status"], "primary_admin": m["primary_admin"], "nodes": count})
                 })
                 .collect()
@@ -67,7 +68,7 @@ pub async fn overview(admin: &Admin) -> Value {
         None => None,
     };
     // `fabric.get` names the fabric-primary by its node id; the header shows its path and name.
-    let fabric_primary = nodes.iter().find(|n| !fabric["fabric_primary"].is_null() && n["node_id"] == fabric["fabric_primary"]).map_or(Value::Null, |n| json!({"path": n["path"], "name": n["name"]}));
+    let fabric_primary = nodes.iter().find(|n| fabric["fabric_primary"].as_str() == Some(n.node_id.as_str())).map_or(Value::Null, |n| json!({"path": n.path, "name": n.name}));
     json!({
         "fabric": {"name": fabric["name"], "status": fabric["status"], "provider": fabric["provider"], "build_id": fabric["build_id"], "fabric_primary": fabric_primary, "fabric_primary_id": fabric["fabric_primary"]},
         "meshes": meshes,
