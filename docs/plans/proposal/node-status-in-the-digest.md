@@ -30,8 +30,8 @@ clarifications. Code and architecture pages change together at implementation.
 
 Every frame is the CloudEvents envelope (gossip.md §3.4) and a body. The envelope names the author
 (`source`, an exact birth), the order (`sequence`), the time (`time`) and the delivery identity (`id`);
-the body never repeats them. The mesh's version (`sequence` on the aggregate and the differential) is
-open: Q389.
+the body never repeats them. The mesh's version is the envelope's `sequence` on the aggregate and on
+each differential, whichever mesh-primary sent it (Q389).
 
 **A node's Digest, on its own mesh channel** (every node; at once on a status change and on its
 heartbeat):
@@ -54,7 +54,7 @@ in chunks only when it does not fit one message, Q390):
 
 ```json
 {
-  "envelope": { "source": "rdm://fabric1/<mesh-primary node id>/<incarnation>", "type": "rdm.mesh.members", "subject": "mesh/mesh1", "sequence": "<Q389>", "time": "2026-11-07T14:00:00.050Z", "id": "rdm.mesh.members/mesh1/<Q389>/0" },
+  "envelope": { "source": "rdm://fabric1/<mesh-primary node id>/<incarnation>", "type": "rdm.mesh.members", "subject": "mesh/mesh1", "sequence": "00000000000000000007", "time": "2026-11-07T14:00:00.050Z", "id": "rdm.mesh.members/mesh1/7/0" },
   "data": {
     "mesh": "mesh1",
     "chunk_index": 0,
@@ -72,7 +72,7 @@ nodes removed; never its own mesh, never a full):
 
 ```json
 {
-  "envelope": { "source": "rdm://fabric1/<forwarder node id>/<incarnation>", "type": "rdm.mesh.members.delta", "subject": "mesh/mesh2", "sequence": "<Q389>", "time": "2026-11-07T14:00:00.060Z" },
+  "envelope": { "source": "rdm://fabric1/<forwarder node id>/<incarnation>", "type": "rdm.mesh.members.delta", "subject": "mesh/mesh2", "sequence": "00000000000000000008", "time": "2026-11-07T14:00:00.060Z" },
   "data": {
     "mesh": "mesh2",
     "added": [ { "node_id": "m2n0de000001", "incarnation": "0000000000000003", "type": "broker", "path": "mesh2.broker", "name": "1", "endpoint_id": "6b6b…6b6b", "transport_addr": "10.0.0.7:41001", "status": "pending" } ],
