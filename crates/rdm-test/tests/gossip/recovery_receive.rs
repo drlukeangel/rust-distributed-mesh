@@ -24,7 +24,7 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, 
     }).await.expect("the following frame proves this receipt finished");
 }
 fn birth(fabric: &FabricId, mesh: &MeshId, path: rdm_core::PathName, mesh_name: &str, r#type: &str, ordinal: u16) -> MeshDigest {
-    MeshDigest { fabric_id: fabric.clone(), node: MeshNode { mesh: mesh_name.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: NodeStatus::Ready, admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None }
+    MeshDigest { fabric_id: fabric.clone(), node: MeshNode { mesh: mesh_name.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, }, status: NodeStatus::Ready, digest_seq: 100, emitted_at_rafka_ms: 1, primary: Vec::new(), }
 }
 fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
     LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "recovery-receive".into(), operation: rdm_core::OperationId::node(format!("node.{command}"), &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
@@ -70,7 +70,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let (stop,delete)=(operation(&started,"stop"),operation(&deleted,"delete"));
         // The version the read serves carries the `node` type primary record its publisher put in it:
         // a read serves a version's content as published, never records taken since (gossip.md §3.1).
-        let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..rpc_primary.clone()}];
+        let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{ primary: rdm_core::RoleRevision::of_type(&rpc_primary.node.r#type, Some(10), None),..rpc_primary.clone()}];
         assert!(matches!(server_topology_view_channels.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],deleted:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
         let primary_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
         for (role,d) in [(PrimaryRole::MeshPrimary,&own),(PrimaryRole::FabricPrimary,&own),(PrimaryRole::NodePrimary("node".into()),&rpc_primary)] {server_topology_view.primaries().take(role,&primary_of(d,10));}

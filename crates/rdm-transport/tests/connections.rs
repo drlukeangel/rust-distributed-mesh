@@ -568,19 +568,11 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
                 transport_addr: dialer.peer.resolved.transport_addr,
                 incarnation: dialer.peer.birth.incarnation.clone(),
                 supersedes: None,
-                runtime: None,
             },
             status: rdm_core::model::NodeStatus::Ready,
-            admin_api_base: None,
             digest_seq: 0,
             emitted_at_rafka_ms: 0,
-            data_dir: None,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary: None,
-            is_fabric_primary: None,
+            primary: Vec::new(),
         };
         let publishing = on_dialer_channels.publish_every(Duration::from_millis(100), move || own.clone());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);

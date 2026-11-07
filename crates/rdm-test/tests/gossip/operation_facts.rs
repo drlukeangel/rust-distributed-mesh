@@ -37,9 +37,9 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "deletion-build".into(), operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(receiver.digest_view.record(MeshDigest { 
-            fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
-            status: NodeStatus::Ready, admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
-            data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
+            fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, },
+            status: NodeStatus::Ready, digest_seq: 1, emitted_at_rafka_ms: 1,
+            primary: Vec::new(),
         }), "the exact birth is initially held");
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == receiver_id.as_str()) {

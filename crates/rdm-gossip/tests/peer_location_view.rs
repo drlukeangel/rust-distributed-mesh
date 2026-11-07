@@ -92,18 +92,11 @@ fn birth(node_id: &NodeId, key: iroh::PublicKey, socket: SocketAddr, incarnation
             transport_addr: socket,
             incarnation: incarnation.clone(),
             supersedes,
-            runtime: None,
         },
         status: NodeStatus::Ready,
-        admin_api_base: None,
         digest_seq: 1,
         emitted_at_rafka_ms: 0,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None,
-        is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 

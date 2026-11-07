@@ -134,13 +134,7 @@ impl Context {
         let mut publication = None;
         let mut time_ms = now_ms;
         let subject = match frame {
-            Frame::Digest { digest } => {
-                source = Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() };
-                sequence = Some(p(digest.digest_seq));
-                identity = birth_parts(&source); identity.push(digest.digest_seq.to_string());
-                time_ms = digest.emitted_at_rafka_ms;
-                format!("birth/{}", path(&birth_parts(&source)))
-            }
+            Frame::Digest { .. } => panic!("a Digest is authored by its own birth at its sequence (Frame::digest)"),
             Frame::TopologyFull { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, .. } => {
                 source = Birth::publisher(&author.fabric, publisher);
                 sequence = Some(p(*topology_version)); time_ms = *published_at_rafka_ms;
@@ -186,6 +180,18 @@ impl Context {
         let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
         Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
+
+    /// A Digest's context: authored by `source`, the exact birth, at its `digest_seq` and emitted time.
+    pub fn digest(source: &Birth, digest_seq: u64, time_ms: u64) -> Self {
+        let kind = TYPES[0].to_string();
+        let mut identity = birth_parts(source);
+        identity.push(digest_seq.to_string());
+        let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
+        Self { id: format!("{kind}/{}", path(&identity)), source: source.clone(), kind, subject: format!("birth/{}", path(&birth_parts(source))), sequence: Some(p(digest_seq)), time_ms, publication: None, traceparent: trace.traceparent, tracestate: trace.tracestate }
+    }
+
+    /// A Digest's `digest_seq`: its sequence, when it is one.
+    pub fn digest_seq(&self) -> Option<u64> { scalar(self.sequence.as_deref()?).ok() }
 
     fn attributes(&self, dataschema: Option<&str>) -> Result<Vec<(String, String)>, WireError> {
         let mut a = vec![("specversion".into(), "1.0".into()), ("id".into(), self.id.clone()), ("source".into(), self.source.uri()), ("type".into(), self.kind.clone()), ("subject".into(), self.subject.clone())];
@@ -355,7 +361,10 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
         _ => (),
     }
     let owner = context.publication.as_ref().map(|(b, _)| b).unwrap_or(&context.source);
-    let expected = Context::authored(&frame, owner, context.primary_revision().unwrap_or(0), time_ms);
+    let expected = match &frame {
+        Frame::Digest { .. } => Context::digest(&context.source, context.digest_seq().ok_or_else(|| invalid("digest sequence"))?, time_ms),
+        _ => Context::authored(&frame, owner, context.primary_revision().unwrap_or(0), time_ms),
+    };
     if context.id != expected.id || context.source != expected.source || context.subject != expected.subject || context.sequence != expected.sequence || context.time_ms != expected.time_ms {
         return Err(invalid("context and data disagree").into());
     }

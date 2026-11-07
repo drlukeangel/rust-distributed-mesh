@@ -182,16 +182,11 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     };
     let digest = rdm_core::MeshDigest { 
         fabric_id: template.fabric_id.clone(),
-        node: rdm_core::MeshNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(), node_id: node.node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
+        node: rdm_core::MeshNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(), node_id: node.node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, },
         status: rdm_core::model::NodeStatus::Pending,
-        admin_api_base: None,
         digest_seq: 9,
         emitted_at_rafka_ms: 9,
-        data_dir: node.data_dir.clone(),
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     };
     let (provider, events, joins) = (Running::default(), Events::default(), rdm_admin::join::Joins::default());
     let observer = StartsWhole { joins: &joins, events: &events, digest };

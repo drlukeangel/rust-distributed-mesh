@@ -967,17 +967,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             transport_addr: mesh_addr,
             incarnation: incarnation.clone(),
             supersedes: supersedes.clone(),
-            runtime: Some(runtime.clone()),
         },
         status: rdm_core::model::NodeStatus::Pending,
-        admin_api_base: Some(api_base.clone()),
         emitted_at_rafka_ms: 0,
         digest_seq: 0,
-        mesh_id: cfg.mesh_id.clone(),
-        in_flight: None,
-        load: None,
-        gossip: None,
-        data_dir: Some(cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     });
     let joining = match &joins_through {
         Some((_, launcher, _)) => crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.node_id.to_string() },
@@ -1840,20 +1834,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     transport_addr: mesh_addr,
                                     incarnation: incarnation.clone(),
                                     supersedes,
-                                    // Day 0: PublishRuntimeFactAndCurrentRuntimeMetadata sets them.
-                                    runtime: adoption.is_none().then(|| runtime.clone()),
                                 },
                                 // Pending until it can take authority at once (the Ready gate below).
                                 status: rdm_core::model::NodeStatus::Pending,
-                                admin_api_base: Some(api_base.clone()),
                                 // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
                                 emitted_at_rafka_ms: 0,
                                 digest_seq: 0,
-                                mesh_id: Some(mesh_id.clone()),
-                                in_flight: None,
-                                load: None,
-                                gossip: None,
-                                data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
+                                primary: Vec::new(),
                             }));
                             // This admin owns its properties just as an ordinary node does. Bind
                             // actual metadata before any readiness hook or role can publish Ready.

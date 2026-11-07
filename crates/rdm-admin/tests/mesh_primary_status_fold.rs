@@ -172,16 +172,10 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
             transport_addr: "127.0.0.1:20001".parse().unwrap(),
             incarnation: n.incarnation_id.clone().unwrap(),
             supersedes: None,
-            runtime: None,
         },
         status: rdm_core::model::NodeStatus::Pending,
-        admin_api_base: None,
         digest_seq: 7,
         emitted_at_rafka_ms: 7,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }

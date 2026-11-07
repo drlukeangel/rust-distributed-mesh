@@ -1911,16 +1911,11 @@ pub(crate) mod tests {
         let floor = std::time::Duration::from_secs(3);
         let digest = |name: crate::model::PathName, mesh: &str, r#type: &str| MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), path: name.path.clone(), name: name.name.clone(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), path: name.path.clone(), name: name.name.clone(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, },
             status: rdm_core::model::NodeStatus::Ready,
-            admin_api_base: None,
             emitted_at_rafka_ms: 1,
             digest_seq: 1,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            data_dir: None, is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         };
         let node_of = |d: &MeshDigest| {
             let mut n = crate::model::Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);

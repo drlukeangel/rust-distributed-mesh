@@ -207,17 +207,11 @@ mod tests {
                 transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
-                runtime: None,
             },
             status,
-            admin_api_base: (rdm_core::is_node_admin(&r#type)).then(|| format!("http://admin-{node_id}")),
             emitted_at_rafka_ms: 0,
             digest_seq: 1,
-            mesh_id: Some(mesh_id(mesh)),
-            in_flight: None,
-            load: None,
-            gossip: None,
-            data_dir: None, is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         }
     }
 

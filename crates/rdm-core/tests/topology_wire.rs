@@ -29,17 +29,11 @@ fn digest() -> rdm_core::MeshDigest {
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
-            runtime: None,
         },
         status: rdm_core::model::NodeStatus::Ready,
-        admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 
@@ -141,17 +135,11 @@ fn a_snapshot_chunk_carries_each_node_as_its_digest() {
             transport_addr: "127.0.0.1:80".parse().unwrap(),
             incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(),
             supersedes: None,
-            runtime: None,
         },
         status: rdm_core::model::NodeStatus::ConnectionsDeleting,
-        admin_api_base: None,
         digest_seq: 7,
         emitted_at_rafka_ms: 9,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     };
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![WireDigest::from(&d)], in_flight: vec![], deleted: vec![] };
     let hex = "00 05 6d65736831 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \

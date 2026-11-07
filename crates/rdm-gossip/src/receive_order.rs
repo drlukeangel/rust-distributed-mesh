@@ -558,17 +558,11 @@ mod tests {
     fn birth(path: rdm_core::PathName, mesh: &str, r#type: &str) -> MeshDigest {
         MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, },
             status: NodeStatus::Ready,
-            admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1,
-            data_dir: None,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         }
     }
 

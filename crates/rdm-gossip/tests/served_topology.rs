@@ -29,18 +29,11 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, 
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: incarnation.clone(),
             supersedes: None,
-            runtime: None,
         },
         status,
-        admin_api_base: None,
         digest_seq: seq,
         emitted_at_rafka_ms: seq,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None,
-        is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 

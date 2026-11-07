@@ -44,7 +44,7 @@ fn reserved(kind: Kind) {
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
         let (backbone_sender, _backbone_rx) = backbone_channel.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), path: "mesh1.node-admin".into(), name: "2".into(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: NodeStatus::Ready, admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: node_id.clone(), path: "mesh1.node-admin".into(), name: "2".into(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, }, status: NodeStatus::Ready, digest_seq: 1, emitted_at_rafka_ms: 1, primary: Vec::new(), };
         receiver.digest_view.record(digest);
         assert!(receiver.digest_view.started(&node_id, &incarnation, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1"));
         let primary = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };

@@ -210,19 +210,11 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_a
                 transport_addr: "127.0.0.1:42000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
-                runtime: None,
             },
             status: NodeStatus::Ready,
-            admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1_000,
-            data_dir: None,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary: None,
-            is_fabric_primary: None,
+            primary: Vec::new(),
         }));
         let end = run_handle.await.expect("join driver run");
         assert_eq!(end, End::Passed);

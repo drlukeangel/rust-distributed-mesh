@@ -799,8 +799,11 @@ pub struct Channels {
     app_id_nonce: [u8; 32],
     /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
     pub(crate) digest_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// This process's CPU and RAM, sampled into every digest it publishes.
+    /// This process's CPU and RAM, sampled in memory for its own `node.get` (Q394): never gossiped.
     pub(crate) load: Arc<rdm_transport::load::LoadSampler>,
+    /// What this birth's last Digest carried of it: its node details and its status. A Digest carries
+    /// the details again when they changed, or at its pending of an accepted join.
+    pub(crate) last_digest: Arc<Mutex<Option<(rdm_core::wire::NodeDetails, rdm_core::model::NodeStatus)>>>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     pub(crate) forward_path: ForwardPath,
     /// The forward path's sender end, until the mesh channel it sends on is joined.
@@ -869,6 +872,7 @@ impl Channels {
             app_id_nonce: *iroh::SecretKey::generate().public().as_bytes(),
             digest_seq: Arc::default(),
             load: Arc::new(rdm_transport::load::LoadSampler::for_this_process()),
+            last_digest: Arc::default(),
             forward_path,
             forward_rx: Arc::new(Mutex::new(Some(forward_rx))),
         })
@@ -1027,12 +1031,13 @@ impl Channels {
             for d in &carried {
                 ls.register(d);
             }
-            if let Frame::Digest { digest } = frame.data() {
+            if let (Frame::Digest { details, .. }, Some(c)) = (frame.data(), frame.context()) {
                 tracing::info_span!(
                     "rdm.mesh.topology.update.via-digest-receipt",
-                    node = %v.current_name(), node_id = %digest.node.node_id,
-                    incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq,
-                    endpoint_id = %digest.node.endpoint_id.0, applied = digest_fresh,
+                    node = %v.current_name(), node_id = %c.source.node,
+                    incarnation_id = %c.source.incarnation, digest_seq = c.digest_seq().unwrap_or_default(),
+                    endpoint_id = %carried.first().map(|d| d.node.endpoint_id.0.clone()).unwrap_or_default(), applied = digest_fresh,
+                    details = details.is_some(),
                     addresses_registered = carried.len(),
                 ).in_scope(|| tracing::info!("digest receipt finished classification and address registration"));
             }
@@ -1117,11 +1122,13 @@ impl Channels {
         }
     }
 
-    /// Broadcast this member's digest on its mesh channel (and record it). The heartbeat is
+    /// Broadcast this member's Digest on its mesh channel (and record it). The heartbeat is
     /// stamped here, once, for every caller: `digest_seq` is the next of this birth's own
     /// sequence (from 1) and `emitted_at_rafka_ms` is the composed clock's reading; its status is
     /// the node's own, as the caller hands it. The order a receiver acts on is the sequence, whatever the
-    /// clock reads.
+    /// clock reads. The Digest carries the birth's node details on its first publication, on its
+    /// pending of an accepted join (node-mesh-join.md step 10) and when they changed since its last
+    /// one (a rename); otherwise its status and primary roles only (gossip.md §3.1 `Digest`).
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
         {
             let birth = crate::envelope::Birth { fabric: d.fabric_id.clone(), node: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() };
@@ -1133,18 +1140,34 @@ impl Channels {
         let mut d = self.topology_view.reported(d);
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.topology_view.clock.now_rafka_ms();
-        d.load = Some(self.load.sample());
         // The primaries this birth is, as its view holds their records: its digest is their normal
         // announcement (gossip.md "A primary change on gossip").
         self.topology_view.digest_view.recorded_primaries(&mut d);
-        d.gossip = Some(rdm_core::GossipStats {
-            heard: self.topology_view.digest_view.current(self.topology_view.digest_view.staleness_floor()).len() as u32,
-            neighbours: self.mesh().neighbors.lock().unwrap().len() as u32,
-            frames_sent: self.mesh().frames_sent.load(Ordering::Relaxed),
-            frames_received: self.mesh().frames_received.load(Ordering::Relaxed),
-        });
+        let details = {
+            let mut last = self.last_digest.lock().unwrap();
+            let now = rdm_core::wire::NodeDetails::of(&d.node);
+            let joined = d.status == rdm_core::model::NodeStatus::Pending && last.as_ref().is_none_or(|(_, s)| *s != rdm_core::model::NodeStatus::Pending);
+            let owed = joined || last.as_ref().is_none_or(|(held, _)| *held != now);
+            *last = Some((now, d.status));
+            owed
+        };
         self.topology_view.digest_view.record(d.clone());
-        self.mesh().broadcast(&Frame::Digest { digest: d }).await
+        self.mesh().broadcast(&Frame::digest(&d, details)).await
+    }
+
+    /// This process's own CPU and RAM and its mesh channel's counters, sampled now: in memory only,
+    /// for its own `node.get` (Q394, node-identity-and-state.md §2.5); never gossiped or stored.
+    pub fn own_sample(&self) -> (rdm_core::NodeLoad, rdm_core::GossipStats) {
+        let gossip = match self.mesh_channel.get() {
+            Some(mesh) => rdm_core::GossipStats {
+                heard: self.topology_view.digest_view.current(self.topology_view.digest_view.staleness_floor()).len() as u32,
+                neighbours: mesh.neighbors.lock().unwrap().len() as u32,
+                frames_sent: mesh.frames_sent.load(Ordering::Relaxed),
+                frames_received: mesh.frames_received.load(Ordering::Relaxed),
+            },
+            None => rdm_core::GossipStats::default(),
+        };
+        (self.load.sample(), gossip)
     }
 
     /// Broadcast a frame onto this mesh's channel (a forward).

@@ -166,17 +166,11 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
                 transport_addr: "127.0.0.1:34567".parse().unwrap(),
                 incarnation: incarnation.clone(),
                 supersedes: None,
-                runtime: Some(runtime.clone()),
             },
             status: NodeStatus::Pending,
-            admin_api_base: None,
             digest_seq: 0,
             emitted_at_rafka_ms: 0,
-            data_dir: Some(data_dir.display().to_string()),
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None, is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         };
         let installed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = installed.clone();

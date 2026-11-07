@@ -276,8 +276,8 @@ impl Row for MeshDigest {
             "mesh" => Value::One(self.node.mesh.clone()),
             "type" => Value::One(self.node.r#type.clone()),
             "name" => Value::One(name.name()),
-            "is_primary" => Value::bool(self.is_primary.is_some()),
-            "is_fabric_primary" => Value::bool(self.is_fabric_primary.is_some()),
+            "is_primary" => Value::bool(self.is_primary().is_some()),
+            "is_fabric_primary" => Value::bool(self.is_fabric_primary().is_some()),
             _ => Value::Absent,
         }
     }
@@ -598,19 +598,11 @@ mod tests {
                 transport_addr: "127.0.0.1:20001".parse().unwrap(),
                 incarnation: crate::IncarnationId::mint(),
                 supersedes: None,
-                runtime: None,
             },
             status,
-            admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1,
-            data_dir: None,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary: is_primary.then_some(1),
-            is_fabric_primary: None,
+            primary: crate::RoleRevision::of_type(r#type, is_primary.then_some(1), None),
         }
     }
 

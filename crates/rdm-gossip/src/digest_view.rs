@@ -374,28 +374,6 @@ pub(crate) fn unheard(at: &Instant, heard: Heard, now: Instant) -> Duration {
     }
 }
 
-/// One birth has one runtime: a digest of the held incarnation that names
-/// another runtime locator or control domain is refused by name, and the
-/// held one stays.
-pub(crate) fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
-    let changed = held.node.incarnation == d.node.incarnation
-        && held.node.runtime.is_some()
-        && d.node.runtime.is_some()
-        && held.node.runtime != d.node.runtime;
-    if changed {
-        tracing::info_span!(
-            "rdm.mesh.runtime.reject.via-locator-changed",
-            node_path = %d.node.path, node_name = %d.node.name,
-            node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.as_str(),
-            held_locator_fingerprint = %held.node.runtime.as_ref().map(|r| r.locator_fingerprint()).unwrap_or_default(),
-            offered_locator_fingerprint = %d.node.runtime.as_ref().map(|r| r.locator_fingerprint()).unwrap_or_default(),
-        )
-        .in_scope(|| tracing::info!("a birth offered another runtime"));
-    }
-    changed
-}
-
 impl DigestView {
     /// The path name of the node holding this view, when set by its topology view.
     pub fn observer_name(&self) -> Option<String> {
@@ -1458,7 +1436,7 @@ impl DigestView {
             if !crate::receive_order::admit_digest(held, &d, node, channel) {
                 return false;
             }
-            if runtime_changed(held, &d) || (held.node.incarnation != d.node.incarnation && held.node.supersedes.as_ref() == Some(&d.node.incarnation)) {
+            if held.node.incarnation != d.node.incarnation && held.node.supersedes.as_ref() == Some(&d.node.incarnation) {
                 return false;
             }
         }
@@ -1485,23 +1463,39 @@ impl DigestView {
     /// mesh at that record's revision, the fabric-primary at that record's, none it does not hold.
     pub fn recorded_primaries(&self, d: &mut MeshDigest) {
         let n = &d.node;
-        d.is_primary = self.primaries.node_type_primary(&n.mesh, &n.r#type).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
-        d.is_fabric_primary = self.primaries.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        let primary = self.primaries.node_type_primary(&n.mesh, &n.r#type).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        let fabric_primary = self.primaries.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.primary = rdm_core::RoleRevision::of_type(&n.r#type, primary, fabric_primary);
     }
 
-    /// Hold the primary records `d` carries (gossip.md "A primary change on gossip"): its birth as its
-    /// node type's primary of its mesh at `is_primary`, as the fabric-primary at
-    /// `is_fabric_primary`. A record is held only when it supersedes the one held (a later
-    /// revision); who is primary is the election's, from what the view holds.
+    /// Hold the primary records `d` carries (gossip.md "A primary change on gossip", Q392): its birth
+    /// as each role it lists, at that role's revision. A record is held only when it supersedes the
+    /// one held (a later revision); who is primary is the election's, from what the view holds.
     pub(crate) fn take_primaries(&self, d: &MeshDigest) {
         let n = &d.node;
-        let record = |revision| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
-        if let Some(revision) = d.is_primary {
-            self.primaries.take(PrimaryRole::of_type(&n.r#type), &record(revision));
+        for r in &d.primary {
+            let record = Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision: r.revision };
+            self.primaries.take(r.role.clone(), &record);
         }
-        if let Some(revision) = d.is_fabric_primary {
-            self.primaries.take(PrimaryRole::FabricPrimary, &record(revision));
+    }
+
+    /// The node details this view holds of the exact birth `node_id`, `incarnation`: what a Digest of
+    /// it that carries none names (gossip.md §3.1: peers retain the details its first Digest carried).
+    /// Held heard or from its mesh-primary's projection, kept with its stop, or refused deleted.
+    pub(crate) fn node_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::MeshNode> {
+        let exact = |d: &MeshDigest| (&d.node.node_id == node_id && &d.node.incarnation == incarnation).then(|| d.node.clone());
+        if let Some(n) = self.inner.lock().unwrap().get(node_id.as_str()).and_then(|(d, _, _)| exact(d)) {
+            return Some(n);
         }
+        if let Some(n) = self.projected.lock().unwrap().get(node_id.as_str()).and_then(|(d, _)| exact(d)) {
+            return Some(n);
+        }
+        if let Some(mark) = self.stopped_marks.lock().unwrap().get(node_id.as_str()) {
+            if let Some(n) = mark.latest.as_ref().map(|(d, _, _)| d).or(mark.held.as_ref()).and_then(exact) {
+                return Some(n);
+            }
+        }
+        self.returned.lock().unwrap().get(&(node_id.to_string(), incarnation.to_string())).map(|d| d.node.clone())
     }
 
 
@@ -1544,9 +1538,6 @@ impl DigestView {
         }
         let mut held_entry = None;
         if let Some((held, at, heard)) = inner.get(d.node.node_id.as_str()) {
-            if runtime_changed(held, &d) {
-                return false;
-            }
             // An own-mesh birth's status is its own Digest's: a copy at the sequence held moves no status.
             let older = if held.node.incarnation == d.node.incarnation {
                 d.digest_seq < held.digest_seq || (own_mesh && d.digest_seq == held.digest_seq && d.status != held.status)
@@ -1613,9 +1604,6 @@ impl DigestView {
             return false;
         }
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
-            if runtime_changed(held, &d) {
-                return false;
-            }
             // An own-mesh birth's status is its own Digest's: a copy at the sequence held moves no status.
             let older = if held.node.incarnation == d.node.incarnation {
                 d.digest_seq < held.digest_seq || (own_mesh && d.digest_seq == held.digest_seq && d.status != held.status)

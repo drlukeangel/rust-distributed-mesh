@@ -34,7 +34,6 @@ pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
         transport_addr: n.transport_addr?,
         incarnation: n.incarnation.clone()?,
         supersedes: None,
-        runtime: None,
     })
 }
 

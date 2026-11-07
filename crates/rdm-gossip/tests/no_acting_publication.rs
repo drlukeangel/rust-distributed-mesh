@@ -34,17 +34,11 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
-            runtime: None,
         },
         status: NodeStatus::Ready,
-        admin_api_base: None,
         digest_seq: 1,
         emitted_at_rafka_ms: 1_000,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 

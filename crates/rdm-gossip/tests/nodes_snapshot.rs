@@ -53,17 +53,11 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: birth.clone(),
             supersedes: None,
-            runtime: None,
         },
         status: NodeStatus::Ready,
-        admin_api_base: None,
         digest_seq: seq,
         emitted_at_rafka_ms: 1_000 + seq,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 

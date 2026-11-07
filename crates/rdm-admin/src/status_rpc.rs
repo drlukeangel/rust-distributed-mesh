@@ -3024,19 +3024,11 @@ mod tests {
                 transport_addr: "127.0.0.1:34567".parse().unwrap(),
                 incarnation: birth.clone(),
                 supersedes: None,
-                runtime: Some(first.runtime.clone()),
             },
             status: rdm_core::model::NodeStatus::Pending,
-            admin_api_base: None,
             digest_seq: 0,
             emitted_at_rafka_ms: 0,
-            data_dir: Some(first.data_dir.clone()),
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary: None,
-            is_fabric_primary: None,
+            primary: Vec::new(),
         };
         // The birth's last cycle's cut, as this mesh-primary holds it: a begun cycle forgets it.
         let cut = || { status_service.declared.lock().unwrap().connections_deleted.insert((rpc.node_id.clone(), birth.clone()), ConnectionsDeletedReceipt { all: true, held: Vec::new(), status_at_cut: crate::model::NodeStatus::ConnectionsDeleted }); };
@@ -3546,17 +3538,11 @@ mod tests {
                 transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation,
                 supersedes: None,
-                runtime: None,
             },
             status: rdm_core::model::NodeStatus::Ready,
-            admin_api_base: None,
             emitted_at_rafka_ms: 0,
             digest_seq: 1,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            data_dir: None, is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         }
     }
 

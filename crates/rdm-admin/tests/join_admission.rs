@@ -100,17 +100,11 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
             transport_addr: addr.parse().unwrap(),
             incarnation: d.incarnation.clone(),
             supersedes: d.supersedes.clone(),
-            runtime: Some(d.runtime.clone()),
         },
         status: rdm_core::model::NodeStatus::Pending,
-        admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,
-        data_dir: Some(d.data_dir.clone()),
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 

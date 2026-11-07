@@ -4,7 +4,9 @@
 
 use crate::snapshot::PublisherId;
 use anyhow::Result;
-use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, NodeId, Primary, PrimaryRole, StateHook};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, NodeId, Primary, PrimaryRole, RoleRevision, StateHook};
+use rdm_core::model::NodeStatus;
+use rdm_core::wire::NodeDetails;
 use serde::{Deserialize, Serialize};
 
 
@@ -26,13 +28,21 @@ pub const MAX_FRAME: usize = rdm_transport::chunking::MAX_MESSAGE_BYTES;
 /// context. A field with a serde `with` module travels in that module's wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Frame {
-    /// A member's own digest (its mesh channel only).
+    /// A node's own Digest (its mesh channel only; gossip.md §3.1 `Digest`): its status and the
+    /// primary roles it holds, at once when its status changes and on its heartbeat. The envelope's
+    /// `source` is the exact birth, its `sequence` the birth's `digest_seq` and its `time` the emitted
+    /// time; the body repeats none of them. Its first Digest into its mesh (its pending at the
+    /// accepted join, node-mesh-join.md step 10) also carries its `details`, as does a Digest whose
+    /// details changed since its last one; peers retain them.
     ///
     /// Schema index 0, never a wire kind.
     Digest {
-        /// The member's digest, in its wire shape.
-        #[serde(with = "rdm_transport::wire::digest")]
-        digest: MeshDigest,
+        /// The node's status.
+        status: NodeStatus,
+        /// The primary roles the node holds now, each with its revision (Q392); empty while it holds none.
+        primary: Vec<RoleRevision>,
+        /// The node's details, on its first Digest into its mesh and when they changed.
+        details: Option<NodeDetails>,
     },
     /// One chunk of a snapshot of `mesh`'s topology (gossip.md §3.1). On the backbone it is the
     /// complete Mesh with its loads, published by that Mesh's current primary (`publisher`, the
@@ -313,6 +323,27 @@ pub enum Frame {
 }
 
 impl Frame {
+    /// `d`'s Digest, authored by its exact birth at its `digest_seq` and emitted time: with its node
+    /// details when `details`.
+    pub fn digest(d: &MeshDigest, details: bool) -> Self {
+        let frame = Self::Digest { status: d.status, primary: d.primary.clone(), details: details.then(|| NodeDetails::of(&d.node)) };
+        let source = crate::envelope::Birth { fabric: d.fabric_id.clone(), node: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() };
+        let context = crate::envelope::Context::digest(&source, d.digest_seq, d.emitted_at_rafka_ms);
+        Self::Authored { context, frame: Box::new(frame) }
+    }
+
+    /// The node a Digest names, with the details it carries or `held` (what the receiver holds of the
+    /// exact birth its envelope names): `None` for another frame, a frame with no authored context, or
+    /// a Digest of a birth whose details neither carry.
+    pub fn digest_of(&self, held: impl FnOnce(&crate::envelope::Birth) -> Option<rdm_core::MeshNode>) -> Option<MeshDigest> {
+        let (Self::Digest { status, primary, details }, Some(c)) = (self.data(), self.context()) else { return None };
+        let node = match details {
+            Some(d) => d.node(c.source.node.clone(), c.source.incarnation.clone()),
+            None => held(&c.source)?,
+        };
+        Some(MeshDigest { fabric_id: c.source.fabric.clone(), node, status: *status, primary: primary.clone(), digest_seq: c.digest_seq()?, emitted_at_rafka_ms: c.time_ms })
+    }
+
     /// The selected domain data, independent of its immutable authored context.
     pub fn data(&self) -> &Self { match self { Self::Authored { frame, .. } => frame.data(), _ => self } }
     /// Consume the carrier and retain its selected data.

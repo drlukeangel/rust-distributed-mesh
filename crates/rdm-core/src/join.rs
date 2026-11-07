@@ -2,10 +2,10 @@
 //! table; i143 R-J1).
 //!
 //! A node binds its transport on port 0 and the operating system assigns the port. Its first
-//! call is `JoinNode` to the node-admin that deployed it: the request carries the node's full
-//! topology digest (the same struct its gossip `Frame::Digest` carries) with the transport
-//! address read from the bound endpoint, and the listeners it bound with the ports the operating
-//! system selected. The admin verifies the digest against what it
+//! call is `JoinNode` to the node-admin that deployed it: the request carries the node's topology
+//! digest with the transport address read from the bound endpoint, its runtime and data dir (the
+//! management facts the join checks; gossip never carries them), and the listeners it bound with
+//! the ports the operating system selected. The admin verifies the digest against what it
 //! deployed, installs that address for the node's key and answers what it holds.
 //!
 //! ```text
@@ -18,8 +18,7 @@
 //!                       birth is not admitted
 //! ```
 //!
-//! The request carries the digest typed, as `WireDigest` (`crate::wire`, the same
-//! positional shape a gossip frame carries). The answer is the postcard of the admin's entry
+//! The request carries the digest typed, as `WireDigest` (`crate::wire`, its positional shape). The answer is the postcard of the admin's entry
 //! answer (`rafka-node-admin-core` `wire::WireEntryAnswer`): its topology projection, its
 //! topology frames and its source snapshots are types of crates this contract does not depend
 //! on, so they travel as one postcard frame of their own, never JSON. The family is not
@@ -41,8 +40,13 @@ pub enum JoinRequest {
     ///
     /// Position 0 on the wire.
     JoinNode {
-        /// The node's full digest.
+        /// The node's digest: its birth, its status and the primary roles it holds.
         digest: WireDigest,
+        /// The birth's exact runtime, as its launch recorded it: checked against the deployment.
+        #[serde(with = "crate::wire::runtime_opt")]
+        runtime: Option<crate::RuntimeFact>,
+        /// Where the birth keeps its data: checked against the deployment.
+        data_dir: Option<String>,
         /// The non-Iroh listeners the node bound, by name, each with the port the operating system
         /// selected (Q151): exactly the names its launch assigned, each on its assigned address.
         listeners: Vec<(String, std::net::SocketAddr)>,

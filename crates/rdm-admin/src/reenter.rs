@@ -496,19 +496,11 @@ mod tests {
                     transport_addr: local_addr,
                     incarnation: local_inc.clone(),
                     supersedes: None,
-                    runtime: None,
                 },
                 status: rdm_core::model::NodeStatus::Ready,
-                admin_api_base: None,
                 digest_seq: 1,
                 emitted_at_rafka_ms: 5_000_000,
-                data_dir: None,
-                mesh_id: Some(mesh1_id.clone()),
-                in_flight: None,
-                load: None,
-                gossip: None,
-                is_primary: None,
-                is_fabric_primary: None,
+                primary: Vec::new(),
             };
             let dead_digest = rdm_core::MeshDigest {
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
@@ -518,7 +510,6 @@ mod tests {
                     transport_addr: "127.0.0.1:9".parse().unwrap(),
                     incarnation: dead_inc.clone(),
                     supersedes: None,
-                    runtime: None,
                 },
                 ..local_digest.clone()
             };

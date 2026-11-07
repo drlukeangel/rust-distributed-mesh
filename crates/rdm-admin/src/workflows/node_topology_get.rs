@@ -92,19 +92,11 @@ mod tests {
                     transport_addr: server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4"),
                     incarnation: server_inc.clone(),
                     supersedes: None,
-                    runtime: None,
                 },
                 status: rdm_core::model::NodeStatus::Ready,
-                admin_api_base: None,
                 digest_seq: 1,
                 emitted_at_rafka_ms: 7_500_000,
-                data_dir: None,
-                mesh_id: Some(mesh_id.clone()),
-                in_flight: None,
-                load: None,
-                gossip: None,
-                is_primary: Some(1),
-                is_fabric_primary: Some(1),
+                primary: rdm_core::RoleRevision::of_type("node-admin", Some(1), Some(1)),
             };
 
             let snap = SourceSnapshot {

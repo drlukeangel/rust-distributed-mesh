@@ -26,24 +26,12 @@ type OpKey = (String, rdm_core::OperationId);
 /// The digest as the topology projection sees it: what `topology_version` orders.
 ///
 /// CONTRACT (gossip.md §3.1 "DOES bump / DOES NOT bump"): the view KEEPS the birth (identity,
-/// incarnation and lineage, the one transport address, the runtime fact and its metadata), the
-/// status routing reads, the control API base, the mesh id, the data dir and the descriptive tags.
-/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp),
-/// `in_flight` (the in-flight work count), `load` (the process's CPU and RAM) and `gossip` (the
-/// channel's heard/neighbour/frame counts): the digest's load and gossip stats.
+/// incarnation and lineage, the one transport address), the status routing reads and the primary
+/// roles. It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp).
 pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
-    let mut v = without_load(d);
+    let mut v = d.clone();
     v.digest_seq = 0;
     v.emitted_at_rafka_ms = 0;
-    v
-}
-
-/// The digest without its load and gossip stats: what an ordinary node holds of a member of a remote Mesh.
-pub(crate) fn without_load(d: &MeshDigest) -> MeshDigest {
-    let mut v = d.clone();
-    v.in_flight = None;
-    v.load = None;
-    v.gossip = None;
     v
 }
 
@@ -56,6 +44,9 @@ pub struct Full {
     deleted: BTreeMap<String, LifecycleOp>,
     /// The members' node ids by endpoint key, kept in step with `digests` ([`Full::member_at`]).
     by_endpoint: BTreeMap<String, BTreeSet<String>>,
+    /// The id of the mesh, as its frame names it beside the mesh's name: a later mesh of the same name
+    /// has another id ([`another_mesh`]).
+    mesh_id: Option<rdm_core::MeshId>,
 }
 
 impl Full {
@@ -72,6 +63,7 @@ impl Full {
             in_flight: in_flight.into_iter().map(|o| (o.key(), o)).collect(),
             deleted: deleted.into_iter().map(|o| (o.node_id.to_string(), o)).collect(),
             by_endpoint,
+            mesh_id: None,
         }
     }
 
@@ -131,25 +123,26 @@ impl Full {
             && self.deleted == other.deleted
     }
 
-    /// The id of the mesh these births belong to, as its node-admins' entries carry it; `None` when
-    /// none carries one ([`mesh_id_of`]).
+    /// The id of the mesh these births belong to, as the frame that carried them names it next to the
+    /// mesh's name; `None` when it named none.
     pub fn mesh_id(&self) -> Option<rdm_core::MeshId> {
-        mesh_id_of(&self.digests())
+        self.mesh_id.clone()
     }
 
-    /// This full without any member's load.
-    pub fn without_loads(&self) -> Full {
-        Full { digests: self.digests.iter().map(|(k, d)| (k.clone(), without_load(d))).collect(), in_flight: self.in_flight.clone(), deleted: self.deleted.clone(), by_endpoint: self.by_endpoint.clone() }
+    /// This full as the topology of the mesh whose id is `mesh_id`.
+    pub fn of_mesh(mut self, mesh_id: Option<rdm_core::MeshId>) -> Self {
+        self.mesh_id = mesh_id;
+        self
     }
 
-    /// The complete difference from this full to `new`, loads omitted (gossip.md §3.3: one delta
+    /// The complete difference from this full to `new` (gossip.md §3.3: one delta
     /// per move from a held version to a newer one, never a replay of the versions between).
     /// `in_flight` and `deleted` carry the overlays and departures `new` holds that this one does
     /// not. A cleared stop overlay travels as its birth's own `changed` entry: a source's primary
     /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
     /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
-        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| without_load(d)).collect();
+        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| d.clone()).collect();
         Delta {
             removed: self.digests.keys().filter(|id| !new.digests.contains_key(*id)).cloned().collect(),
             in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
@@ -473,6 +466,9 @@ pub enum Gap {
     /// pulled from the mesh-primary by a read, which ends the stop once that primary took its
     /// `node.joined` (gossip.md §3.3, Q387).
     StoppedBirthHeard,
+    /// A Digest of a birth whose node details this node does not hold (it missed the birth's first
+    /// Digest into the mesh): a sync issue, topped up by a read of its own mesh (gossip.md §3.3).
+    UnknownBirth,
 }
 
 impl std::fmt::Display for Gap {
@@ -482,6 +478,7 @@ impl std::fmt::Display for Gap {
             Gap::Version { .. } => f.write_str("version-gap"),
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
             Gap::StoppedBirthHeard => f.write_str("stopped-birth-heard"),
+            Gap::UnknownBirth => f.write_str("unknown-birth"),
         }
     }
 }
@@ -782,15 +779,20 @@ impl SnapshotReceiver {
         Moved::Desynced { mesh: mesh.to_string(), gap: if already { Gap::AlreadyDesynced } else { gap } }
     }
 
-    /// Mark the held source `mesh` desynchronized by `gap`, so a top-up pulls it: `false` when it holds
-    /// no source of `mesh` or the source is desynchronized already.
+    /// Mark the source `mesh` desynchronized by `gap`, so a top-up pulls it, held or not yet held:
+    /// `false` when it is desynchronized already.
     pub fn mark_desynced(&mut self, mesh: &str, gap: Gap) -> bool {
         match self.held.get_mut(mesh) {
             Some(h) if h.desynced.is_none() => {
                 h.desynced = Some(gap);
                 true
             }
-            _ => false,
+            Some(_) => false,
+            None if self.unbased.contains_key(mesh) => false,
+            None => {
+                self.unbased.insert(mesh.to_string(), gap);
+                true
+            }
         }
     }
 
@@ -954,7 +956,7 @@ impl Forwarder {
     pub fn start_from(&mut self, held: &[(String, PublisherId, u64, Full)]) {
         for (mesh, publisher, version, full) in held {
             if mesh != &self.own_mesh {
-                self.published.insert(mesh.clone(), Published { publisher: publisher.clone(), version: *version, full: full.without_loads(), last: None });
+                self.published.insert(mesh.clone(), Published { publisher: publisher.clone(), version: *version, full: full.clone(), last: None });
             }
         }
     }
@@ -980,7 +982,7 @@ impl Forwarder {
     /// one message is not sent: the baseline still moves, the span names it, and a node behind it
     /// repairs by a read at the next differential's base.
     pub fn source(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Forward {
-        let stripped = full.without_loads();
+        let stripped = full.clone();
         if mesh == self.own_mesh {
             // Held for a topology read; its own nodes publish themselves on the mesh channel.
             self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped, last: None });

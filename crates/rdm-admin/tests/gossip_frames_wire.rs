@@ -37,17 +37,11 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: full.then(IncarnationId::mint),
-            runtime,
         },
         status: NodeStatus::Ready,
-        admin_api_base: full.then(|| "http://127.0.0.1:7000".to_string()),
         digest_seq: 3 + ordinal as u64,
         emitted_at_rafka_ms: 1_000 + ordinal as u64,
-        data_dir: full.then(|| "/var/lib/rafka/mesh1.node".to_string()),
-        mesh_id: full.then(MeshId::mint),
-        in_flight: full.then_some(4),
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     }
 }
 

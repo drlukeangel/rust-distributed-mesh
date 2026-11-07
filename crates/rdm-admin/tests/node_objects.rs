@@ -449,16 +449,11 @@ impl Rig {
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
                 let digest = MeshDigest { 
                     fabric_id: FabricId::mint(),
-                    node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
+                    node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, },
                     status: rdm_core::model::NodeStatus::Pending,
-                    admin_api_base: None,
                     digest_seq: 0,
                     emitted_at_rafka_ms: 0,
-                    data_dir: Some(data_dir.display().to_string()),
-                    mesh_id: None,
-                    in_flight: None,
-                    load: None,
-                    gossip: None, is_primary: None, is_fabric_primary: None
+                    primary: Vec::new(),
                 };
                 self.joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
                 return;

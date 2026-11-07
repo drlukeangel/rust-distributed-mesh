@@ -691,19 +691,11 @@ mod tests {
                     transport_addr: "127.0.0.1:0".parse().unwrap(),
                     incarnation: IncarnationId::mint(),
                     supersedes: None,
-                    runtime: None,
                 },
                 status: NodeStatus::Ready,
-                admin_api_base: None,
                 digest_seq: 0,
                 emitted_at_rafka_ms: 0,
-                data_dir: None,
-                mesh_id: None,
-                in_flight: None,
-                load: None,
-                gossip: None,
-                is_primary: None,
-                is_fabric_primary: None,
+                primary: Vec::new(),
             }
         }
 

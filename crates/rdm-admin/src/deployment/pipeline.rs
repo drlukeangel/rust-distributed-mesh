@@ -3311,19 +3311,11 @@ mod tests {
                     transport_addr: "127.0.0.1:34567".parse().unwrap(),
                     incarnation: IncarnationId::parse(&env(rdm_core::launch::ENV_INCARNATION)?).map_err(|e| refused(e.to_string()))?,
                     supersedes: None,
-                    runtime: handle.fact(),
                 },
                 status: rdm_core::model::NodeStatus::Pending,
-                admin_api_base: None,
                 digest_seq: 0,
                 emitted_at_rafka_ms: 0,
-                data_dir: Some(spec.data_dir.display().to_string()),
-                mesh_id: None,
-                in_flight: None,
-                load: None,
-                gossip: None,
-                is_primary: None,
-                is_fabric_primary: None,
+                primary: Vec::new(),
             };
             let joins = self.joins.clone();
             tokio::spawn(async move {

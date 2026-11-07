@@ -615,17 +615,11 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             transport_addr: addr,
             incarnation: admin_incarnation.clone(),
             supersedes: None,
-            runtime: None,
         },
         status,
-        admin_api_base: None,
         emitted_at_rafka_ms: now_ms,
         digest_seq: 1,
-        data_dir: None,
-        mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
-        in_flight: None,
-        load: None,
-        gossip: None, is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     };
     let primary = matches!(role, SideRole::Primary);
     if primary {

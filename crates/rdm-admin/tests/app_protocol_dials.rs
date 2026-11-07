@@ -167,7 +167,6 @@ async fn peer(name: rdm_core::PathName, mesh: &str, r#type: &str, expiry_ms: Opt
         transport_addr: addr,
         incarnation: IncarnationId::mint(),
         supersedes: None,
-        runtime: None,
     };
     let cert = match expiry_ms {
         None => Vec::new(),

@@ -115,19 +115,11 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                 transport_addr: "127.0.0.1:41000".parse().expect("addr"),
                 incarnation: dep.incarnation.clone(),
                 supersedes: None,
-                runtime: Some(dep.runtime.clone()),
             },
             status: rdm_core::model::NodeStatus::Pending,
-            admin_api_base: None,
             digest_seq: 0,
             emitted_at_rafka_ms: 0,
-            data_dir: Some(dep.data_dir.clone()),
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary: None,
-            is_fabric_primary: None,
+            primary: Vec::new(),
         };
 
         let joins = Arc::new(Joins::default());

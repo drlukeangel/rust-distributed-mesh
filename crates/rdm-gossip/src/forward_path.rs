@@ -307,17 +307,11 @@ mod tests {
                 transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
                 incarnation: birth.clone(),
                 supersedes: None,
-                runtime: None,
             },
             status: NodeStatus::Ready,
-            admin_api_base: None,
             emitted_at_rafka_ms: seq,
             digest_seq: seq,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            data_dir: None, is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         }
     }
 

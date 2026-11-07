@@ -69,17 +69,11 @@ impl Birth {
                 transport_addr: "127.0.0.1:7000".parse().unwrap(),
                 incarnation: self.incarnation.clone(),
                 supersedes: self.supersedes.clone(),
-                runtime: None,
             },
             status,
-            admin_api_base: None,
             digest_seq: seq,
             emitted_at_rafka_ms: at_rafka_ms,
-            data_dir: None,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None, is_primary: None, is_fabric_primary: None
+            primary: Vec::new(),
         }
     }
 }

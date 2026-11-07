@@ -628,18 +628,12 @@ async fn start_booted(
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
             transport_addr: bound_addr,
-            runtime: Some(runtime.clone()),
         },
         status: rdm_core::model::NodeStatus::Ready,
-        admin_api_base: None,
         // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
         emitted_at_rafka_ms: 0,
         digest_seq: 0,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None,
-        data_dir: Some(launch.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
+        primary: Vec::new(),
     };
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
     // admin that deployed it; the admin verifies it against the deployment and answers what it
@@ -2235,18 +2229,11 @@ mod primary_tests {
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.unwrap();
             let digest = MeshDigest {
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, },
                 status: rdm_core::model::NodeStatus::Pending,
-                admin_api_base: None,
                 digest_seq: 1,
                 emitted_at_rafka_ms: 1_000,
-                data_dir: None,
-                mesh_id: Some(mesh_id.clone()),
-                in_flight: None,
-                load: None,
-                gossip: None,
-                is_primary: None,
-                is_fabric_primary: None,
+                primary: Vec::new(),
             };
             let start = DeclaredOperation { operation: rdm_core::OperationId::node("node.start", &node_id) };
             let owed: Arc<OwedDeclarations> = Arc::default();

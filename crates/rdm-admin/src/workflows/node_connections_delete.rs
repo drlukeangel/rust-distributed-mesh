@@ -149,19 +149,11 @@ mod tests {
                     incarnation: incarnation.clone(),
                     supersedes: None,
                     transport_addr: node_addr,
-                    runtime: None,
                 },
                 status: NodeStatus::Ready,
-                admin_api_base: None,
                 emitted_at_rafka_ms: 0,
                 digest_seq: 1,
-                mesh_id: Some(mesh_id),
-                in_flight: None,
-                load: None,
-                gossip: None,
-                data_dir: None,
-                is_primary: None,
-                is_fabric_primary: None,
+                primary: Vec::new(),
             };
             let status_for_set = status_cell.clone();
             let digest_for_set = digest_base.clone();
