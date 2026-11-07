@@ -768,122 +768,6 @@ mod tests {
         assert_eq!(digest_view.runtime_of(&id, &birth), None, "the old birth's runtime is not held");
     }
 
-    /// CONTRACT (gossip.md §3.1 `Digest`: "peers retain them, and a receiver that hears a birth whose
-    /// details it does not hold tops up by a read (`via-unknown-birth`)"; §3.3): a Digest of a birth
-    /// this node holds no details of is taken as nothing, names the gap `unknown-birth` on its own mesh
-    /// with one span, and signals the top-up; each further such Digest signals it again (a pull refused
-    /// while the node holds no primary record yet is attempted at the next one) and opens no second
-    /// span; the primary roles it carries are held, a record naming only the exact birth. The birth's
-    /// first publication, its details, supplies it, and its later heartbeats are named from the details
-    /// retained. Must NOT happen: an unknown birth's Digest held with details it never carried, its
-    /// primary record dropped, or the gap signalled once and never again (cert_renewal: a first top-up
-    /// refused `no-primary-record-held` left mesh1.node.1 never holding mesh1.node.2, and the
-    /// mesh-primary's later Digests, of a birth it held no details of, never gave it the record).
-    #[test]
-    fn an_unknown_births_digest_signals_the_top_up_at_every_heartbeat_until_its_details_are_held() {
-        let spans = OpenedSpans::default();
-        let _capture = rdm_transport::test_span_capture::install(spans.clone());
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.node.1");
-        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-        let signalled = || rt.block_on(async { tokio::time::timeout(Duration::from_millis(20), view.desync.notified()).await.is_ok() });
-        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let at = |seq: u64| {
-            let mut d = digest(&id, &inc, None, NodeStatus::Ready, seq);
-            d.node.name = "2".into();
-            d
-        };
-        for seq in [2, 3] {
-            // The second carries the node-type primary role it holds: a record names only the exact birth.
-            let mut d = at(seq);
-            if seq == 3 {
-                d.set_primary(Some(4));
-            }
-            assert!(view.take(&Frame::digest(&d, false), &fabric, "mesh-channel").is_empty(), "heartbeat {seq} of an unknown birth is taken as nothing");
-            assert!(signalled(), "heartbeat {seq} signals the top-up");
-        }
-        assert!(view.digest_view.get(id.as_str()).is_none(), "no birth is held from a Digest without its details");
-        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision: 4 }), "the primary record its Digest carries is held: the node tops up from the primary it names");
-        assert_eq!(view.mesh_rx.lock().unwrap().desynced(), vec![("mesh1".to_string(), Gap::UnknownBirth)], "the gap is named on its own mesh");
-        let raised = spans.named("rdm.mesh.topology.update.via-unknown-birth");
-        assert_eq!(raised.len(), 1, "one span per gap: {raised:?}");
-        assert_eq!((raised[0]["node_id"].as_str(), raised[0]["digest_seq"].as_str()), (id.as_str(), "2"));
-        // Its first publication supplies the birth; a later heartbeat is named from the details retained.
-        assert_eq!(view.take(&Frame::digest(&at(4), true), &fabric, "mesh-channel").len(), 1, "the details supply the birth");
-        assert_eq!(view.take(&Frame::digest(&at(5), false), &fabric, "mesh-channel").len(), 1, "a heartbeat of a held birth is named from its details");
-        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.node.clone(), d.digest_seq)), Some((at(5).node, 5)));
-        assert!(!signalled(), "a held birth's heartbeat signals nothing");
-    }
-
-    /// The frame `Channels::publish` sends of `d`, after `last`, the details and status its birth's
-    /// last Digest carried: [`details_owed`] decides whether it carries the details.
-    fn published(last: &mut Option<(rdm_core::wire::NodeDetails, NodeStatus)>, d: &MeshDigest) -> Frame {
-        let now = rdm_core::wire::NodeDetails::of(&d.node);
-        let owed = details_owed(last.as_ref(), &now, d);
-        *last = Some((now, d.status));
-        Frame::digest(d, owed)
-    }
-
-    fn carries_details(f: &Frame) -> bool {
-        matches!(f.data(), Frame::Digest { details: Some(_), .. })
-    }
-
-    /// CONTRACT (gossip.md §3.1 `Digest`, Q401: the details ride every Digest of a node holding a
-    /// mesh-primary role; §3.3: a node tops up from its own mesh-primary): a node that missed a
-    /// mesh-primary's first Digest, the one that carried its details, holds it, its endpoint and its
-    /// primary record from the next Digest it sends in the role, and so from every one after; a node
-    /// holding no role, or a node-type primary role of another type, carries its details only on its
-    /// first publication and its pending of an accepted join. A fabric-primary is its mesh's primary as
-    /// well. Must NOT happen: a mesh-primary's later Digests sent without its details, so a node that
-    /// never held them cannot address the primary its top-ups and start read go to (build_sections
-    /// `a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_events`, node_records
-    /// `current_node_reads_survive_fabric_primary_restart`: `via-top-up reason="pull-refused" …
-    /// Resolve(Unknown)` at every node that missed the new primary's first Digest).
-    #[test]
-    fn a_node_that_missed_a_mesh_primarys_first_digest_holds_it_from_the_next_one() {
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.node.1");
-        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let mut admin = digest(&id, &inc, None, NodeStatus::Pending, 1);
-        (admin.node.r#type, admin.node.path, admin.node.name) = ("node-admin".into(), "mesh1.node-admin".into(), "2".into());
-        let mut last = None;
-        // Its pending at its accepted join carries its details: this receiver never hears it.
-        assert!(carries_details(&published(&mut last, &admin)), "the first Digest carries the details");
-        (admin.status, admin.digest_seq) = (NodeStatus::Ready, 2);
-        let ready = published(&mut last, &admin);
-        assert!(!carries_details(&ready), "a node holding no role carries its status only");
-        assert!(view.take(&ready, &fabric, "mesh-channel").is_empty(), "the receiver holds no details of it: nothing is held");
-        // It takes its mesh's primary role (an election, a restart): every Digest it sends in the role
-        // carries its details, and the receiver holds the birth from the first it hears.
-        admin.set_primary(Some(2));
-        for seq in [3, 4] {
-            admin.digest_seq = seq;
-            let f = published(&mut last, &admin);
-            assert!(carries_details(&f), "Digest {seq} of a mesh-primary carries its details");
-            let carried = view.take(&f, &fabric, "mesh-channel");
-            assert_eq!(carried.iter().map(|d| (d.node.clone(), d.digest_seq)).collect::<Vec<_>>(), vec![(admin.node.clone(), seq)], "Digest {seq}: the birth is held with its endpoint");
-        }
-        assert_eq!(view.digest_view.node_of(&id, &inc), Some(admin.node.clone()), "the details are retained");
-        assert_eq!(view.digest_view.primaries.mesh("mesh1"), Some(Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision: 2 }), "its primary record is held: the node tops up from it");
-        // It gives up the role: its status only again.
-        admin.set_primary(None);
-        admin.digest_seq = 5;
-        assert!(!carries_details(&published(&mut last, &admin)), "a node that gave up the role carries its status only");
-        // A fabric-primary is its own mesh's primary: its Digests carry its details.
-        admin.set_primary(Some(3));
-        admin.set_fabric_primary(Some(1));
-        admin.digest_seq = 6;
-        assert!(carries_details(&published(&mut last, &admin)), "a fabric-primary carries its details");
-        // A node-type primary of another type carries its details only on its first publication.
-        let (rpc_id, rpc_inc) = (NodeId::mint(), IncarnationId::mint());
-        let mut rpc = digest(&rpc_id, &rpc_inc, None, NodeStatus::Ready, 1);
-        rpc.set_primary(Some(1));
-        let mut rpc_last = None;
-        assert!(carries_details(&published(&mut rpc_last, &rpc)), "its first publication carries the details");
-        rpc.digest_seq = 2;
-        assert!(!carries_details(&published(&mut rpc_last, &rpc)), "a node-type primary of another type carries its status and roles only");
-    }
-
     /// CONTRACT (gossip.md §3.1 `Digest`: "a node-admin takes them from join reports, topology reads and
     /// node records"; Q400): at a node-admin that is not its mesh's primary, a Digest of a birth of its
     /// mesh it holds no runtime fact of is taken, names the gap `no-runtime-fact` on its own mesh with one
@@ -920,7 +804,7 @@ mod tests {
         };
         let view = view_of("node-admin");
         for seq in [1, 2] {
-            let carried = view.take(&Frame::digest(&at(seq, NodeStatus::Ready), true), &fabric, "mesh-channel");
+            let carried = view.take(&Frame::digest(&at(seq, NodeStatus::Ready)), &fabric, "mesh-channel");
             assert_eq!(carried.len(), 1, "Digest {seq} of the birth is taken");
             assert!(signalled(&view), "Digest {seq} of a birth with no runtime fact signals the top-up");
         }
@@ -932,13 +816,13 @@ mod tests {
         assert_eq!(Gap::NoRuntimeFact.to_string(), "no-runtime-fact", "the top-up's reasons name it");
         // A data dir alone is no runtime fact.
         assert!(view.digest_view.hold_runtime(&id, &inc, NodeRuntime { runtime: None, data_dir: Some("/data/7".into()) }));
-        view.take(&Frame::digest(&at(3, NodeStatus::Ready), false), &fabric, "mesh-channel");
+        view.take(&Frame::digest(&at(3, NodeStatus::Ready)), &fabric, "mesh-channel");
         assert!(signalled(&view), "a data dir alone leaves the fact owed");
         // A read supplies the fact: the birth's Digests signal nothing more.
         let fact = RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep"), provider: RuntimeProvider::Process, control_domain: "process:a:1".into(), locator: RuntimeLocator::Process { pid: 7, start: 7 } };
         assert!(view.digest_view.hold_runtime(&id, &inc, NodeRuntime { runtime: Some(fact), data_dir: None }));
         assert!(view.digest_view.without_runtime_fact("mesh1").is_empty(), "nothing is owed once the fact is held");
-        view.take(&Frame::digest(&at(4, NodeStatus::Ready), false), &fabric, "mesh-channel");
+        view.take(&Frame::digest(&at(4, NodeStatus::Ready)), &fabric, "mesh-channel");
         assert!(!signalled(&view), "a birth whose runtime fact is held signals nothing");
         // The mesh-primary, a node that is no node-admin, and a birth held leaving signal nothing.
         let primary = view_of("node-admin");
@@ -946,7 +830,7 @@ mod tests {
         let node = view_of("node");
         let leaving = view_of("node-admin");
         for (what, v, status) in [("the mesh-primary", &primary, NodeStatus::Ready), ("a node that is no node-admin", &node, NodeStatus::Ready), ("a birth held leaving", &leaving, NodeStatus::Leaving)] {
-            assert_eq!(v.take(&Frame::digest(&at(1, status), true), &fabric, "mesh-channel").len(), 1, "{what}: the birth is taken");
+            assert_eq!(v.take(&Frame::digest(&at(1, status)), &fabric, "mesh-channel").len(), 1, "{what}: the birth is taken");
             assert!(!signalled(v), "{what}: nothing is signalled");
             assert!(v.mesh_rx.lock().unwrap().desynced().is_empty(), "{what}: no gap");
         }
@@ -1324,18 +1208,18 @@ mod tests {
             deleted: Vec::new(),
         };
         let held = || view.digest_view.get(id.as_str()).map(|(d, _)| (d.node.name.clone(), d.digest_seq, d.status));
-        assert_eq!(view.take(&Frame::digest(&at("1", NodeStatus::Ready, 1), true), &fabric, "mesh-channel").len(), 1, "its first Digest, with its details");
+        assert_eq!(view.take(&Frame::digest(&at("1", NodeStatus::Ready, 1)), &fabric, "mesh-channel").len(), 1, "its first Digest, with its details");
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![at("1", NodeStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.digest_view.get(id.as_str()).is_none() && view.digest_view.in_flight() == vec![stop.clone()], "stopped");
 
         // Renamed while stopped, then started: its Digests with the new details reached no one here.
-        assert!(view.take(&Frame::digest(&at("renamed", NodeStatus::Ready, 5), false), &fabric, "mesh-channel").is_empty(), "a Digest with no details, while the stop stands, is refused");
+        assert!(view.take(&Frame::digest(&at("renamed", NodeStatus::Ready, 5)), &fabric, "mesh-channel").is_empty(), "a Digest with no details, while the stop stands, is refused");
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(3, vec![at("renamed", NodeStatus::Pending, 4)], vec![]), &fabric, Side::Backbone);
         assert!(view.digest_view.in_flight().is_empty(), "the projection moved past the stop: it is over");
         assert_eq!(held(), Some(("renamed".to_string(), 5, NodeStatus::Ready)), "held again from the Digest it refused, with the projection's details");
-        let next = view.take(&Frame::digest(&at("renamed", NodeStatus::Ready, 6), false), &fabric, "mesh-channel");
+        let next = view.take(&Frame::digest(&at("renamed", NodeStatus::Ready, 6)), &fabric, "mesh-channel");
         assert_eq!(next.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec!["renamed".to_string()], "its next heartbeat is named from the details held again");
         assert_eq!(held(), Some(("renamed".to_string(), 6, NodeStatus::Ready)));
     }
@@ -1527,7 +1411,7 @@ mod tests {
         assert!(digest_view.routable(id.as_str()));
         assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 102)), "a Digest delivered late");
         assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "sets nothing back");
-        let heard = Frame::decode(&Frame::digest(&digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120), true).encode()).unwrap().digest_of("mesh1", |_| None).expect("a Digest with its details names its birth");
+        let heard = Frame::decode(&Frame::digest(&digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120)).encode()).unwrap().digest_of("mesh1").expect("a Digest names its birth from its details");
         assert_eq!(heard.status, NodeStatus::ConnectionsDeleting, "the Digest carries its status on the wire");
         assert!(digest_view.record(heard));
         assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "nor does one from the wire");

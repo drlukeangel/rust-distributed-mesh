@@ -1491,25 +1491,6 @@ impl DigestView {
         }
     }
 
-    /// The node details this view holds of the exact birth `node_id`, `incarnation`: what a Digest of
-    /// it that carries none names (gossip.md §3.1: peers retain the details its first Digest carried).
-    /// Held heard or from its mesh-primary's projection, kept with its stop, or refused deleted.
-    pub(crate) fn node_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::MeshNode> {
-        let exact = |d: &MeshDigest| (&d.node.node_id == node_id && &d.node.incarnation == incarnation).then(|| d.node.clone());
-        if let Some(n) = self.inner.lock().unwrap().get(node_id.as_str()).and_then(|(d, _, _)| exact(d)) {
-            return Some(n);
-        }
-        if let Some(n) = self.projected.lock().unwrap().get(node_id.as_str()).and_then(|(d, _)| exact(d)) {
-            return Some(n);
-        }
-        if let Some(mark) = self.stopped_marks.lock().unwrap().get(node_id.as_str()) {
-            if let Some(n) = mark.latest.as_ref().map(|(d, _, _)| d).or(mark.held.as_ref()).and_then(exact) {
-                return Some(n);
-            }
-        }
-        self.returned.lock().unwrap().get(&(node_id.to_string(), incarnation.to_string())).map(|d| d.node.clone())
-    }
-
 
     /// Hold `d` as forwarded by its mesh's primary, which only forwards a
     /// member it hears: an equal copy of the held digest keeps the member

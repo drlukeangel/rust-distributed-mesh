@@ -472,9 +472,6 @@ pub enum Gap {
     /// pulled from the mesh-primary by a read, which ends the stop once that primary took its
     /// `node.joined` (gossip.md §3.3, Q387).
     StoppedBirthHeard,
-    /// A Digest of a birth whose node details this node does not hold (it missed the birth's first
-    /// Digest into the mesh): a sync issue, topped up by a read of its own mesh (gossip.md §3.3).
-    UnknownBirth,
     /// A node-admin that is not its mesh's primary holds a birth of its mesh with no runtime fact of
     /// it: its mesh-primary took the fact from the birth's join report, and a read of its own mesh
     /// from that primary serves it (Q400). Pulled again on the one backoff rule until it is held.
@@ -488,7 +485,6 @@ impl std::fmt::Display for Gap {
             Gap::Version { .. } => f.write_str("version-gap"),
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
             Gap::StoppedBirthHeard => f.write_str("stopped-birth-heard"),
-            Gap::UnknownBirth => f.write_str("unknown-birth"),
             Gap::NoRuntimeFact => f.write_str("no-runtime-fact"),
         }
     }

@@ -31,9 +31,8 @@ pub enum Frame {
     /// A node's own Digest (its mesh channel only; gossip.md §3.1 `Digest`): its status and the
     /// primary roles it holds, at once when its status changes and on its heartbeat. The envelope's
     /// `source` is the exact birth, its `sequence` the birth's `digest_seq` and its `time` the emitted
-    /// time; the body repeats none of them. Its first Digest into its mesh (its pending at the
-    /// accepted join, node-mesh-join.md step 10) also carries its `details`, as does a Digest whose
-    /// details changed since its last one; peers retain them.
+    /// time; the body repeats none of them. Every Digest carries the node's `details`, so a receiver
+    /// names the birth from whichever Digest of it it hears.
     ///
     /// Schema index 0, never a wire kind.
     Digest {
@@ -41,8 +40,8 @@ pub enum Frame {
         status: NodeStatus,
         /// The primary roles the node holds now, each with its revision (Q392); empty while it holds none.
         primary: Vec<RoleRevision>,
-        /// The node's details, on its first Digest into its mesh and when they changed.
-        details: Option<NodeDetails>,
+        /// The node's details: type, path, name, endpoint id, transport address and the birth it supersedes.
+        details: NodeDetails,
     },
     /// One chunk of a snapshot of `mesh`'s topology (gossip.md §3.1). On the backbone it is the
     /// complete Mesh with its loads, published by that Mesh's current primary (`publisher`, the
@@ -326,24 +325,20 @@ pub enum Frame {
 }
 
 impl Frame {
-    /// `d`'s Digest, authored by its exact birth at its `digest_seq` and emitted time: with its node
-    /// details when `details`.
-    pub fn digest(d: &MeshDigest, details: bool) -> Self {
-        let frame = Self::Digest { status: d.status, primary: d.primary.clone(), details: details.then(|| NodeDetails::of(&d.node)) };
+    /// `d`'s Digest, authored by its exact birth at its `digest_seq` and emitted time, with its node
+    /// details.
+    pub fn digest(d: &MeshDigest) -> Self {
+        let frame = Self::Digest { status: d.status, primary: d.primary.clone(), details: NodeDetails::of(&d.node) };
         let source = crate::envelope::Birth { fabric: d.fabric_id.clone(), node: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() };
         let context = crate::envelope::Context::digest(&source, d.digest_seq, d.emitted_at_rafka_ms);
         Self::Authored { context, frame: Box::new(frame) }
     }
 
-    /// The node a Digest heard on `mesh`'s channel names, with the details it carries or `held` (what
-    /// the receiver holds of the exact birth its envelope names): `None` for another frame, a frame with
-    /// no authored context, or a Digest of a birth whose details neither carry.
-    pub fn digest_of(&self, mesh: &str, held: impl FnOnce(&crate::envelope::Birth) -> Option<rdm_core::MeshNode>) -> Option<MeshDigest> {
+    /// The node a Digest heard on `mesh`'s channel names, from the details it carries and the exact
+    /// birth its envelope names: `None` for another frame or a frame with no authored context.
+    pub fn digest_of(&self, mesh: &str) -> Option<MeshDigest> {
         let (Self::Digest { status, primary, details }, Some(c)) = (self.data(), self.context()) else { return None };
-        let node = match details {
-            Some(d) => d.node(c.source.node.clone(), c.source.incarnation.clone(), mesh),
-            None => held(&c.source)?,
-        };
+        let node = details.node(c.source.node.clone(), c.source.incarnation.clone(), mesh);
         Some(MeshDigest { fabric_id: c.source.fabric.clone(), node, status: *status, primary: primary.clone(), digest_seq: c.digest_seq()?, emitted_at_rafka_ms: c.time_ms })
     }
 

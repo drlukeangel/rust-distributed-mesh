@@ -116,21 +116,13 @@ impl Observer {
     }
 
     /// The digests of `node` heard on the mesh channel, in arrival order: each Digest's envelope names
-    /// its birth, sequence and time, and the birth's details are the ones the observer heard of it, on
-    /// its first Digest or its mesh-primary's TopologyFull entry (gossip.md §3.1).
+    /// its birth, sequence and time, and its body the birth's details (gossip.md §3.1).
     fn heartbeats_of(&self, node: &rdm_core::NodeId) -> Vec<(Seen, MeshDigest)> {
-        let all = self.all();
-        let held = |b: &rdm_gossip::envelope::Birth| {
-            all.iter().find_map(|x| match x.frame.data() {
-                Frame::Digest { details: Some(d), .. } if x.frame.context().is_some_and(|c| &c.source == b) => Some(d.node(b.node.clone(), b.incarnation.clone(), "mesh1")),
-                Frame::TopologyFull { digests, .. } => digests.iter().find(|d| d.node.node_id == b.node && d.node.incarnation == b.incarnation).map(|d| d.node.clone()),
-                _ => None,
-            })
-        };
-        all.iter()
+        self.all()
+            .into_iter()
             .filter(|x| x.channel == "mesh1")
             .filter_map(|x| match x.frame.data() {
-                Frame::Digest { .. } if x.frame.context().is_some_and(|c| &c.source.node == node) => Some((x.clone(), x.frame.digest_of("mesh1", &held)?)),
+                Frame::Digest { .. } if x.frame.context().is_some_and(|c| &c.source.node == node) => Some((x.clone(), x.frame.digest_of("mesh1")?)),
                 _ => None,
             })
             .collect()
@@ -212,7 +204,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     forged.emitted_at_rafka_ms = os_now_ms() + 365 * 24 * 3600 * 1000;
     assert!(forged.digest_seq < last.digest_seq && forged.emitted_at_rafka_ms > last.emitted_at_rafka_ms);
     let forged_at_ms = os_now_ms();
-    observer.broadcast(&Frame::digest(&forged.clone(), true)).await;
+    observer.broadcast(&Frame::digest(&forged.clone())).await;
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
     let held_after = estate.node_view(&target.location()).await;

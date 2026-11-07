@@ -220,32 +220,9 @@ impl View {
     pub(crate) fn take_with(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> (Vec<MeshDigest>, bool) {
         if let (Frame::Digest { .. }, Some(source)) = (f.data(), f.context().map(|c| c.source.clone())) {
             if &source.fabric == fabric {
-                // The birth's details come with its first Digest into the mesh; a later Digest carries
-                // its status only, and the view supplies the details it retained (gossip.md §3.1).
-                let Some(digest) = f.digest_of(&self.mesh, |b| self.digest_view.node_of(&b.node, &b.incarnation)) else {
-                    // A Digest of a birth whose details this node does not hold: a sync issue, topped up
-                    // by a read of its own mesh (gossip.md §3.3). Each such Digest pulls again until a
-                    // read supplies the birth, as a node held stopped heard again does: a pull refused
-                    // (this node mid-start, holding no primary record yet) is attempted at the next one.
-                    if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::UnknownBirth) {
-                        tracing::info_span!("rdm.mesh.topology.update.via-unknown-birth", node = %self.current_name(), node_id = %source.node, incarnation_id = %source.incarnation, digest_seq = f.context().and_then(|c| c.digest_seq()).unwrap_or_default(), via)
-                            .in_scope(|| tracing::info!("a Digest of a birth whose details this node does not hold: its mesh-primary's view is read"));
-                    }
-                    // The primary roles it carries are its exact birth's (the envelope names the birth, the
-                    // channel its mesh), which is all a primary record names: held as any Digest's are
-                    // (gossip.md "A primary change on gossip"), for a NodeId this view holds nothing of and
-                    // never accepted deleted. A node that missed its mesh-primary's first Digest learns its
-                    // primary from the next, and tops up from it.
-                    if let Frame::Digest { primary, .. } = f.data() {
-                        if !primary.is_empty() && self.digest_view.get(source.node.as_str()).is_none() && !self.digest_view.is_deleted(source.node.as_str()) {
-                            for r in primary {
-                                self.digest_view.primaries.take(r.role.clone(), &Primary { mesh: self.mesh.clone(), node_id: source.node.clone(), incarnation: source.incarnation.clone(), revision: r.revision });
-                            }
-                        }
-                    }
-                    self.desync.notify_one();
-                    return (Vec::new(), false);
-                };
+                // Every Digest carries the birth's details (gossip.md §3.1): the birth is named from the
+                // Digest heard, whichever of its Digests this node missed.
+                let Some(digest) = f.digest_of(&self.mesh) else { return (Vec::new(), false) };
                 let digest = &digest;
                 let channel = if via == "mesh-channel" { format!("mesh:{}", self.mesh) } else { via.to_string() };
                 let fresh = self.digest_view.record_with(digest.clone(), Instant::now(), &self.current_name(), &channel);

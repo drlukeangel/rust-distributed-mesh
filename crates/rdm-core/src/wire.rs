@@ -127,10 +127,9 @@ impl From<WireDigest> for MeshDigest {
     }
 }
 
-/// A birth's node details as its first Digest into its mesh carries them (gossip.md §3.1 `Digest`,
-/// node-mesh-join.md step 10): its type, path, name, endpoint and lineage. The envelope's `source`
-/// names its fabric, node id and incarnation; its mesh is the mesh channel's it is heard on. Peers
-/// retain them; later Digests carry status only.
+/// A birth's node details as every Digest of it carries them (gossip.md §3.1 `Digest`): its type,
+/// path, name, endpoint and lineage. The envelope's `source` names its fabric, node id and
+/// incarnation; its mesh is the mesh channel's it is heard on.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NodeDetails {
     /// The node's type.

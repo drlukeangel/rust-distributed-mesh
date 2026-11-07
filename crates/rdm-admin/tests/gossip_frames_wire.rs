@@ -73,13 +73,13 @@ fn executor() -> rdm_core::framing::Birth {
     rdm_core::framing::Birth { node_id: NodeId::parse("100000000001").unwrap(), incarnation: IncarnationId::parse("100000000002").unwrap() }
 }
 
-/// Every `Frame` variant, each Digest shape (details absent and present, a lineage, primary roles).
+/// Every `Frame` variant, each Digest shape (a first birth, a lineage, primary roles).
 fn frames() -> Vec<Frame> {
     let p = publisher();
     vec![
-        Frame::digest(&pending(1, false), false),
-        Frame::digest(&pending(2, true), true),
-        Frame::digest(&primary(3), true),
+        Frame::digest(&pending(1, false)),
+        Frame::digest(&pending(2, true)),
+        Frame::digest(&primary(3)),
         Frame::TopologyFull {
             mesh: "mesh2".into(),
             mesh_id: Some(MeshId::mint()),
@@ -183,14 +183,12 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     // ---- sizes: one Digest's data, postcard against the JSON-shaped MeshDigest; the envelope that
     // carries either is the same CloudEvents metadata, measured beside them ----
     let one = digest(1, true);
-    let first = Frame::digest(&one.clone(), true);
-    let data_bytes = crate::gossip_wire::data(&first).len();
-    let heartbeat_bytes = crate::gossip_wire::data(&Frame::digest(&one, false)).len();
-    let message_bytes = crate::gossip_wire::authored(&first).encode().len();
+    let every = Frame::digest(&one);
+    let data_bytes = crate::gossip_wire::data(&every).len();
+    let message_bytes = crate::gossip_wire::authored(&every).encode().len();
     let json_bytes = serde_json::to_vec(&one).unwrap().len();
     assert!(data_bytes < json_bytes, "postcard {data_bytes} B against JSON {json_bytes} B");
-    assert!(heartbeat_bytes < data_bytes, "a heartbeat's data ({heartbeat_bytes} B) carries no details, the first Digest's ({data_bytes} B) does");
-    result.insert("digest_bytes".into(), json!({ "postcard_data": data_bytes, "postcard_heartbeat_data": heartbeat_bytes, "complete_message": message_bytes, "json_digest": json_bytes }));
+    result.insert("digest_bytes".into(), json!({ "postcard_data": data_bytes, "complete_message": message_bytes, "json_digest": json_bytes }));
 
     // ---- a frame this build does not read is refused by name ----
     let garbage = Frame::decode(&[0xff, 0xff, 0xff, 0xff]).unwrap_err().to_string();

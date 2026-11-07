@@ -528,7 +528,7 @@ mod tests {
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         gate.entered.notified().await;
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
-        path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1), true));
+        path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         path.set_role(false, &[]);
         gate.release.add_permits(1);
         path.set_role(true, &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))]);
@@ -559,7 +559,7 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), gate.sink());
         let p = publisher();
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1), true));
+        path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
         path.set_role(true, &[]);
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
@@ -583,7 +583,7 @@ mod tests {
         path.set_role(true, &[]);
         let p = publisher();
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1), true));
+        path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         let (replayed, deltas, _) = path.replay("mesh2.node-admin.1", Vec::new(), || 2);
         assert_eq!((replayed, deltas), (1, 1), "the replay is the last differential of mesh1");
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 3);

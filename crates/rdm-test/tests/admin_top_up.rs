@@ -173,7 +173,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         tokio::time::timeout(WRONG, async {
             loop {
                 let _ = channels.forward(&stopped).await;
-                let _ = channels.forward(&Frame::digest(&heard_again.clone(), true)).await;
+                let _ = channels.forward(&Frame::digest(&heard_again.clone())).await;
                 heard_again.digest_seq += 1;
                 if !spans_named(&spans, "rdm.mesh.topology.update.via-stopped-birth-heard", &gap).is_empty() {
                     break;

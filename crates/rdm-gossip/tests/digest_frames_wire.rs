@@ -1,6 +1,6 @@
 //! Fixed bytes for a node's Digest and its mesh-primary's projection on the topology channels
-//! (gossip.md §3.1: the `Digest` carries the node's status, the primary roles it holds and, on its
-//! first publication, its details; the envelope names its birth, sequence and time; `TopologyFull` and
+//! (gossip.md §3.1: every `Digest` carries the node's status, the primary roles it holds and its
+//! details; the envelope names its birth, sequence and time; `TopologyFull` and
 //! `TopologyDelta` carry the mesh's id beside its name and each node with its status). Postcard,
 //! positional, append-only. The literals are derived from the postcard rules by hand. Never
 //! regenerate an expectation from the Rust serializer to make a schema change pass.
@@ -23,14 +23,15 @@ fn digest(status: &str) -> MeshDigest {
     .unwrap()
 }
 
+/// mesh1.node.1's details on the wire: type, path, name, endpoint id, transport address (variant V4,
+/// four address bytes, port) and supersedes (`Option`: absent `00`).
+const WIRE_DETAILS: &str = "04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 00";
+
 /// The Digest's body: the status (the record's `NodeStatus` position: `Ready` = 1,
-/// `ConnectionsDeleting` = 2), the primary roles (a vector: empty is one `00`), then the details
-/// (`Option`: absent `00`; present `01`, then type, path, name, endpoint id, transport address (variant
-/// V4, four address bytes, port) and supersedes). Nothing else: the fabric, node id, incarnation,
-/// sequence and time are the envelope's.
-fn wire_digest_body(status: &str, details: bool) -> String {
-    let details = if details { "01 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 00" } else { "00" };
-    format!("{status} 00 {details}")
+/// `ConnectionsDeleting` = 2), the primary roles (a vector: empty is one `00`), then the details,
+/// every time. Nothing else: the fabric, node id, incarnation, sequence and time are the envelope's.
+fn wire_digest_body(status: &str) -> String {
+    format!("{status} 00 {WIRE_DETAILS}")
 }
 
 /// A projection entry's wire shape: fabric id, node (mesh, type (a string), node id, path, name,
@@ -47,45 +48,38 @@ fn wire_entry(status: &str) -> String {
 const MESH_ID: &str = "2123456789ab";
 const WIRE_MESH_ID: &str = "01 0c 323132333435363738396162";
 
-/// CONTRACT (gossip.md §3.1 frame catalog, Q387, Q392): a `Digest` (variant 0) is the node's status
-/// at position 0, the primary roles it holds at position 1 and its details at position 2, present on
-/// its first publication and absent on a heartbeat: a connections-deleting Digest and a ready one
-/// differ in that one byte. The envelope's `source`, `sequence` and `time` are the birth, its
-/// `digest_seq` and its emitted time, and a decoded Digest names its birth from them. Must NOT
-/// happen: a Digest body repeating its birth, sequence or time, or carrying runtime, data dir,
-/// control API, mesh id, load or gossip counters; a field moved.
+/// CONTRACT (gossip.md §3.1 frame catalog, Q387, Q392, Q405 A): a `Digest` (variant 0) is the node's
+/// status at position 0, the primary roles it holds at position 1 and its details at position 2, on
+/// every Digest: a connections-deleting Digest and a ready one differ in their status byte alone. The
+/// envelope's `source`, `sequence` and `time` are the birth, its `digest_seq` and its emitted time, and
+/// a decoded Digest names its birth from them and its details, whatever the receiver holds. Must NOT
+/// happen: a Digest without its details, a Digest body repeating its birth, sequence or time, or
+/// carrying runtime, data dir, control API, mesh id, load or gossip counters; a field moved.
 #[test]
-fn a_digest_carries_its_status_its_primary_roles_and_its_details_on_its_first_publication() {
+fn every_digest_carries_its_status_its_primary_roles_and_its_details() {
     for (status, byte) in [("connections-deleting", "02"), ("ready", "01")] {
-        let frame = Frame::digest(&digest(status), true);
-        let first = format!("00 {}", wire_digest_body(byte, true));
-        assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&first)), "a {status} Digest with its details");
+        let frame = Frame::digest(&digest(status));
+        let body = format!("00 {}", wire_digest_body(byte));
+        assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&body)), "a {status} Digest with its details");
     }
-    let heartbeat = Frame::digest(&digest("ready"), false);
-    let heartbeat_golden = golden(&heartbeat, &bytes("00 01 00 00"));
-    assert_eq!(heartbeat.golden_encode(), heartbeat_golden, "a heartbeat: the status, no roles, no details");
+    let heartbeat = Frame::digest(&digest("ready"));
     let context = heartbeat.context().expect("a Digest is authored");
     assert_eq!((context.source.fabric.as_str(), context.source.node.as_str(), context.source.incarnation.as_str()), ("1123456789ab", "0123456789ab", "yrz49j303yh4"), "the envelope's source is the exact birth");
     assert_eq!((context.digest_seq(), context.time_ms), (Some(7), 9), "its sequence is the digest_seq and its time the emitted time");
 
     // A node-type primary at revision 4 that is also the fabric-primary at revision 300: the roles in
     // their wire order (`FabricPrimary` = 1, `NodePrimary` = 2 with its type), each with its revision
-    // (300 = varint ac 02).
+    // (300 = varint ac 02), then the details.
     let mut primary = digest("ready");
     primary.set_primary(Some(4));
     primary.set_fabric_primary(Some(300));
-    let roles = Frame::digest(&primary, false);
-    let roles_golden = golden(&roles, &bytes("00 01 02 01 ac02 02 04 6e6f6465 04 00"));
-    assert_eq!(roles.golden_encode(), roles_golden, "a Digest with its primary roles");
+    let roles = Frame::digest(&primary);
+    let roles_golden = golden(&roles, &bytes(&format!("00 01 02 01 ac02 02 04 6e6f6465 04 {WIRE_DETAILS}")));
+    assert_eq!(roles.golden_encode(), roles_golden, "a Digest with its primary roles and its details");
     let back = Frame::decode(&roles_golden).expect("the Digest decodes");
     let Frame::Digest { status, primary: carried, details } = back.data() else { panic!("not a Digest") };
-    assert_eq!((*status, carried.clone(), details.is_none()), (NodeStatus::Ready, vec![RoleRevision { role: PrimaryRole::FabricPrimary, revision: 300 }, RoleRevision { role: PrimaryRole::NodePrimary("node".into()), revision: 4 }], true));
-    let held = digest("ready").node;
-    let heard = back.digest_of("mesh1", |b| (b.node == held.node_id && b.incarnation == held.incarnation).then(|| held.clone())).expect("a heartbeat of a held birth names it");
-    assert_eq!(heard, primary, "the Digest, its envelope and the details held are the node's digest");
-    assert!(back.digest_of("mesh1", |_| None).is_none(), "a heartbeat of a birth whose details are not held names nothing");
-    let first = Frame::decode(&Frame::digest(&digest("ready"), true).golden_encode()).unwrap();
-    assert_eq!(first.digest_of("mesh1", |_| None), Some(digest("ready")), "a first publication names its birth from its details");
+    assert_eq!((*status, carried.clone(), details.clone()), (NodeStatus::Ready, vec![RoleRevision { role: PrimaryRole::FabricPrimary, revision: 300 }, RoleRevision { role: PrimaryRole::NodePrimary("node".into()), revision: 4 }], rdm_core::wire::NodeDetails::of(&digest("ready").node)));
+    assert_eq!(back.digest_of("mesh1"), Some(primary), "the Digest and its envelope are the node's digest");
 }
 
 /// CONTRACT (gossip.md §3.1, lead note 0001): a projection entry, in `TopologyFull` (variant 1) and
@@ -141,7 +135,7 @@ fn a_projection_entry_carries_the_nodes_status_and_its_frame_the_meshs_id() {
 /// The complete gossip message is the standard context list followed by opaque postcard data.
 #[test]
 fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
-    let frame = Frame::digest(&digest("ready"), true);
+    let frame = Frame::digest(&digest("ready"));
     let author = rdm_gossip::envelope::Birth { fabric: digest("ready").fabric_id, node: digest("ready").node.node_id, incarnation: digest("ready").node.incarnation };
     let encoded = frame.authored(&author, 0, 9).encode();
     let (attributes, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&encoded).expect("CloudEvents binary metadata and opaque data");
@@ -157,10 +151,10 @@ fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
 fn the_largest_complete_message_golden_fits_max_frame() {
     let mut d = digest("ready");
     d.node.endpoint_id = rdm_core::EndpointId("x".repeat(3600));
-    let frame = Frame::digest(&d, true);
+    let frame = Frame::digest(&d);
     // The status (`Ready` = 1), no roles, the details through the name; the endpoint id string has a
     // two-byte postcard length (3600 = 0x90 0x1c), then the address and supersedes.
-    let mut data = bytes("00 01 00 01 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 901c");
+    let mut data = bytes("00 01 00 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 901c");
     data.extend(std::iter::repeat_n(b'x', 3600));
     data.extend(bytes("00 7f000001 50 00"));
     let expected = golden(&frame, &data);
@@ -198,9 +192,9 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     const STATE: &str = "rojo=00f067aa0ba902b7";
     let mut d = digest("ready");
     d.node.endpoint_id = rdm_core::EndpointId("x".repeat(3500));
-    let frame = Frame::digest(&d, true);
+    let frame = Frame::digest(&d);
     // 3500 = postcard unsigned varint 0xac 0x1b. All other domain positions stand.
-    let mut data = bytes("00 01 00 01 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 ac1b");
+    let mut data = bytes("00 01 00 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 ac1b");
     data.extend(std::iter::repeat_n(b'x', 3500));
     data.extend(bytes("00 7f000001 50 00"));
     let expected = crate::gossip_wire::golden_with_trace(&frame, &data, Some(PARENT), Some(STATE));
@@ -262,7 +256,7 @@ fn largest(path: &str) -> Frame {
     d.set_primary(Some(u64::MAX));
     d.set_fabric_primary(Some(u64::MAX));
     (d.digest_seq, d.emitted_at_rafka_ms) = (u64::MAX, 253_402_300_799_999);
-    let mut frame = Frame::digest(&d, true);
+    let mut frame = Frame::digest(&d);
     let Frame::Authored { context, .. } = &mut frame else { panic!("a Digest is authored") };
     context.traceparent = Some(format!("00-{}-{}-01", "a".repeat(32), "b".repeat(16)));
     let state = format!("a={},b={}", "v".repeat(254), "w".repeat(253));
@@ -276,7 +270,7 @@ fn largest(path: &str) -> Frame {
 /// gossip message: its complete encoding is within `MAX_FRAME` and decodes to the same details. The
 /// cell prints the longest path at which that Digest still fits. What must NOT happen: such a Digest
 /// split or refused for its size. The ceiling the cell names: `PathName` bounds each segment, never
-/// the number of segments, so node.create admits a path whose first Digest can never be sent.
+/// the number of segments, so node.create admits a path whose Digest can never be sent.
 #[test]
 fn a_digest_carrying_the_largest_details_fits_one_gossip_message() {
     use rdm_gossip::frame::MAX_FRAME;
@@ -285,8 +279,8 @@ fn a_digest_carrying_the_largest_details_fits_one_gossip_message() {
     let frame = largest(&path);
     let bytes = frame.encode();
     assert!(bytes.len() <= MAX_FRAME, "the largest Digest at a four-segment path is {} bytes, over MAX_FRAME {MAX_FRAME}", bytes.len());
-    let Frame::Digest { details: Some(back), primary, .. } = Frame::decode(&bytes).expect("the Digest decodes").into_data() else { panic!("not a Digest with its details") };
-    let Frame::Digest { details: Some(sent), .. } = frame.data() else { unreachable!() };
+    let Frame::Digest { details: back, primary, .. } = Frame::decode(&bytes).expect("the Digest decodes").into_data() else { panic!("not a Digest") };
+    let Frame::Digest { details: sent, .. } = frame.data() else { unreachable!() };
     assert_eq!((&back, primary.len()), (sent, 2), "the details and both roles travel whole");
     let longest = (path.len()..MAX_FRAME).filter_map(path_of).take_while(|p| largest(p).encode().len() <= MAX_FRAME).last().map_or(0, |p| p.len());
     eprintln!("the largest Digest at a four-segment path ({} characters) is {} of {MAX_FRAME} bytes; the longest path at which it still fits is {longest} characters", path.len(), bytes.len());

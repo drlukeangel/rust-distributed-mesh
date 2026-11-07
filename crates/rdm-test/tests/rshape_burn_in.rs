@@ -5519,12 +5519,12 @@ async fn control_run(cell: &str, shape: Shape) {
         for (p, seq) in &tv {
             assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{p}: topology_version went backward: {seq:?}");
         }
-        // A Digest names its birth and sequence in its envelope; the birth's path name rides its first
+        // A Digest names its birth and sequence in its envelope; the birth's path name rides every
         // Digest's details and every mesh-primary's TopologyFull entry of it (gossip.md §3.1).
         let mut location_of: BTreeMap<(String, String), PathName> = BTreeMap::new();
         for (_, fr) in &seen {
             match (fr.data(), fr.context()) {
-                (Frame::Digest { details: Some(d), .. }, Some(c)) => {
+                (Frame::Digest { details: d, .. }, Some(c)) => {
                     location_of.insert((c.source.node.to_string(), c.source.incarnation.to_string()), PathName::new(d.path.clone(), d.name.clone()).expect("a Digest's details name a path"));
                 }
                 (Frame::TopologyFull { digests, .. }, _) => {
