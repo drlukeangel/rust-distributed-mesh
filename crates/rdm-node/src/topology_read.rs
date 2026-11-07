@@ -404,7 +404,11 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     // same source (its publication arrived before the read's answer) is refused `OlderThanHeld`: the
     // held snapshot stands, and it is the one this read leaves installed (node-start.md step 4).
     let mut older_than_held: Vec<String> = Vec::new();
-    let mut read = read_with(client, target, &node_name, mesh, since, |c| {
+    // The primary records the target holds are this node's too, wherever they supersede its own: it
+    // computes no primary before it has them, so they are held before any mesh's topology in the read is
+    // installed (a view rebuild between the two elected a node-admin of a mesh whose fabric recovery was
+    // restoring its primary: node_recovery_exits, lane 5 #339).
+    let mut read = read_with(client, target, &node_name, mesh, since, |r| topology_view.learn_primaries(&r.primaries, "entry"), |c| {
         let mesh = c.mesh.clone();
         let taken = channels.take_read_chunk(c, answerer_mesh);
         if matches!(taken, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
@@ -419,9 +423,6 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
             read.installed.push(ReadMesh { mesh, publisher, topology_version, members });
         }
     }
-    // The primary records the target holds are this node's too, wherever they supersede its own: it
-    // computes no primary before it has them.
-    topology_view.learn_primaries(&read.primaries, "entry");
     Ok(read)
 }
 
@@ -456,7 +457,7 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFe
 /// Read the topology from `target`.
 pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let mut receiver = rdm_gossip::snapshot::SnapshotReceiver::default();
-    read_with(client, target, node, mesh, since, |c| receiver.take_chunk(c)).await
+    read_with(client, target, node, mesh, since, |_| {}, |c| receiver.take_chunk(c)).await
 }
 
 async fn read_with(
@@ -465,6 +466,7 @@ async fn read_with(
     node: &str,
     mesh: Option<&str>,
     since: Option<SourceVersion>,
+    learn: impl FnOnce(&TopologyRead),
     mut take: impl FnMut(Chunk) -> Taken,
 ) -> Result<TopologyRead, TopologyFailure> {
     let req = TopologyRequest::GetTopology { mesh: mesh.map(String::from), since };
@@ -482,6 +484,9 @@ async fn read_with(
     };
     let mut read = TopologyRead::default();
     let mut served_meshes = None;
+    // Each mesh's topology in the answer is installed once the answer is whole, after the primary records
+    // it carries are held: `learn`.
+    let mut chunks: Vec<Chunk> = Vec::new();
     while let Some(item) = stream.next().await {
         match item {
             StreamItem::Frame(FrameKind::Refusal(_), r) => return Err(refusal_of(r)),
@@ -499,28 +504,7 @@ async fn read_with(
                     in_flight,
                     deleted: deleted,
                 };
-                match take(chunk) {
-                    Taken::Waiting { .. } => {}
-                    Taken::Installed(i) => {
-                        let members = i.full.digests();
-                        tracing::info_span!(
-                            "rdm.mesh.topology.update.via-read-install",
-                            node = node,
-                            mesh = %i.mesh,
-                            publisher = %i.publisher,
-                            topology_version = i.topology_version,
-                            snapshot_id = i.snapshot_id,
-                            members = members.len(),
-                            target = %target_name,
-                        )
-                        .in_scope(|| tracing::info!("a complete snapshot read from the target is installed"));
-                        read.installed.push(ReadMesh { mesh: i.mesh.clone(), publisher: i.publisher.clone(), topology_version: i.topology_version, members });
-                    }
-                    Taken::Refused(r) => {
-                        tracing::info_span!("rdm.mesh.topology.reject.via-read-install", target = %target_name, reason = ?r)
-                            .in_scope(|| tracing::info!("a snapshot chunk read from the target is refused: the held projection stands"));
-                    }
-                }
+                chunks.push(chunk);
             }
             StreamItem::Frame(_, TopologyReply::Unchanged { mesh, topology_version, .. }) => read.unchanged.push((mesh, topology_version)),
             StreamItem::Frame(_, TopologyReply::Stored { mesh, mesh_id, nodes }) => match read.stored.iter_mut().find(|m| m.mesh == mesh) {
@@ -544,6 +528,31 @@ async fn read_with(
         return Err(TopologyFailure::Unreached("the stream ended without its End frame".into()));
     };
     read.meshes = meshes;
+    learn(&read);
+    for chunk in chunks {
+        match take(chunk) {
+            Taken::Waiting { .. } => {}
+            Taken::Installed(i) => {
+                let members = i.full.digests();
+                tracing::info_span!(
+                    "rdm.mesh.topology.update.via-read-install",
+                    node = node,
+                    mesh = %i.mesh,
+                    publisher = %i.publisher,
+                    topology_version = i.topology_version,
+                    snapshot_id = i.snapshot_id,
+                    members = members.len(),
+                    target = %target_name,
+                )
+                .in_scope(|| tracing::info!("a complete snapshot read from the target is installed"));
+                read.installed.push(ReadMesh { mesh: i.mesh.clone(), publisher: i.publisher.clone(), topology_version: i.topology_version, members });
+            }
+            Taken::Refused(r) => {
+                tracing::info_span!("rdm.mesh.topology.reject.via-read-install", target = %target_name, reason = ?r)
+                    .in_scope(|| tracing::info!("a snapshot chunk read from the target is refused: the held projection stands"));
+            }
+        }
+    }
     let held = (read.installed.len() + read.unchanged.len() + read.stored.len()) as u32;
     if held > meshes {
         return Err(TopologyFailure::Incomplete(format!("{held} meshes arrived whole, the target counted {meshes}")));
