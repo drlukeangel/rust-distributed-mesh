@@ -220,7 +220,7 @@ sequenceDiagram
     Note over M: writes mesh deleted
     M->>F: mesh.deleted (members' manifest + own exact birth)
     F-->>C: mesh.deleted
-    M->>B: mesh topology: mesh deleted, itself the only member
+    M->>B: mesh topology: mesh deleted, itself the only node not listed `deleted`
     Note over C,F: separate call
     C->>F: build.create(node.delete of the mesh-primary)
     F->>M: node.delete
