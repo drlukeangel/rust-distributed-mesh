@@ -22,7 +22,8 @@ use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::filter::Filter;
-use rdm_core::{IncarnationId, MemberStatus, NodeId, PathName};
+use rdm_core::model::NodeStatus;
+use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_node::node_hooks::{CallFailedCtx, OnCallFailed};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_gossip::topology::TopologyView;
@@ -308,7 +309,7 @@ impl Node {
     }
 
     /// `broker`'s status as this node's topology holds it now.
-    fn status_of(&self, broker: &NodeId) -> Option<MemberStatus> {
+    fn status_of(&self, broker: &NodeId) -> Option<NodeStatus> {
         self.view.get()?.digest_view.get(&broker.to_string()).map(|(d, _)| d.status)
     }
 }

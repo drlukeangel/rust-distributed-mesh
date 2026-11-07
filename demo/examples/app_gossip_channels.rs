@@ -85,7 +85,7 @@ fn main() -> Result<()> {
             }),
             data_dir: broker_dir.clone(),
             store_dir: root_dir.clone(),
-            mesh_id: d.mesh_id.clone(),
+            mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
             issuing: None,
             roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,

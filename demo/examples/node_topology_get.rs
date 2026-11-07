@@ -17,7 +17,6 @@
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{Filter, MeshNode, NodeRpc, Nodes, PathName, Peers};
 use rdm_core::topology::{SourceVersion, TopologyReply};
-use rdm_core::MeshDigest;
 use rdm_transport::{CallOptions, NodeTarget};
 
 async fn enter() -> Result<(Peers, PathName)> {
@@ -45,8 +44,8 @@ async fn main() -> Result<()> {
     let mut held: Vec<(String, SourceVersion)> = Vec::new();
     for frame in rpc.topology_get(&target, None, None, &CallOptions::default()).await? {
         match frame {
-            TopologyReply::Snapshot { mesh, publisher, topology_version, chunk_index, chunk_count, digests, .. } => {
-                let nodes: Vec<String> = digests.into_iter().map(MeshDigest::from).map(|d| format!("path {:?}, name {:?} {:?}", d.node.path, d.node.name, d.status)).collect();
+            TopologyReply::Snapshot { mesh, publisher, topology_version, chunk_index, chunk_count, nodes, .. } => {
+                let nodes: Vec<String> = nodes.into_iter().map(|n| format!("path {:?}, name {:?} {:?}", n.path, n.name, n.status)).collect();
                 println!("{mesh} v{topology_version} from {publisher} (chunk {}/{chunk_count}): {nodes:?}", chunk_index + 1);
                 if chunk_index == 0 {
                     held.push((mesh, SourceVersion { publisher, topology_version }));

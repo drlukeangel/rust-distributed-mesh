@@ -3,7 +3,7 @@
 
 use crate::chaos::NodeFacts;
 use crate::admin::Admin;
-use rdm_client::{BuildId, CallEnd};
+use rdm_client::{BuildId, CallEnd, NodeView};
 use serde_json::{json, Value};
 
 fn text(v: &Value, k: &str) -> Option<String> {
@@ -25,18 +25,17 @@ pub async fn nodes(admin: &Admin) -> Result<Vec<Value>, CallEnd> {
     Ok(admin.nodes().await?.iter().map(|n| serde_json::to_value(n).unwrap_or(Value::Null)).collect())
 }
 
-/// What a fault needs of each node.
-pub fn facts(nodes: &[Value]) -> Vec<NodeFacts> {
+/// What a fault needs of each node, from its record as `node.get` answers it: its mesh is its path's
+/// first location (Q366) and its data dir is its storage's.
+pub fn facts(nodes: &[NodeView]) -> Vec<NodeFacts> {
     nodes
         .iter()
-        .filter_map(|n| {
-            Some(NodeFacts {
-                name: serde_json::from_value(n.get("name")?.clone()).ok()?,
-                mesh: text(n, "mesh")?,
-                is_fabric_primary: n["is_fabric_primary"].as_bool().unwrap_or(false),
-                data_dir: text(n, "data_dir"),
-                transport_port: text(n, "transport_addr").and_then(|a| a.rsplit(':').next().and_then(|p| p.parse().ok())),
-            })
+        .map(|n| NodeFacts {
+            name: n.location(),
+            mesh: n.mesh(),
+            is_fabric_primary: n.is_fabric_primary,
+            data_dir: n.storage.data_dir.clone(),
+            transport_port: n.transport_addr.map(|a| a.port()),
         })
         .collect()
 }

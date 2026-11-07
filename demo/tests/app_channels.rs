@@ -109,7 +109,7 @@ async fn broker(
         }),
         data_dir: dir.into(),
         store_dir: shared.into(),
-        mesh_id: d.mesh_id.clone(),
+        mesh_id: root.topology_view.digest_view.mesh_id_of(&d.node.mesh),
         issuing: None,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,

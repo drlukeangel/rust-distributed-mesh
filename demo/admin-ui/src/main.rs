@@ -122,7 +122,7 @@ async fn chaos_fault(State(s): State<AppState>, Json(b): Json<FaultBody>) -> Res
         Ok(n) => n,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid-request", "detail": e.to_string()}))).into_response(),
     };
-    let nodes = match view::nodes(admin).await {
+    let nodes = match admin.nodes().await {
         Ok(n) => view::facts(&n),
         Err(e) => return unreachable(e),
     };
@@ -135,7 +135,7 @@ async fn chaos_fault(State(s): State<AppState>, Json(b): Json<FaultBody>) -> Res
 /// A cut of one node (`{"scope": "node", "path", "name"}`) or of a mesh (`{"scope": "mesh", "mesh"}`).
 async fn chaos_cut(State(s): State<AppState>, Json(b): Json<Target>) -> Response {
     let Some(admin) = &s.admin else { return no_node_admin() };
-    let nodes = match view::nodes(admin).await {
+    let nodes = match admin.nodes().await {
         Ok(n) => view::facts(&n),
         Err(e) => return unreachable(e),
     };

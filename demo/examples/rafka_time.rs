@@ -20,7 +20,7 @@
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_admin::rafka_time::{adopt_pulled, Puller, Refusal, Served};
-use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, Peers};
+use rdm_client::{Fabrics, Filter, MeshNode, NodeStatus, Nodes, Peers};
 use rdm_core::topology::PrimaryKind;
 
 use rdm_node::topology_read::read_topology;
@@ -38,10 +38,13 @@ async fn main() -> Result<()> {
     let carrier = peers.carrier_at(entry.clone());
     let all = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&all);
+    // The fabric the reads are of: `fabric.get` at the entry admin.
+    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("path {:?}, name {:?} answered fabric.get with no fabric", entry.path, entry.name))?.id;
 
     let fp_read = read_topology(
         carrier.client(),
         &NodeTarget::CurrentPath(entry.clone()),
+        &fabric,
         "example-rafka-time",
         Some(&birth.mesh),
         None,
@@ -61,6 +64,7 @@ async fn main() -> Result<()> {
     let member_read = read_topology(
         carrier.client(),
         &NodeTarget::ExactNode(member.node_id.clone()),
+        &fabric,
         "example-rafka-time",
         Some(&member.mesh()),
         None,
