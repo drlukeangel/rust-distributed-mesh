@@ -112,15 +112,10 @@ The primary the election named, on `mesh2`'s channel and the backbone
 ([catalog](../gossip.md#31-frame-catalog), the node-admin's own `Digest`, `is_primary` at revision 1):
 
 ```json
-{
-  "frame": "digest",
-  "mesh": "mesh2",
-  "node_id": "adm2b7d4f9h1",
-  "incarnation": "0000000000000001",
-  "digest_seq": 1,
-  "is_primary": true,
-  "revision": 1
-}json
+{ "status": "pending", "primary": [{ "role": "MeshPrimary", "revision": 1 }], "details": { "type": "node-admin", "path": "mesh2.node-admin", "name": "1", "endpoint_id": "7b7b…7b7b", "transport_addr": "127.0.0.1:54474", "supersedes": null } }
+```
+
+```json
 {
   "frame": "mesh-status",
   "mesh": "mesh2",
