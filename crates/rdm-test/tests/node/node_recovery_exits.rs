@@ -734,10 +734,10 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
     eprintln!("Q122 hung fabric-primary: {fp_name:?} (birth {}) re-created as {} by {standby:?}'s fabric recovery", s(&fp["node_id"]), s(&after["node_id"]));
 }
 
-/// The `observer`'s first span writing `node_id` dead (node-recovery.md step 3, Q393: its
-/// investigation concluded in failure, and the recovery follows at once), once exported.
+/// The `observer`'s first fold of its investigation ladder for `node_id` (node-recovery.md steps 2-3,
+/// Q393: the verdict and what follows it, the window the ladder ran on), once exported.
 fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value) -> Option<&'a Value> {
-    let mut found: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-dead").into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
+    let mut found: Vec<&Value> = named(spans, "rdm.node_admin.node.resolve.via-verdict").into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
     found.sort_by_key(|sp| start(sp));
     found.into_iter().next()
 }
@@ -819,7 +819,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 
     let spans = estate.spans();
     let taken_ns = start(&role);
-    let new_round1 = tickle_span(&spans, &standby, &before["node_id"]).unwrap_or_else(|| panic!("{standby:?}'s written dead for {node:?}"));
+    let new_round1 = tickle_span(&spans, &standby, &before["node_id"]).unwrap_or_else(|| panic!("{standby:?}'s verdict on {node:?}"));
     assert!(start(new_round1) > taken_ns, "{standby:?} tickles only once it holds the primary role");
     // The window it kept: the ladder runs on the instant it first saw the member silent, before the
     // role changed hands and a probe delay or more before it, never on a window opened at the role.
@@ -828,7 +828,9 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let first_seen_ms = num_attr(new_round1, "first_seen_ms");
     assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby:?}'s window began a probe delay or more before it took the role: first_seen {first_seen_ms} ms, role at {} ms", taken_ns / 1_000_000);
     let waited = Duration::from_nanos(start(new_round1) - taken_ns);
-    assert!(start(new_round1) < start(&recovery), "written dead before the submit");
+    assert!(start(new_round1) < start(&recovery), "the verdict before the submit");
+    let dead = named(&spans, "rdm.node_admin.node.update.via-dead").into_iter().find(|sp| sp["attributes"]["observer"] == standby.as_str() && sp["attributes"]["node_id"] == before["node_id"]).unwrap_or_else(|| panic!("{standby:?} writes {node:?} dead"));
+    assert!(start(new_round1) <= start(dead) && start(dead) < start(&recovery), "the running birth is commanded back, unanswered, then written dead, before the submit (Q393)");
     let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
         .into_iter()
         .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == standby.as_str())

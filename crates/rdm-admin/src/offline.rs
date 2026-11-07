@@ -676,8 +676,10 @@ pub(crate) struct OfflineTickReport {
 /// The verdict of one investigation and what follows it (node-recovery.md step 3, Q393): one
 /// `rdm.node_admin.node.resolve.via-verdict` span naming the verdict, the investigation's reason and
 /// trigger, the birth's status in the topology and what follows: `nothing`, `node.mesh.join`,
-/// `node.start` or `dead`.
-fn verdict_span(id: &str, path: &crate::model::PathName, verdict: &str, n: &SilentNode, follows: crate::node_investigation::Follows, observer: &str) {
+/// `node.start` or `dead`; beside them the window the ladder ran on (`first_seen_ms`, the mark or first
+/// sighting) and the tick clock it began at (`ladder_began_ms`).
+#[allow(clippy::too_many_arguments)]
+fn verdict_span(id: &str, path: &crate::model::PathName, verdict: &str, n: &SilentNode, follows: crate::node_investigation::Follows, observer: &str, first_seen_ms: u64, ladder_began_ms: u64) {
     tracing::info_span!(
         "rdm.node_admin.node.resolve.via-verdict",
         node_id = %id,
@@ -688,6 +690,8 @@ fn verdict_span(id: &str, path: &crate::model::PathName, verdict: &str, n: &Sile
         status = ?n.status,
         follows = follows.as_str(),
         observer = %observer,
+        first_seen_ms = first_seen_ms as i64,
+        ladder_began_ms = ladder_began_ms as i64,
         "otel.kind" = "internal",
     )
     .in_scope(|| tracing::info!(node_id = %id, verdict, follows = follows.as_str(), "the investigation's verdict and what follows it"));
@@ -932,7 +936,7 @@ impl OfflineTickle {
                     // An ordered investigation whose birth answered while the topology holds it running
                     // does nothing (Q393): it is not commanded back.
                     if crate::node_investigation::follows_reached(n.reason, n.status) == crate::node_investigation::Follows::Nothing {
-                        verdict_span(&id, &path, "reached", n, crate::node_investigation::Follows::Nothing, &self.observer);
+                        verdict_span(&id, &path, "reached", n, crate::node_investigation::Follows::Nothing, &self.observer, seen_at, started_at_ms);
                         report.matched.push(id.clone());
                         report.reachable_silent.push(id);
                         continue;
@@ -976,7 +980,7 @@ impl OfflineTickle {
                     // self-heal. Nothing is probed again.
                     self.settled.insert(id.clone());
                     let follows = crate::node_investigation::follows(&finding, n.reason, n.status);
-                    verdict_span(&id, &path, finding.name(), n, follows, &self.observer);
+                    verdict_span(&id, &path, finding.name(), n, follows, &self.observer, seen_at, started_at_ms);
                     match follows {
                         crate::node_investigation::Follows::Nothing => report.matched.push(id),
                         crate::node_investigation::Follows::MeshJoin => report.rejoin.push(id),

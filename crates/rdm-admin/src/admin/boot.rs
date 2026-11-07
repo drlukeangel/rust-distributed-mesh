@@ -2758,7 +2758,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     for (id, start) in report.rejoin.iter().map(|id| (id, false)).chain(report.start.iter().map(|id| (id, true))) {
                                                         let (Some(n), Some((reason, status))) = (watched.get(id).cloned(), listed.get(id).copied()) else { continue };
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
-                                                        let (heard_again, records, recovery, rows, gate) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), stop.clone());
+                                                        let (heard_again, records, recovery, rows, gate, observer) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), stop.clone(), me_id.to_string());
                                                         tokio::spawn(stop.until_stopped(async move {
                                                             use crate::heard_again::SelfHealEnd;
                                                             use crate::wiring::NodeInvestigatedVerdict as V;
@@ -2772,7 +2772,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             }
                                                             if let SelfHealEnd::Unanswered(how) = &end {
                                                                 let verdict = if start { "os-stopped" } else { "running" };
-                                                                tracing::info_span!("rdm.node_admin.node.update.via-dead", node_id = %n.node_id, node_path = %n.path, node_name = %n.name, verdict, detail = %how, reason = reason.as_str(), trigger = reason.trigger(), "otel.kind" = "internal")
+                                                                tracing::info_span!("rdm.node_admin.node.update.via-dead", node_id = %n.node_id, node_path = %n.path, node_name = %n.name, verdict, detail = %how, reason = reason.as_str(), trigger = reason.trigger(), observer = %observer, "otel.kind" = "internal")
                                                                     .in_scope(|| tracing::info!(node_id = %n.node_id, verdict, "the self-heal's command went unanswered to the end of its attempts: the birth is written dead, and its recovery follows at once"));
                                                                 write_dead(&records, &recovery, rows, &gate, &n, reason);
                                                             }
