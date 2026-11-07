@@ -379,30 +379,90 @@ pub fn node_spec(at: &PathName, mesh: &str, r#type: &str, dir: &std::path::Path)
     rdm_core::build::Nodes { path: at.path.clone(), name: at.name.clone(), mesh: mesh.into(), r#type: r#type.into(), storage_persistence: None, executable: Some(executable(dir, r#type)), tags: Default::default(), config: Default::default() }
 }
 
+/// A caller of the fabric-primary `root` over Node RPC, as any caller holds it: an endpoint of its
+/// own, a resolver that names `root`, and the `node` objects at `root` (`rdm_client::Nodes`).
+pub struct Caller {
+    /// The `node` objects at `root`: workflows start there, and a node command goes to the node's
+    /// mesh-primary that `root` names.
+    pub nodes: rdm_client::Nodes,
+    endpoint: iroh::Endpoint,
+}
+
+impl Caller {
+    /// A caller of `root`.
+    pub async fn of(root: &Running) -> Self {
+        let me = root.digest.lock().unwrap().clone();
+        let admin = rdm_transport::ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type.clone(), node_id: me.node.node_id.clone(), path: me.node.path.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().expect("the admin's endpoint key"), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
+        let resolver = Arc::new(rdm_transport::StaticResolver::new());
+        resolver.insert(admin);
+        let client = Arc::new(rdm_transport::NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
+        Self { nodes: rdm_client::Nodes::new(rdm_client::BuildCarrier::at_node(client, me.node.node_id.clone())), endpoint }
+    }
+
+    /// The caller's endpoint closes.
+    pub async fn close(self) {
+        self.endpoint.close().await;
+    }
+}
+
+/// Every frame of the workflow `what`'s `stream`, in order, up to and including its terminal, within
+/// [`BOUND`]. A stream that breaks, or ends with no terminal, is a defect of the cell, named.
+pub async fn frames(what: &str, mut stream: rdm_client::WorkflowStream) -> Vec<rdm_client::Frame> {
+    let mut out = Vec::new();
+    let followed = async {
+        loop {
+            match stream.next().await {
+                Some(Ok(f)) => {
+                    let terminal = f.is_terminal();
+                    out.push(f);
+                    if terminal {
+                        return;
+                    }
+                }
+                Some(Err(e)) => panic!("{what}: the stream broke after {out:?}: {e}"),
+                None => panic!("{what} ended with no terminal frame after {out:?}"),
+            }
+        }
+    };
+    if tokio::time::timeout(BOUND, followed).await.is_err() {
+        panic!("{what} sent no terminal within {BOUND:?}");
+    }
+    out
+}
+
 /// `node.create` of `nodes` at the fabric-primary `root`, over Node RPC as any caller makes it
 /// (`rdm_client::Nodes::create`), once its Day-0 Build is complete ([`day0_complete`]), followed to
 /// its `Complete`. A refusal or any other end is a defect of the cell, named.
 pub async fn create(root: &Running, nodes: Vec<rdm_core::build::Nodes>) {
     day0_complete(root).await;
-    let me = root.digest.lock().unwrap().clone();
-    let admin = rdm_transport::ResolvedNode { mesh: me.node.mesh.clone(), r#type: me.node.r#type.clone(), node_id: me.node.node_id.clone(), path: me.node.path.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().expect("the admin's endpoint key"), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
-    let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
-    let resolver = Arc::new(rdm_transport::StaticResolver::new());
-    resolver.insert(admin);
-    let client = Arc::new(rdm_transport::NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
+    let caller = Caller::of(root).await;
     let at: Vec<String> = nodes.iter().map(|n| format!("{}.{}", n.path, n.name)).collect();
-    let mut stream = rdm_client::Nodes::new(rdm_client::BuildCarrier::at_node(client, me.node.node_id.clone())).create(nodes).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of {at:?}: {e}"));
-    let followed = async {
-        loop {
-            match stream.next().await {
-                Some(Ok(rdm_client::Frame::Complete)) => return,
-                Some(Ok(f @ (rdm_client::Frame::Failed { .. } | rdm_client::Frame::FabricPrimaryMoved { .. }))) => panic!("node.create of {at:?} ended {f:?}"),
-                Some(Ok(_)) => {}
-                Some(Err(e)) => panic!("node.create of {at:?}: {e}"),
-                None => panic!("node.create of {at:?} ended with no terminal frame"),
-            }
-        }
-    };
-    tokio::time::timeout(BOUND, followed).await.unwrap_or_else(|_| panic!("node.create of {at:?} was not complete within {BOUND:?}"));
-    endpoint.close().await;
+    let stream = caller.nodes.create(nodes).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of {at:?}: {e}"));
+    let ended = frames(&format!("node.create of {at:?}"), stream).await;
+    assert_eq!(ended.last(), Some(&rdm_client::Frame::Complete), "node.create of {at:?} ended: {ended:?}");
+    caller.close().await;
+}
+
+/// `node.stop` of `at` through the fabric-primary `root`, as any caller sends it
+/// (`rdm_client::Nodes::stop`: NodeCommand 0x22 `StopNode` to the node's mesh-primary), followed to its
+/// terminal: its frames. A refusal before it ran is a defect of the cell, named.
+pub async fn stop(root: &Running, at: &PathName) -> Vec<rdm_client::Frame> {
+    let caller = Caller::of(root).await;
+    let stream = caller.nodes.stop(at).await.unwrap_or_else(|e| panic!("node.stop of {at:?} was refused: {e}"));
+    let ended = frames(&format!("node.stop of {at:?}"), stream).await;
+    caller.close().await;
+    ended
+}
+
+/// `node.start` of the stopped `at` through the fabric-primary `root`, as any caller sends it
+/// (`rdm_client::Nodes::start`: NodeCommand 0x22 `StartNode` to the node's mesh-primary, whose
+/// node.start registers the birth's join before it commands the start), followed to its terminal:
+/// its frames. A refusal before it ran is a defect of the cell, named.
+pub async fn start(root: &Running, at: &PathName) -> Vec<rdm_client::Frame> {
+    let caller = Caller::of(root).await;
+    let stream = caller.nodes.start(at).await.unwrap_or_else(|e| panic!("node.start of {at:?} was refused: {e}"));
+    let ended = frames(&format!("node.start of {at:?}"), stream).await;
+    caller.close().await;
+    ended
 }

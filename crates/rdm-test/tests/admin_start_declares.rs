@@ -10,16 +10,15 @@
 //! "The open start sends no separate readiness declaration."
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it creates the second admin through
-//! its `node.create` once its Day-0 Build is complete (started in this process) and
-//! commands its stop and start. Its own process: the cell holds process-wide state (the stop flag).
+//! its `node.create` once its Day-0 Build is complete (started in this process); the admin's stop and
+//! start are the product's node.stop and node.start, sent as any caller sends them. Its own process:
+//! the cell holds process-wide state (the stop flag).
 
 use crate::in_process_provider::{self as in_process, InProcessProvider};
-use rdm_core::launch::Launch;
 use rdm_core::{model::NodeStatus, MeshDigest, NodeId, PathName};
-use rdm_admin::admin::{start_with, AdminConfig, Running};
+use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::status::{StatusReply, StatusRequest};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -49,25 +48,9 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
-fn command(launch: &Launch, start: bool) -> StatusRequest {
-    let (node_id, incarnation, build_id) = (launch.node_id.clone(), launch.incarnation.clone(), "xtccsd8180sr".to_string());
-    if start {
-        StatusRequest::StartNode { node_id, incarnation, build_id, operation: rdm_core::OperationId::node("node.start", &launch.node_id) }
-    } else {
-        StatusRequest::StopNode { node_id, incarnation, build_id, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) }
-    }
-}
-
-/// `req` sent by `root` over Node RPC to the birth `launch` names, as its mesh's primary sends it:
-/// the commanded admin holds the call's endpoint key, which its start joins back through
-/// (node-start.md step 2).
-async fn call(root: &Running, launch: &Launch, req: &StatusRequest) -> StatusReply {
-    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(WRONG + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
-    if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, req).await { return reply; }
-    match root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
-        rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-        other => panic!("{} to {:?} did not end in a reply: {other:?}", req.op(), launch.name),
-    }
+/// The node events of a workflow's frames, in order.
+fn events(frames: &[rdm_client::Frame]) -> Vec<rdm_client::NodeEvent> {
+    frames.iter().filter_map(|f| if let rdm_client::Frame::Event(e) = f { Some(*e) } else { None }).collect()
 }
 
 /// The finished own-state declarations `node` sent: each one's target and outcome.
@@ -119,9 +102,12 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         .expect("mesh1.node-admin.2 declares its first start's node.started");
         assert_eq!(first.iter().map(|f| f["to_node_id"].clone()).collect::<Vec<_>>(), vec![root_id.clone()], "to its mesh's primary: {first:#?}");
 
-        assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the created admin stops");
-        let _ = root.runner.joins.expect(crate::common::held_join(&launch));
-        assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the created admin starts after its stop");
+        // Its stop and its start, through the product's node.stop and node.start (NodeCommand 0x22 to its
+        // mesh-primary, the root, whose node.start registers the birth's join before it commands the start).
+        let stopped = in_process::stop(&root, &at).await;
+        assert_eq!((events(&stopped), stopped.last()), (vec![rdm_client::NodeEvent::ConnectionsDeleted, rdm_client::NodeEvent::Stopped], Some(&rdm_client::Frame::Complete)), "the created admin stops: {stopped:?}");
+        let started = in_process::start(&root, &at).await;
+        assert_eq!((events(&started), started.last()), (vec![rdm_client::NodeEvent::Joined, rdm_client::NodeEvent::Started], Some(&rdm_client::Frame::Complete)), "the created admin starts after its stop: {started:?}");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
         let status_service = root.status_service().unwrap();

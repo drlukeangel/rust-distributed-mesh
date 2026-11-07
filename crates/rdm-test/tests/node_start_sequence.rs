@@ -28,17 +28,16 @@
 //! step before it, or comes in another order than in the other paths.
 //!
 //! The authority is a real Day-0 node-admin in this process; it creates the second admin and the rpc
-//! node through its `node.create` once its Day-0 Build is complete (each started in this process), and commands their stops and starts over Node RPC, so each start after a stop joins it back
-//! through its call (node-start.md step 2). Its own process: the cell holds process-wide state (the
+//! nodes through its `node.create` once its Day-0 Build is complete (each started in this process);
+//! their stops and starts are the product's node.stop and node.start, sent as any caller sends them,
+//! so each start after a stop joins it back through its mesh-primary's call (node-start.md step 2). Its own process: the cell holds process-wide state (the
 //! stop flag).
 
 use crate::in_process_provider::{self as in_process, InProcessProvider};
-use rdm_core::launch::Launch;
 use rdm_core::{model::NodeStatus, MeshDigest, NodeId, PathName};
-use rdm_admin::admin::{start_with, AdminConfig, Running};
+use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::status::{StatusReply, StatusRequest};
 use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, CurrentBuild};
@@ -97,23 +96,19 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
-fn stop(launch: &Launch) -> StatusRequest {
-    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), operation: rdm_core::OperationId::node("node.stop", &launch.node_id) }
+/// The node events of a workflow's frames, in order.
+fn events(frames: &[rdm_client::Frame]) -> Vec<rdm_client::NodeEvent> {
+    frames.iter().filter_map(|f| if let rdm_client::Frame::Event(e) = f { Some(*e) } else { None }).collect()
 }
 
-/// `req` sent by `root` over Node RPC to the birth `launch` names, as a commanding node-admin sends
-/// it: the commanded node holds the call's endpoint key, which its start joins back through.
-async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> StatusReply {
-    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(WRONG + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
-    if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, req).await { return reply; }
-    match root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
-        rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-        other => panic!("{} to {:?} did not end in a reply: {other:?}", req.op(), launch.name),
-    }
+/// `frames` are a node.stop's, ended `Complete` after its connections were deleted and it stopped.
+fn stopped(frames: &[rdm_client::Frame]) -> bool {
+    events(frames) == [rdm_client::NodeEvent::ConnectionsDeleted, rdm_client::NodeEvent::Stopped] && frames.last() == Some(&rdm_client::Frame::Complete)
 }
 
-fn start(launch: &Launch) -> StatusRequest {
-    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), operation: rdm_core::OperationId::node("node.start", &launch.node_id) }
+/// `frames` are a node.start's, ended `Complete` after the birth joined and started.
+fn started(frames: &[rdm_client::Frame]) -> bool {
+    events(frames) == [rdm_client::NodeEvent::Joined, rdm_client::NodeEvent::Started] && frames.last() == Some(&rdm_client::Frame::Complete)
 }
 
 /// The start steps of `node` that are children of a span named `root`, in the order they began:
@@ -195,31 +190,52 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let admin = provider.admin(&admin_at).await;
         until_ready("mesh1.node-admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
-        // A node's first start: created by the root. The root then reconciles nothing.
-        let rpc_at = PathName::new("mesh1.node", "1").unwrap();
-        provider.create(&root, vec![in_process::node_spec(&rpc_at, "mesh1", "node", &rpc_dir)]).await;
+        // Two nodes' first starts: created by the root. The root then reconciles nothing. The node whose
+        // stop and start the cell takes is the one that holds no primary role: a node-type primary's
+        // stop moves its role first, and the sole one's is refused `no-secondary`.
+        let ats = [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap()];
+        provider.create(&root, ats.iter().map(|at| in_process::node_spec(at, "mesh1", "node", &rpc_dir.join(&at.name))).collect()).await;
         root.stop_reconciling().await;
-        let rpc_launch = provider.launch(&rpc_at);
-        let rpc = provider.node(&rpc_at).await;
-        until_ready("mesh1.node.1 (first start)", || {
-            let mut d = rpc.digest.clone();
-            d.status = *rpc.status.lock().unwrap();
-            d
+        let mut held = Vec::new();
+        for at in &ats {
+            let node = provider.node(at).await;
+            until_ready(&format!("{at:?} (first start)"), || {
+                let mut d = node.digest.clone();
+                d.status = *node.status.lock().unwrap();
+                d
+            })
+            .await;
+            held.push((at.clone(), provider.launch(at), node));
+        }
+        let role = tokio::time::timeout(WRONG, async {
+            loop {
+                if let Some(p) = root.control.topology.read().await.node_type_primary("mesh1", "node") {
+                    return p.node_id.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         })
-        .await;
+        .await
+        .expect("one of mesh1's nodes takes its node type's primary role");
+        let (rpc_at, rpc_launch, rpc) = {
+            let i = held.iter().position(|(_, l, _)| l.node_id != role).expect("a node that holds no primary role");
+            held.remove(i)
+        };
 
-        // The node-admin's stop and its start after the stop, commanded by the root over Node RPC.
-        assert!(matches!(command(&root, &admin_launch, &stop(&admin_launch)).await, StatusReply::Stopped { .. }), "the created admin stops");
-        let _ = root.runner.joins.expect(crate::common::held_join(&admin_launch));
-        let started = tokio::time::timeout(WRONG, command(&root, &admin_launch, &start(&admin_launch))).await.expect("the admin's start answers");
-        assert_eq!(started, StatusReply::Started, "the created admin starts after its stop");
+        // The node-admin's stop and its start after the stop, through the product's node.stop and
+        // node.start (NodeCommand 0x22 to the mesh-primary, the root, whose node.start registers the
+        // birth's join before it commands the start).
+        let frames = in_process::stop(&root, &admin_at).await;
+        assert!(stopped(&frames), "the created admin stops: {frames:?}");
+        let frames = in_process::start(&root, &admin_at).await;
+        assert!(started(&frames), "the created admin starts after its stop: {frames:?}");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
-        // The node's stop and its start after the stop, commanded by the root over Node RPC.
-        assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the node stops");
-        let _ = root.runner.joins.expect(crate::common::held_join(&rpc_launch));
-        let started = tokio::time::timeout(WRONG, command(&root, &rpc_launch, &start(&rpc_launch))).await.expect("the node's start answers");
-        assert_eq!(started, StatusReply::Started, "the node starts after its stop");
+        // The node's stop and its start after the stop, the same way.
+        let frames = in_process::stop(&root, &rpc_at).await;
+        assert!(stopped(&frames), "the node {rpc_at:?} stops: {frames:?}");
+        let frames = in_process::start(&root, &rpc_at).await;
+        assert!(started(&frames), "the node {rpc_at:?} starts after its stop: {frames:?}");
 
         let paths = [
             ("node-admin first start", steps_under(&spans, admin_launch.node_id.as_str(), FIRST_START)),
@@ -241,7 +257,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
             assert_eq!(step.get("rafka_time").map(String::as_str), Some("adopted"), "{path} adopts the rafka-time of its one topology reply in its topology step: {step:?}");
         }
         // No read these nodes made named a source version: every one was answered whole.
-        for (who, launch) in [("mesh1.node-admin.2", &admin_launch), ("mesh1.node.1", &rpc_launch)] {
+        for (who, launch) in [("mesh1.node-admin.2".to_string(), &admin_launch), (format!("{rpc_at:?}"), &rpc_launch)] {
             let endpoint = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap().public().to_string();
             let served = topology_served_to(&spans, &endpoint);
             assert!(!served.is_empty(), "{who}: the authority served its topology reads");
@@ -250,6 +266,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         }
 
         drop(rpc);
+        drop(held);
         admin.leave().await;
         root.leave().await;
         let _ = std::fs::remove_dir_all(&base);

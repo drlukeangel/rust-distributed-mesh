@@ -744,26 +744,6 @@ pub async fn root_lifecycle_reply(root: &rdm_admin::admin::Running, launch: &rdm
     })
 }
 
-/// What the mesh-primary verifies the start of the stopped birth `launch` against, as its own
-/// `node.start` registers it (`AdminRunner::start_stopped`, `held: true` under the name last accepted):
-/// a cell that commands the start through [`root_lifecycle_reply`] (`StatusService::carry_lifecycle`,
-/// which registers nothing) registers it first.
-pub fn held_join(launch: &rdm_core::launch::Launch) -> rdm_admin::join::Deployed {
-    let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
-        path: launch.path.clone(), name: launch.name.clone(),
-        node_id: launch.node_id.clone(),
-        incarnation: launch.incarnation.clone(),
-        supersedes: None,
-        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
-        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, std::time::Duration::from_secs(10)).unwrap(),
-        data_dir: launch.data_dir.display().to_string(),
-        last_accepted_name: Some(launch.location()),
-        held: true,
-        listeners: Vec::new(),
-    }
-}
-
 /// The start of a cell whose Day-0 admin creates its nodes through `node.create`
 /// ([`crate::in_process_provider`]): an ordinary node with a passing `pre_node_ready` hook, through the
 /// testkit's node start; a node-admin with a passing hook and no certs, from its launch's environment.
