@@ -249,7 +249,6 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
                 runtime: None,
             },
             status: rdm_core::model::NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 0,
             digest_seq: 1,

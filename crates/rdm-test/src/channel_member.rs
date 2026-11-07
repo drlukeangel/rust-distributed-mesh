@@ -95,7 +95,6 @@ impl Member {
                 runtime: None,
             },
             status: rdm_core::model::NodeStatus::Pending,
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1,

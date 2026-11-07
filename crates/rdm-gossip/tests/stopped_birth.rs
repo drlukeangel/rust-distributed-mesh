@@ -54,7 +54,6 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, 
             runtime: None,
         },
         status,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: seq,
         emitted_at_rafka_ms: seq,
@@ -290,19 +289,19 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let v3 = version_at_m().unwrap();
         assert!(v3 > v2, "the stop ended at a newer version than the one carrying it");
         // The birth never vanishes from the member's view: it is held again from the latest heartbeat of
-        // it the member refused (3), with the projection's status, and with that heartbeat's liveness: the
-        // projection gives the status, never liveness.
+        // it the member refused (3), with that Digest's status and liveness: the projection ends the stop
+        // and gives neither.
         let since_3 = heard_3.elapsed();
         let (again, silent) = m.digest_view.get(id.as_str()).expect("the member holds the birth again once its projection ends the stop");
-        assert_eq!((again.node.incarnation.clone(), again.digest_seq, again.status), (inc.clone(), 3, NodeStatus::Pending), "held from the latest refused heartbeat, with the projection's status");
+        assert_eq!((again.node.incarnation.clone(), again.digest_seq, again.status), (inc.clone(), 3, NodeStatus::Pending), "held from the latest refused heartbeat, with its status");
         assert!(silent >= since_3, "its liveness is heartbeat 3's, never refreshed by the projection: silent {silent:?}, heard {since_3:?} ago");
         assert!(m.digest_view.record(b(NodeStatus::Ready, 4)), "the birth's heartbeat is taken once the stop is over");
-        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Pending), "its status is the projection's Pending, not the heartbeat's Ready");
+        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "its status is its own Digest's Ready (Q387)");
 
-        // node.started: the primary takes the birth's report (its DeclareNodeState(Ready)); its
-        // heartbeat says nothing of it. Its next projection says ready.
+        // node.started: the primary takes the birth's report (its DeclareNodeState(Ready)), which its
+        // ready Digest says too. Its next projection says ready.
         assert!(p.digest_view.record(b(NodeStatus::Ready, 4)));
-        assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Pending), "the birth's heartbeat moves no status at the primary");
+        assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "the birth's own Digest moves its status at the primary");
         assert!(p.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
         publication().await;
         until("the member to take ready from the projection", || m.digest_view.get(id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready)).await;
@@ -324,8 +323,8 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let delta: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1" && attr(s, "topology_version") == v3.to_string()).collect();
         assert_eq!(delta.len(), 1, "the primary published the projection that clears the stop on its own channel: {delta:#?}");
         assert_eq!((attr(delta[0], "base_version"), attr(delta[0], "changed"), attr(delta[0], "in_flight")), (v2.to_string(), "1".to_string(), "0".to_string()), "the clear travels as the birth's own changed entry");
-        let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-projected-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.node.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "topology_version"))).collect();
-        assert_eq!(statuses, vec![format!("Ready@{v1}"), format!("Pending@{v3}"), format!("Ready@{v4}")], "the member's statuses of the birth come from the projection alone");
+        let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-digest").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.node.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "digest_seq"))).collect();
+        assert_eq!(statuses, vec!["Ready@1".to_string(), "Ready@4".to_string()], "the member's statuses of the birth come from its own Digests alone (Q387): {v4}");
         let mut lines = String::new();
         for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {
             lines.push_str(&format!("{what} {} {} via={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "via"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));

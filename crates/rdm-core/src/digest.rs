@@ -36,57 +36,16 @@ impl MeshNode {
     pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
-/// The liveness a birth self-publishes on its heartbeat (node-identity-and-state.md §4,
-/// `NodeState`): what it measures of itself, never a status. Postcard-positional: a variant is only
-/// ever appended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NodeState {
-    /// Until the birth has published once and is self-ready.
-    ///
-    /// Position 0 on the wire; serialized as `joining`.
-    #[default]
-    Joining,
-    /// The default once it is self-ready.
-    ///
-    /// Position 1 on the wire; serialized as `alive`.
-    Alive,
-    /// Over its CPU or RAM budget.
-    ///
-    /// Position 2 on the wire; serialized as `overloaded`.
-    Overloaded,
-    /// It reaches a broker only through a peer or node-admin.
-    ///
-    /// Position 3 on the wire; serialized as `degraded`.
-    Degraded,
-}
-
-impl NodeState {
-    /// The liveness a birth publishes from its own word about itself: `Joining` while it is not yet
-    /// self-ready (`Pending`, before its node.started at this start), `Alive` once it is. RDM measures
-    /// no budget breach and no peer-only routing, so it publishes neither `Overloaded` nor `Degraded`.
-    pub fn self_published(own: NodeStatus) -> Self {
-        match own {
-            NodeStatus::Pending => Self::Joining,
-            _ => Self::Alive,
-        }
-    }
-}
-
-/// One topology digest: the node's current birth, its liveness and the status held for it.
+/// One topology digest: the node's current birth and its status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshDigest {
     /// The logical Fabric this member belongs to.
     pub fabric_id: FabricId,
     /// The birth the digest describes.
     pub node: MeshNode,
-    /// The member's status as the holder holds it: its mesh-primary's (gossip.md §3.1 `TopologyFull`),
-    /// or, for the holder's own birth, its own word. A heartbeat carries none
-    /// ([`crate::wire::WireDigest`]).
+    /// The node's status, as the node writes it on its own record (Q356) and publishes it in its
+    /// Digest: one status, carried by everything that carries the node (gossip.md §3.1 `Digest`).
     pub status: NodeStatus,
-    /// The liveness the birth self-published on its last heartbeat (node-identity-and-state.md §4).
-    #[serde(default)]
-    pub node_state: NodeState,
     /// The control API a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
     /// Orders ONE birth's own heartbeats: sender-local, per incarnation, from 1 (gossip.md §3.1).

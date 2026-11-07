@@ -618,7 +618,6 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             runtime: None,
         },
         status,
-        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: now_ms,
         digest_seq: 1,

@@ -213,7 +213,6 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_a
                 runtime: None,
             },
             status: NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1_000,

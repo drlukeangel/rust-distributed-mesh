@@ -1118,8 +1118,8 @@ impl Channels {
 
     /// Broadcast this member's digest on its mesh channel (and record it). The heartbeat is
     /// stamped here, once, for every caller: `digest_seq` is the next of this birth's own
-    /// sequence (from 1), `emitted_at_rafka_ms` is the composed clock's reading, and `node_state` is
-    /// the liveness it self-publishes. The order a receiver acts on is the sequence, whatever the
+    /// sequence (from 1) and `emitted_at_rafka_ms` is the composed clock's reading; its status is
+    /// the node's own, as the caller hands it. The order a receiver acts on is the sequence, whatever the
     /// clock reads.
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
         {
@@ -1132,9 +1132,6 @@ impl Channels {
         let mut d = self.topology_view.reported(d);
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.topology_view.clock.now_rafka_ms();
-        // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
-        // about itself; its status never travels on its heartbeat.
-        d.node_state = rdm_core::NodeState::self_published(d.status);
         d.load = Some(self.load.sample());
         // The primaries this birth is, as its view holds their records: its digest is their normal
         // announcement (gossip.md "A primary change on gossip").

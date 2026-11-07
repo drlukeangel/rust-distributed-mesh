@@ -9,7 +9,7 @@
 //! through the receiver the Mesh channel's snapshots install into
 //! ([`TopologyView::take_read_chunk`]): there is no second install path.
 
-use rdm_core::wire::ProjectionEntry;
+use rdm_core::wire::WireDigest;
 use rdm_core::{MeshDigest, PublisherId};
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
@@ -106,7 +106,7 @@ pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyRep
         publisher: s.publisher.clone(),
         topology_version: s.topology_version,
         snapshot_id, chunk_index, chunk_count,
-        digests: digests.iter().map(ProjectionEntry::from).collect(),
+        digests: digests.iter().map(WireDigest::from).collect(),
         in_flight, deleted,
     }, |reply| rdm_transport::wire::encode(reply).expect("topology reply serializes"))
 }
@@ -598,7 +598,6 @@ mod tests {
                 runtime: None,
             },
             status: NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1_000_000,

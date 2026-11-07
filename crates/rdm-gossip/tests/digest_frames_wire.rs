@@ -1,7 +1,6 @@
-//! Fixed bytes for a member's heartbeat and its mesh-primary's member projection on the topology
-//! channels (gossip.md §3.1: the `Digest` carries "`node_state`" and "no status: a member's status
-//! comes only from its mesh-primary"; `TopologyFull` and `TopologyDelta` carry the mesh-primary's own-mesh
-//! member projection, each entry its digest and its status). Postcard, positional, append-only. The
+//! Fixed bytes for a node's Digest and its mesh-primary's projection on the topology channels
+//! (gossip.md §3.1: the `Digest` carries the node's status; `TopologyFull` and `TopologyDelta` carry
+//! each node as its Digest, status included). Postcard, positional, append-only. The
 //! literals are derived from the postcard rules by hand. Never regenerate an expectation from the Rust
 //! serializer to make a schema change pass.
 
@@ -15,8 +14,7 @@ fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
 }
 
-/// mesh1.node.1's digest as JSON carries it (REST, files): no liveness field, so `node_state` takes its
-/// default (`Joining`), and the status `status`.
+/// mesh1.node.1's digest as JSON carries it (REST, files), with the status `status`.
 fn digest(status: &str) -> MeshDigest {
     serde_json::from_str(&format!(
         r#"{{"fabric_id":"1123456789ab","node":{{"mesh":"mesh1","type":"node","node_id":"0123456789ab","path":"mesh1.node","name":"1","endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"yrz49j303yh4","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
@@ -25,27 +23,29 @@ fn digest(status: &str) -> MeshDigest {
 }
 
 /// The digest's wire shape: fabric id, node (mesh, type (a string), node id, path.name, endpoint id, transport address
-/// (variant V4, four address bytes, port), incarnation, supersedes, runtime), then `node_state` at
-/// position 2 (`Joining` = 0), admin API base, digest_seq, emitted_at, data dir, mesh id, in flight,
-/// load, gossip, then the primary revision and the fabric-primary revision (gossip.md
-/// "A primary change on gossip"; absent: one `00` each).
-const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
+/// (variant V4, four address bytes, port), incarnation, supersedes, runtime), then the status at
+/// position 2 (`status`, the record's `NodeStatus` position: `Ready` = 1, `ConnectionsDeleting` = 2),
+/// admin API base, digest_seq, emitted_at, data dir, mesh id, in flight, load, gossip, then the primary
+/// revision and the fabric-primary revision (gossip.md "A primary change on gossip"; absent: one `00`
+/// each).
+fn wire_digest(status: &str) -> String {
+    format!("0c 313132333435363738396162 \
     05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
-    00 \
-    00 07 09 00 00 00 00 00 00 00";
+    {status} \
+    00 07 09 00 00 00 00 00 00 00")
+}
 
-/// CONTRACT (gossip.md §3.1 frame catalog): a heartbeat (`Digest`, variant 0) is the digest's wire
-/// shape with the liveness `node_state` at position 2 and no status: a ConnectionsDeleting digest and a
-/// ready one encode alike. A member projection entry, in `TopologyFull` (variant 1) and
-/// `TopologyDelta` (variant 2), is the digest's wire shape then its status (`Ready` = 1), and
-/// decodes to that status. What must NOT happen: a status on the heartbeat, a projection entry without
-/// its status, or a field moved.
+/// CONTRACT (gossip.md §3.1 frame catalog, Q387): a `Digest` (variant 0) is the digest's wire shape
+/// with the node's status at position 2: a connections-deleting Digest and a ready one differ in that
+/// one byte. A projection entry, in `TopologyFull` (variant 1) and `TopologyDelta` (variant 2), is the
+/// node's Digest, status included, and decodes to that status. What must NOT happen: a Digest without
+/// its status, a second status beside it, or a field moved.
 #[test]
-fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_its_status() {
-    let heartbeat = format!("00 {WIRE_DIGEST}");
-    for status in ["connections-deleting", "ready"] {
+fn a_digest_carries_its_status_and_a_projection_entry_is_the_digest() {
+    for (status, byte) in [("connections-deleting", "02"), ("ready", "01")] {
         let frame = Frame::Digest { digest: digest(status) };
-        assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&heartbeat)), "a {status} heartbeat");
+        let heartbeat = format!("00 {}", wire_digest(byte));
+        assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&heartbeat)), "a {status} Digest");
     }
 
     let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
@@ -62,11 +62,11 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         deleted: vec![],
     };
-    let topology_full_hex = format!("01 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
+    let topology_full_hex = format!("01 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {} 00 00", wire_digest("01"));
     let topology_full_golden = golden(&members, &bytes(&topology_full_hex));
-    assert_eq!(members.golden_encode(), topology_full_golden, "TopologyFull: one projection entry, digest then status");
+    assert_eq!(members.golden_encode(), topology_full_golden, "TopologyFull: one projection entry, the Digest");
     let Frame::TopologyFull { digests, .. } = Frame::decode(&topology_full_golden).expect("the TopologyFull frame decodes").into_data() else { panic!("not TopologyFull") };
-    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is the projection's");
+    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is its Digest's");
 
     let delta = Frame::TopologyDelta {
         mesh: "mesh1".into(),
@@ -79,11 +79,11 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         deleted: vec![],
     };
-    let delta_hex = format!("02 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
+    let delta_hex = format!("02 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {} 00 00 00", wire_digest("01"));
     let delta_golden = golden(&delta, &bytes(&delta_hex));
-    assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: one changed projection entry, digest then status");
+    assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: one changed projection entry, the Digest");
     let Frame::TopologyDelta { changed, .. } = Frame::decode(&delta_golden).expect("the TopologyDelta frame decodes").into_data() else { panic!("not TopologyDelta") };
-    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is the projection's");
+    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is its Digest's");
 }
 
 /// The complete gossip message is the standard context list followed by opaque postcard data.
@@ -106,9 +106,9 @@ fn the_largest_complete_message_golden_fits_max_frame() {
     let mut d = digest("ready");
     d.admin_api_base = Some("x".repeat(3600));
     let frame = Frame::Digest { digest: d };
-    // The existing literal digest prefix through node_state; Some API string has a two-byte
+    // The existing literal digest prefix through the status (`Ready` = 1); Some API string has a two-byte
     // postcard length (3600 = 0x90 0x1c), then sequence, stamp and all remaining empty fields.
-    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 04 6e6f6465 0c303132333435363738396162 0a 6d657368312e6e6f6465 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 901c");
+    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 04 6e6f6465 0c303132333435363738396162 0a 6d657368312e6e6f6465 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 01 01 901c");
     data.extend(std::iter::repeat_n(b'x', 3600));
     data.extend(bytes("07 09 00 00 00 00 00 00 00"));
     let expected = golden(&frame, &data);
@@ -148,7 +148,7 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     d.admin_api_base = Some("x".repeat(3500));
     let frame = Frame::Digest { digest: d };
     // 3500 = postcard unsigned varint 0xac 0x1b. All other domain positions stand.
-    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 04 6e6f6465 0c303132333435363738396162 0a 6d657368312e6e6f6465 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 ac1b");
+    let mut data = bytes("00 0c313132333435363738396162 05 6d65736831 04 6e6f6465 0c303132333435363738396162 0a 6d657368312e6e6f6465 01 31 016b 007f00000150 0c79727a34396a333033796834 0000 01 01 ac1b");
     data.extend(std::iter::repeat_n(b'x', 3500));
     data.extend(bytes("07 09 00 00 00 00 00 00 00"));
     let expected = crate::gossip_wire::golden_with_trace(&frame, &data, Some(PARENT), Some(STATE));

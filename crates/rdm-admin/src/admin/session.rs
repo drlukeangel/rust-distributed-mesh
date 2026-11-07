@@ -198,22 +198,23 @@ impl NodeObserver for TopologyObserver {
             .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
-    /// Ready once this admin's view holds the birth ready: the status its mesh-primary
-    /// set from the birth's node.started (this admin, as that primary, through its status authority;
-    /// otherwise the primary's projection), never a heartbeat's. A refusal names the status the
-    /// view's digest carries, the member status the digest view holds for the birth, and whether this
-    /// admin took the birth's node.started (the state it holds the birth declared).
+    /// Ready once this admin took the birth's node.started report (its `StatusService`), or, when
+    /// this admin is not the primary of the birth's mesh, once its view holds the birth ready from
+    /// the birth's Digest. At the birth's own mesh-primary readiness is the report alone: nothing
+    /// waits for gossip (Q197). A refusal names the status the view's digest carries, the status the
+    /// digest view holds for the birth, and whether this admin took the birth's node.started (the
+    /// state it holds the birth declared).
     async fn ready(&self, node: &Node) -> Result<(), String> {
         let Some(d) = self.digest_of(node) else {
             return Err(format!("no digest from {} for this birth", node.node_id));
         };
-        if d.status == rdm_core::model::NodeStatus::Ready {
+        // This admin's `StatusService` took the birth's node.started: its mesh-primary, and fabric
+        // recovery's executor of another mesh, which writes the records of the node it re-creates
+        // there while that mesh has no mesh-primary (build.md §5.3, Q122).
+        if self.status_service.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::Ready)) {
             return Ok(());
         }
-        // This admin's `StatusService` took the birth's node.started: fabric recovery's executor, of
-        // another mesh, writes the records of the node it re-creates there while that mesh has no
-        // mesh-primary (build.md §5.3, Q122), and its view holds no member status of another mesh.
-        if self.status_service.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::Ready)) {
+        if d.status == rdm_core::model::NodeStatus::Ready && !self.digest_view.primary_of(&d.node.mesh) {
             return Ok(());
         }
         let member = match self.digest_view.member_status(&node.node_id, &d.node.incarnation) {

@@ -130,7 +130,7 @@ CurrentPath intentionally follows whichever node holds the path and name. ExactN
 
 ### 4.2 Live resolver contract
 
-LiveNodeResolver is location/identity state only. It does not own MemberStatus policy, election, topology, or death inference.
+LiveNodeResolver is location/identity state only. It does not own status policy, election, topology, or death inference.
 
 Conceptually it holds:
 - current exact NodeId -> path, IncarnationId, EndpointId, endpoint slot/freshness;

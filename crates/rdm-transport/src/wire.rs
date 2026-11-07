@@ -47,8 +47,8 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WireError> {
 
 // A topology digest travels as the shared `WireDigest` (`rdm_core::wire`): the same
 // shape in a heartbeat and in the join; a mesh-primary's member projection carries each member as a
-// `ProjectionEntry` (its digest, then its status).
-pub use rdm_core::wire::{digest, entries, ProjectionEntry, WireDigest};
+// `WireDigest` (its digest, then its status).
+pub use rdm_core::wire::{digest, entries, WireDigest};
 
 /// Consume one postcard value from a selected data schema, retaining its remaining fields.
 pub fn take<T: DeserializeOwned>(bytes: &mut &[u8]) -> Result<T, WireError> {

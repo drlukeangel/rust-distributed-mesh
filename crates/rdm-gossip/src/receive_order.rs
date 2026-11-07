@@ -583,7 +583,6 @@ mod tests {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1,

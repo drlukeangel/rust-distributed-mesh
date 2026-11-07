@@ -631,7 +631,6 @@ async fn start_booted(
             runtime: Some(runtime.clone()),
         },
         status: rdm_core::model::NodeStatus::Ready,
-        node_state: Default::default(),
         admin_api_base: None,
         // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
         emitted_at_rafka_ms: 0,
@@ -964,9 +963,13 @@ async fn start_booted(
 /// status (every status its `NodeSelf` sets, and its Ready at node.started). The rule a set
 /// applies before it is made is its caller's.
 fn set_own_status(status: &Mutex<rdm_core::model::NodeStatus>, digest: &MeshDigest, to: rdm_core::model::NodeStatus) -> MeshDigest {
-    *status.lock().unwrap() = to;
+    let mut held = status.lock().unwrap();
+    // The one status order its record follows: a move the order refuses leaves the status as it is.
+    if held.moves_to(to) {
+        *held = to;
+    }
     let mut d = digest.clone();
-    d.status = to;
+    d.status = *held;
     d
 }
 
@@ -2234,7 +2237,6 @@ mod primary_tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
                 status: rdm_core::model::NodeStatus::Pending,
-                node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
                 emitted_at_rafka_ms: 1_000,

@@ -87,39 +87,11 @@ impl NodeRecord {
         BirthRef { node_id: self.node_id.clone(), incarnation_id: self.incarnation.clone() }
     }
 
-    /// Set `to` as the node's state: whether it moved. A `Deleted` or `Withdrawn` record stands. A
-    /// start of a stopped node (`Starting`) and a new join (`Pending`, from any state but `Deleting`)
-    /// begin its next cycle. `Deleting` is the mesh-primary's, from node.delete's admission, over any
-    /// state (states.md). A stop's acknowledgement (`Stopping`) sets stopping over any state but
-    /// `Stopped`. Every other state only moves forward along node.stop's frames (node-stop.md steps
-    /// 1-4, Q205: starting, pending, ready, deleting, stopping, connections-deleting,
-    /// connections-deleted, leaving, left, stopped).
+    /// Set `to` as the node's state, by the one status order ([`crate::model::NodeStatus::moves_to`]):
+    /// whether it moved.
     pub fn set_state(&mut self, to: crate::model::NodeStatus) -> bool {
-        use crate::model::NodeStatus as S;
-        fn order(s: S) -> u8 {
-            match s {
-                S::Starting => 0,
-                S::Pending => 1,
-                S::Ready | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
-                S::Deleting => 3,
-                S::Stopping => 4,
-                S::ConnectionsDeleting => 5,
-                S::ConnectionsDeleted => 6,
-                S::Leaving => 7,
-                S::Left => 8,
-                S::Stopped => 9,
-                S::Deleted | S::Withdrawn => 10,
-            }
-        }
         let current = self.state;
-        let moves = match to {
-            _ if matches!(current, S::Deleted | S::Withdrawn) => false,
-            S::Starting => matches!(current, S::Stopped | S::Leaving),
-            S::Pending => current != S::Deleting,
-            S::Deleting => true,
-            S::Stopping => current != S::Stopped,
-            _ => order(to) > order(current),
-        };
+        let moves = current.moves_to(to);
         if moves {
             self.state = to;
         }

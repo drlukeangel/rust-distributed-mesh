@@ -20,7 +20,7 @@
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::wire::ProjectionEntry;
+use crate::wire::WireDigest;
 use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Primary};
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +135,7 @@ pub enum TopologyReply {
         chunk_count: u32,
         /// The members this chunk carries, each a member projection entry: its digest, then the
         /// status held for it (gossip.md §3.1).
-        digests: Vec<ProjectionEntry>,
+        digests: Vec<WireDigest>,
         /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
         /// The retained proven departures this chunk carries.

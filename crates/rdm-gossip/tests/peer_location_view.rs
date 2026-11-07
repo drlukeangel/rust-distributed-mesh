@@ -95,7 +95,6 @@ fn birth(node_id: &NodeId, key: iroh::PublicKey, socket: SocketAddr, incarnation
             runtime: None,
         },
         status: NodeStatus::Ready,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,
         emitted_at_rafka_ms: 0,

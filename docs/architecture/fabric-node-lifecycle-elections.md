@@ -44,7 +44,7 @@ does not license destructive recovery: [node investigation](lifecycles/node-reco
 For ordinary election/recomputation:
 
 ~~~text
-eligible = current MemberStatus::Ready
+eligible = current NodeStatus::Ready
 ~~~
 
 Eligibility is current Ready and nothing else.
@@ -281,7 +281,7 @@ fn elect<'a>(primary: Option<&Primary>, candidates: &'a [Node]) -> Option<&'a No
     candidates
         .iter()
         .filter(|n| primary.map_or(true, |p| n.mesh == p.mesh))
-        .filter(|n| n.status == MemberStatus::Ready)
+        .filter(|n| n.status == NodeStatus::Ready)
         .min_by_key(|n| n.node_id)
 }
 ~~~

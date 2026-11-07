@@ -57,13 +57,13 @@ Every term below links to the architecture pages that define it.
   [Node recovery](architecture/lifecycles/node-recovery.md)): A new node, with a new node.id, at the
   same `path` and `name` an earlier node held (a recovery's create, or a Build that adds a node on a
   new executable), never a running process changed in place.
-- **lifecycle status (`MemberStatus`)** ([States](architecture/lifecycles/states.md)): The durable
-  readiness state recorded on a node, mesh, or fabric row (`starting`, `pending`, `ready`,
+- **lifecycle status (`NodeStatus`)** ([States](architecture/lifecycles/states.md)): The durable
+  state recorded on a node, mesh, or fabric row (`starting`, `pending`, `ready`,
   `connections-deleting`, `connections-deleted`, `stopping`, `stopped`, `deleting`, `deleted`). A
-  node's status is written only by its `mesh-primary` from the node's workflow reports.
-- **liveness (`NodeState`)** ([Node identity and state](architecture/node-identity-and-state.md)):
-  What peers infer locally from gossip digests (`Alive`, `PendingReconnect`, `Dead`), separate from
-  the durable `status` on the node row.
+  node writes its own status on its own record (Q356) and publishes it in its Digest; its
+  `mesh-primary` writes `PendingReconnect` (a node under investigation), deleting and deleted.
+- **liveness** ([Node identity and state](architecture/node-identity-and-state.md)): a node's Digests
+  arriving, read on the observer's own clock; separate from the status the Digest carries.
 - **stopped-node collector** ([Node identity and state](architecture/node-identity-and-state.md)):
   The `fabric-primary`'s sweep that submits one ordinary [`node.delete`](architecture/lifecycles/node-delete.md)
   Build for each node whose status has stayed `stopped` past `stopped_node_ttl` (`RDM_STOPPED_NODE_TTL`).

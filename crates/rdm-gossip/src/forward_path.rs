@@ -356,7 +356,6 @@ mod tests {
                 runtime: None,
             },
             status: NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: seq,
             digest_seq: seq,

@@ -1072,13 +1072,6 @@ pub struct MeshNode {
     pub runtime: Option<RuntimeFact>,
 }
 
-pub enum MemberStatus {
-    Pending,
-    Ready,
-    ConnectionsDeleting,
-    Stopped,
-}
-
 pub struct NodeLoad {
     pub cpu_used_millicores: u32,
     pub cpu_budget_millicores: u32,
@@ -1096,7 +1089,7 @@ pub struct GossipStats {
 pub struct MeshDigest {
     pub fabric_id: FabricId,
     pub node: MeshNode,
-    pub status: MemberStatus,
+    pub status: NodeStatus, // the record's status (States), carried by every frame that carries the node
     pub admin_api_base: Option<String>,
     pub digest_seq: u64,
     pub emitted_at_rafka_ms: u64,

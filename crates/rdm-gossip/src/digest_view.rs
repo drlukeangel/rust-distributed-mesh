@@ -168,9 +168,8 @@ impl HeldMembers {
 /// The latest digest held per logical node: when it was taken, and how it was heard.
 #[derive(Debug, Clone)]
 pub struct DigestView {
-    /// Each member's latest digest, when it was heard and how. An own-mesh birth's `status` here is
-    /// never read: its one status is `member_statuses`'s, and every read that hands out a digest
-    /// takes it from there ([`Self::hand_out`]).
+    /// Each member's latest digest, when it was heard and how, with the status that node published
+    /// in it: an own-mesh birth's status comes only from its own Digest (gossip.md §3.1 `Digest`).
     pub(crate) inner: Arc<Mutex<HeldMembers>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
     /// changes, or a departure is accepted; a fresher digest of the same
@@ -239,10 +238,6 @@ pub struct DigestView {
     pub(crate) own: Arc<Mutex<Option<String>>>,
     /// This process's explicitly supplied predecessor incarnation, never inferred from its location.
     pub(crate) own_predecessor: Arc<Mutex<Option<IncarnationId>>>,
-    /// The status this view holds for each own-mesh birth, by NodeId: what the mesh-primary's
-    /// projection said, or, while this view's holder is the primary, what it authored. The only copy:
-    /// no held digest carries an own-mesh birth's status.
-    pub(crate) member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rdm_core::model::NodeStatus)>>>,
     /// The own-mesh births this view holds only from its mesh-primary's projection, by NodeId: the
     /// birth as the projection carried it (its identity, endpoint and runtime fact: gossip.md §3,
     /// "needed by an authority-bearing admin to manage that birth"), and the instant this view first
@@ -439,7 +434,6 @@ impl DigestView {
             primary: Arc::default(),
             own_mesh: Arc::default(),
             own: Arc::default(),
-            member_statuses: Arc::default(),
             projected: Arc::default(),
             ended_overlays: Arc::default(),
             observer_name: Arc::default(),
@@ -553,7 +547,6 @@ impl DigestView {
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().remove(&op.key());
         self.overlays_moved();
-        self.member_statuses.lock().unwrap().remove(&id);
         self.projected.lock().unwrap().remove(&id);
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
@@ -702,8 +695,6 @@ impl DigestView {
         self.overlays_moved();
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
         self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), StopMark { incarnation: op.incarnation.clone(), held_seq: seq, held: held_digest, latest: None, carried: carried.clone() });
-        // A stopped birth's status is the overlay: the status held for it ends with it.
-        self.member_statuses.lock().unwrap().remove(op.node_id.as_str());
         self.projected.lock().unwrap().remove(op.node_id.as_str());
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
         tracing::info_span!(
@@ -748,12 +739,11 @@ impl DigestView {
                 Some(mark.held_seq)
             }
         };
-        // The status the digest carried: a projection entry's (`topology`, `forwarded`); a heartbeat
-        // and a join digest carry none.
-        let carried_status = if matches!(via, "topology" | "forwarded") { format!("{:?}", d.status) } else { String::new() };
+        // The status the digest carried: every digest carries its node's status.
+        let carried_status = format!("{:?}", d.status);
         let Some(held_seq) = held_seq else {
             self.end_stop(d.node.node_id.as_str());
-            tracing::info_span!("rdm.mesh.topology.update.via-node-started", node_path = %d.node.path, node_name = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), "type" = %d.node.r#type, node_state = ?d.node_state, digest_seq = d.digest_seq, via)
+            tracing::info_span!("rdm.mesh.topology.update.via-node-started", node_path = %d.node.path, node_name = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), "type" = %d.node.r#type, status = ?d.status, digest_seq = d.digest_seq, via)
                 .in_scope(|| tracing::info!("a later birth of a stopped node is heard: the stop of the older birth is over"));
             return false;
         };
@@ -763,7 +753,6 @@ impl DigestView {
             member_path = %d.node.path, member_name = %d.node.name,
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.as_str(),
-            node_state = ?d.node_state,
             entry_status = %carried_status,
             digest_seq = d.digest_seq,
             held_digest_seq = held_seq,
@@ -902,7 +891,8 @@ impl DigestView {
     /// mesh-primary set, here or in the projection this view took. `None` when it holds none for that
     /// exact birth.
     pub fn member_status(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::model::NodeStatus> {
-        self.member_statuses.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, s)| *s)
+        self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation).map(|(d, _, _)| d.status)
+            .or_else(|| self.projected.lock().unwrap().get(node_id.as_str()).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| d.status))
     }
 
     /// This view's holder took its mesh's primary role and adopts `status`, the state its mesh's
@@ -933,8 +923,7 @@ impl DigestView {
         if self.stopped_marks.lock().unwrap().get(node_id.as_str()).is_some_and(|m| m.incarnation == *incarnation) {
             return Err("stopped");
         }
-        let other_birth = self.inner.lock().unwrap().get(node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation != *incarnation)
-            || self.member_statuses.lock().unwrap().get(node_id.as_str()).is_some_and(|(inc, _)| inc != incarnation);
+        let other_birth = self.inner.lock().unwrap().get(node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation != *incarnation);
         if other_birth {
             return Err("another-birth-held");
         }
@@ -946,11 +935,42 @@ impl DigestView {
     /// of its digest carry. A move ticks `heard`. Returns the status held for that birth before
     /// (`None` when none was).
     pub(crate) fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rdm_core::model::NodeStatus) -> Option<rdm_core::model::NodeStatus> {
-        let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), status)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
-        if prior != Some(status) {
+        let prior = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.map.get_mut(node_id).filter(|(d, _, _)| d.node.incarnation == *incarnation) {
+                Some((d, _, _)) => Some(std::mem::replace(&mut d.status, status)),
+                None => self.projected.lock().unwrap().get_mut(node_id).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| std::mem::replace(&mut d.status, status)),
+            }
+        };
+        if prior.is_some_and(|p| p != status) {
             self.heard.send_modify(|v| *v += 1);
         }
         prior
+    }
+
+    /// An own-mesh node's status moved here, from its own Digest or a copy of it (gossip.md §3.1
+    /// `Digest`): named once per move, with the Digest's sequence and where the copy came from.
+    pub(crate) fn note_status(&self, d: &MeshDigest, prior: Option<rdm_core::model::NodeStatus>, channel: &str) {
+        if prior == Some(d.status) || !self.own_mesh_member(d) {
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.topology.update.via-digest",
+            node = %self.observer_name.lock().unwrap(),
+            member_path = %d.node.path, member_name = %d.node.name,
+            member_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.as_str(),
+            status = ?d.status,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            digest_seq = d.digest_seq,
+            channel,
+        )
+        .in_scope(|| tracing::info!("an own-mesh node's status, from its own Digest"));
+    }
+
+    /// Whether this view's holder is the primary of `mesh` now: its own mesh, while it holds the role.
+    pub fn primary_of(&self, mesh: &str) -> bool {
+        self.primary.load(std::sync::atomic::Ordering::Relaxed) && *self.own_mesh.lock().unwrap() == mesh
     }
 
     /// Whether the birth `d` names is stopped in this view (the exact incarnation).
@@ -1025,8 +1045,7 @@ impl DigestView {
         let latest = mark.latest;
         self.end_stop(d.node.node_id.as_str());
         let held_again = match latest {
-            // Its status is the projection's: the caller takes it next ([`Self::take_projected_status`]),
-            // into the one copy, and names the move there.
+            // Its status is the one its own latest Digest carried.
             Some((again, at, heard)) if self.own_mesh_member(d) => {
                 let seq = again.digest_seq;
                 self.inner.lock().unwrap().insert(d.node.node_id.to_string(), (again, at, heard));
@@ -1099,61 +1118,11 @@ impl DigestView {
     /// mesh-primary's `TopologyFull` projection is such a read, so it carries the recorded primaries (gossip.md
     /// "A primary change on gossip"). Called with no hold of `inner`.
     pub(crate) fn hand_out<'a>(&self, ds: impl IntoIterator<Item = &'a mut MeshDigest>) {
-        let own_mesh = self.own_mesh.lock().unwrap().clone();
-        let statuses = self.member_statuses.lock().unwrap();
         for d in ds {
             self.recorded_primaries(d);
-            if own_mesh.is_empty() {
-                continue;
-            }
-            let itself = self.is_own_lineage(&d.node.node_id, &d.node.incarnation);
-            if d.node.mesh == own_mesh && !itself {
-                d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rdm_core::model::NodeStatus::Pending);
-            }
         }
     }
 
-    /// The mesh-primary's projection lists the own-mesh birth `d` with its status (gossip.md §3.1:
-    /// own-mesh members receive statuses through the primary's versioned member
-    /// projection): the status is held for the birth, and the held digest, liveness, endpoints and
-    /// runtime as its own heartbeat said, takes that status. Nothing else of `d` is taken. `false`
-    /// when nothing moved.
-    pub(crate) fn take_projected_status(&self, d: &MeshDigest, target: &Target) -> bool {
-        // This node's own birth is its own word: no projection moves the status it holds of itself.
-        if !self.own_mesh_member(d) || self.is_deleted(d.node.node_id.as_str()) || self.is_stopped(d) {
-            return false;
-        }
-        // The birth itself, as the projection carries it, when this view holds no digest of it.
-        self.hold_projected_at(d, Instant::now());
-        let prior = {
-            let mut statuses = self.member_statuses.lock().unwrap();
-            let prior = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s);
-            if prior == Some(d.status) {
-                return false;
-            }
-            statuses.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
-            prior
-        };
-        let held = self.inner.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(h, _, _)| h.node.incarnation == d.node.incarnation);
-        // The status moved for a birth held by its own heartbeat or held only from this projection
-        // ([`Self::projected_at`]): the view lists either with it.
-        self.heard.send_modify(|v| *v += 1);
-        tracing::info_span!(
-            "rdm.mesh.topology.update.via-projected-status",
-            node = %self.observer_name.lock().unwrap(),
-            member_path = %d.node.path, member_name = %d.node.name,
-            member_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.as_str(),
-            status = ?d.status,
-            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
-            heartbeat_held = held,
-            publisher = %target.publisher,
-            channel = target.channel,
-            topology_version = target.version,
-        )
-        .in_scope(|| tracing::info!("an own-mesh member's status taken from its mesh-primary's projection; its liveness stays its own heartbeat's"));
-        true
-    }
 
     /// Whether this view's overlay holds the exact birth `incarnation` of `node_id` stopped (its stop mark).
     pub fn holds_stopped(&self, node_id: &str, incarnation: &IncarnationId) -> bool {
@@ -1169,26 +1138,41 @@ impl DigestView {
 
     /// Hold the own-mesh birth `d` its mesh-primary's projection lists, received at `now`, when this
     /// view holds no digest of it (`DigestView::projected`): first held at `now`, or kept as first
-    /// held when this exact birth is held already (a projection is no liveness); a later birth of
-    /// the node replaces an earlier one, first held at `now`.
-    pub fn hold_projected_at(&self, d: &MeshDigest, now: Instant) {
+    /// held when this exact birth is held already (a projection is no liveness), its status moved by
+    /// a later Digest of it the projection carries; a later birth of the node replaces an earlier one,
+    /// first held at `now`. `true` when it was first held or its status moved.
+    pub fn hold_projected_at(&self, d: &MeshDigest, now: Instant) -> bool {
         if self.inner.lock().unwrap().contains_key(d.node.node_id.as_str()) {
-            return;
+            return false;
         }
-        let inserted = {
+        let (inserted, moved) = {
             let mut projected = self.projected.lock().unwrap();
             match projected.get_mut(d.node.node_id.as_str()) {
-                Some((held, _)) if held.node.incarnation == d.node.incarnation => false,
-                Some((held, _)) if held.node.supersedes.as_ref() == Some(&d.node.incarnation) => false,
+                // The same birth: a later Digest of it, as the projection carries it, moves its status;
+                // it stays first held when it was.
+                Some((held, _)) if held.node.incarnation == d.node.incarnation => {
+                    if d.digest_seq > held.digest_seq {
+                        let moved = held.status != d.status;
+                        *held = d.clone();
+                        (false, moved)
+                    } else {
+                        (false, false)
+                    }
+                }
+                Some((held, _)) if held.node.supersedes.as_ref() == Some(&d.node.incarnation) => (false, false),
                 _ => {
                     projected.insert(d.node.node_id.to_string(), (d.clone(), now));
-                    true
+                    (true, false)
                 }
             }
         };
         if inserted {
             self.births.send_modify(|v| *v += 1);
         }
+        if inserted || moved {
+            self.heard.send_modify(|v| *v += 1);
+        }
+        inserted || moved
     }
 
     /// The own-mesh birth of `node_id` this view holds only from its mesh-primary's projection, and
@@ -1409,9 +1393,6 @@ impl DigestView {
         if self.stopped_refuses(&d, "heartbeat", now) {
             return false;
         }
-        // An own-mesh birth's status is not its heartbeat's: it is the one this view holds for it, and
-        // no move of it is a move of the digest.
-        let own_mesh = self.own_mesh_member(&d);
 
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
@@ -1423,10 +1404,12 @@ impl DigestView {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.status != d.status || now.saturating_duration_since(*at) > self.staleness_floor);
+        let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
         self.take_primaries(&d);
-        inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
+        inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Direct));
         drop(inner);
+        self.note_status(&d, prior, channel);
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -1495,8 +1478,9 @@ impl DigestView {
             if runtime_changed(held, &d) {
                 return false;
             }
+            // An own-mesh birth's status is its own Digest's: a copy at the sequence held moves no status.
             let older = if held.node.incarnation == d.node.incarnation {
-                d.digest_seq < held.digest_seq
+                d.digest_seq < held.digest_seq || (own_mesh && d.digest_seq == held.digest_seq && d.status != held.status)
             } else {
                 held.node.supersedes.as_ref() == Some(&d.node.incarnation)
             };
@@ -1506,11 +1490,13 @@ impl DigestView {
             held_entry = Some((*at, *heard));
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || (!own_mesh && held.status != d.status));
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
+        let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
         drop(inner);
+        self.note_status(&d, prior, "topology");
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -1553,8 +1539,9 @@ impl DigestView {
             if runtime_changed(held, &d) {
                 return false;
             }
+            // An own-mesh birth's status is its own Digest's: a copy at the sequence held moves no status.
             let older = if held.node.incarnation == d.node.incarnation {
-                d.digest_seq < held.digest_seq
+                d.digest_seq < held.digest_seq || (own_mesh && d.digest_seq == held.digest_seq && d.status != held.status)
             } else {
                 held.node.supersedes.as_ref() == Some(&d.node.incarnation)
             };
@@ -1565,18 +1552,12 @@ impl DigestView {
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         // A forwarded copy is its forwarder's word that the member is heard (it forwards only what it
         // hears): a birth held silent past the staleness floor is heard again here, as on its own digest.
-        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || (!own_mesh && held.status != d.status) || unheard(at, *heard, now) > self.staleness_floor);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || held.status != d.status || unheard(at, *heard, now) > self.staleness_floor);
+        let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
-        // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
-        // status): that status is held. A join digest carries none: the held status stands, and the
-        // birth's Pending is its mesh-primary's, recorded when it accepted the join report
-        // (node-mesh-join.md step 10), never this digest's.
-        if own_mesh && carried == Carried::Status {
-            let prior = self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status)).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| s);
-            heard_changed |= prior != Some(d.status);
-        }
+        self.note_status(&d, prior, if carried == Carried::Status { "forwarded" } else { "join" });
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -1926,7 +1907,6 @@ impl DigestView {
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
         self.overlays_moved();
-        self.member_statuses.lock().unwrap().remove(&id);
         self.projected.lock().unwrap().remove(&id);
         self.inner.lock().unwrap().remove(&id);
         true

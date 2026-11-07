@@ -3,8 +3,7 @@
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
 This page owns node identity (the minted id, `endpoint_id`, `path` and `name`, incarnation and the
-display prefixes), the node, mesh and fabric rows and who writes each, the `NodeState` liveness
-enum, the hydration roster, local eviction and the stopped-node collector. Lifecycle states and
+display prefixes), the node, mesh and fabric rows and who writes each, the hydration roster, local eviction and the stopped-node collector. Lifecycle states and
 check-ins are [States](lifecycles/states.md#states); each workflow is its page in the
 [lifecycle index](fabric-mesh-node-lifecycles.md); gossip is [gossip.md](gossip.md); the primaries are
 [elections](fabric-node-lifecycle-elections.md).
@@ -23,9 +22,9 @@ The lifecycle architecture rests on five design rules:
    on its workflow's reply stream ([node status](lifecycles/node-status.md)); absence, a failed
    dial or RPC, a transport drop or an unheard peer mesh never shows an exact runtime gone
    ([States](lifecycles/states.md#routing)).
-2. **Aliveness and readiness are separate axes** (§4): readiness is
-   the status a node's row holds, liveness the `NodeState` peers observe from its digests (§4).
-3. **Observation and exact departure are different facts.** Local NodeState::Dead/stale vocabulary may
+2. **Liveness and status are separate axes** (§4): the status is on a node's row and in its
+   Digest; liveness is its Digests arriving, read on the observer's own clock.
+3. **Observation and exact departure are different facts.** Local `Dead`/stale vocabulary may
    describe an observer's routing view, but destructive recovery and Node RPC Gone require canonical
    exact-runtime deletion/supersession evidence. A stopped status is a lifecycle state, not evidence that the
    runtime has disappeared.
@@ -35,7 +34,7 @@ The lifecycle architecture rests on five design rules:
    staleness floor (an inference bound, §6) and the stopped-node collector's ttl (§6.9); none is
    a coordination timer.
 5. **A gossip struct is DURABLE, and adding a field MOVES the format.** `GossipDigest`,
-   `GossipEnvelope`, `NodeState` and `NodeDigest` are postcard-positional. Postcard does not
+   `GossipEnvelope` and `NodeDigest` are postcard-positional. Postcard does not
    honour `#[serde(default)]` for a missing trailing field: an old-shaped frame EOF-errors and
    is dropped whole ([gossip.md §3.1](gossip.md#31-frame-catalog)). So a new field is a **hard cutover** — the commit says "durable format moved" and
    every live mesh is taken down and deployed again, never redeployed in place, before anything
@@ -387,36 +386,15 @@ The projected kinds' channels, the projection frame and the pull a node makes at
 
 ## 4. The state machine
 
-A node has TWO kinds of state, and they answer different questions:
+A node has one state, its **status**: starting, pending, ready, connections-deleting,
+connections-deleted, leaving, left, stopping, stopped, deleting and deleted, each set by its workflow as
+[States](lifecycles/states.md#states) and [node status](lifecycles/node-status.md#node-status-change)
+define, and `PendingReconnect`, the status of a node under [node investigation](lifecycles/node-investigation.md).
+The node writes its status on its own record (Q356) and publishes it in its Digest at once when it
+changes and on every heartbeat ([gossip](gossip.md#31-frame-catalog)); its mesh-primary writes
+`PendingReconnect`, deleting and deleted. A stopping node's last Digest carries stopping, and its
+mesh-primary publishes `NodeStopped` from the stop stream's `node.stopped` frame.
 
-- its **status** — the readiness on its durable row: starting, pending, ready,
-  connections-deleting, connections-deleted, stopping, stopped, deleting and deleted, each set by its workflow as
-  [States](lifecycles/states.md#states) and [node status](lifecycles/node-status.md#node-status-change)
-  define;
-- its **`NodeState`** — the liveness it self-publishes on its gossip digest (below).
-
-A status change is written as a blind put of the row the mesh-primary holds, and only the mesh's
-primary writes it: a row of a mesh this node-admin does not own (`MeshWriteGate::NotOwned`) is never
-put.
-
-`NodeState` (`rdm-core/src/digest.rs`), postcard-positional:
-
-```
-Joining → Alive ⇄ Overloaded          self-published (auto, every tick)
-Alive ⇄ Degraded                      self-published (auto, every tick)
-Alive → PendingReconnect              observer-inferred on staleness, or on a command never sent for a reachability reason (soft, reversible)
-*     → Leaving                       set by the mesh-primary on node.stopped; published as NodeStopped
-*     → Dead                          observer-inferred ONLY (never sent)
-```
-
-A node's `NodeState` is self-published from what the node measures, inferred by an observer from
-absence, or set from its mesh-primary's lifecycle overlay (`NodeStopped`).
-
-- **Self-publication** recomputes state each gossip tick: `Joining` until the node has published
-  once and is self-ready; `Overloaded` when over its CPU or RAM budget; `Degraded` when it reaches a
-  broker only through a peer or node-admin (§8); else `Alive`. The node never publishes its own
-  departure: a stopping node gossips nothing, and its mesh-primary publishes `NodeStopped` from the
-  stop stream's `node.stopped` frame.
 - **Shutdown is signal-driven.** SIGINT and SIGTERM run the node's own stop steps
   ([node stop](lifecycles/node-stop.md), the signal stop). No file poll, no timer.
 
@@ -424,11 +402,9 @@ absence, or set from its mesh-primary's lifecycle overlay (`NodeStopped`).
 
 | state | produced by | read by |
 |---|---|---|
-| `Joining` | self-published until published-once ∧ self-ready | the traffic/topology filters — routed no traffic |
-| `Alive` | self-published, default | the rebind path; every traffic and topology filter |
-| `Overloaded` | self-published, over CPU or RAM budget | `node.get`; the span reason |
-| `Degraded` | self-published while the node reaches a peer only through a forward (§8) | routing's peer choice, which prefers a source that is not `Degraded`; the span reason naming each such broker |
-| `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |
+| pending | the node, at its accepted join ([node-mesh-join](lifecycles/node-mesh-join.md) step 10) | the traffic/topology filters — routed no traffic |
+| ready | the node, at its node.started | the rebind path; every traffic and topology filter |
+| leaving, stopping, stopped | the node, on its own record ([States](lifecycles/states.md#who-sets-each-state)) | the routing rule: routed no traffic |
 | `Dead` | never sent; receiver-side vocabulary | the traffic/topology filters |
 | `PendingReconnect` | the staleness sweep; the mesh-primary, at once, for a member a command was never sent to for a reachability reason ([node recovery](lifecycles/node-recovery.md) step 1) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
 
@@ -436,8 +412,7 @@ Every state in that table has a reader. That is the bar a state has to clear to 
 
 ### 4.2 Two state models, and they do not meet
 
-`NodeState` (`rdm-core/src/digest.rs`) and a node's status (its row, §1 rule 2) are separate state
-families that never share an enum or a type; an application's own entity lifecycle is a third, the application's.
+A node's status is its one state family; an application's own entity lifecycle is the second, the application's.
 
 ### 4.3 A returning node's catch-up is the application's, never a node status
 

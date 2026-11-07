@@ -2250,7 +2250,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         assert!(topology_view.digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: rdm_core::model::NodeStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
+            status: rdm_core::model::NodeStatus::Pending, admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
         let (sd, cd) = (server_delivery.clone(), caller_delivery.clone());
@@ -2402,7 +2402,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         assert!(topology_view.digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: rdm_core::model::NodeStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
+            status: rdm_core::model::NodeStatus::Pending, admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
         let (sd, cd) = (server_delivery.clone(), caller_delivery.clone());
@@ -2474,7 +2474,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         assert!(digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
-            status: rdm_core::model::NodeStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
+            status: rdm_core::model::NodeStatus::Pending, admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         // The birth's stop: its Stopped row, and the view's stop of it.
         let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), node_id: rpc.node.node_id.clone(), incarnation: incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), operation: rdm_core::OperationId::node("node.stop", &rpc.node.node_id), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
@@ -2670,7 +2670,7 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         assert!(digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: marked.clone(), supersedes: None, runtime: None },
-            status: rdm_core::model::NodeStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
+            status: rdm_core::model::NodeStatus::Ready, admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), node_id: rpc.node.node_id.clone(), incarnation: marked.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), operation: rdm_core::OperationId::node("node.stop", &rpc.node.node_id), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop), "the view holds the stop of the marked birth");

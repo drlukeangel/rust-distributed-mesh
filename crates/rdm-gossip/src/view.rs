@@ -652,24 +652,22 @@ impl View {
             }
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
-                // An own-mesh member's status from its primary's projection (gossip.md §3.1 `TopologyFull`
-                // author): nothing else of it, so no liveness from it.
+                // An own-mesh node's status comes only from its own Digest (gossip.md §3.1 `Digest`): its
+                // primary's projection gives nothing of a node this view hears, and holds one it does not.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
-                    self.digest_view.take_projected_status(&d, target);
+                    if self.digest_view.own_mesh_member(&d) {
+                        self.digest_view.hold_projected_at(&d, std::time::Instant::now());
+                    }
                     continue;
                 }
                 (Side::Backbone, false) => self.digest_view.record_forwarded(d.clone()),
                 (Side::MeshChannel, false) => self.digest_view.record_topology(d.clone()),
                 // A read installs what an entry answer installed, by the rule `learn` applies
-                // (R-G2): a peer mesh's member is topology and refreshes no liveness; a member of
-                // this node's own mesh is held as the answerer heard it, with its status.
-                // Its status is ordered by the topology version the read just admitted, and its digest by
-                // its own heartbeat sequence (gossip.md §3.1, four orderings): a member's later
-                // heartbeat already held refuses the primary's older copy of the digest, never the status.
-                (Side::Read, true) => {
-                    self.digest_view.take_projected_status(&d, target);
-                    self.digest_view.record_forwarded(d.clone())
-                }
+                // (R-G2): a peer mesh's member is topology and refreshes no liveness; a node of this
+                // node's own mesh is held as the answerer heard it, its status the one its own Digest
+                // carried, ordered by that Digest's sequence (gossip.md §3.1, four orderings): a later
+                // Digest already held refuses the primary's older copy, status included.
+                (Side::Read, true) => self.digest_view.record_forwarded(d.clone()),
                 (Side::Read, false) | (Side::ReadPeer, false) => self.digest_view.record_topology(d.clone()),
                 (Side::ReadPeer, true) => false,
             };

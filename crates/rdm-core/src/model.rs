@@ -93,6 +93,40 @@ pub enum NodeStatus {
 }
 
 impl NodeStatus {
+    /// Whether a node at `self` moves to `to`: the one order its record and its Digest follow. A
+    /// `Deleted` or `Withdrawn` node stands. A start of a stopped node (`Starting`) and a new join
+    /// (`Pending`, from any status but `Deleting`) begin its next cycle. `Deleting` is the
+    /// mesh-primary's, from node.delete's admission, over any status (states.md). A stop's
+    /// acknowledgement (`Stopping`) sets stopping over any status but `Stopped`. Every other status
+    /// only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting, pending,
+    /// ready, deleting, stopping, connections-deleting, connections-deleted, leaving, left, stopped).
+    pub fn moves_to(self, to: NodeStatus) -> bool {
+        use NodeStatus as S;
+        fn order(s: S) -> u8 {
+            match s {
+                S::Starting => 0,
+                S::Pending => 1,
+                S::Ready | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
+                S::Deleting => 3,
+                S::Stopping => 4,
+                S::ConnectionsDeleting => 5,
+                S::ConnectionsDeleted => 6,
+                S::Leaving => 7,
+                S::Left => 8,
+                S::Stopped => 9,
+                S::Deleted | S::Withdrawn => 10,
+            }
+        }
+        match to {
+            _ if matches!(self, S::Deleted | S::Withdrawn) => false,
+            S::Starting => matches!(self, S::Stopped | S::Leaving),
+            S::Pending => self != S::Deleting,
+            S::Deleting => true,
+            S::Stopping => self != S::Stopped,
+            _ => order(to) > order(self),
+        }
+    }
+
     /// A node that may hold or contend for a node-type primary.
     pub fn is_live(self) -> bool {
         matches!(self, Self::Pending | Self::Ready | Self::ConnectionsDeleting)

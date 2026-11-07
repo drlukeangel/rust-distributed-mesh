@@ -977,7 +977,6 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 runtime: None,
             },
             status: rdm_core::model::NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
             emitted_at_rafka_ms: 1_000,

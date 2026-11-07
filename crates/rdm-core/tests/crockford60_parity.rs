@@ -55,7 +55,6 @@ fn a_topology_digest_carries_its_product_ids_exactly() {
             runtime: None,
         },
         status: rdm_core::model::NodeStatus::Ready,
-        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: 1,
         digest_seq: 1,

@@ -47,7 +47,7 @@ fn story(story: Story) {
         let key = iroh::SecretKey::generate().public();
         let other_key = iroh::SecretKey::generate().public();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: NodeStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: NodeStatus::Ready, admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         if matches!(story, Story::ReadFloor) {
             let read = rdm_gossip::snapshot::Chunk {
                 mesh: "mesh1".into(), publisher: rdm_gossip::snapshot::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
@@ -68,7 +68,7 @@ fn story(story: Story) {
         match story {
             Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; offered.data_dir = Some("obsolete=yes".into()); }
             Story::Duplicate => {
-                offered.status = NodeStatus::Leaving; // absent from the wire; the held status is Ready.
+                // The same Digest again, its status included (Q387: the status is on the wire).
                 assert_eq!(Frame::Digest { digest: offered.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::Digest { digest: digest.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
                 receiver_channels.location_view().forget(key);
             }

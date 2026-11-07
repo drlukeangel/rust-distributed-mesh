@@ -970,7 +970,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             runtime: Some(runtime.clone()),
         },
         status: rdm_core::model::NodeStatus::Pending,
-        node_state: Default::default(),
         admin_api_base: Some(api_base.clone()),
         emitted_at_rafka_ms: 0,
         digest_seq: 0,
@@ -1846,7 +1845,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 },
                                 // Pending until it can take authority at once (the Ready gate below).
                                 status: rdm_core::model::NodeStatus::Pending,
-                                node_state: Default::default(),
                                 admin_api_base: Some(api_base.clone()),
                                 // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
                                 emitted_at_rafka_ms: 0,

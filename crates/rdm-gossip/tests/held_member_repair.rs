@@ -39,7 +39,6 @@ fn birth(fabric: &FabricId, n: &Node, name: &str) -> MeshDigest {
             runtime: None,
         },
         status: NodeStatus::Pending,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,

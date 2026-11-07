@@ -5,13 +5,12 @@
 //! runtime locator's internal tag cannot be read positionally. `WireDigest` carries the same
 //! facts with every field present and the locator externally tagged.
 //!
-//! A heartbeat is the digest alone: liveness (`node_state`), endpoints and the runtime fact, and no
-//! status (gossip.md §3.1 `Digest`: "it carries no status: a member's status comes only from its
-//! mesh-primary"). A mesh-primary's member projection (`TopologyFull`, `TopologyDelta`, the topology
-//! read) carries each member as a [`ProjectionEntry`]: its digest, then the status the primary holds.
+//! A Digest carries the node's status (gossip.md §3.1 `Digest`), and so does every frame that carries
+//! a node: a mesh-primary's `TopologyFull`, `TopologyDelta` and the topology read carry each node as
+//! its Digest, status included.
 
 use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
-use crate::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, NodeState, GossipStats};
+use crate::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, GossipStats};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -45,13 +44,12 @@ struct WireNode {
     runtime: Option<WireRuntime>,
 }
 
-/// A [`MeshDigest`] as it travels in a gossip frame: position 2 is the self-published liveness
-/// `node_state`; no status travels with it.
+/// A [`MeshDigest`] as it travels in a gossip frame: position 2 is the node's status.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct WireDigest {
     fabric_id: FabricId,
     node: WireNode,
-    node_state: NodeState,
+    status: NodeStatus,
     admin_api_base: Option<String>,
     digest_seq: u64,
     emitted_at_rafka_ms: u64,
@@ -89,7 +87,7 @@ impl From<&MeshDigest> for WireDigest {
                 supersedes: n.supersedes.clone(),
                 runtime,
             },
-            node_state: d.node_state,
+            status: d.status,
             admin_api_base: d.admin_api_base.clone(),
             digest_seq: d.digest_seq,
             emitted_at_rafka_ms: d.emitted_at_rafka_ms,
@@ -104,9 +102,7 @@ impl From<&MeshDigest> for WireDigest {
     }
 }
 
-/// A heartbeat decoded: it carries no status, so the digest holds `Pending`, the status of a birth
-/// whose status its holder was not told; the holder's view gives it the status it holds for the
-/// birth. A projection entry carries the status ([`ProjectionEntry`]).
+/// A Digest decoded, with the status it carried.
 impl From<WireDigest> for MeshDigest {
     fn from(w: WireDigest) -> Self {
         let n = w.node;
@@ -130,8 +126,7 @@ impl From<WireDigest> for MeshDigest {
                 supersedes: n.supersedes,
                 runtime,
             },
-            status: NodeStatus::Pending,
-            node_state: w.node_state,
+            status: w.status,
             admin_api_base: w.admin_api_base,
             digest_seq: w.digest_seq,
             emitted_at_rafka_ms: w.emitted_at_rafka_ms,
@@ -146,39 +141,16 @@ impl From<WireDigest> for MeshDigest {
     }
 }
 
-/// One member of a mesh-primary's member projection as it travels (gossip.md §3.1 `TopologyFull`,
-/// `TopologyDelta`; the topology read): its digest (liveness, endpoints, runtime), then its status,
-/// which the primary sets. Postcard-positional: `digest` at position 0, `status` at 1.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ProjectionEntry {
-    /// The member's digest.
-    pub digest: WireDigest,
-    /// The member's status, as its mesh-primary holds it.
-    pub status: NodeStatus,
-}
-
-impl From<&MeshDigest> for ProjectionEntry {
-    fn from(d: &MeshDigest) -> Self {
-        Self { digest: WireDigest::from(d), status: d.status }
-    }
-}
-
-impl From<ProjectionEntry> for MeshDigest {
-    fn from(e: ProjectionEntry) -> Self {
-        MeshDigest { status: e.status, ..MeshDigest::from(e.digest) }
-    }
-}
-
 /// `#[serde(with = "crate::wire::entries")]`: a run of member projection entries in a frame.
 pub mod entries {
     use super::*;
     /// Serialize members as projection entries.
     pub fn serialize<S: Serializer>(ds: &[MeshDigest], s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(ds.iter().map(ProjectionEntry::from))
+        s.collect_seq(ds.iter().map(WireDigest::from))
     }
     /// Deserialize members from projection entries.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<MeshDigest>, D::Error> {
-        Vec::<ProjectionEntry>::deserialize(d).map(|v| v.into_iter().map(Into::into).collect())
+        Vec::<WireDigest>::deserialize(d).map(|v| v.into_iter().map(Into::into).collect())
     }
 }
 

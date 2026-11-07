@@ -175,7 +175,6 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
             runtime: None,
         },
         status: rdm_core::model::NodeStatus::Pending,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 7,
         emitted_at_rafka_ms: 7,

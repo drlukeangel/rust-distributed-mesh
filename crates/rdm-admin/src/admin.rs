@@ -210,7 +210,6 @@ mod tests {
                 runtime: None,
             },
             status,
-            node_state: Default::default(),
             admin_api_base: (rdm_core::is_node_admin(&r#type)).then(|| format!("http://admin-{node_id}")),
             emitted_at_rafka_ms: 0,
             digest_seq: 1,

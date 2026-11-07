@@ -1810,7 +1810,6 @@ pub(crate) mod tests {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), path: name.path.clone(), name: name.name.clone(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: rdm_core::model::NodeStatus::Ready,
-            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 1,
             digest_seq: 1,

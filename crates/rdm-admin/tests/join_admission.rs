@@ -103,7 +103,6 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
             runtime: Some(d.runtime.clone()),
         },
         status: rdm_core::model::NodeStatus::Pending,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,

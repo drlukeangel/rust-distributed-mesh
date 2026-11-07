@@ -284,7 +284,7 @@ use crate::topology::*;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::wire::ProjectionEntry;
+use crate::wire::WireDigest;
 use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, Primary, PrimaryRole, PublisherId};
 use serde::{Deserialize, Serialize};
 /// Construct the typed not-ready outcome.

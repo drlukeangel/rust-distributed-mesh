@@ -184,7 +184,6 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         fabric_id: template.fabric_id.clone(),
         node: rdm_core::MeshNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(), node_id: node.node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
         status: rdm_core::model::NodeStatus::Pending,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 9,
         emitted_at_rafka_ms: 9,

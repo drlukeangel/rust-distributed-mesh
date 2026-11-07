@@ -344,7 +344,6 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
             fabric_id: fabric.clone(),
             node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: if ready { rdm_core::model::NodeStatus::Ready } else { rdm_core::model::NodeStatus::Pending },
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 10,
             emitted_at_rafka_ms: 10,

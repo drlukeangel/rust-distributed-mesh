@@ -451,7 +451,6 @@ impl Rig {
                     fabric_id: FabricId::mint(),
                     node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
                     status: rdm_core::model::NodeStatus::Pending,
-                    node_state: Default::default(),
                     admin_api_base: None,
                     digest_seq: 0,
                     emitted_at_rafka_ms: 0,

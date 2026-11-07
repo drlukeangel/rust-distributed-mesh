@@ -25,7 +25,6 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
             runtime: None,
         },
         status: NodeStatus::Leaving,
-        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,
         emitted_at_rafka_ms: 1_000,

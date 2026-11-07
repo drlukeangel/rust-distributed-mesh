@@ -359,14 +359,21 @@ impl NodeSelf {
         *self.records.lock().unwrap() = Some(records);
     }
 
-    /// Write `to` as this birth's state on its own record (Q356), before the frame that reports it. A
-    /// process that holds no writer yet, or a write the store refuses, leaves the frame to go as it
-    /// is; the refusal is named on the writer's span.
+    /// Write `to` as this birth's status on its own record (Q356), before the frame that reports it,
+    /// and publish it at once in its Digest (gossip.md §3.1 `Digest`: "at once when its status
+    /// changes"): the one status its record, its Digest and its answers carry. A process that holds no
+    /// writer yet, or a write the store refuses, leaves the frame to go as it is; the refusal is named
+    /// on the writer's span. A Digest sent while the birth is on no channel reaches nobody; its
+    /// heartbeats carry the status once it is.
     async fn write_state(&self, to: crate::model::NodeStatus) {
         let writer = self.records.lock().unwrap().clone();
-        let Some(writer) = writer else { return };
-        let Some(initial) = writer.start_record() else { return };
-        let _ = writer.state(initial, to).await;
+        if let Some(writer) = writer {
+            if let Some(initial) = writer.start_record() {
+                let _ = writer.state(initial, to).await;
+            }
+        }
+        let d = (self.set_status)(to);
+        let _ = self.channels.publish(&d).await;
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -1796,7 +1803,6 @@ mod tests {
                     runtime: None,
                 },
                 status: rdm_core::model::NodeStatus::Ready,
-                node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
                 emitted_at_rafka_ms: 1_000,
@@ -2001,7 +2007,6 @@ mod tests {
                     runtime: None,
                 },
                 status: rdm_core::model::NodeStatus::Ready,
-                node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
                 emitted_at_rafka_ms: 1_000,

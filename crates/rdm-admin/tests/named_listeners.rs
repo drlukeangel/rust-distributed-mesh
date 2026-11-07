@@ -118,7 +118,6 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                 runtime: Some(dep.runtime.clone()),
             },
             status: rdm_core::model::NodeStatus::Pending,
-            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,
             emitted_at_rafka_ms: 0,

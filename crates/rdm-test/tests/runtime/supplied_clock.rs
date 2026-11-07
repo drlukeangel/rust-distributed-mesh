@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
-use rdm_core::{FabricId, MeshDigest, MeshId, NodeState};
+use rdm_core::{FabricId, MeshDigest, MeshId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_client::{NodeStatus, NodeView};
@@ -145,7 +145,7 @@ fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
 }
 
 fn row(h: &(Seen, MeshDigest)) -> Value {
-    json!({ "heard_at_ms": h.0.heard_at_ms, "digest_seq": h.1.digest_seq, "emitted_at_rafka_ms": h.1.emitted_at_rafka_ms, "node_state": format!("{:?}", h.1.node_state), "incarnation": h.1.node.incarnation.as_str() })
+    json!({ "heard_at_ms": h.0.heard_at_ms, "digest_seq": h.1.digest_seq, "emitted_at_rafka_ms": h.1.emitted_at_rafka_ms, "status": format!("{:?}", h.1.status), "incarnation": h.1.node.incarnation.as_str() })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -196,9 +196,9 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     assert_eq!(held_before.state, NodeStatus::Ready);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
-    // A heartbeat carries liveness and no status (gossip.md §3.1 Digest row): the forged one says the
-    // birth is not self-ready.
-    forged.node_state = NodeState::Joining;
+    // A Digest carries its node's status (gossip.md §3.1 Digest row): the forged one says the birth is
+    // pending, not ready.
+    forged.status = rdm_core::model::NodeStatus::Pending;
     forged.digest_seq = seqs[0];
     forged.emitted_at_rafka_ms = os_now_ms() + 365 * 24 * 3600 * 1000;
     assert!(forged.digest_seq < last.digest_seq && forged.emitted_at_rafka_ms > last.emitted_at_rafka_ms);
@@ -209,7 +209,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     let held_after = estate.node_view(&target.location()).await;
     assert_eq!(held_after.state, NodeStatus::Ready, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
     assert_eq!((&held_after.node_id, &held_after.incarnation), (&held_before.node_id, &held_before.incarnation), "the same birth");
-    let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(node_id).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();
+    let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(node_id).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.status == rdm_core::model::NodeStatus::Ready).collect();
     assert!(live_after.len() >= 8, "the node kept publishing live heartbeats for the whole window ({} heard)", live_after.len());
     assert!(live_after.iter().all(|h| h.1.digest_seq > last.digest_seq), "every live heartbeat after the forged one carries a higher sequence than the last one before it");
     let silent_ms = live_after.windows(2).map(|w| w[1].0.heard_at_ms - w[0].0.heard_at_ms).max().unwrap_or(0);
@@ -224,7 +224,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         "observer_heartbeats_before_forgery": before.iter().map(row).collect::<Vec<_>>(),
         "digest_seq_rises": seqs,
         "topology_full_publication_skews_ms": topology_full_published,
-        "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "node_state": "Joining", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
+        "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "status": "Pending", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
         "member_before": { "status": held_before.state, "incarnation_id": held_before.incarnation },
         "member_after_9s": { "status": held_after.state, "incarnation_id": held_after.incarnation },
         "live_heartbeats_after_forgery": live_after.len(),

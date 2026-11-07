@@ -40,7 +40,6 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
             runtime,
         },
         status: NodeStatus::Ready,
-        node_state: rdm_core::NodeState::Alive,
         admin_api_base: full.then(|| "http://127.0.0.1:7000".to_string()),
         digest_seq: 3 + ordinal as u64,
         emitted_at_rafka_ms: 1_000 + ordinal as u64,
