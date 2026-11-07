@@ -825,9 +825,15 @@ pub struct Forwarder {
     /// The term of the role: bumped on every take and every loss, so a decision made in one term
     /// is recognisably not of the next.
     role_revision: u64,
+    /// This primary's own mesh: held as a source, so a topology read serves it, and never put into
+    /// the mesh channel, whose nodes publish themselves (gossip.md §2, Q387).
+    own_mesh: String,
 }
 
 impl Forwarder {
+    /// This primary's own mesh (see `own_mesh`).
+    pub fn set_own_mesh(&mut self, mesh: &str) { self.own_mesh = mesh.to_string(); }
+
     /// Supply this publisher's owned exact birth before making a publication.
     pub fn set_author(&mut self, author: crate::envelope::Birth) { self.author = Some(author); }
 
@@ -885,6 +891,11 @@ impl Forwarder {
     /// delta from the last published version, or a full when the delta would not fit one message.
     pub fn source(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Forward {
         let stripped = full.without_loads();
+        if mesh == self.own_mesh {
+            // Held for a topology read; its own nodes publish themselves on the mesh channel.
+            self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped });
+            return Forward::Nothing("its own mesh: its nodes publish themselves");
+        }
         let basis = match self.published.get(mesh) {
             Some(p) if &p.publisher == publisher => p.clone(),
             _ => {
@@ -935,7 +946,9 @@ impl Forwarder {
         for (mesh, publisher, version, full) in held {
             let stripped = full.without_loads();
             self.published.insert(mesh.clone(), Published { publisher: publisher.clone(), version: *version, full: stripped.clone() });
-            out.extend(self.full_frames(me, mesh, publisher, *version, &stripped, now_ms));
+            if mesh != &self.own_mesh {
+                out.extend(self.full_frames(me, mesh, publisher, *version, &stripped, now_ms));
+            }
         }
         out
     }
@@ -943,7 +956,7 @@ impl Forwarder {
     /// The fulls of what is already published (a join, heal or refeed replay): the published
     /// versions do not move.
     pub fn replay(&mut self, me: &str, now_ms: u64) -> Vec<Frame> {
-        let mut meshes: Vec<String> = self.published.keys().cloned().collect();
+        let mut meshes: Vec<String> = self.published.keys().filter(|m| **m != self.own_mesh).cloned().collect();
         meshes.sort();
         let mut out = Vec::new();
         for m in meshes {

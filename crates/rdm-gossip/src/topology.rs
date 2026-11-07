@@ -553,8 +553,9 @@ mod tests {
 
     /// CONTRACT (gossip.md "A primary change on gossip": "the mesh-primary records it on the node's row
     /// and its next `TopologyFull` projection carries it, its normal publication"; lifecycles/node-primary-update.md
-    /// step 5): a member of mesh1 holds the primary records its mesh-primary's projection carries, its own
-    /// birth's among them, though the projection's copy of its own digest is older than the one it holds.
+    /// step 5; Q387: a member's own mesh reaches it by a read): a member of mesh1 holds the primary records
+    /// its mesh-primary's read carries, its own birth's among them, though the read's copy of its own
+    /// digest is older than the one it holds.
     /// Must NOT happen: a node whose mesh-primary named it the `node` primary holding no record
     /// of it.
     #[test]
@@ -572,10 +573,9 @@ mod tests {
         let mut theirs = digest(&other, &other_inc, None, NodeStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); theirs.node.path = at.path; theirs.node.name = at.name; }
         theirs.node.mesh = "mesh1".into();
-        let members = Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
-        let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
-        assert!(heard, "the projection is admitted");
-        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
+        let read = crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
+        assert!(matches!(view.take_read_chunk(read, Side::Read, &fabric), Taken::Installed(_)), "the read is installed");
+        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's read carries");
     }
 
     /// CONTRACT (node-recovery.md step 2: "Only the mesh-primary acts. ... For an unheard mesh-primary
@@ -1049,10 +1049,10 @@ mod tests {
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(3, vec![], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.digest_view.in_flight(), vec![stop.clone()], "a version listing neither the stop nor the birth ends nothing");
         assert!(!hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone), "v2 again, earlier than the v3 held, is ignored by the receive path");
-        assert!(!view.digest_view.record(b(NodeStatus::Pending, 3)), "a heartbeat of the stopped birth is refused");
+        assert!(!view.digest_view.record(b(NodeStatus::ConnectionsDeleting, 3)), "a late Digest of the stopped cycle is refused");
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(4, vec![b(NodeStatus::Pending, 3)], vec![]), &fabric, Side::Backbone);
         assert!(view.digest_view.in_flight().is_empty(), "the projection moved past the stop: it is over");
-        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((3, NodeStatus::Pending)), "held again from the latest heartbeat it refused, with that Digest's status");
+        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((3, NodeStatus::ConnectionsDeleting)), "held again from the latest heartbeat it refused, with that Digest's status");
         assert!(view.digest_view.record(b(NodeStatus::Ready, 4)));
         assert_eq!(status(), Some(NodeStatus::Ready), "its own Digest's Ready");
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(5, vec![b(NodeStatus::Ready, 4)], vec![]), &fabric, Side::Backbone);
@@ -1111,7 +1111,7 @@ mod tests {
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>, deleted: Vec<LifecycleOp>| Frame::TopologyFull {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
-            forwarded_by: Some(publisher.node_id.to_string()),
+            forwarded_by: None,
             topology_version: version,
             published_at_rafka_ms: version,
             snapshot_id: version,
@@ -1127,7 +1127,7 @@ mod tests {
         let mut other = digest(&gone, &gone_inc, None, NodeStatus::Ready, 4);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); other.node.path = at.path; other.node.name = at.name; }
         other.node.mesh = "mesh1".into();
-        view.take_snapshot(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+        view.take_snapshot(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         let first_held_by = Instant::now();
         assert!(view.digest_view.get(id.as_str()).is_none(), "a projection is no liveness: no digest of the member is held");
         let held = |now: Instant| view.digest_view.projected_at(id.as_str(), now).map(|(d, unheard)| (d.node.incarnation.clone(), now.checked_sub(unheard)));
@@ -1135,9 +1135,9 @@ mod tests {
         assert_eq!(incarnation, inc);
         assert!(since.is_some_and(|s| s <= first_held_by), "unheard since it was first held");
         std::thread::sleep(Duration::from_millis(20));
-        view.take_snapshot(&mesh_topology(2, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+        view.take_snapshot(&mesh_topology(2, vec![member.clone(), other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "a later version listing it again does not refresh its silence");
-        view.take_snapshot(&mesh_topology(3, vec![other.clone()], vec![]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+        view.take_snapshot(&mesh_topology(3, vec![other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "the primary dropping the silent member from its projection is no departure: the birth stays held");
         let listed: Vec<rdm_core::PathName> = view.digest_view.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d.node.location()).collect();
         assert_eq!(listed.len(), 2, "both projected births are held: {listed:?}");
@@ -1145,7 +1145,7 @@ mod tests {
         assert!(view.digest_view.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
         let mut departure = op(&gone, &gone_inc, "node.delete");
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); departure.path = at.path; departure.name = at.name; }
-        view.take_snapshot(&mesh_topology(4, vec![], vec![departure]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+        view.take_snapshot(&mesh_topology(4, vec![], vec![departure]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(view.digest_view.projected_at(gone.as_str(), Instant::now()).is_none(), "a departure removes the projected birth");
         assert!(view.digest_view.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
     }
@@ -1362,9 +1362,11 @@ mod tests {
         assert_eq!(digest_view.member_status(&other, &other_inc), ready);
     }
 
-    /// CONTRACT: an overlay that ended stays ended: a stop its mesh-primary's node.joined ended,
-    /// re-sent by a snapshot built before it, opens nothing. Must NOT happen: a joined node stopped
-    /// again.
+    /// CONTRACT (Q387: a node of the mesh ends a stop by the stopped node's own Digest of its next
+    /// cycle): a late Digest of the stopped cycle is refused; the node's own Pending after it ends the
+    /// stop, and an overlay that ended stays ended: the stop re-sent by a snapshot built before it opens
+    /// nothing. Must NOT happen: a stop ended by a Digest of the cycle it stopped, or a started node
+    /// stopped again by a copy of its old stop.
     #[test]
     fn an_ended_stop_overlay_is_not_opened_again_by_a_later_copy() {
         let digest_view = DigestView::default();
@@ -1379,10 +1381,30 @@ mod tests {
         assert!(digest_view.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "node.stop");
         assert!(digest_view.stopped(stop.clone()));
-        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 130)), "a heartbeat ends no stop");
-        assert!(digest_view.joined(&op(&id, &inc, "node.start")));
-        assert!(!digest_view.stopped(stop), "a snapshot built before node.joined does not stop the node again");
+        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 126)), "a late Digest of the stopped cycle ends no stop");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 130)), "its own Digest of its next cycle ends the stop");
+        assert!(digest_view.in_flight().is_empty(), "the stop overlay ended");
+        assert!(!digest_view.stopped(stop), "a snapshot built before the stop ended does not stop the node again");
         assert!(digest_view.get(id.as_str()).is_some());
+    }
+
+    /// CONTRACT (Q387, Q197): at the stopped node's own mesh-primary its Digest of its next cycle ends
+    /// no stop: the primary takes the node's report, node.joined, which does. Must NOT happen: the
+    /// mesh-primary acting on gossip for a stop it ran.
+    #[test]
+    fn at_its_mesh_primary_only_node_joined_ends_a_stop() {
+        let digest_view = DigestView::default();
+        *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
+        digest_view.primary.store(true, Ordering::Relaxed);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
+        let stop = op(&id, &inc, "node.stop");
+        assert!(digest_view.stopped(stop.clone()));
+        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 130)), "its next-cycle Digest is refused at its mesh-primary");
+        assert_eq!(digest_view.in_flight(), vec![stop], "the stop stands");
+        assert!(digest_view.joined(&op(&id, &inc, "node.start")), "node.joined, the node's report, ends it");
+        assert!(digest_view.in_flight().is_empty());
     }
 
     /// CONTRACT: a stop of an older birth than the one held, and a stop of a deleted node, are refused;
@@ -2580,7 +2602,7 @@ mod tests {
         assert!(peer.digest_view.is_deleted(admin2.node.node_id.as_str()) && peer.digest_view.get(admin2.node.node_id.as_str()).is_none(), "the deleted primary is not held again");
 
         // An ordinary node's mesh channel: mesh1's role moves from mesh1.node-admin.1 to mesh1.node-admin.2.
-        let member = test_view("mesh1", "mesh1.node.9");
+        let member = test_view("mesh9", "mesh1.node.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
         let (p1, p2, rpc1) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1));
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 5, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 500), &fabric, Side::MeshChannel));
@@ -2641,7 +2663,7 @@ mod tests {
         assert!(fp.digest_view.in_flight().contains(&stop_x) && fp.digest_view.in_flight().contains(&stop_p), "both stops stand");
 
         // An own-mesh member, on its mesh channel: the stop is the fabric-primary's.
-        let member = test_view("mesh1", "mesh1.node.9");
+        let member = test_view("mesh9", "mesh1.node.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
         assert!(hear(&mut channel, &member, &snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.node-admin.1"), 7, 7, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
         assert!(hear(&mut channel, &member, &StatusEvent::Stopped.frame(stop_p.clone(), publisher_of(&fabric_primary), 4), &fabric, Side::MeshChannel));
@@ -2722,7 +2744,7 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let fabric = FabricId::parse("fab000000001").unwrap();
-        let member = test_view("mesh1", "mesh1.node.9");
+        let member = test_view("mesh9", "mesh1.node.9");
         let hears = |f: &Frame| hear(&mut member.order.lock().unwrap(), &member, f, &fabric, Side::MeshChannel);
         let reads = |chunk: crate::snapshot::Chunk| member.take_read_chunk(chunk, Side::Read, &fabric);
         let held = || member.mesh_rx.lock().unwrap().held_version("mesh1");
@@ -2868,11 +2890,11 @@ mod tests {
         let rpc = birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 3);
         let stop = op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &rpc.node.node_id, &rpc.node.incarnation, "node.stop");
         let member = |name: &str| {
-            let v = test_view("mesh1", name);
+            let v = test_view("mesh9", name);
             v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
             v.digest_view.primaries.take(PrimaryRole::FabricPrimary, &primary_of(&fabric_primary, 1));
             v.take_snapshot(&snapshot_of("mesh1", &publisher_of(&primary), Some("mesh1.node-admin.1"), 5, 1, vec![primary.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel, &mut v.order.lock().unwrap());
-            assert!(v.digest_view.record(rpc.clone()));
+            assert!(v.digest_view.get(rpc.node.node_id.as_str()).is_some(), "the birth is held from the projection");
             v
         };
         let late = member("mesh1.node.7");
@@ -3088,13 +3110,14 @@ mod tests {
         let view = test_view("mesh1", "mesh1.node-admin.2");
         assert!(view.digest_view.record(admin2.clone()));
 
-        // Gossip v1 arrives on mesh-channel and backbone while the v0 topology-read stream is in flight.
+        // Gossip v1 arrives on the backbone, where a node-admin hears its own mesh's aggregate (Q387),
+        // while the v0 topology-read stream is in flight.
         let gossip_v1 = stamped(
-            snapshot_of("mesh1", &p, Some("mesh1.node-admin.1"), 1, 1, vec![primary.clone(), admin2.clone()], vec![], vec![]),
+            snapshot_of("mesh1", &p, None, 1, 1, vec![primary.clone(), admin2.clone()], vec![], vec![]),
             100,
         );
-        assert!(hear(&mut view.order.lock().unwrap(), &view, &gossip_v1, &fabric, Side::MeshChannel));
-        assert_eq!(view.mesh_rx.lock().unwrap().held_version("mesh1"), Some((p.clone(), 1)));
+        assert!(hear(&mut view.order.lock().unwrap(), &view, &gossip_v1, &fabric, Side::Backbone));
+        assert_eq!(view.backbone_rx.lock().unwrap().held_version("mesh1"), Some((p.clone(), 1)));
 
         // The in-flight topology read served at v0 arrives on Side::Read, followed by the primary record.
         let read_v0 = crate::snapshot::Chunk {
@@ -3114,7 +3137,7 @@ mod tests {
             matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version: 1, offered_version: 0 })),
             "the source projection stays at v1: {taken:?}"
         );
-        assert_eq!(view.mesh_rx.lock().unwrap().held_version("mesh1"), Some((p, 1)));
+        assert_eq!(view.backbone_rx.lock().unwrap().held_version("mesh1"), Some((p, 1)));
 
         assert!(matches!(view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1)), RoleTaken::Held { .. }));
         let resolved = view.digest_view.mesh_primary("mesh1").expect("the primary's digest from the own-mesh topology read is held in the digest view");

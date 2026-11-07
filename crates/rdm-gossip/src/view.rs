@@ -130,6 +130,7 @@ impl View {
         view.digest_view.held_name = view.held_name.clone();
         // One flag: the view replays as its mesh's primary while the digest view authors its members' statuses.
         view.primary = view.digest_view.primary.clone();
+        view.forwarder.lock().unwrap().set_own_mesh(mesh);
         let forwarder = view.forwarder.clone();
         *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| {
             if let Ok(mut fw) = forwarder.try_lock() {
@@ -336,6 +337,18 @@ impl View {
     /// channel is refused by name. Whoever published it, a frame is taken for what it carries: one
     /// published before the newest the channel holds of its mesh was already ignored by the receive
     /// path (R-RX3, [`crate::receive_order`]), and only the mesh-primary publishes a mesh (R-RX2).
+    /// A projection of this node's own mesh on its own mesh channel is refused by name: its mesh-primary
+    /// puts nothing of its own mesh there, whose nodes publish themselves, and its view reaches this
+    /// node only by a read (gossip.md §2, §3.3, Q387). What arrives is a frame from before that rule.
+    fn own_mesh_on_its_channel(&self, mesh: &str, side: Side, publisher: &PublisherId, frame: &'static str) -> bool {
+        if side != Side::MeshChannel || mesh != self.mesh {
+            return false;
+        }
+        tracing::info_span!("rdm.mesh.topology.reject.via-own-mesh-on-its-channel", node = %self.current_name(), mesh = %mesh, publisher = %publisher, frame)
+            .in_scope(|| tracing::info!("a projection of this node's own mesh on its mesh channel: refused, its nodes publish themselves and its view comes by a read"));
+        true
+    }
+
     pub(crate) fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side, order: &mut crate::receive_order::ReceiveOrder) -> SnapshotTaken {
         match f.data() {
             Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => {
@@ -349,6 +362,9 @@ impl View {
                         forwarded_by = forwarded_by.as_deref().unwrap_or(""),
                     )
                     .in_scope(|| tracing::warn!("a TopologyFull frame on a channel it is not published on: refused"));
+                    return SnapshotTaken::default();
+                }
+                if self.own_mesh_on_its_channel(mesh, side, publisher, "mesh-topology") {
                     return SnapshotTaken::default();
                 }
                 if self.outside_build(mesh, side) {
@@ -403,6 +419,9 @@ impl View {
                 if side == Side::Backbone {
                     tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
                         .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete snapshots travel: refused"));
+                    return SnapshotTaken::default();
+                }
+                if self.own_mesh_on_its_channel(mesh, side, source_publisher, "mesh-topology-delta") {
                     return SnapshotTaken::default();
                 }
                 if self.outside_build(mesh, side) {

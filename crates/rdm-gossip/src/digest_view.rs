@@ -722,6 +722,35 @@ impl DigestView {
     /// birth). A digest of another birth of the node ends the stop and is taken by the rules of any
     /// birth.
     pub(crate) fn stopped_refuses(&self, d: &MeshDigest, via: &'static str, now: Instant) -> bool {
+        // A node of this view's own mesh ends its stop by its own Digest of its next cycle (gossip.md
+        // §3.3, Q387: its mesh-primary puts nothing of its own mesh on the mesh channel): a start or a
+        // new join, `Starting` or `Pending` ([`rdm_core::model::NodeStatus::moves_to`]), sent after
+        // every Digest of it held or refused since the stop. Its own mesh-primary ends the stop by the
+        // node's report, `node.joined`, never by gossip (Q197).
+        let next_cycle = {
+            let marks = self.stopped_marks.lock().unwrap();
+            marks.get(d.node.node_id.as_str()).is_some_and(|mark| {
+                mark.incarnation == d.node.incarnation
+                    && matches!(d.status, rdm_core::model::NodeStatus::Starting | rdm_core::model::NodeStatus::Pending)
+                    && d.digest_seq > mark.held_seq
+                    && mark.latest.as_ref().is_none_or(|(l, _, _)| d.digest_seq > l.digest_seq)
+            })
+        } && self.own_mesh_member(d) && !self.primary_of(&d.node.mesh);
+        if next_cycle {
+            self.end_stop(d.node.node_id.as_str());
+            tracing::info_span!(
+                "rdm.mesh.topology.update.via-next-cycle-digest",
+                node = %self.observer_name.lock().unwrap(),
+                member_path = %d.node.path, member_name = %d.node.name,
+                node_id = %d.node.node_id,
+                incarnation_id = %d.node.incarnation.as_str(),
+                status = ?d.status,
+                digest_seq = d.digest_seq,
+                via,
+            )
+            .in_scope(|| tracing::info!("the stopped node's own Digest of its next cycle: its stop is over"));
+            return false;
+        }
         let held_seq = {
             let mut marks = self.stopped_marks.lock().unwrap();
             let Some(mark) = marks.get_mut(d.node.node_id.as_str()) else { return false };
@@ -758,7 +787,7 @@ impl DigestView {
             held_digest_seq = held_seq,
             via,
         )
-        .in_scope(|| tracing::info!("a digest of a stopped birth: refused, the stop stands until its mesh-primary's node.joined"));
+        .in_scope(|| tracing::info!("a digest of a stopped birth: refused, the stop stands until its next cycle"));
         true
     }
 

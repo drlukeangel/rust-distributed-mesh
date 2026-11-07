@@ -191,23 +191,17 @@ fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) ->
     .collect()
 }
 
-/// CONTRACT (gossip.md §3.1 `TopologyFull` / `TopologyDelta`: "Own-mesh members receive
-/// statuses through the primary's versioned member projection ... For an own-mesh birth, liveness,
-/// endpoints with freshness and the runtime fact come from its Digest and status from the
-/// projection; NodeStopped and NodeDeleting stay immediate events"): through real
-/// gossip, mesh1.node.2 (an own-mesh member) holds mesh1.node.1 stopped by the mesh-primary's
-/// `NodeStopped`. Every heartbeat of the stopped birth it hears (a late ready one, a pending one) is
-/// refused by name, and so is a projection entry of the birth from a version that never carried the
-/// stop (a read built before the stop, at the version held). The member learns the stop ended only
-/// from the mesh-primary's projection: once the primary's projection moves, in order, from the
-/// version carrying the stop to the one listing the birth after `node.joined`. Its status is then the
-/// projection's `Pending` whatever the birth's next heartbeat says, and `Ready` only when
-/// the projection says so. Where the stop ends, the member holds the birth again from the latest
-/// heartbeat of it it refused, with the projection's status and that heartbeat's liveness, so the birth
-/// never vanishes from its view. Must NOT happen: a heartbeat, or a projection entry from before the
-/// stop, ending the stop or moving the status; the birth missing from the view once its stop ended.
+/// CONTRACT (gossip.md §3.1 `Digest`, §3.3, Q387: inside its mesh a node's status comes from its own
+/// Digest; its mesh-primary puts nothing of its own mesh on the mesh channel): through real gossip,
+/// mesh1.node.2 holds mesh1.node.1 stopped by the mesh-primary's `NodeStopped`. A late Digest of the
+/// stopped cycle is refused by name, and so is a projection entry of the birth from a read built
+/// before the stop. The stopped node's own Digest of its next cycle, `Pending`, ends the stop, and the
+/// member holds the birth from it, its status and liveness that Digest's; its later `Ready` moves it.
+/// The mesh-primary ends its own stop by `node.joined` and publishes nothing of mesh1 on mesh1's
+/// channel. Must NOT happen: a Digest of the stopped cycle, or a read from before the stop, ending the
+/// stop; a projection of the member's own mesh on its channel.
 #[test]
-fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_mesh_primarys_projection() {
+fn an_own_mesh_node_holding_node_stopped_ends_the_stop_by_the_nodes_next_cycle_digest() {
     let dir = crate::evidence_dir();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-s52").expect("the cell's evidence file can be created");
     capture.run(4, async {
@@ -245,10 +239,15 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert!(p.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "the primary sets it ready from its node.started");
         m.digest_view.record(b(NodeStatus::Ready, 1));
 
-        // v1: the primary's projection lists mesh1.node.1 ready.
+        // v1: the primary's projection lists mesh1.node.1 ready; the member holds it by a read, the one
+        // way its mesh-primary's view reaches it (gossip.md §3.3, Q387: nothing of its own mesh on the
+        // mesh channel).
         publication().await;
-        until("the member to hold the primary's first projection", || version_at_m().is_some()).await;
-        let v1 = version_at_m().unwrap();
+        let first = p.held_topology(&p.digest_view.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
+        for c in read_chunks(&first, "mesh1") {
+            let _ = m_channels.take_read_chunk(c, "mesh1");
+        }
+        let v1 = version_at_m().expect("the member holds the primary's first projection by its read");
         // What the primary serves a topology read now: built before the stop.
         let before_stop = p.held_topology(&p.digest_view.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
 
@@ -265,47 +264,30 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         }
         assert!(m.digest_view.get(id.as_str()).is_none() && m.digest_view.in_flight().contains(&stop), "a projection entry from before the stop does not end it");
 
-        // v2: the primary's projection carries the stop and no longer lists the birth.
-        publication().await;
-        until("the member to hold the projection carrying the stop", || version_at_m().is_some_and(|v| v > v1)).await;
-        let v2 = version_at_m().unwrap();
-
-        // The stopped birth's heartbeats reach the member: a late ready one (sent before the stop) and a
-        // pending one (the shape of its rejoin). Each is refused by name; the stop stands.
-        assert!(!m.digest_view.record(b(NodeStatus::Ready, 2)), "a late ready heartbeat of the stopped birth is refused");
-        assert!(!m.digest_view.record(b(NodeStatus::Pending, 3)), "a pending heartbeat of the stopped birth is refused");
-        // When the member heard heartbeat 3: the birth's own liveness word, whatever ends the stop later.
-        let heard_3 = std::time::Instant::now();
-        assert!(m.digest_view.get(id.as_str()).is_none(), "no heartbeat brought the stopped birth back");
-        assert!(m.digest_view.in_flight().contains(&stop), "only the mesh-primary's projection ends the stop");
+        // The stopped birth's late Digest of the cycle it stopped reaches the member: refused by name.
+        assert!(!m.digest_view.record(b(NodeStatus::Ready, 2)), "a late ready Digest of the stopped cycle is refused");
+        assert!(m.digest_view.in_flight().contains(&stop), "the stop stands");
 
         // node.joined at the mesh-primary (its start workflow took `Started`): its own view ends the stop
-        // and holds the birth Pending; v3, its next projection, lists the birth again.
+        // and holds the birth Pending, from the report; the node's own Digest of its next cycle ends it
+        // at the member.
         let start = LifecycleOp { operation: rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), ..stop.clone() };
         assert!(p.digest_view.joined(&start), "the mesh-primary ends the stop at node.joined");
         assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Pending), "the primary holds the birth Pending");
         publication().await;
-        until("the member to end the stop from the primary's projection", || !m.digest_view.in_flight().contains(&stop)).await;
-        let v3 = version_at_m().unwrap();
-        assert!(v3 > v2, "the stop ended at a newer version than the one carrying it");
-        // The birth never vanishes from the member's view: it is held again from the latest heartbeat of
-        // it the member refused (3), with that Digest's status and liveness: the projection ends the stop
-        // and gives neither.
-        let since_3 = heard_3.elapsed();
-        let (again, silent) = m.digest_view.get(id.as_str()).expect("the member holds the birth again once its projection ends the stop");
-        assert_eq!((again.node.incarnation.clone(), again.digest_seq, again.status), (inc.clone(), 3, NodeStatus::Pending), "held from the latest refused heartbeat, with its status");
-        assert!(silent >= since_3, "its liveness is heartbeat 3's, never refreshed by the projection: silent {silent:?}, heard {since_3:?} ago");
-        assert!(m.digest_view.record(b(NodeStatus::Ready, 4)), "the birth's heartbeat is taken once the stop is over");
-        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "its status is its own Digest's Ready (Q387)");
+        assert!(m.digest_view.record(b(NodeStatus::Pending, 3)), "the node's own Pending of its next cycle is taken");
+        assert!(!m.digest_view.in_flight().contains(&stop), "and ends the stop");
+        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| (d.node.incarnation.clone(), d.digest_seq, d.status)), Some((inc.clone(), 3, NodeStatus::Pending)), "held from that Digest, with its status");
+        assert!(m.digest_view.record(b(NodeStatus::Ready, 4)), "its next Digest is taken");
+        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "its status is its own Digest's Ready");
 
         // node.started: the primary takes the birth's report (its DeclareNodeState(Ready)); at the
-        // primary its Digest moves no status, its report does (Q387, Q197). Its next projection says ready.
+        // primary its Digest moves no status, its report does (Q387, Q197).
         assert!(p.digest_view.record(b(NodeStatus::Ready, 4)));
         assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Pending), "the birth's Digest moves no status at the primary");
         assert!(p.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
         publication().await;
-        until("the member to take ready from the projection", || m.digest_view.get(id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready)).await;
-        let v4 = version_at_m().unwrap();
+        assert_eq!(version_at_m(), Some(v1), "nothing of mesh1 reached the member on mesh1's channel: it holds the version it read");
 
         drop(bb);
         for n in [&p_node, &m_node] {
@@ -315,16 +297,16 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let refused: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
         assert!(refused.iter().any(|s| attr(s, "via") == "heartbeat" && attr(s, "digest_seq") == "2"), "the late heartbeat is refused by name: {refused:#?}");
         assert!(refused.iter().any(|s| attr(s, "via") == "projection" && attr(s, "held_version") == v1.to_string() && attr(s, "topology_version") == v1.to_string()), "the projection entry from before the stop is refused naming both versions: {refused:#?}");
-        let ended: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-stop-ended-in-projection").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
-        assert_eq!(ended.len(), 1, "the member ended the stop once, at the ordered move: {ended:#?}");
-        assert_eq!((attr(ended[0], "node"), attr(ended[0], "held_version"), attr(ended[0], "topology_version"), attr(ended[0], "status")), ("mesh1.node.2".to_string(), v2.to_string(), v3.to_string(), "Pending".to_string()));
+        let ended: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-next-cycle-digest").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
+        assert_eq!(ended.len(), 1, "the member ended the stop once, by the node's own Digest: {ended:#?}");
+        assert_eq!((attr(ended[0], "node"), attr(ended[0], "digest_seq"), attr(ended[0], "status")), ("mesh1.node.2".to_string(), "3".to_string(), "Pending".to_string()));
         let joined: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-node-joined").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
         assert_eq!((joined.len(), joined.first().map(|s| attr(s, "node"))), (1, Some(p_node_id.to_string())), "the mesh-primary took node.joined once: {joined:#?}");
-        let delta: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1" && attr(s, "topology_version") == v3.to_string()).collect();
-        assert_eq!(delta.len(), 1, "the primary published the projection that clears the stop on its own channel: {delta:#?}");
-        assert_eq!((attr(delta[0], "base_version"), attr(delta[0], "changed"), attr(delta[0], "in_flight")), (v2.to_string(), "1".to_string(), "0".to_string()), "the clear travels as the birth's own changed entry");
+        let own_mesh_frames: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().chain(named(&spans, "rdm.mesh.topology.update.via-forwarded-full")).filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1" && attr(s, "chunks") != "0").collect();
+        assert!(own_mesh_frames.is_empty(), "the primary put nothing of mesh1 on mesh1's channel: {own_mesh_frames:#?}");
         let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-digest-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.node.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "digest_seq"))).collect();
-        assert_eq!(statuses, vec!["Ready@1".to_string(), "Ready@4".to_string()], "the member's statuses of the birth come from its own Digests alone (Q387): {v4}");
+        assert_eq!(statuses, vec!["Ready@1".to_string(), "Pending@3".to_string(), "Ready@4".to_string()], "the member's statuses of the birth come from its own Digests alone (Q387)");
+        let delta: Vec<&Value> = Vec::new();
         let mut lines = String::new();
         for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {
             lines.push_str(&format!("{what} {} {} via={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "via"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));
@@ -382,10 +364,15 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         assert!(p.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "the primary sets it ready from its node.started");
         m.digest_view.record(b(NodeStatus::Ready, 1));
 
-        // v1: the primary's projection lists mesh1.node.1 ready.
+        // v1: the primary's projection lists mesh1.node.1 ready; the member holds it by a read, the one
+        // way its mesh-primary's view reaches it (gossip.md §3.3, Q387: nothing of its own mesh on the
+        // mesh channel).
         publication().await;
-        until("the member to hold the primary's first projection", || version_at_m().is_some()).await;
-        let v1 = version_at_m().unwrap();
+        let first = p.held_topology(&p.digest_view.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
+        for c in read_chunks(&first, "mesh1") {
+            let _ = m_channels.take_read_chunk(c, "mesh1");
+        }
+        let v1 = version_at_m().expect("the member holds the primary's first projection by its read");
 
         // The stop: the member takes the primary's NodeStopped event, and nothing else of it.
         let stop = stop_op(&b(NodeStatus::Ready, 1));

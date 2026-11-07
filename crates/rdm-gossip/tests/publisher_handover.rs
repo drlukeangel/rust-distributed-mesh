@@ -96,6 +96,23 @@ fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
     LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
+/// What `view`'s topology read serves of `mesh`, as the chunks a reader takes (gossip.md §3.3: a node
+/// holds its own mesh's projection only by a read, Q387).
+fn read_of(view: &TopologyView, me: &MeshDigest, mesh: &str) -> Vec<rdm_gossip::snapshot::Chunk> {
+    let served = view.held_topology(me);
+    let s = served.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
+    rdm_gossip::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
+        mesh: s.mesh.clone(), publisher: s.publisher.clone(), forwarded_by: None, topology_version: s.topology_version,
+        published_at_rafka_ms: 1, snapshot_id: 900, chunk_index, chunk_count, digests, in_flight, deleted,
+    }.authored(&crate::gossip_wire::author(), 0, 1))
+    .into_iter()
+    .map(|f| match f.into_data() {
+        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => rdm_gossip::snapshot::Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted },
+        _ => unreachable!("chunks_of shapes TopologyFull"),
+    })
+    .collect()
+}
+
 fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
     MeshDigest { digest_seq, ..d.clone() }
 }
@@ -160,6 +177,10 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         bb1.hold_primary(PrimaryRole::MeshPrimary, primary_of(&p1_d, 1));
         bb1.set_mesh_primary(true);
         bb1.publish(&m1, bb1.own_members(&m1)).await;
+        // Its own mesh reaches the member by a read (Q387: nothing of mesh1 on mesh1's channel).
+        for c in read_of(&m1, &p1_d, "mesh1") {
+            let _ = m_channels.take_read_chunk(c, "mesh1");
+        }
         until("the member to hold mesh1.node-admin.1's projection", || held_at_member().is_some_and(|(p, _)| p == pub1)).await;
         let (_, pred_version) = held_at_member().unwrap();
         // The instant mesh1.node-admin.1's late frames are stamped with: before the successor publishes.
@@ -171,11 +192,17 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         bb2.hold_primary(PrimaryRole::MeshPrimary, primary_of(&p2_d, 2));
         bb2.set_mesh_primary(true);
         bb2.publish(&m2, bb2.own_members(&m2)).await;
+        for c in read_of(&m2, &p2_d, "mesh1") {
+            let _ = m_channels.take_read_chunk(c, "mesh1");
+        }
         until("the member to install the successor's full", || held_at_member().is_some_and(|(p, _)| p == pub2)).await;
         let (_, v1) = held_at_member().unwrap();
         m2.digest_view.record(rpc2.clone());
         bb2.publish(&m2, bb2.own_members(&m2)).await;
-        until("the member to apply the successor's delta", || held_at_member().is_some_and(|(p, v)| p == pub2 && v > v1)).await;
+        for c in read_of(&m2, &p2_d, "mesh1") {
+            let _ = m_channels.take_read_chunk(c, "mesh1");
+        }
+        until("the member to take the successor's next version", || held_at_member().is_some_and(|(p, v)| p == pub2 && v > v1)).await;
         let (_, v2) = held_at_member().unwrap();
 
         // mesh1.node-admin.2 executes mesh1.node.3's delete: its NodeDeleting at the version it moved to.
@@ -232,22 +259,21 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mut said: Vec<_> = ignored.iter().map(|s| fields(s)).collect();
         let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
         let mut expected = vec![
-            ("mesh:mesh1".to_string(), "mesh-topology".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.topology.reject.via-stale".to_string()),
-            ("mesh:mesh1".to_string(), "mesh-topology-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.topology.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.topology.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.topology.reject.via-stale".to_string()),
         ];
-        // The successor's delta stamp is the member's held key of mesh1: read it from the span itself.
-        let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "mesh-topology").map(|s| attr(s, "held_key")).unwrap_or_default();
-        for e in expected.iter_mut().take(2) {
-            e.3 = held_stamp.clone();
-        }
         // Two senders: the receive order across them is gossip's own.
         said.sort();
         expected.sort();
-        assert_eq!(said, expected, "each late frame is ignored by the receive path, by name: {ignored:#?}");
-        let held_published_at: u64 = held_stamp.strip_prefix("published_at_rafka_ms=").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
-        assert!(held_published_at > pred_stamp && held_stamp.ends_with(&format!(" topology_version={v2}")), "the held key of mesh1 is the successor's, stamped after the late frames: {held_stamp}");
+        assert_eq!(said, expected, "each late lifecycle frame and heartbeat is ignored by the receive path, by name: {ignored:#?}");
+        // The predecessor's late full and delta of mesh1 are projections of the member's own mesh on its
+        // channel: refused by name whatever their stamp (gossip.md §3.3, Q387: that view comes by a read).
+        let own: Vec<(String, String)> = at("rdm.mesh.topology.reject.via-own-mesh-on-its-channel", rpc1.node.node_id.as_str()).into_iter()
+            .filter(|s| s["start_unix_nano"].as_u64().is_some_and(|t| t >= late_from) && attr(s, "publisher") == pub1.to_string())
+            .map(|s| (attr(s, "mesh"), attr(s, "frame"))).collect();
+        let mut own = own; own.sort(); own.dedup();
+        assert_eq!(own, vec![("mesh1".to_string(), "mesh-topology".to_string()), ("mesh1".to_string(), "mesh-topology-delta".to_string())], "the late full and delta of mesh1 are refused as its own mesh on its channel");
+        let _ = (pred_stamp, pred_version);
         for refusal in ["rdm.mesh.topology.reject.via-predecessor-publisher", "rdm.mesh.topology.reject.via-non-primary-publisher"] {
             assert!(spans.iter().all(|s| s["name"] != refusal), "no frame is refused for who published it: {refusal}");
         }
@@ -324,10 +350,11 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
     });
 }
 
-/// The same birth's source full and own-mesh forwarded full are distinct publications, so their
-/// standard source+id pairs must remain unique even at an unchanged material version.
+/// One birth's backbone publications at an unchanged material version are distinct publications, so
+/// their standard source+id pairs stay unique; nothing of its own mesh goes on its own mesh channel,
+/// whose nodes publish themselves (gossip.md §2, Q387).
 #[test]
-fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
+fn one_birth_uses_one_publication_counter_and_puts_nothing_of_its_own_mesh_on_its_channel() {
     use futures_lite::StreamExt;
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-publication-counter").unwrap();
     capture.run(4, async {
@@ -350,27 +377,37 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         tokio::time::timeout(Duration::from_secs(5), remote.joined()).await.unwrap().unwrap();
         let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();
         let mut ids = std::collections::BTreeSet::new();
-        for count in [2, 1] {
+        let mut on_mesh = 0;
+        for _ in 0..2 {
             assert!(backbone.publish(&topology_view, vec![]).await);
-            let events = tokio::time::timeout(Duration::from_secs(5), async {
-                let mut events = Vec::new();
-                while events.len() < count {
-                    let event = tokio::select! { event = local.next() => event, event = remote.next() => event };
-                    if let Some(Ok(iroh_gossip::api::Event::Received(message))) = event {
-                        let frame = Frame::decode(&message.content).unwrap();
-                        if matches!(frame.data(), Frame::TopologyFull { .. }) { events.push(frame); }
+            let full = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    tokio::select! {
+                        event = local.next() => if let Some(Ok(iroh_gossip::api::Event::Received(message))) = event {
+                            if matches!(Frame::decode(&message.content).unwrap().data(), Frame::TopologyFull { .. }) { on_mesh += 1; }
+                        },
+                        event = remote.next() => if let Some(Ok(iroh_gossip::api::Event::Received(message))) = event {
+                            let frame = Frame::decode(&message.content).unwrap();
+                            if matches!(frame.data(), Frame::TopologyFull { .. }) { break frame; }
+                        },
                     }
                 }
-                events
             }).await.unwrap();
-            for event in events {
-                let context = event.context().unwrap();
-                assert_eq!(context.source, rdm_gossip::envelope::Birth::publisher(&fabric(), &author));
-                assert_eq!(context.sequence.as_deref(), Some("00000000000000000001"));
-                assert!(ids.insert(context.id.clone()), "distinct source and forwarded publications reused {}", context.id);
-            }
+            let context = full.context().unwrap();
+            assert_eq!(context.source, rdm_gossip::envelope::Birth::publisher(&fabric(), &author));
+            assert_eq!(context.sequence.as_deref(), Some("00000000000000000001"));
+            assert!(ids.insert(context.id.clone()), "two backbone publications reused {}", context.id);
         }
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 2);
+        // The backbone's two fulls were received; a full of mesh1 on mesh1's channel would have been too.
+        let _ = tokio::time::timeout(Duration::from_millis(500), async {
+            while let Some(Ok(event)) = local.next().await {
+                if let iroh_gossip::api::Event::Received(message) = event {
+                    if matches!(Frame::decode(&message.content).unwrap().data(), Frame::TopologyFull { .. }) { on_mesh += 1; }
+                }
+            }
+        }).await;
+        assert_eq!(on_mesh, 0, "nothing of mesh1 on mesh1's channel");
         source.ep.close().await; probe.ep.close().await;
     });
 }
