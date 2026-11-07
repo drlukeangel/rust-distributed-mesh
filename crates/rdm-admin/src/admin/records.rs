@@ -298,14 +298,6 @@ pub(crate) fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-pub(crate) fn node_status(s: MemberStatus) -> NodeStatus {
-    match s {
-        MemberStatus::Pending => NodeStatus::Pending,
-        MemberStatus::Ready => NodeStatus::Ready,
-        MemberStatus::ConnectionsDeleting => NodeStatus::ConnectionsDeleting,
-        MemberStatus::Leaving => NodeStatus::Leaving,
-    }
-}
 
 /// What this admin's pipelines published and removed, and the meshes its
 /// Builds created: merged into the topology projection.

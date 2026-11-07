@@ -576,13 +576,13 @@ mod tests {
     use super::*;
     use crate::status::StatusEvent;
     use crate::snapshot::PublisherId;
-    use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshNode, NodeId};
 
     fn birth(path: rdm_core::PathName, mesh: &str, r#type: &str) -> MeshDigest {
         MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
-            status: MemberStatus::Ready,
+            status: NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,

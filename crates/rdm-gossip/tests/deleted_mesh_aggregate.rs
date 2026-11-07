@@ -3,7 +3,7 @@
 //! `via-member-state` (`Leaving, routable=false`), and hold the last admin deleted for
 //! `DELETED_RETENTION` while keeping the final mesh topology in `SnapshotReceiver` and `Forwarder`.
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_gossip::frame::Frame;
 use rdm_gossip::snapshot::SnapshotReceiver;
 
@@ -24,7 +24,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Leaving,
+        status: NodeStatus::Leaving,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

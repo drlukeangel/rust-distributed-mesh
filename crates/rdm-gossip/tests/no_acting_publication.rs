@@ -6,7 +6,7 @@
 //! (A deleted mesh's topology from its last admin's stop on is `deleted_mesh_aggregate`'s.)
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::status::StatusEvent;
@@ -36,7 +36,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

@@ -89,10 +89,10 @@ impl UnreachableMark {
 /// (node-recovery.md step 1): an observer mark beside a live status (`Pending`, `Ready`, or
 /// none held), never over a lifecycle state the node reported and the mesh-primary recorded
 /// (connections-deleting, stopping, stopped).
-pub(crate) fn marks_over(recorded: Option<rdm_core::MemberStatus>) -> bool {
+pub(crate) fn marks_over(recorded: Option<rdm_core::model::NodeStatus>) -> bool {
     match recorded {
-        Some(rdm_core::MemberStatus::ConnectionsDeleting | rdm_core::MemberStatus::Leaving) => false,
-        Some(rdm_core::MemberStatus::Pending | rdm_core::MemberStatus::Ready) | None => true,
+        Some(rdm_core::model::NodeStatus::Starting | rdm_core::model::NodeStatus::Pending | rdm_core::model::NodeStatus::Ready | rdm_core::model::NodeStatus::PendingReconnect) | None => true,
+        Some(_) => false,
     }
 }
 
@@ -1002,7 +1002,7 @@ pub(crate) mod tests {
     // @feature: node-lifecycle
     #[test]
     fn a_pending_reconnect_mark_never_overwrites_an_admitted_stopping() {
-        use rdm_core::MemberStatus as M;
+        use rdm_core::model::NodeStatus as M;
         for live in [None, Some(M::Pending), Some(M::Ready)] {
             assert!(marks_over(live), "{live:?}: marked");
         }
@@ -1804,12 +1804,12 @@ pub(crate) mod tests {
     /// no receipt of, a receipt of another incarnation, or one heard within the floor carries none.
     #[test]
     fn the_silent_set_marks_each_birth_at_its_last_receipt_plus_the_floor() {
-        use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
+        use rdm_core::{EndpointId, FabricId, IncarnationId, MeshDigest, MeshNode};
         let floor = std::time::Duration::from_secs(3);
         let digest = |name: crate::model::PathName, mesh: &str, r#type: &str| MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: crate::model::NodeId::mint(), path: name.path.clone(), name: name.name.clone(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
-            status: MemberStatus::Ready,
+            status: rdm_core::model::NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 1,

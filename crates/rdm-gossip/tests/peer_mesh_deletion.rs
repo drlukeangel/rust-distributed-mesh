@@ -12,7 +12,7 @@
 //! deletion, and mesh2's primary later took the deleted birth back as an arrival.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::frame::Frame;
@@ -36,7 +36,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, 
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

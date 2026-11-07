@@ -116,7 +116,7 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rd
             // A digest says what the node last reported, not that it is alive: whoever answered
             // heard it at an age the digest does not carry. Every birth is therefore not yet
             // reached (the sweep's ping, or its own digest, says more), never ready.
-            let transition = (d.status != rdm_core::MemberStatus::Ready).then(|| crate::admin::node_status(d.status));
+            let transition = (d.status != rdm_core::model::NodeStatus::Ready).then(|| d.status);
             MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(),
                 transition,
                 ready: false,
@@ -342,17 +342,17 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::MemberStatus;
+    use rdm_core::model::NodeStatus;
 
     /// An own-mesh birth of the map as a topology read gives it: the status its source held.
-    fn birth(name: PathName, mesh: &str, r#type: &str, status: MemberStatus) -> MapNode {
+    fn birth(name: PathName, mesh: &str, r#type: &str, status: rdm_core::model::NodeStatus) -> MapNode {
         MapNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
             path: name.path.clone(), name: name.name.clone(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: IncarnationId::mint(),
-            transition: (status != MemberStatus::Ready).then(|| crate::admin::node_status(status)),
+            transition: (status != rdm_core::model::NodeStatus::Ready).then(|| status),
             ready: false,
             data_dir: None,
             admin_api_base: None,
@@ -362,7 +362,7 @@ mod tests {
     // @feature: node-reference-fields
     #[test]
     fn entry_map_keeps_distinct_ids_at_the_same_location() {
-        let first = birth(PathName::new("unrelated.path", "member").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        let first = birth(PathName::new("unrelated.path", "member").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         let second = MapNode { node_id: NodeId::mint(), ..first.clone() };
         let own = own_mesh_map(&[first.clone(), second.clone(), first.clone()], "mesh2", &NodeId::mint());
         assert_eq!(own.len(), 2);
@@ -378,10 +378,10 @@ mod tests {
     #[test]
     fn the_entry_pings_every_own_mesh_birth_whatever_its_status() {
         let map = vec![
-            birth(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Leaving),
-            birth(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", MemberStatus::Ready),
-            birth(PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node", MemberStatus::ConnectionsDeleting),
-            birth(PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node", MemberStatus::Pending),
+            birth(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Leaving),
+            birth(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready),
+            birth(PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::ConnectionsDeleting),
+            birth(PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Pending),
         ];
         let pinged: Vec<PathName> = sweep_targets(&map).iter().map(|n| n.location()).collect();
         assert_eq!(pinged, vec![PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node", "3").unwrap(), PathName::new("mesh2.node", "4").unwrap()]);
@@ -395,10 +395,10 @@ mod tests {
     #[test]
     fn the_local_node_is_tried_settled_births_first() {
         let map = vec![
-            birth(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::ConnectionsDeleting),
-            birth(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", MemberStatus::Leaving),
-            birth(PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node", MemberStatus::Ready),
-            birth(PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node", MemberStatus::Ready),
+            birth(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::ConnectionsDeleting),
+            birth(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Leaving),
+            birth(PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready),
+            birth(PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready),
         ];
         let tried: Vec<PathName> = local_candidates(&map).iter().map(|n| n.location()).collect();
         assert_eq!(tried, vec![PathName::new("mesh2.node", "3").unwrap(), PathName::new("mesh2.node", "4").unwrap(), PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap()]);
@@ -498,7 +498,7 @@ mod tests {
                     supersedes: None,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: rdm_core::model::NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,

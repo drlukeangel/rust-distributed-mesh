@@ -562,7 +562,7 @@ fn refusal_of(r: TopologyReply) -> TopologyFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshId, MeshNode, NodeId};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshId, MeshNode, NodeId};
     use std::collections::HashSet;
     use std::net::SocketAddr;
 
@@ -597,7 +597,7 @@ mod tests {
                 supersedes: None,
                 runtime: None,
             },
-            status: MemberStatus::Ready,
+            status: NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,

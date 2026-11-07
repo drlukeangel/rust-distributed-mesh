@@ -316,7 +316,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
 /// two sources disagreeing on a gossiped pair, or a row-only pair answered locally as no match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topology_a_node_holds() {
-    use rdm_core::{MemberStatus, MeshDigest, MeshNode};
+    use rdm_core::{MeshDigest, MeshNode};
     let fabric = FabricId::mint();
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
@@ -343,7 +343,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         let d = MeshDigest {
             fabric_id: fabric.clone(),
             node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: if ready { MemberStatus::Ready } else { MemberStatus::Pending },
+            status: if ready { rdm_core::model::NodeStatus::Ready } else { rdm_core::model::NodeStatus::Pending },
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 10,

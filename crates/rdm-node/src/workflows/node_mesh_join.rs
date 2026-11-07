@@ -8,7 +8,7 @@ use super::node_start::{reached_back, JoinThrough, JoinTo, JOIN_TURNS};
 use crate::model::NodeId;
 use crate::node_self::StartFailed;
 use crate::wire::JoinAnswer;
-use rdm_core::{MemberStatus, MeshDigest};
+use rdm_core::{model::NodeStatus, MeshDigest};
 use rdm_gossip::channel::Channels;
 use rdm_transport::{NodeRpcClient, NodeTarget};
 use tracing::Instrument as _;
@@ -80,7 +80,7 @@ pub struct MeshJoined {
 pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'_>) -> Result<MeshJoined, J::Error> {
     let JoinCall { mut name, node_id, mesh, mesh_id, client, rafka_time, to, primary, operation, report_parent, reported, channel_parent } = call;
     let mut digest = node.join_digest();
-    digest.status = MemberStatus::Pending;
+    digest.status = NodeStatus::Pending;
     let joining = match &report_parent {
         Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step),
         None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step),
@@ -264,7 +264,7 @@ mod tests {
                 .find(|a| a.is_ipv4())
                 .unwrap();
 
-            let observed_statuses: Arc<Mutex<Vec<MemberStatus>>> = Arc::default();
+            let observed_statuses: Arc<Mutex<Vec<NodeStatus>>> = Arc::default();
             let next_reply: Arc<Mutex<Option<JoinReply>>> = Arc::default();
 
             let statuses_slot = observed_statuses.clone();
@@ -340,7 +340,7 @@ mod tests {
                     transport_addr: node_addr,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 emitted_at_rafka_ms: 0,
@@ -462,7 +462,7 @@ mod tests {
             // Both reports presented status = Pending on the wire.
             assert_eq!(
                 *observed_statuses.lock().unwrap(),
-                vec![MemberStatus::Pending, MemberStatus::Pending]
+                vec![NodeStatus::Pending, NodeStatus::Pending]
             );
             assert_eq!(joined.name, handed_name.name);
             assert_eq!(joined.through.node_id, NodeId::parse("0123456789ab").unwrap());
@@ -622,7 +622,7 @@ mod tests {
                     transport_addr: node_addr,
                     runtime: None,
                 },
-                status: MemberStatus::Pending,
+                status: NodeStatus::Pending,
                 node_state: Default::default(),
                 admin_api_base: None,
                 emitted_at_rafka_ms: 0,

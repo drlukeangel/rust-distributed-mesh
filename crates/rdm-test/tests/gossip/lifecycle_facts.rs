@@ -1,5 +1,5 @@
 //! Live cells for lifecycle operation identity alongside the carried projection revision.
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -43,7 +43,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         // predecessor published under the same identity (a resubmitted Build replays its completed step).
         let successor = PublisherId { incarnation: IncarnationId::mint(), node_id: successor_id };
         sender_channels.set_author(&publisher, None);
-        receiver.digest_view.record(MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
+        receiver.digest_view.record(MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: NodeStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
         assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.location(), &"mesh1"));
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }

@@ -15,7 +15,7 @@
 
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::{IncarnationId, model::NodeStatus, MeshId, NodeId};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
@@ -67,7 +67,7 @@ async fn rig_carried(tag: &str, carry: bool) -> Rig {
 /// [`rig_carried`], the node running `pre_node_ready` as its `pre_node_ready` hook when one is given.
 pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: Option<std::sync::Arc<rdm_test::pre_node_ready_probe::TestPreNodeReady>>) -> Rig {
     let fabric = rdm_core::FabricId::mint();
-    let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+    let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.node-admin", "2").unwrap()).await;
     let dir = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -103,7 +103,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     let digest_view = &primary.observer.topology_view.digest_view;
     let mut heard = digest_view.heard_changes();
     tokio::time::timeout(NEVER, async {
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != NodeStatus::Ready) {
             heard.changed().await.unwrap();
         }
     })
@@ -116,7 +116,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     // projection into the node's view, the commander included (gossip.md §3.3).
     let own_key = digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.node.endpoint_id.0.clone()).expect("the primary holds the node");
     tokio::time::timeout(NEVER, async {
-        while running.topology_view.projected_member_at(&own_key).is_none_or(|d| d.status != MemberStatus::Ready) {
+        while running.topology_view.projected_member_at(&own_key).is_none_or(|d| d.status != NodeStatus::Ready) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

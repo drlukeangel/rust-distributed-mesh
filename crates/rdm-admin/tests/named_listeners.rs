@@ -9,7 +9,7 @@ use rdm_admin::storage::{MemoryNodesStorage, NodesStorage};
 use rdm_admin::wire::{JoinAnswer, JoinControl};
 use rdm_core::join::{JoinReply, JoinRequest};
 use rdm_core::launch::DeclaredListeners;
-use rdm_core::{MemberStatus, MeshDigest, MeshNode, RuntimeFact};
+use rdm_core::{MeshDigest, MeshNode, RuntimeFact};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -117,7 +117,7 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                 supersedes: None,
                 runtime: Some(dep.runtime.clone()),
             },
-            status: MemberStatus::Pending,
+            status: rdm_core::model::NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,

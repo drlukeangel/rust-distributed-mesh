@@ -19,7 +19,7 @@ mod tests {
     use iroh::protocol::Router;
     use rdm_core::topology::{SourceVersion, StoredNode, TopologyReply};
     use rdm_core::views::{NodeStatus, NodeView, ProviderKind};
-    use rdm_core::{MemberStatus, MeshDigest, MeshNode, PublisherId};
+    use rdm_core::{MeshDigest, MeshNode, PublisherId};
     use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
     use rdm_gossip::topology::TopologyView;
     use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -94,7 +94,7 @@ mod tests {
                     supersedes: None,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: rdm_core::model::NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,

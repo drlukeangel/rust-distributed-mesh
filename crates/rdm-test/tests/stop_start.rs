@@ -13,7 +13,7 @@
 use crate::common::admin_side_serving;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::{FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
@@ -51,7 +51,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("stop-start-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -82,7 +82,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
 
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != NodeStatus::Ready) {
             heard.changed().await.unwrap();
         }
         let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();

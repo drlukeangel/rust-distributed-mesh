@@ -562,7 +562,7 @@ pub use rdm_node::join::{call_join_to, JoinFailure};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::{MemberStatus, MeshNode};
+    use rdm_core::{MeshNode};
 
     fn fact() -> RuntimeFact {
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap()
@@ -595,7 +595,7 @@ mod tests {
                 supersedes: d.supersedes.clone(),
                 runtime: Some(d.runtime.clone()),
             },
-            status: MemberStatus::Pending,
+            status: rdm_core::model::NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,

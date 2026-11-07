@@ -701,7 +701,7 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
             N::StopConnectionsDeleted { receipt: r } => { receipt = Some(r); None }
             N::NodeJoined => {
                 joined = true;
-                if let Some(digest_view) = digest_view { digest_view.reported(node_id, incarnation, rdm_core::MemberStatus::Pending); }
+                if let Some(digest_view) = digest_view { digest_view.reported(node_id, incarnation, rdm_core::model::NodeStatus::Pending); }
                 None
             }
             N::NodeStarted => {
@@ -709,7 +709,7 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
                 Some(if joined { R::Started } else { R::AlreadyApplied })
             }
             N::NodeStopped => {
-                if let Some(digest_view) = digest_view { digest_view.reported(node_id, incarnation, rdm_core::MemberStatus::Leaving); }
+                if let Some(digest_view) = digest_view { digest_view.reported(node_id, incarnation, rdm_core::model::NodeStatus::Leaving); }
                 Some(R::Stopped { receipt: receipt.take().expect("stop reports its closure before NodeStopped") })
             }
             N::Failed { step, reason, .. } => Some(R::StartFailed { step, reason }),

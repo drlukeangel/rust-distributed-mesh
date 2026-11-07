@@ -16,7 +16,7 @@ use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
+use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId};
 use rdm_node::storage_error::StorageError;
 use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use std::path::Path;
@@ -167,7 +167,7 @@ fn deployed(launch: &Launch) -> Deployed {
 
 pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::Ready {
+        while digest().status != NodeStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };

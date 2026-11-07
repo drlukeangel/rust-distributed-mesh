@@ -19,7 +19,7 @@ use crate::common::admin_side_serving;
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{ConnectionId, FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::{ConnectionId, FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId, PathName};
 use rdm_transport::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
@@ -42,7 +42,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("connections-delete-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -95,7 +95,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         // Both births are held ready by the admin, and the peer holds the renamed one.
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while [&cut, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready)) {
+        while [&cut, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != NodeStatus::Ready)) {
             heard.changed().await.unwrap();
         }
         let peer_view = &peer_node.topology_view.digest_view;
@@ -212,7 +212,7 @@ fn an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connecti
     let cap = crate::common::capture("an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connection");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("connections-delete-bound-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -255,7 +255,7 @@ fn an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connecti
         let seams = seams.get().cloned().expect("the node handed its seams");
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(cut.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
+        while digest_view.get(cut.node_id.as_str()).is_none_or(|(d, _)| d.status != NodeStatus::Ready) {
             heard.changed().await.unwrap();
         }
 

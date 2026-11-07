@@ -7,7 +7,7 @@
 
 use crate::gossip_wire::{WireGolden, golden};
 
-use rdm_core::{IncarnationId, MemberStatus, MeshDigest, PublisherId};
+use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, PublisherId};
 use rdm_gossip::frame::Frame;
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -66,7 +66,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     let topology_full_golden = golden(&members, &bytes(&topology_full_hex));
     assert_eq!(members.golden_encode(), topology_full_golden, "TopologyFull: one projection entry, digest then status");
     let Frame::TopologyFull { digests, .. } = Frame::decode(&topology_full_golden).expect("the TopologyFull frame decodes").into_data() else { panic!("not TopologyFull") };
-    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::Ready], "the entry's status is the projection's");
+    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is the projection's");
 
     let delta = Frame::TopologyDelta {
         mesh: "mesh1".into(),
@@ -83,7 +83,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     let delta_golden = golden(&delta, &bytes(&delta_hex));
     assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: one changed projection entry, digest then status");
     let Frame::TopologyDelta { changed, .. } = Frame::decode(&delta_golden).expect("the TopologyDelta frame decodes").into_data() else { panic!("not TopologyDelta") };
-    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::Ready], "the entry's status is the projection's");
+    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is the projection's");
 }
 
 /// The complete gossip message is the standard context list followed by opaque postcard data.

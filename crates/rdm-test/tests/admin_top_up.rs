@@ -16,7 +16,7 @@
 use iroh::protocol::Router;
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
+use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId};
 use rdm_gossip::location::{gossip_addr, learn_addresses};
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -96,7 +96,7 @@ fn deployed(launch: &Launch) -> Deployed {
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::Ready {
+        while digest().status != NodeStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
@@ -210,7 +210,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // another channel is refused, so the gap waits for mesh1.node-admin.2 to hold, on mesh1's channel,
         // the publication that carries its Ready: the cell's endpoint shows which version that is.
         until("the primary to publish mesh1.node-admin.2's Ready on mesh1's channel", WRONG, || {
-            topology_view.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == MemberStatus::Ready)
+            topology_view.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == NodeStatus::Ready)
         })
         .await;
         let (_, ready_at) = topology_view.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");

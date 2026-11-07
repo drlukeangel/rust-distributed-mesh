@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(Filter::new().eq("state", ["connected"]).eq("kind", ["direct", "proxy"]).refusal(Entity::Connections), None);
     }
 
-    fn digest(name: crate::PathName, mesh: &str, r#type: &str, status: crate::MemberStatus, is_primary: bool) -> MeshDigest {
+    fn digest(name: crate::PathName, mesh: &str, r#type: &str, status: crate::model::NodeStatus, is_primary: bool) -> MeshDigest {
         MeshDigest {
             fabric_id: crate::FabricId::mint(),
             node: crate::MeshNode { mesh: mesh.into(), r#type: r#type.into(),
@@ -624,7 +624,7 @@ mod tests {
     /// happen: a row-only property answered as no match, or a refusal that does not say where to read it.
     #[test]
     fn a_local_query_matches_the_digests_held_and_refuses_a_row_only_property_naming_nodes_get() {
-        use crate::MemberStatus as M;
+        use crate::model::NodeStatus as M;
         let ready = digest(crate::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", M::Ready, false);
         let pending = digest(crate::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", "broker", M::Pending, false);
         let admin = digest(crate::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", M::Ready, true);

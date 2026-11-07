@@ -339,7 +339,7 @@ fn test_author() -> crate::envelope::Birth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshNode, NodeId};
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -355,7 +355,7 @@ mod tests {
                 supersedes: None,
                 runtime: None,
             },
-            status: MemberStatus::Ready,
+            status: NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: seq,
@@ -372,7 +372,7 @@ mod tests {
     /// every version is a delta from the one before.
     fn source_at(ids: &[(NodeId, IncarnationId)], version: u64) -> Full {
         let mut d = digest(1, &ids[0].0, &ids[0].1, 1);
-        d.status = if version % 2 == 0 { MemberStatus::Ready } else { MemberStatus::ConnectionsDeleting };
+        d.status = if version % 2 == 0 { NodeStatus::Ready } else { NodeStatus::ConnectionsDeleting };
         d.node.transport_addr = format!("127.0.0.1:{}", 42_000 + version).parse().unwrap();
         Full::new(vec![d], Vec::new(), Vec::new())
     }
@@ -655,7 +655,7 @@ mod tests {
         let big = |version: u64| {
             let mut digests: Vec<MeshDigest> = members.iter().enumerate().map(|(k, (id, b))| digest(k as u32 + 1, id, b, 1)).collect();
             if version > 10 {
-                digests[0].status = MemberStatus::ConnectionsDeleting;
+                digests[0].status = NodeStatus::ConnectionsDeleting;
             }
             Full::new(digests, Vec::new(), Vec::new())
         };

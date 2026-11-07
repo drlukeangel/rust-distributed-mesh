@@ -56,7 +56,7 @@ impl AdminRunner {
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(self.provider.kind());
-        n.status = crate::admin::node_status(d.status);
+        n.status = d.status;
         n.routable = false;
         n.admin_api_base = d.admin_api_base.clone();
         n.transport_addr = Some(d.node.transport_addr);

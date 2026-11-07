@@ -14,7 +14,7 @@
 //! replaced is not. A real `TopologyView` given a frozen clock stamps one frozen `emitted_at_rafka_ms`
 //! and a strictly increasing `digest_seq` from 1 on every heartbeat it publishes.
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_transport::clock::Clock;
 use rdm_gossip::digest_view::DigestView;
 use rdm_gossip::topology::TopologyView;
@@ -59,7 +59,7 @@ impl Birth {
         Self { fabric: self.fabric.clone(), node_id: self.node_id.clone(), incarnation: IncarnationId::mint(), supersedes: Some(self.incarnation.clone()) }
     }
 
-    fn digest(&self, seq: u64, at_rafka_ms: u64, status: MemberStatus) -> MeshDigest {
+    fn digest(&self, seq: u64, at_rafka_ms: u64, status: NodeStatus) -> MeshDigest {
         MeshDigest { 
             fabric_id: self.fabric.clone(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
@@ -85,7 +85,7 @@ impl Birth {
     }
 }
 
-fn held(digest_view: &DigestView, node_id: &NodeId) -> (u64, MemberStatus, u64) {
+fn held(digest_view: &DigestView, node_id: &NodeId) -> (u64, NodeStatus, u64) {
     let (d, _) = digest_view.get(node_id.as_str()).expect("the birth is held");
     (d.digest_seq, d.status, d.emitted_at_rafka_ms)
 }
@@ -99,7 +99,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let fabric = FabricId::mint();
         let now = Instant::now();
         let mut observations: Vec<Value> = Vec::new();
-        let mut note = |label: &str, seq: u64, at: u64, status: MemberStatus, taken: bool, digest_view: &DigestView, node: &NodeId| {
+        let mut note = |label: &str, seq: u64, at: u64, status: NodeStatus, taken: bool, digest_view: &DigestView, node: &NodeId| {
             let (hs, hst, hat) = held(digest_view, node);
             observations.push(json!({ "offered": label, "digest_seq": seq, "emitted_at_rafka_ms": at, "status": format!("{status:?}"), "taken": taken, "held": { "digest_seq": hs, "status": format!("{hst:?}"), "emitted_at_rafka_ms": hat } }));
         };
@@ -110,20 +110,20 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let node_id = NodeId::mint();
         let b1 = Birth::first(&fabric, &node_id);
         for (label, seq, at, status, want) in [
-            ("first heartbeat", 1u64, 1_000u64, MemberStatus::Pending, true),
-            ("clock frozen: same stamp, next seq", 2, 1_000, MemberStatus::Ready, true),
-            ("clock stepped back: lower stamp, next seq", 3, 900, MemberStatus::ConnectionsDeleting, true),
-            ("a repeat of the held heartbeat", 3, 900, MemberStatus::ConnectionsDeleting, false),
-            ("an older heartbeat stamped far ahead", 2, 99_999_999, MemberStatus::Ready, false),
-            ("the oldest heartbeat stamped far ahead", 1, 99_999_999, MemberStatus::Pending, false),
-            ("a newer heartbeat stamped at zero", 4, 0, MemberStatus::Leaving, true),
+            ("first heartbeat", 1u64, 1_000u64, NodeStatus::Pending, true),
+            ("clock frozen: same stamp, next seq", 2, 1_000, NodeStatus::Ready, true),
+            ("clock stepped back: lower stamp, next seq", 3, 900, NodeStatus::ConnectionsDeleting, true),
+            ("a repeat of the held heartbeat", 3, 900, NodeStatus::ConnectionsDeleting, false),
+            ("an older heartbeat stamped far ahead", 2, 99_999_999, NodeStatus::Ready, false),
+            ("the oldest heartbeat stamped far ahead", 1, 99_999_999, NodeStatus::Pending, false),
+            ("a newer heartbeat stamped at zero", 4, 0, NodeStatus::Leaving, true),
         ] {
             let d = b1.digest(seq, at, status);
             let taken = digest_view.record_at(d, now);
             assert_eq!(taken, want, "{label}: seq {seq} at {at}");
             note(label, seq, at, status, taken, &digest_view, &node_id);
         }
-        assert_eq!(held(&digest_view, &node_id), (4, MemberStatus::Leaving, 0), "the newest heartbeat by sequence is held whatever its stamp");
+        assert_eq!(held(&digest_view, &node_id), (4, NodeStatus::Leaving, 0), "the newest heartbeat by sequence is held whatever its stamp");
 
         // The forwarded path: a copy of the held heartbeat keeps the member heard (equal sequence is
         // taken), a lower sequence is refused whatever its stamp, a higher one is taken.
@@ -131,24 +131,24 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let fnode = NodeId::mint();
         let f1 = Birth::first(&fabric, &fnode);
         for (label, seq, at, status, want) in [
-            ("forwarded first", 5u64, 2_000u64, MemberStatus::Ready, true),
-            ("forwarded copy of the held heartbeat", 5, 2_000, MemberStatus::Ready, true),
-            ("forwarded lower sequence stamped far ahead", 4, 99_999_999, MemberStatus::Pending, false),
-            ("forwarded higher sequence, same stamp", 6, 2_000, MemberStatus::ConnectionsDeleting, true),
+            ("forwarded first", 5u64, 2_000u64, NodeStatus::Ready, true),
+            ("forwarded copy of the held heartbeat", 5, 2_000, NodeStatus::Ready, true),
+            ("forwarded lower sequence stamped far ahead", 4, 99_999_999, NodeStatus::Pending, false),
+            ("forwarded higher sequence, same stamp", 6, 2_000, NodeStatus::ConnectionsDeleting, true),
         ] {
             let taken = fdigest_view.record_forwarded_at(f1.digest(seq, at, status), now);
             assert_eq!(taken, want, "{label}");
             note(label, seq, at, status, taken, &fdigest_view, &fnode);
         }
-        assert_eq!(held(&fdigest_view, &fnode), (6, MemberStatus::ConnectionsDeleting, 2_000));
+        assert_eq!(held(&fdigest_view, &fnode), (6, NodeStatus::ConnectionsDeleting, 2_000));
 
         // A new incarnation has its own sequence: it starts again at 1 and is taken along its
         // lineage whatever its stamp; a late digest of the incarnation it replaced is not taken.
         let b2 = b1.successor();
         for (label, seq, at, status, want, new_inc) in [
-            ("successor incarnation, sequence starts at 1, lower stamp", 1u64, 10u64, MemberStatus::Pending, true, true),
-            ("successor's next heartbeat", 2, 10, MemberStatus::Ready, true, true),
-            ("a late digest of the replaced incarnation with a high sequence and a far stamp", 500, 99_999_999, MemberStatus::ConnectionsDeleting, false, false),
+            ("successor incarnation, sequence starts at 1, lower stamp", 1u64, 10u64, NodeStatus::Pending, true, true),
+            ("successor's next heartbeat", 2, 10, NodeStatus::Ready, true, true),
+            ("a late digest of the replaced incarnation with a high sequence and a far stamp", 500, 99_999_999, NodeStatus::ConnectionsDeleting, false, false),
         ] {
             let d = if new_inc { b2.digest(seq, at, status) } else { b1.digest(seq, at, status) };
             let taken = digest_view.record_at(d, now);
@@ -156,7 +156,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             note(label, seq, at, status, taken, &digest_view, &node_id);
         }
         let (_, _) = digest_view.get(node_id.as_str()).unwrap();
-        assert_eq!(held(&digest_view, &node_id), (2, MemberStatus::Ready, 10));
+        assert_eq!(held(&digest_view, &node_id), (2, NodeStatus::Ready, 10));
         assert_eq!(digest_view.get(node_id.as_str()).unwrap().0.node.incarnation, b2.incarnation);
 
         // The sender, composed with a supplied clock: a real TopologyView stamps every heartbeat it
@@ -177,11 +177,11 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let sender = Birth::first(&fabric, &sender_id);
         let mut stamped: Vec<Value> = Vec::new();
         for (label, clock_ms, status) in [
-            ("clock frozen at 5000", 5_000u64, MemberStatus::Pending),
-            ("clock still frozen", 5_000, MemberStatus::Ready),
-            ("clock stepped back", 4_000, MemberStatus::ConnectionsDeleting),
-            ("clock jumped far ahead", 99_999_999, MemberStatus::Ready),
-            ("clock back at zero", 0, MemberStatus::Leaving),
+            ("clock frozen at 5000", 5_000u64, NodeStatus::Pending),
+            ("clock still frozen", 5_000, NodeStatus::Ready),
+            ("clock stepped back", 4_000, NodeStatus::ConnectionsDeleting),
+            ("clock jumped far ahead", 99_999_999, NodeStatus::Ready),
+            ("clock back at zero", 0, NodeStatus::Leaving),
         ] {
             hand.0.store(clock_ms, Ordering::SeqCst);
             channels.publish(&sender.digest(0, 0, status)).await.unwrap();

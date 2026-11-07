@@ -1,7 +1,7 @@
 //! i143 R-B2 (Luke), D: a `JoinNode` that arrives after the deploying admin ended the birth's
 //! deployment is refused by name (`DeploymentAbandoned`), never as `NotPrimary`.
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
@@ -168,7 +168,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
                 supersedes: None,
                 runtime: Some(runtime.clone()),
             },
-            status: MemberStatus::Pending,
+            status: NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,

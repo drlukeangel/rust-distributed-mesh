@@ -15,7 +15,6 @@ mod tests {
     use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus, PathName};
     use crate::status_rpc::Declaration;
     use crate::storage::MeshRecord;
-    use rdm_core::MemberStatus;
     use rdm_core::status::{DeclaredOperation, MeshState, NodeState};
     use std::time::{Duration, Instant};
 
@@ -71,14 +70,14 @@ mod tests {
         assert_eq!(declared.node(&node_id, &current_inc), None);
 
         // Reporter matching and member status conversion round-trip.
-        assert_eq!(member_of_declared(NodeState::Pending), MemberStatus::Pending);
-        assert_eq!(member_of_declared(NodeState::Ready), MemberStatus::Ready);
-        assert_eq!(member_of_declared(NodeState::ConnectionsDeleting), MemberStatus::ConnectionsDeleting);
-        assert_eq!(member_of_declared(NodeState::Stopped), MemberStatus::Leaving);
-        assert_eq!(declared_of_member(MemberStatus::Pending), NodeState::Pending);
-        assert_eq!(declared_of_member(MemberStatus::Ready), NodeState::Ready);
-        assert_eq!(declared_of_member(MemberStatus::ConnectionsDeleting), NodeState::ConnectionsDeleting);
-        assert_eq!(declared_of_member(MemberStatus::Leaving), NodeState::Stopped);
+        assert_eq!(member_of_declared(NodeState::Pending), rdm_core::model::NodeStatus::Pending);
+        assert_eq!(member_of_declared(NodeState::Ready), rdm_core::model::NodeStatus::Ready);
+        assert_eq!(member_of_declared(NodeState::ConnectionsDeleting), rdm_core::model::NodeStatus::ConnectionsDeleting);
+        assert_eq!(member_of_declared(NodeState::Stopped), rdm_core::model::NodeStatus::Leaving);
+        assert_eq!(declared_of_member(rdm_core::model::NodeStatus::Pending), NodeState::Pending);
+        assert_eq!(declared_of_member(rdm_core::model::NodeStatus::Ready), NodeState::Ready);
+        assert_eq!(declared_of_member(rdm_core::model::NodeStatus::ConnectionsDeleting), NodeState::ConnectionsDeleting);
+        assert_eq!(declared_of_member(rdm_core::model::NodeStatus::Leaving), NodeState::Stopped);
 
         let mut distinct = Declared::default();
         let mut current = Node::allocated(PathName::new("place", "primary").unwrap(), "mesh1", "node-admin");

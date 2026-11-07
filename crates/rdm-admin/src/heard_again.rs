@@ -153,7 +153,7 @@ async fn command_mesh_join(
         }
         let heard_ready_since = digest_view
             .get(node.node_id.as_str())
-            .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::Ready && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
+            .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::model::NodeStatus::Ready && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
         // Heard ready since, or unheard again (a commanded start that stopped at a step left the
         // birth off its mesh): a new silence, commanded again; else the one command stands.
         let unheard_again = !digest_view.get(node.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && unheard < digest_view.staleness_floor());

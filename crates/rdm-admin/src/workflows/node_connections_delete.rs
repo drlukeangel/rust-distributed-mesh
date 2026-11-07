@@ -16,7 +16,7 @@ mod tests {
     use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
     use rdm_core::ping::{Ping, PingRequest};
     use rdm_core::status::{ConnectionScope, ConnectionsReceipt};
-    use rdm_core::{ConnectionId, MemberStatus, MeshDigest, MeshNode};
+    use rdm_core::{ConnectionId, model::NodeStatus, MeshDigest, MeshNode};
     use rdm_node::node_self::{ChannelFrames, NodeSelf};
     use rdm_node::storage::MemoryConnectionsStorage;
     use rdm_gossip::topology::TopologyView;
@@ -139,7 +139,7 @@ mod tests {
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
             .expect("join topology view");
 
-            let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
+            let status_cell = Arc::new(Mutex::new(NodeStatus::Ready));
             let digest_base = MeshDigest {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
@@ -151,7 +151,7 @@ mod tests {
                     transport_addr: node_addr,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 emitted_at_rafka_ms: 0,
@@ -166,7 +166,7 @@ mod tests {
             };
             let status_for_set = status_cell.clone();
             let digest_for_set = digest_base.clone();
-            let set_status = Arc::new(move |s: MemberStatus| {
+            let set_status = Arc::new(move |s: NodeStatus| {
                 *status_for_set.lock().unwrap() = s;
                 let mut d = digest_for_set.clone();
                 d.status = s;

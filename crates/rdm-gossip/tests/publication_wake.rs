@@ -4,7 +4,7 @@
 //! publication that publishes it is woken by the change itself, not by the next anti-entropy tick.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
@@ -37,7 +37,7 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId) -> 
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

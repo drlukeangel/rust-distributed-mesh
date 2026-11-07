@@ -8,7 +8,7 @@
 use rdm_core::connections::NodeConnection;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use rdm_client::{BuildCarrier, CallEnd, Connections, ConnectionsView, ExactBirth, Fabrics, Filter, Meshes, NodeRpc, NodeStatus, Nodes};
 use rdm_core::status::TagScope;
 use rdm_core::status::StatusReply;
@@ -414,7 +414,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
     let spans = cap.spans.clone();
     let rpc_id = cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
+        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, rdm_core::model::NodeStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("node-reads-rpc-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -457,7 +457,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let seams = seams.get().cloned().expect("the node handed its seams");
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != rdm_core::model::NodeStatus::Ready) {
             heard.changed().await.unwrap();
         }
         // The node originates a data-plane connection to its admin: a Direct entry of its log.

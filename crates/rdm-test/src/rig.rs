@@ -76,7 +76,7 @@ impl NodeObserver for LiveMesh {
         // the lifecycle commands): ready is the status this admin side set from its node.started,
         // never the Ping alone and never its heartbeat.
         match self.topology_view.digest_view.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
-            Some((d, _)) if d.status == rdm_core::digest::MemberStatus::Ready => {}
+            Some((d, _)) if d.status == rdm_core::model::NodeStatus::Ready => {}
             Some((d, _)) => return Err(format!("{} is held {:?}, not ready: the member status the admin side holds for the birth is {:?}", node.node_id, d.status, self.topology_view.digest_view.member_status(&node.node_id, &d.node.incarnation))),
             None => return Err(format!("no digest from {} for this birth", node.node_id)),
         }
@@ -311,7 +311,7 @@ impl AdminSide {
 
     /// Say `status` as this admin side's own digest: how a test moves its authority from Pending
     /// to Ready.
-    pub async fn publish_status(&self, status: rdm_core::digest::MemberStatus) {
+    pub async fn publish_status(&self, status: rdm_core::model::NodeStatus) {
         let d = {
             let mut held = self.digest.lock().unwrap();
             held.status = status;
@@ -396,25 +396,25 @@ impl AdminSide {
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs()).await
+    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, None, |b| b, rdm_core::model::NodeStatus::Ready, no_certs()).await
 }
 
 /// [`admin_side`] whose rafka-time is `reference_ms` (adopted once, as a Day-0 root adopts its own
 /// clock) instead of the OS clock: a node it admits adopts that lineage, so a reading that matches
 /// it cannot have come from an OS clock.
 pub async fn admin_side_on_rafka_time(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: u64) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, Some(reference_ms), |b| b, rdm_core::digest::MemberStatus::Ready, no_certs()).await
+    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, Some(reference_ms), |b| b, rdm_core::model::NodeStatus::Ready, no_certs()).await
 }
 
 /// [`admin_side`] that also serves what `serve` adds (an app's ops) and publishes itself as
 /// `status` to start with.
-pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status: rdm_core::digest::MemberStatus, serve: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> AdminSide {
+pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status: rdm_core::model::NodeStatus, serve: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> AdminSide {
     admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, None, serve, status, no_certs()).await
 }
 
 /// [`admin_side_serving`] as the node-admin `name` of `mesh1` (`mesh1.node-admin.<n>`): a second admin
 /// side of the same fabric and mesh, for a cell where a role moves between two node-admins.
-pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name: &rdm_core::PathName, status: rdm_core::digest::MemberStatus, serve: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> AdminSide {
+pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name: &rdm_core::PathName, status: rdm_core::model::NodeStatus, serve: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> AdminSide {
     admin_side_taking_joins_elected(ip, fabric, name, true, None, serve, status, no_certs(), SideRole::Primary).await
 }
 
@@ -425,7 +425,7 @@ pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name
 pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, name: &rdm_core::PathName) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
     let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
-    admin_side_taking_joins_elected(ip, &primary.fabric, name, true, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideRole::Silent { seed }).await
+    admin_side_taking_joins_elected(ip, &primary.fabric, name, true, None, |b| b, rdm_core::model::NodeStatus::Ready, no_certs(), SideRole::Silent { seed }).await
 }
 
 /// [`admin_side_silent_as`] whose `JoinService` is never opened: a node that joins it is answered
@@ -433,13 +433,13 @@ pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, nam
 pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide, name: &rdm_core::PathName) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
     let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
-    admin_side_taking_joins_elected(ip, &primary.fabric, name, false, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideRole::Silent { seed }).await
+    admin_side_taking_joins_elected(ip, &primary.fabric, name, false, None, |b| b, rdm_core::model::NodeStatus::Ready, no_certs(), SideRole::Silent { seed }).await
 }
 
 /// [`admin_side`] whose `JoinService` is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), false, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs()).await
+    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), false, None, |b| b, rdm_core::model::NodeStatus::Ready, no_certs()).await
 }
 
 fn no_certs() -> rdm_admin::certs::CertChoice {
@@ -449,15 +449,15 @@ fn no_certs() -> rdm_admin::certs::CertChoice {
 /// [`admin_side_on_rafka_time`] whose `JoinService` issues each admitted birth's member cert with the
 /// material `certs` names, on the admin side's rafka-time (the reference, when given).
 pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, certs: rdm_admin::certs::CertChoice) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, reference_ms, |b| b, rdm_core::digest::MemberStatus::Ready, certs).await
+    admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, reference_ms, |b| b, rdm_core::model::NodeStatus::Ready, certs).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &rdm_core::PathName, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice) -> AdminSide {
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &rdm_core::PathName, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::model::NodeStatus, certs: rdm_admin::certs::CertChoice) -> AdminSide {
     admin_side_taking_joins_elected(ip, fabric, name, takes_joins, reference_ms, serve_app, status, certs, SideRole::Primary).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId, name: &rdm_core::PathName, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, role: SideRole) -> AdminSide {
+async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId, name: &rdm_core::PathName, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::model::NodeStatus, certs: rdm_admin::certs::CertChoice, role: SideRole) -> AdminSide {
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the topology silence window, so gossip redials instead of holding it.
@@ -517,7 +517,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             pending: {
                 let digest_view = topology_view.digest_view.clone();
                 Arc::new(move |d, _| {
-                    digest_view.reported(&d.node.node_id, &d.node.incarnation, rdm_core::MemberStatus::Pending);
+                    digest_view.reported(&d.node.node_id, &d.node.incarnation, rdm_core::model::NodeStatus::Pending);
                     Box::pin(async {})
                 })
             },
@@ -578,7 +578,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                         let Some(subject) = digest_view.get(node_id.as_str()).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| d.node) else {
                             return Ok(rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown));
                         };
-                        use rdm_core::MemberStatus as M;
+                        use rdm_core::model::NodeStatus as M;
                         match state {
                             NodeState::Ready => digest_view.started(node_id, incarnation, &subject.location(), &subject.mesh),
                             NodeState::Pending => digest_view.reported(node_id, incarnation, M::Pending),

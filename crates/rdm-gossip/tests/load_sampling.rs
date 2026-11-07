@@ -10,7 +10,7 @@
 //! process was given a budget (`RDM_CPU_BUDGET_MILLICORES`, `RDM_RAM_BUDGET_BYTES`)."
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, PublisherId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
@@ -30,7 +30,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoin
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

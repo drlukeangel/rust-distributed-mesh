@@ -18,7 +18,7 @@ mod tests {
     use rdm_core::status::{
         ConnectionsReceipt, DeclaredOperation, NodeState, StatusReply, StatusRequest, WhichMesh,
     };
-    use rdm_core::{MemberStatus, MeshDigest, MeshNode};
+    use rdm_core::{model::NodeStatus, MeshDigest, MeshNode};
     use rdm_node::connections_writer::{ConnectionsWriter, RowsHeld};
     use rdm_node::storage::MemoryConnectionsStorage;
     use rdm_gossip::topology::TopologyView;
@@ -138,7 +138,7 @@ mod tests {
             };
             let writer = Arc::new(ConnectionsWriter::new(own_end, conn_store, held));
 
-            let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
+            let status_cell = Arc::new(Mutex::new(NodeStatus::Ready));
             let digest_base = MeshDigest {
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
@@ -150,7 +150,7 @@ mod tests {
                     supersedes: None,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
@@ -166,7 +166,7 @@ mod tests {
             let set_status = {
                 let status_cell = status_cell.clone();
                 let digest_base = digest_base.clone();
-                Arc::new(move |st: MemberStatus| {
+                Arc::new(move |st: NodeStatus| {
                     *status_cell.lock().unwrap() = st;
                     let mut d = digest_base.clone();
                     d.status = st;

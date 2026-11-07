@@ -9,7 +9,7 @@ use crate::common::{admin_side_serving, serve_ping, Spans};
 use rdm_test::rig::AdminSide;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::{FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId, PathName};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -73,7 +73,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
     let seams = seams.get().cloned().expect("the node handed its seams");
     let digest_view = &admin.observer.topology_view.digest_view;
     let mut digests = digest_view.digest_changes();
-    while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
+    while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != NodeStatus::Ready) {
         digests.changed().await.unwrap();
     }
     let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
@@ -119,7 +119,7 @@ fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_goss
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("connections-all-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
@@ -161,7 +161,7 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("connections-all-rename-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
@@ -195,7 +195,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("connections-all-deleted-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
@@ -232,7 +232,7 @@ fn a_reserved_status_position_at_a_node_with_no_handler_for_it_closes_nothing_an
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
         let dir = std::env::temp_dir().join(format!("connections-all-unhandled-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
@@ -266,7 +266,7 @@ fn a_reserved_status_position_at_a_node_with_no_handler_for_it_closes_nothing_an
         })
         .await
         .expect("the node publishes a digest after the request");
-        assert_eq!(digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Ready), "the node's status is unchanged");
+        assert_eq!(digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "the node's status is unchanged");
 
         // The request at the handler that implements it, the node command op 0x22, closes it.
         let command = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
@@ -292,7 +292,7 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
         let dir = std::env::temp_dir().join(format!("connections-all-rig-status-service-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (_launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
@@ -331,7 +331,7 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
         let dir = std::env::temp_dir().join(format!("connections-all-admission-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
@@ -392,7 +392,7 @@ fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
         let dir = std::env::temp_dir().join(format!("connections-all-late-dial-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
@@ -438,7 +438,7 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
         let dir = std::env::temp_dir().join(format!("connections-all-wait-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         // The node serves one op the cell can hold: a call into it stays in flight until released.
@@ -495,7 +495,7 @@ fn node_mesh_join_standalone_after_its_connections_are_deleted() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
         let dir = std::env::temp_dir().join(format!("connections-all-mesh-leave-join-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;

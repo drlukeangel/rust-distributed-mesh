@@ -19,7 +19,7 @@ use rdm_admin::model::{
 };
 use rdm_admin::node_commands::NodeCommand;
 use rdm_admin::topology::Topology;
-use rdm_core::{MemberStatus, MeshDigest, MeshNode, RuntimeFact, RuntimeLocator};
+use rdm_core::{MeshDigest, MeshNode, RuntimeFact, RuntimeLocator};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -139,7 +139,7 @@ impl DeploymentProvider for ImmediateReportProvider {
                 supersedes: None,
                 runtime: handle.fact(),
             },
-            status: MemberStatus::Pending,
+            status: rdm_core::model::NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,
@@ -528,7 +528,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
                 supersedes: None,
                 runtime: Some(exp_fact),
             },
-            status: MemberStatus::Pending,
+            status: rdm_core::model::NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,
@@ -654,7 +654,7 @@ impl DeploymentProvider for StepFaultProvider {
                 supersedes: None,
                 runtime: handle.fact(),
             },
-            status: MemberStatus::Pending,
+            status: rdm_core::model::NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,

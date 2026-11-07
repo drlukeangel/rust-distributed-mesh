@@ -8,7 +8,7 @@
 //! with both values, and installs nothing. A digest that matches installs the address the node
 //! reported for its key and completes the wait for the node's own report.
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rdm_admin::join::{Deployed, JoinService, Joins};
 use rdm_core::join::{JoinReply, JoinRequest};
 use serde_json::{json, Value};
@@ -102,7 +102,7 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
             supersedes: d.supersedes.clone(),
             runtime: Some(d.runtime.clone()),
         },
-        status: MemberStatus::Pending,
+        status: rdm_core::model::NodeStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

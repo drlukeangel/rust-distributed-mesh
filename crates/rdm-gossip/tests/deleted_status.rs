@@ -13,7 +13,7 @@
 //! refused its mesh's status by name, and published a fresh `pending`.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -49,7 +49,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, 
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Pending,
+        status: NodeStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

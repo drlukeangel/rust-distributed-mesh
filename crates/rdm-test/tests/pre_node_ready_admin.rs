@@ -3,7 +3,7 @@
 //! completes from local state; an admin launched by another admin pulls from it, and is refused
 //! typed `NotReady` until that admin's own hook has passed.
 
-use rdm_core::MemberStatus;
+use rdm_core::model::NodeStatus;
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks, PreNodeReadyState};
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -30,7 +30,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 async fn until_ready(running: &rdm_admin::admin::Running) {
     let waited = async {
         loop {
-            if running.digest.lock().unwrap().status == MemberStatus::Ready {
+            if running.digest.lock().unwrap().status == NodeStatus::Ready {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -123,7 +123,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // is about the hook, so the root does not reconcile.
         root.stop_reconciling().await;
         tokio::time::timeout(WRONG, started.notified()).await.expect("the Day-0 admin's hook began");
-        assert_eq!(root.digest.lock().unwrap().status, MemberStatus::Pending, "the Day-0 admin is Pending while its hook runs");
+        assert_eq!(root.digest.lock().unwrap().status, NodeStatus::Pending, "the Day-0 admin is Pending while its hook runs");
 
         // The admin it launches: registered with the root as a deployment, then started.
         let (root_digest, root_mesh_id) = {
@@ -187,7 +187,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         .expect("the pull was answered NotReady and the hook answered Pending");
         let PreNodeReadyState::Pending { reason: hook_reason, .. } = pending.clone() else { unreachable!() };
         assert!(hook_reason.contains("NotReady"), "the hook's reason is the admin's answer: {pending:?}");
-        assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a pending admin is Pending");
+        assert_eq!(joiner.digest.lock().unwrap().status, NodeStatus::Pending, "a pending admin is Pending");
         assert_eq!(pull.answered(), 0, "the Day-0 admin answered no rows before its own hook passed");
         // node-rpc-envelope.md, Status: while its hook answers Pending, the node answers its executor's
         // ProbeNodeState with Pending { node_id, incarnation, reason }, and `ready_hook_answer` names it.
@@ -240,7 +240,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         resume.notify_one();
         assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("a later attempt passes"), PreNodeReadyState::Passed);
         until_ready(&joiner).await;
-        assert_eq!(root.digest.lock().unwrap().status, MemberStatus::Ready, "the authority was Ready before the joiner");
+        assert_eq!(root.digest.lock().unwrap().status, NodeStatus::Ready, "the authority was Ready before the joiner");
         assert_eq!(joiner_pre_node_ready.held().0.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(root_pre_node_ready.contexts.lock().unwrap().len(), 1);
         assert!(root_pre_node_ready.contexts.lock().unwrap()[0].2.is_some(), "the Day-0 root's hook was handed authority None");

@@ -8,7 +8,7 @@ use rdm_core::launch::Launch;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{ConnectionId, FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::{ConnectionId, FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId, PathName};
 use rdm_node::connection_reconnect::{adapt_recovery_dial, run_pending, RecoveryDial};
 use rdm_test::node;
 use rdm_test::originate::Seams;
@@ -37,7 +37,7 @@ fn source_node_reconciler_dials_the_destination_an_accept_woke_and_deletes_activ
         let admin = admin_side_serving(
             "127.0.0.1".parse().unwrap(),
             &fabric,
-            MemberStatus::Ready,
+            NodeStatus::Ready,
             crate::common::serve_ping,
         )
         .await;
@@ -102,7 +102,7 @@ fn source_node_reconciler_dials_the_destination_an_accept_woke_and_deletes_activ
         while [&src_launch, &peer_launch].iter().any(|l| {
             digest_view
                 .get(l.node_id.as_str())
-                .is_none_or(|(d, _)| d.status != MemberStatus::Ready)
+                .is_none_or(|(d, _)| d.status != NodeStatus::Ready)
         }) {
             heard.changed().await.unwrap();
         }

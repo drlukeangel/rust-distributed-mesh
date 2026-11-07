@@ -37,7 +37,7 @@ use crate::topology::Topology;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rdm_core::launch::Launch;
-use rdm_core::{MemberStatus, MeshDigest, MeshNode};
+use rdm_core::{MeshDigest, MeshNode};
 use rdm_core::cadence::gossip_interval;
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::digest_view::DigestView;
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn a_heard_node_admin_member_that_answers_its_commands_is_not_investigated() {
         let digest_view = DigestView::default();
-        let (primary, member) = (digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Ready));
+        let (primary, member) = (digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready));
         for d in [primary.clone(), member.clone()] {
             digest_view.record(d);
         }
@@ -144,9 +144,9 @@ mod tests {
     fn an_investigator_hears_no_other_node_only_when_every_other_birth_is_unheard_past_the_floor() {
         let floor = rdm_core::cadence::staleness_floor();
         let digest_view = DigestView::default();
-        let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
-        let mate = digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
-        let peer = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready);
+        let mate = digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready);
+        let peer = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         let now = std::time::Instant::now();
         let past = now.checked_sub(floor * 2).expect("the clock reaches back two floors");
         assert!(digest_view.record_at(me.clone(), now) && digest_view.record_at(mate.clone(), past) && digest_view.record_at(peer.clone(), past), "every digest is taken");
@@ -196,7 +196,7 @@ mod tests {
         MeshId::parse(&format!("meshd{:0>7}", mesh.trim_start_matches("mesh"))).unwrap()
     }
 
-    pub(super) fn digest(name: PathName, mesh: &str, r#type: &str, status: MemberStatus) -> MeshDigest {
+    pub(super) fn digest(name: PathName, mesh: &str, r#type: &str, status: rdm_core::model::NodeStatus) -> MeshDigest {
         let node_id = NodeId::mint();
         MeshDigest { 
             fabric_id: fabric1(),
@@ -235,7 +235,7 @@ mod tests {
     fn a_deleted_mesh_whose_last_admin_is_stopped_stays_deleted_under_its_id() {
         let digest_view = DigestView::default();
         let records = Records::default();
-        let last = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let last = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(last.clone()));
         let id = last.mesh_id.clone().expect("a node-admin's digest states its mesh id");
         records.hold_mesh_deleted(&id);
@@ -273,8 +273,8 @@ mod tests {
             let digest_view = DigestView::default();
             let records = Records::default();
             let _ = records.contacts.set(nodes.clone());
-            let predecessor = digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", MemberStatus::Ready);
-            let mut successor = digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", MemberStatus::Ready);
+            let predecessor = digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
+            let mut successor = digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
             successor.node.endpoint_id = EndpointId("key-mesh1.node.2-successor".into());
             // The records: the predecessor's node deleted by the recovery, the successor's row at the name.
             own_record(&*nodes, &predecessor).await;
@@ -361,11 +361,11 @@ mod tests {
     async fn every_read_of_the_births_a_store_holds_answers_from_the_node_records_on_either_backend() {
         for (backend, nodes, meshes) in record_stores("births-from-records").await {
             assert!(rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap().is_empty(), "{backend}: an empty root holds no durable topology");
-            let admin = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), Some(3), Some(1));
-            let rpc = primaries(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready), Some(2), None);
+            let admin = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), Some(3), Some(1));
+            let rpc = primaries(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready), Some(2), None);
             // The rpc type's primary before its role moved to mesh1.node.1 at the next revision.
-            let deleted = primaries(digest(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", MemberStatus::Ready), Some(1), None);
-            let other = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
+            let deleted = primaries(digest(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready), Some(1), None);
+            let other = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready);
             // Each node that started wrote its own record; mesh1.node.2, launched, has not started yet.
             for d in [&admin, &rpc, &deleted, &other] {
                 own_record(&*nodes, d).await;
@@ -403,8 +403,8 @@ mod tests {
     #[tokio::test]
     async fn a_deleted_node_is_no_seed_and_its_recorded_primary_stays_an_input() {
         for (backend, nodes, meshes) in record_stores("deleted-node").await {
-            let admin = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), Some(3), None);
-            let rpc = primaries(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready), Some(2), None);
+            let admin = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), Some(3), None);
+            let rpc = primaries(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready), Some(2), None);
             for d in [&admin, &rpc] {
                 own_record(&*nodes, d).await;
             }
@@ -444,8 +444,8 @@ mod tests {
     /// the re-created birth. Must NOT happen: a transient standby winner, or a record read from the store.
     #[tokio::test]
     async fn a_re_created_admin_holds_the_lost_primarys_records_from_its_pull_and_elects_no_node_admin_until_the_restore() {
-        let lost = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
-        let standby = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let lost = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
+        let standby = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         let lost_record = rdm_core::Primary { mesh: "mesh1".into(), node_id: lost.node.node_id.clone(), incarnation: lost.node.incarnation.clone(), revision: 1 };
         // The standby that launches the re-created birth: it holds the lost birth's records, and the birth gone.
         let server = DigestView::default();
@@ -465,7 +465,7 @@ mod tests {
                 digest_view.primaries.mark_gone(primary.incarnation.clone());
             }
         }
-        let recreated = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Pending);
+        let recreated = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Pending);
         let mut view = vec![elected_node(&recreated, NodeStatus::Pending), elected_node(&standby, NodeStatus::Ready)];
         crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
         assert_eq!(mesh_primary_of(&view, "mesh1"), None, "the lost primary's record holds the election: no node-admin is elected");
@@ -488,9 +488,9 @@ mod tests {
     #[tokio::test]
     async fn a_deleted_former_primarys_older_record_never_overrides_its_successors() {
         for (backend, nodes, meshes) in record_stores("deleted-older-primary").await {
-            let former = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), Some(1), None);
-            let successor = primaries(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), Some(2), None);
-            let other = digest(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+            let former = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), Some(1), None);
+            let successor = primaries(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), Some(2), None);
+            let other = digest(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
             for d in [&former, &successor, &other] {
                 own_record(&*nodes, d).await;
             }
@@ -512,10 +512,10 @@ mod tests {
     #[tokio::test]
     async fn a_node_admin_with_no_admin_api_base_is_ready_once_its_view_holds_it_ready() {
         let digest_view = DigestView::default();
-        let mut d = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let mut d = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         d.admin_api_base = None;
         assert!(digest_view.record(d.clone()), "the view takes the node-admin's digest");
-        assert_eq!(digest_view.get(d.node.node_id.as_str()).map(|(held, _)| held.status), Some(MemberStatus::Ready), "the view holds the birth ready");
+        assert_eq!(digest_view.get(d.node.node_id.as_str()).map(|(held, _)| held.status), Some(rdm_core::model::NodeStatus::Ready), "the view holds the birth ready");
         let mut node = Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
         node.node_id = d.node.node_id.clone();
         node.incarnation_id = Some(d.node.incarnation.clone());
@@ -690,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn a_successor_re_running_create_mesh_of_the_same_build_writes_with_its_mesh_id_and_finds_its_own_row() {
         let meshes = crate::storage::MemoryMeshStorage::default();
-        let observed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready)]);
+        let observed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready)]);
         let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
         let change = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
@@ -717,7 +717,7 @@ mod tests {
     /// The accepted Build that creates mesh2 beside mesh1, held by a Build log, and its `create-mesh:mesh2`
     /// operation as the fabric-primary plans it.
     async fn build_creating_mesh2(builds: &crate::build_state::MemoryBuildStateAdapter) -> (crate::build::BuildId, BuildOperation) {
-        let observed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready)]);
+        let observed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready)]);
         let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
         let change = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
@@ -970,7 +970,7 @@ mod tests {
         let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let meshes: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let (removed, recreated) = (mesh_id("mesh2"), MeshId::mint());
-        let (a_admin, b_admin) = (digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready));
+        let (a_admin, b_admin) = (digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready));
         own_record(&*nodes, &a_admin).await;
         let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-over-dead");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -1124,10 +1124,10 @@ mod tests {
         use crate::deployment::provider::DeploymentStatus;
         for (status, verdict) in [(DeploymentStatus::Running, "running"), (DeploymentStatus::OsStopped, "os-stopped"), (DeploymentStatus::Exited { code: Some(137) }, "exited"), (DeploymentStatus::Unknown, "unavailable")] {
             let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60(&format!("dep-{verdict}"))).unwrap();
-            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
             member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
-            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1158,10 +1158,10 @@ mod tests {
     async fn a_lost_birth_that_wrote_no_record_is_left_to_its_build() {
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-no-record")).unwrap();
-        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         member.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1193,10 +1193,10 @@ mod tests {
     async fn a_recovery_that_ends_failed_is_run_again_by_the_next_tick_with_no_wait_of_its_own() {
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-run-again")).unwrap();
-        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         member.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1252,7 +1252,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_recovery_stays_owed_to_its_birth_and_runs_again_on_the_tick() {
         let digest_view = DigestView::default();
-        digest_view.record(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready));
+        digest_view.record(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready));
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
         let (path, node_id, incarnation): (PathName, _, _) = (rdm_core::PathName::new("mesh2.node", "1").unwrap(), NodeId::mint(), IncarnationId::mint());
         assert!(view.node(&path).is_none(), "the exited birth deleted: no view holds it");
@@ -1312,10 +1312,10 @@ mod tests {
     async fn an_unheard_birth_whose_removal_was_announced_submits_no_recovery() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-removal-announced")).unwrap();
         for (case, announced, workflow) in [("delete-deleting", "node-deleting", "node.delete"), ("delete-deleted", "node-deleted", "node.delete")] {
-            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
             member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
-            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
             // The tick's view, read before the announcement arrived.
@@ -1369,10 +1369,10 @@ mod tests {
     #[tokio::test]
     async fn a_repairs_announcement_left_by_a_former_primary_holds_no_recovery() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-repair-announced")).unwrap();
-        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         member.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1418,10 +1418,10 @@ mod tests {
     async fn an_unheard_member_of_a_deleting_or_deleted_mesh_submits_no_recovery() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-mesh-deleting")).unwrap();
         for (status, announced) in [("leaving", "mesh-deleting"), ("dead", "mesh-deleted")] {
-            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
             member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
-            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
             digest_view.statuses.take(&rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
@@ -1468,10 +1468,10 @@ mod tests {
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-on-investigated")).unwrap();
         for (status, verdict) in [(DeploymentStatus::Running, NodeInvestigatedVerdict::Running), (DeploymentStatus::Exited { code: Some(137) }, NodeInvestigatedVerdict::Exited)] {
-            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+            let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
             member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
-            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+            for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1539,7 +1539,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_read_of_the_durable_runtime_rows_is_spanned_and_the_tick_watches_the_views_births() {
         let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready)] {
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready)] {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1569,9 +1569,9 @@ mod tests {
     #[tokio::test]
     async fn a_true_offline_member_whose_runtime_row_cannot_be_read_is_unproven_and_recovered() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unreadable")).unwrap();
-        let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
@@ -1595,7 +1595,7 @@ mod tests {
     /// primary.
     #[test]
     fn a_mesh_with_a_node_not_ready_projects_pending() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let t = view(&[
             with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000"),
             with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Pending), "300000000000"),
@@ -1614,7 +1614,7 @@ mod tests {
     /// the births that happen to be heard are ready.
     #[test]
     fn a_mesh_with_a_planned_birth_not_yet_heard_projects_pending() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         for d in [with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000"), with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000")] {
             digest_view.record(d);
@@ -1643,7 +1643,7 @@ mod tests {
     /// which gives the takeover a new status and no checklist.
     #[test]
     fn a_mesh_heard_ready_stays_ready_when_a_node_is_lost() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         for d in [with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000"), with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000"), with_id(digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Pending), "400000000000")] {
             digest_view.record(d);
@@ -1662,7 +1662,7 @@ mod tests {
     /// ready.
     #[tokio::test]
     async fn a_deleted_birth_leaves_the_view_whatever_its_digest_says() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let a = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
         let b = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Ready), "300000000000");
@@ -1684,7 +1684,7 @@ mod tests {
     /// mesh's node-admin on a per-member clock beside the investigation.
     #[test]
     fn a_mesh_primary_watches_only_its_own_meshs_silent_members() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let me = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
         let own = with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000");
@@ -1711,7 +1711,7 @@ mod tests {
     // @feature: node-lifecycle
     #[test]
     fn an_unreachable_mark_watches_the_member_at_once_and_ends_when_it_is_heard_after_it() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let me = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
         let own = with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000");
@@ -1758,7 +1758,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_mesh_primarys_spent_call_to_a_member_marks_it_and_the_tick_investigates_it_half_a_floor_after_the_mark() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let me = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
         let own = with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000");
@@ -1828,7 +1828,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn the_fabric_primarys_spent_call_to_a_mesh_primary_marks_it_and_nothing_marks_the_fabric_primary() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let fp = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
         let m2p = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Ready), "300000000000");
@@ -1879,7 +1879,7 @@ mod tests {
     // @feature: node-lifecycle
     #[test]
     fn a_gossiping_mesh_primarys_spent_call_mark_stands_through_its_digests_and_the_fabric_primary_investigates_it() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let fp = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
         let m2p = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Ready), "300000000000");
@@ -1927,7 +1927,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_spent_call_mark_ends_when_the_marked_birth_answers_a_later_call_of_this_primary_and_not_on_its_digests() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         use rdm_core::ping::{Ping, PingReply, PingRequest};
         let digest_view = DigestView::default();
         let fp = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
@@ -1999,7 +1999,7 @@ mod tests {
     /// of the member, so an heir's tick watches nothing and the member is never recovered.
     #[test]
     fn an_admin_lists_and_watches_an_own_mesh_birth_held_only_from_its_primarys_projection() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let digest_view = DigestView::default();
         let me = with_id(digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", Ready), "200000000000");
         assert!(digest_view.record(me.clone()));
@@ -2032,8 +2032,8 @@ mod tests {
     /// (kept/e6s7-i144-e4-re-born-admin-third-defect).
     #[tokio::test(start_paused = true)]
     async fn a_member_watched_only_through_durable_rows_is_heard_again_not_gone() {
-        let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
-        let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
+        let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready);
+        let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         let snapshot = view(&[me.clone()]);
         assert!(snapshot.births().all(|n| n.node_id != member.node.node_id), "the view does not hold the member");
         let row = crate::storage::NodeRecord { runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("q7-heard-against")).unwrap(), ..record_of(&member) };
@@ -2083,8 +2083,8 @@ mod tests {
     /// opened at 788637, and mesh1.node-admin.1's three commit-state sends had all come back NotReady).
     #[tokio::test]
     async fn an_admins_readiness_gate_opens_with_the_first_installed_view_that_holds_its_exact_birth() {
-        let me = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
-        let primary = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let me = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
+        let primary = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let filled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let records = Records::default();
@@ -2115,7 +2115,7 @@ mod tests {
     /// exited, or replaced by a later birth that says so, hands the role to its own mesh.
     #[tokio::test]
     async fn the_projection_keeps_a_recorded_primary_and_elects_nobody_before_it_is_told() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
         let primary = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "500000000000");
@@ -2154,7 +2154,7 @@ mod tests {
     /// nobody, not the lowest Ready admin of its mesh, holds either role meanwhile.
     #[test]
     fn a_later_birth_that_supersedes_the_primary_proves_it_gone() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
         let primary = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "500000000000");
@@ -2176,7 +2176,7 @@ mod tests {
     /// its node-rows writer over `storage`, and its view projected from both.
     async fn fabric_primary_over(mesh2: &[MeshDigest], storage: Arc<crate::storage::MemoryNodesStorage>) -> (MeshDigest, DigestView, Arc<Records>, Arc<RwLock<Topology>>, Arc<crate::node_rows::NodeRows>) {
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
-        let fp = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), "100000000000");
+        let fp = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), "100000000000");
         let digest_view = DigestView::default();
         digest_view.record(fp.clone());
         for d in mesh2 {
@@ -2231,7 +2231,7 @@ mod tests {
         let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
         for case in ["surviving-primary-wrote-deleted", "no-survivor"] {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-            let last = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Leaving), "200000000000");
+            let last = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Leaving), "200000000000");
             let (_fp, digest_view, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
             crate::storage::NodesStorage::put_node(&*storage, &record_of(&last)).await.unwrap();
             depart(&digest_view, &records, &last).await;
@@ -2279,8 +2279,8 @@ mod tests {
     async fn mesh_left_takes_the_primaries_of_every_birth_its_manifest_names_off_its_record() {
         use crate::storage::NodesStorage;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let last = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Leaving), "200000000000");
-        let member = with_id(digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Leaving), "210000000000");
+        let last = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Leaving), "200000000000");
+        let member = with_id(digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Leaving), "210000000000");
         let (fp, digest_view, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
         // Each node recorded its own role on its own record; mesh1's own stays.
         for d in [&last, &member, &fp] {
@@ -2323,7 +2323,7 @@ mod tests {
     #[tokio::test]
     async fn the_lost_only_admins_exit_held_admits_the_fabric_primarys_create_of_its_successor() {
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let lost = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), "200000000000");
+        let lost = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), "200000000000");
         let (_fp, digest_view, records, view, rows) = fabric_primary_over(std::slice::from_ref(&lost), storage.clone()).await;
         let created: PathName = rdm_core::PathName::new("mesh2.node-admin", "2").unwrap();
         let refused = rows.check_create(&created, "mesh2", "node-admin", &NodeId::mint(), None, None).await;
@@ -2345,8 +2345,8 @@ mod tests {
     async fn the_lost_primarys_departure_makes_the_live_admin_primary_in_the_fabric_primarys_view_and_its_own() {
         use rdm_core::PrimaryRole::MeshPrimary;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let lost = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), "200000000000");
-        let live = with_id(digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), "300000000000");
+        let lost = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), "200000000000");
+        let live = with_id(digest(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), "300000000000");
         let (_fp, digest_view, records, view, _rows) = fabric_primary_over(&[lost.clone(), live.clone()], storage).await;
         let primary = |t: &Topology| t.node_type_primary("mesh2", "node-admin").map(|n| n.location());
         assert_eq!(primary(&*view.read().await), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "unheld, the lost primary keeps its role (R-EL1)");
@@ -2373,7 +2373,7 @@ mod tests {
     /// election with no winner while the record names P).
     #[test]
     fn a_leaving_primary_stays_both_primaries_in_the_readers_until_its_hand_over_is_held() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
@@ -2411,7 +2411,7 @@ mod tests {
     /// the fabric-primary handover stem on f06c8197).
     #[tokio::test]
     async fn a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
@@ -2463,7 +2463,7 @@ mod tests {
     /// lower NodeId that later becomes Ready displaces the living primary.
     #[tokio::test]
     async fn a_mesh_primary_announces_each_node_type_primary_the_election_fills_in_its_mesh() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary, NodePrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
@@ -2501,7 +2501,7 @@ mod tests {
 
     #[test]
     fn the_projection_elects_the_lowest_ready_node_id_per_node_type_and_across_mesh_primaries() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let t = view(&[
             with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Ready), "200000000000"),
             with_id(digest(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", Ready), "700000000000"),
@@ -2522,7 +2522,7 @@ mod tests {
     #[test]
     fn ready_since_and_ordinal_never_change_a_winner() {
         // The ready time no digest carries any more (Q203: a digest carries no config map).
-        let at = |name: PathName, mesh: &str, r#type: &str, id: &str, _since: u64| with_id(digest(name, mesh, r#type, MemberStatus::Ready), id);
+        let at = |name: PathName, mesh: &str, r#type: &str, id: &str, _since: u64| with_id(digest(name, mesh, r#type, rdm_core::model::NodeStatus::Ready), id);
         // rpc.3 has the highest ordinal and the latest ready time, and the lowest id.
         let a = view(&[at(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "100000000000", 10), at(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "900000000000", 1), at(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "800000000000", 2), at(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "200000000000", 900)]);
         let b = view(&[at(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "100000000000", 999), at(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "900000000000", 900), at(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "800000000000", 800), at(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "200000000000", 1)]);
@@ -2540,7 +2540,7 @@ mod tests {
         use rdm_core::{RuntimeLocator, RuntimeProvider};
         let p = ProcessDeploymentProvider::new();
         let with = |name: PathName, mesh: &str, r#type: &str, domain: Option<String>| {
-            let mut d = digest(name, mesh, r#type, MemberStatus::Ready);
+            let mut d = digest(name, mesh, r#type, rdm_core::model::NodeStatus::Ready);
             d.node.runtime = domain.map(|control_domain| rdm_core::RuntimeFact {
                 deployment_id: rdm_core::fixture_crockford60("dep"),
                 provider: RuntimeProvider::Process,
@@ -2608,11 +2608,11 @@ mod tests {
             let wake = records.wake.clone();
             async move { tokio::time::timeout(Duration::from_millis(150), wake.woken()).await.is_err() }
         };
-        let topology = RwLock::new(view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready)]));
+        let topology = RwLock::new(view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready)]));
         let same = topology.read().await.clone();
         records.install_projected(&topology, || same.clone()).await;
         assert!(quiet(&records).await, "the same view wakes nothing");
-        let changed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready)]);
+        let changed = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready)]);
         records.install_projected(&topology, || changed.clone()).await;
         assert!(!quiet(&records).await, "a changed view wakes the declarer");
         records.set_declare_gate(true);
@@ -2637,7 +2637,7 @@ mod tests {
         use rdm_core::join::{JoinReply, JoinRequest};
         let digest_view = DigestView::default();
         let records = Arc::new(Records::default());
-        digest_view.record(with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), "100000000000"));
+        digest_view.record(with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), "100000000000"));
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)));
         let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric-primary role").clone();
         let status_service = StatusService {
@@ -2679,7 +2679,7 @@ mod tests {
 
         // The birth this admin deployed, and the digest it reports on its first call.
         let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-admitted")).unwrap();
-        let mut reported = with_id(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", MemberStatus::Pending), "200000000000");
+        let mut reported = with_id(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Pending), "200000000000");
         reported.node.runtime = Some(runtime.clone());
         reported.data_dir = Some("/data/mesh1.node-admin.2".into());
         let deployed = Deployed { mesh: reported.node.mesh.clone(), r#type: reported.node.r#type.clone(),
@@ -2741,7 +2741,7 @@ mod tests {
 
     #[test]
     fn a_mesh_without_a_ready_admin_cedes_the_fabric_and_stays_pending() {
-        use MemberStatus::*;
+        use rdm_core::model::NodeStatus::*;
         let t = view(&[digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", ConnectionsDeleting), digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Ready)]);
         assert_eq!(t.fabric_primary().map(|n| n.location()), Some(PathName::new("mesh2.node-admin", "1").unwrap()));
         assert_eq!(t.meshes.iter().find(|m| m.name == "mesh1").unwrap().status, ScopeStatus::Pending);
@@ -2765,7 +2765,7 @@ mod tests {
         let written = crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let digest_view = DigestView::default();
-        let held = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let held = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(held.clone());
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
@@ -2815,7 +2815,7 @@ mod tests {
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let digest_view = DigestView::default();
-        let held = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let held = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(held.clone());
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
@@ -2867,8 +2867,8 @@ mod tests {
         held("mesh1", "ready");
         held("mesh2", "pending");
         held("mesh3", "leaving");
-        let (ready, pending) = (digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready), digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", MemberStatus::Pending));
-        let (of_pending_mesh, of_leaving_mesh, of_unheard_mesh) = (digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready), digest(PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node", MemberStatus::Ready), digest(PathName::new("mesh4.node", "1").unwrap(), "mesh4", "node", MemberStatus::Ready));
+        let (ready, pending) = (digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Pending));
+        let (of_pending_mesh, of_leaving_mesh, of_unheard_mesh) = (digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node", rdm_core::model::NodeStatus::Ready), digest(PathName::new("mesh4.node", "1").unwrap(), "mesh4", "node", rdm_core::model::NodeStatus::Ready));
         for d in [&ready, &pending, &of_pending_mesh, &of_leaving_mesh, &of_unheard_mesh] {
             assert!(digest_view.record(d.clone()));
         }
@@ -2902,7 +2902,7 @@ mod tests {
         use rdm_core::status::NodeState;
         let digest_view = DigestView::default();
         let records = Records::default();
-        let d = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Leaving);
+        let d = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Leaving);
         let t0 = std::time::Instant::now();
         assert!(digest_view.record_at(d.clone(), t0));
         records.declared.lock().unwrap().nodes.insert((d.node.node_id.clone(), d.node.incarnation.clone()), NodeState::Stopped);
@@ -2926,7 +2926,7 @@ mod tests {
         let digest_view = DigestView::default();
         let records = Records::default();
         for (mesh, state) in [("mesh1", MeshState::Deleting), ("mesh2", MeshState::Deleted), ("mesh3", MeshState::Ready)] {
-            assert!(digest_view.record(digest(PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), mesh, "node-admin", MemberStatus::Ready)));
+            assert!(digest_view.record(digest(PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), mesh, "node-admin", rdm_core::model::NodeStatus::Ready)));
             records.meshes.lock().unwrap().insert(mesh.into(), mesh_id(mesh));
             records.declared.lock().unwrap().meshes.insert(mesh_id(mesh), state);
         }
@@ -2973,7 +2973,7 @@ mod tests {
         use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let records = Records::default();
-        let rpc = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let rpc = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(rpc.clone()));
         let mut wake = ViewWake::new(&digest_view, &records);
         let gate = crate::stop_gate::StopGate::new();
@@ -2986,7 +2986,7 @@ mod tests {
         wake.seen();
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_none(), "nothing moved: no rebuild is due");
         let mut connections_deleting = rpc.clone();
-        connections_deleting.status = MemberStatus::ConnectionsDeleting;
+        connections_deleting.status = rdm_core::model::NodeStatus::ConnectionsDeleting;
         connections_deleting.digest_seq += 1;
         assert!(digest_view.record(connections_deleting));
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
@@ -3009,7 +3009,7 @@ mod tests {
         use futures_util::FutureExt;
         let digest_view = DigestView::default();
         let records = Records::default();
-        let rpc = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let rpc = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(rpc.clone()));
         let mut wake = ViewWake::new(&digest_view, &records);
         let gate = crate::stop_gate::StopGate::new();
@@ -3136,7 +3136,7 @@ mod tests {
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let written = crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let digest_view = DigestView::default();
-        let held = digest(PathName::new("mesh1.node", "7").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let held = digest(PathName::new("mesh1.node", "7").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(held.clone());
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
@@ -3208,7 +3208,7 @@ mod tests {
     #[test]
     fn a_successor_admin_lists_a_stopped_node_from_the_stop_overlay_it_read() {
         let digest_view = DigestView::default();
-        let stopped = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let stopped = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         let stop = rdm_core::LifecycleOp { r#type: stopped.node.r#type.clone(), mesh: stopped.node.mesh.clone(),
             build_id: "b1".into(),
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
@@ -3235,7 +3235,7 @@ mod tests {
         // birth (silent past the floor), so this admin's own launch record must
         // not bring it back as ready.
         let digest_view = DigestView::default();
-        let left = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Leaving);
+        let left = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Leaving);
         digest_view.record(left.clone());
         let records = Records::default();
         let mut n = Node::allocated(left.node.location(), left.node.mesh.clone(), &left.node.r#type);
@@ -3254,7 +3254,7 @@ mod tests {
         assert!(t.node(&pending.location()).is_some());
         // A birth it launched whose departure another admin proved and published: the view no
         // longer holds the digest, and the launch record never stands in for it.
-        let gone = digest(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let gone = digest(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(gone.clone());
         let launched = Records::default();
         let mut n = Node::allocated(gone.node.location(), gone.node.mesh.clone(), &gone.node.r#type);
@@ -3280,7 +3280,7 @@ mod tests {
     #[test]
     fn removed_births_leave_the_view_and_a_newer_birth_at_the_path_does_not() {
         let digest_view = DigestView::default();
-        let old = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let old = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(old.clone());
         let records = Records::default();
         let mut n = Node::allocated(old.node.location(), old.node.mesh.clone(), &old.node.r#type);
@@ -3289,7 +3289,7 @@ mod tests {
         records.remove(&old.node.location());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         assert!(t.node(&old.node.location()).is_none(), "the removed birth is gone");
-        let mut newer = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let mut newer = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         newer.node.node_id = NodeId::mint();
         digest_view.record(newer.clone());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
@@ -3303,9 +3303,9 @@ mod tests {
     #[test]
     fn a_recovery_removes_exactly_the_exited_birth_and_never_the_new_node_at_its_path() {
         let digest_view = DigestView::default();
-        let old = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let old = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(old.clone());
-        let mut new = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let mut new = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         new.node.node_id = NodeId::mint();
         digest_view.record(new.clone());
         let records = Records::default();
@@ -3340,7 +3340,7 @@ mod tests {
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let digest_view = DigestView::default();
         let records = Records::default();
-        let first = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let first = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(first.clone());
         // This admin's entry sweep reached the birth (`spawn_entry_sweep`): its record stands in for it.
         let reached = crate::reenter::MapNode { mesh: first.node.mesh.clone(), r#type: first.node.r#type.clone(), node_id: first.node.node_id.clone(), path: first.node.path.clone(), name: first.node.name.clone(), endpoint_id: first.node.endpoint_id.clone(), transport_addr: first.node.transport_addr, incarnation: first.node.incarnation.clone(), transition: None, ready: true, data_dir: None, admin_api_base: None };
@@ -3352,7 +3352,7 @@ mod tests {
         assert!(digest_view.depart(deleted(&first)), "the birth is deleted");
         assert_eq!(listed(&view_over(&me, &topology, &digest_view, &records).await), None, "the deleted birth leaves the view");
         // A new birth takes the path and name and is deleted in turn.
-        let second = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let second = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(second.clone());
         assert_eq!(listed(&view_over(&me, &topology, &digest_view, &records).await), Some((second.node.node_id.clone(), NodeStatus::Ready)));
         assert!(digest_view.depart(deleted(&second)), "the new birth is deleted");
@@ -3369,7 +3369,7 @@ mod tests {
     #[tokio::test]
     async fn a_projection_that_waits_for_the_view_lock_installs_the_state_at_the_lock() {
         let digest_view = Arc::new(DigestView::default());
-        let old = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let old = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(old.clone());
         let records = Arc::new(Records::default());
         let mut n = Node::allocated(old.node.location(), old.node.mesh.clone(), &old.node.r#type);

@@ -8,7 +8,7 @@
 //! itself, or a silent member that leaves the view with no span.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::topology::TopologyView;
 use serde_json::Value;
 use std::time::Duration;
@@ -26,7 +26,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoin
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

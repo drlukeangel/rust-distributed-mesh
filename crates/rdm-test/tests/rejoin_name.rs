@@ -8,7 +8,7 @@
 use crate::common::admin_side_serving;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use rdm_admin::model::NodeStatus;
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
@@ -41,7 +41,7 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, rdm_core::model::NodeStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("rejoin-held-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -76,7 +76,7 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
 
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut digests = digest_view.digest_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != rdm_core::model::NodeStatus::Ready) {
             digests.changed().await.unwrap();
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
@@ -104,7 +104,7 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");
         digests.borrow_and_update();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_apply || d.status != MemberStatus::Ready) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_apply || d.status != rdm_core::model::NodeStatus::Ready) {
             let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
             if d.digest_seq >= seq_at_apply {
                 assert_eq!(d.node.location(), taken, "every digest after the apply names the name the node holds");

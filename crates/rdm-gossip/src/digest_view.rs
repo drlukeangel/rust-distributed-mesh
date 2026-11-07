@@ -242,7 +242,7 @@ pub struct DigestView {
     /// The status this view holds for each own-mesh birth, by NodeId: what the mesh-primary's
     /// projection said, or, while this view's holder is the primary, what it authored. The only copy:
     /// no held digest carries an own-mesh birth's status.
-    pub(crate) member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rdm_core::MemberStatus)>>>,
+    pub(crate) member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rdm_core::model::NodeStatus)>>>,
     /// The own-mesh births this view holds only from its mesh-primary's projection, by NodeId: the
     /// birth as the projection carried it (its identity, endpoint and runtime fact: gossip.md §3,
     /// "needed by an authority-bearing admin to manage that birth"), and the instant this view first
@@ -635,7 +635,7 @@ impl DigestView {
         let name = Some(name);
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = name.filter(|_| !own_mesh.is_empty() && mesh == own_mesh) else { return false };
-        let prior = self.author_status(node_id.as_str(), incarnation, rdm_core::MemberStatus::Ready);
+        let prior = self.author_status(node_id.as_str(), incarnation, rdm_core::model::NodeStatus::Ready);
         tracing::info_span!(
             "rdm.mesh.topology.update.from-node-started",
             node = %self.observer_name.lock().unwrap(),
@@ -791,14 +791,14 @@ impl DigestView {
     /// that birth is cleared at `node.mesh.joined`"), and the birth is held again with
     /// `status`, the state its mesh-primary holds for it: Pending, or the Ready it declared
     /// since. Never set back to Pending.
-    pub fn joined_already_applied(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
+    pub fn joined_already_applied(&self, op: &LifecycleOp, status: rdm_core::model::NodeStatus) -> bool {
         self.take_joined(op, Some(status))
     }
 
     /// `node.mesh.joined` of the birth `op` names: held `Pending` ([`Self::joined`]), or with the status
     /// its mesh-primary already holds for it (`already`, [`Self::joined_already_applied`]).
-    pub(crate) fn take_joined(&self, op: &LifecycleOp, already: Option<rdm_core::MemberStatus>) -> bool {
-        let status = already.unwrap_or(rdm_core::MemberStatus::Pending);
+    pub(crate) fn take_joined(&self, op: &LifecycleOp, already: Option<rdm_core::model::NodeStatus>) -> bool {
+        let status = already.unwrap_or(rdm_core::model::NodeStatus::Pending);
         let mark = self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).cloned().filter(|m| m.incarnation == op.incarnation);
         let cleared: Vec<rdm_core::OperationId> = self.in_flight().into_iter().filter(|o| mark.is_some() && o.is_stop() && o.node_id == op.node_id).map(|o| o.operation).collect();
         let (held_again, held_digest_seq) = match &mark {
@@ -850,7 +850,7 @@ impl DigestView {
     /// its status"): held for the birth, so its projection carries it from its next publication. Its
     /// node.started is [`Self::started`]. `false` when the birth is not of this view's own mesh or this
     /// view holds no digest of exactly that birth.
-    pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rdm_core::MemberStatus) -> bool {
+    pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rdm_core::model::NodeStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation && !own_mesh.is_empty() && d.node.mesh == own_mesh).map(|(d, _, _)| d.node.location()) else {
             return false;
@@ -876,7 +876,7 @@ impl DigestView {
     /// for the birth, so its projection carries it from its next publication. No heartbeat says it (gossip.md
     /// §3.1: a Digest "carries no status"). `false` when the birth is not of this view's own mesh or
     /// this view holds no digest of exactly that birth.
-    pub fn admitted(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
+    pub fn admitted(&self, op: &LifecycleOp, status: rdm_core::model::NodeStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let held = !own_mesh.is_empty() && op.mesh == own_mesh && self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == op.incarnation);
         if !held {
@@ -901,7 +901,7 @@ impl DigestView {
     /// The status this view holds for the own-mesh birth `incarnation` of `node_id`: what its
     /// mesh-primary set, here or in the projection this view took. `None` when it holds none for that
     /// exact birth.
-    pub fn member_status(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::MemberStatus> {
+    pub fn member_status(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::model::NodeStatus> {
         self.member_statuses.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, s)| *s)
     }
 
@@ -916,7 +916,7 @@ impl DigestView {
     /// birth or a predecessor at its own (path, name), a deleted or stopped birth, or another birth of
     /// the node this view holds. `Ok` carries
     /// the status held before.
-    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, mesh: &str, status: rdm_core::MemberStatus) -> Result<Option<rdm_core::MemberStatus>, &'static str> {
+    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, mesh: &str, status: rdm_core::model::NodeStatus) -> Result<Option<rdm_core::model::NodeStatus>, &'static str> {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         if own_mesh.is_empty() || mesh != own_mesh {
             return Err("another-mesh");
@@ -945,7 +945,7 @@ impl DigestView {
     /// "Who sets each state"): held for the birth, its one copy, which its projection and every read
     /// of its digest carry. A move ticks `heard`. Returns the status held for that birth before
     /// (`None` when none was).
-    pub(crate) fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rdm_core::MemberStatus) -> Option<rdm_core::MemberStatus> {
+    pub(crate) fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rdm_core::model::NodeStatus) -> Option<rdm_core::model::NodeStatus> {
         let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), status)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
         if prior != Some(status) {
             self.heard.send_modify(|v| *v += 1);
@@ -1108,7 +1108,7 @@ impl DigestView {
             }
             let itself = self.is_own_lineage(&d.node.node_id, &d.node.incarnation);
             if d.node.mesh == own_mesh && !itself {
-                d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rdm_core::MemberStatus::Pending);
+                d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rdm_core::model::NodeStatus::Pending);
             }
         }
     }
@@ -1360,7 +1360,7 @@ impl DigestView {
         if self.is_deleted(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::MemberStatus::Ready).map(|(d, _)| d.node.mesh) else {
+        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::model::NodeStatus::Ready).map(|(d, _)| d.node.mesh) else {
             return false;
         };
         self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY)
@@ -1760,7 +1760,7 @@ impl DigestView {
         let held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
         held.into_iter()
             .filter(|(d, silent)| *silent > floor && d.node.mesh == own_mesh && d.node.node_id.to_string() != me)
-            .filter(|(d, _)| d.status != rdm_core::MemberStatus::Leaving && !self.is_deleted_at(d.node.node_id.as_str(), now))
+            .filter(|(d, _)| d.status != rdm_core::model::NodeStatus::Leaving && !self.is_deleted_at(d.node.node_id.as_str(), now))
             .map(|(d, silent)| (d.node.node_id.to_string(), d.node.node_id.to_string(), silent.as_millis() as u64))
             .collect()
     }

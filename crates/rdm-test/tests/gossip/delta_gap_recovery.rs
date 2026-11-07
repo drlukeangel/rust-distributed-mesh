@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
-use rdm_core::{FabricId, MemberStatus, MeshDigest, MeshId};
+use rdm_core::{FabricId, model::NodeStatus, MeshDigest, MeshId};
 use rdm_client::NodeView;
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
@@ -313,7 +313,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         })
         .expect("mesh2.node.1 is in the forwarded full");
     let mut forged = real_digest.clone();
-    forged.status = MemberStatus::ConnectionsDeleting;
+    forged.status = NodeStatus::ConnectionsDeleting;
     let gap_frame = Frame::TopologyDelta {
         mesh: "mesh2".into(),
         source_publisher: publisher.clone(),

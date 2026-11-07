@@ -3313,7 +3313,7 @@ mod tests {
                     supersedes: None,
                     runtime: handle.fact(),
                 },
-                status: rdm_core::MemberStatus::Pending,
+                status: rdm_core::model::NodeStatus::Pending,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 0,

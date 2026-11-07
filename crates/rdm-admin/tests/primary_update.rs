@@ -588,7 +588,7 @@ fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: fabric.clone(),
         node: rdm_core::MeshNode { mesh: r.mesh.clone(), r#type: r.r#type.clone(), node_id: r.node_id.clone(), path: r.path.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
-        status: rdm_core::MemberStatus::Ready,
+        status: rdm_core::model::NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

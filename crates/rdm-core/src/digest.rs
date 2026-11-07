@@ -1,6 +1,7 @@
 //! What a node publishes about itself on its mesh's topology channel.
 
 use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId, MeshId};
+use crate::model::NodeStatus;
 use crate::runtime::RuntimeFact;
 use serde::{Deserialize, Serialize};
 
@@ -35,30 +36,6 @@ impl MeshNode {
     pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
-/// A member's status: set by its mesh-primary alone (states.md "Who sets each state") and carried to
-/// peers in that primary's member projection, never on the member's own heartbeat (gossip.md §3.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MemberStatus {
-    /// The node has not yet declared itself ready.
-    ///
-    /// Position 0 on the wire; serialized as `pending`.
-    Pending,
-    /// The node takes traffic.
-    ///
-    /// Position 1 on the wire; serialized as `ready`.
-    Ready,
-    /// The node takes no new work: its connections are being deleted.
-    ///
-    /// Position 2 on the wire; serialized as `connections-deleting`.
-    #[serde(rename = "connections-deleting")]
-    ConnectionsDeleting,
-    /// The node has announced its departure.
-    ///
-    /// Position 3 on the wire; serialized as `leaving`.
-    Leaving,
-}
-
 /// The liveness a birth self-publishes on its heartbeat (node-identity-and-state.md §4,
 /// `NodeState`): what it measures of itself, never a status. Postcard-positional: a variant is only
 /// ever appended.
@@ -88,10 +65,10 @@ impl NodeState {
     /// The liveness a birth publishes from its own word about itself: `Joining` while it is not yet
     /// self-ready (`Pending`, before its node.started at this start), `Alive` once it is. RDM measures
     /// no budget breach and no peer-only routing, so it publishes neither `Overloaded` nor `Degraded`.
-    pub fn self_published(own: MemberStatus) -> Self {
+    pub fn self_published(own: NodeStatus) -> Self {
         match own {
-            MemberStatus::Pending => Self::Joining,
-            MemberStatus::Ready | MemberStatus::ConnectionsDeleting | MemberStatus::Leaving => Self::Alive,
+            NodeStatus::Pending => Self::Joining,
+            _ => Self::Alive,
         }
     }
 }
@@ -106,7 +83,7 @@ pub struct MeshDigest {
     /// The member's status as the holder holds it: its mesh-primary's (gossip.md §3.1 `TopologyFull`),
     /// or, for the holder's own birth, its own word. A heartbeat carries none
     /// ([`crate::wire::WireDigest`]).
-    pub status: MemberStatus,
+    pub status: NodeStatus,
     /// The liveness the birth self-published on its last heartbeat (node-identity-and-state.md §4).
     #[serde(default)]
     pub node_state: NodeState,

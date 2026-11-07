@@ -30,7 +30,7 @@ use crate::connections_writer::HeldConnections;
 use crate::model::{IncarnationId, NodeId, PathName};
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::views::{ConnectionView, ConnectionsView};
-use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
+use rdm_core::{LifecycleOp, MeshDigest};
 use rdm_gossip::topology::TopologyView;
 use rdm_transport::{NodeRpcClient, NodeRpcServer};
 use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
@@ -282,9 +282,9 @@ pub struct NodeSelf {
     /// This birth's channels: the mesh channel its completion frames go out on.
     pub channels: rdm_gossip::channel::Channels,
     /// Set this birth's status and answer the digest to publish.
-    pub set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
+    pub set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync>,
     /// This birth's status now.
-    pub status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
+    pub status: Arc<dyn Fn() -> rdm_core::model::NodeStatus + Send + Sync>,
     /// Declare the state this birth entered to its authority (a node-admin of its mesh); `None` for
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
@@ -344,8 +344,8 @@ impl NodeSelf {
         client: Arc<NodeRpcClient>,
         resolver: Arc<rdm_transport::LiveNodeResolver>,
         channels: rdm_gossip::channel::Channels,
-        set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
-        status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
+        set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync>,
+        status: Arc<dyn Fn() -> rdm_core::model::NodeStatus + Send + Sync>,
         declare: Option<Declare>,
         connections_delete_deadline: Duration,
     ) -> Self {
@@ -940,7 +940,7 @@ impl NodeSelf {
         async {
             // The primitive's progress, `leaving`, from its command until the mesh is left: nothing
             // publishes it, in that state or after it (node-mesh-leave.md).
-            let _ = (self.set_status)(MemberStatus::Leaving);
+            let _ = (self.set_status)(rdm_core::model::NodeStatus::Leaving);
             let session = self.session.lock().unwrap().clone();
             let report = match &session {
                 Some(session) => session.cut(spare, mesh_primary).await,
@@ -1004,7 +1004,7 @@ impl NodeSelf {
         // The birth leaves the channels it is on and says Pending: its hook gates its app ops again,
         // and it is published Ready only once the hook has passed.
         session.leave_channels().await;
-        let _ = (self.set_status)(MemberStatus::Pending);
+        let _ = (self.set_status)(rdm_core::model::NodeStatus::Pending);
         self.server.resume();
         self.admit_new_connections();
         let birth_cancel = match &self.birth_cancel {
@@ -1227,7 +1227,7 @@ impl NodeSelf {
         if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
             let del_op = if op.is_stop() { LifecycleOp { operation: op.operation.command("node.delete", &self.node_id), ..op.clone() } } else { op.clone() };
             self.topology_view.digest_view.deleting(del_op);
-            let me = (self.set_status)(MemberStatus::Leaving);
+            let me = (self.set_status)(rdm_core::model::NodeStatus::Leaving);
             let mut members: Vec<MeshDigest> = backbone.own_members(&self.topology_view);
             match members.iter_mut().find(|d| d.node.node_id == me.node.node_id) {
                 Some(slot) => *slot = me.clone(),
@@ -1435,7 +1435,7 @@ impl NodeSelf {
                 Some(w) => Some(w.hold_rows().await),
                 None => None,
             };
-            let _ = (self.set_status)(MemberStatus::Pending);
+            let _ = (self.set_status)(rdm_core::model::NodeStatus::Pending);
             self.server.resume();
             self.admit_new_connections();
             // The admin that commanded the start answers its join, reached back over its own call:
@@ -1795,7 +1795,7 @@ mod tests {
                     supersedes: None,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: rdm_core::model::NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
@@ -1818,7 +1818,7 @@ mod tests {
                 resolver.clone(),
                 channels.clone(),
                 Arc::new(move |_| digest.clone()),
-                Arc::new(|| MemberStatus::Ready),
+                Arc::new(|| rdm_core::model::NodeStatus::Ready),
                 None,
                 Duration::from_millis(200),
             );
@@ -2000,7 +2000,7 @@ mod tests {
                     supersedes: None,
                     runtime: None,
                 },
-                status: MemberStatus::Ready,
+                status: rdm_core::model::NodeStatus::Ready,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
@@ -2027,7 +2027,7 @@ mod tests {
                 resolver,
                 channels.clone(),
                 Arc::new(move |_| digest.clone()),
-                Arc::new(|| MemberStatus::Ready),
+                Arc::new(|| rdm_core::model::NodeStatus::Ready),
                 Some(declare),
                 Duration::from_millis(50),
             )

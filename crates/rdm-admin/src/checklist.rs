@@ -7,7 +7,7 @@ use crate::accepted::FabricTopology;
 use crate::model::{PathName};
 use crate::status_rpc::MeshReport;
 use rdm_core::framing::Birth;
-use rdm_core::{MemberStatus, MeshDigest};
+use rdm_core::{model::NodeStatus, MeshDigest};
 use std::collections::BTreeMap;
 
 /// A checklist subject keeps node identity distinct from a planned location or a label.
@@ -85,7 +85,7 @@ pub(crate) fn missing_members(planned: &[PathName], me: &crate::model::NodeId, c
         let matches = |d: &&MeshDigest| birth.as_ref().map_or(&d.node.location() == path, |b| d.node.node_id == b.node_id && d.node.incarnation == b.incarnation);
         let live = |d: &&MeshDigest| matches(d) && !deleted(d.node.node_id.as_str());
         let here: Vec<&MeshDigest> = heard.iter().filter(live).collect();
-        if birth.is_some() && here.iter().any(|d| d.status == MemberStatus::Ready) {
+        if birth.is_some() && here.iter().any(|d| d.status == NodeStatus::Ready) {
             continue;
         }
         let held: Vec<&MeshDigest> = known.iter().filter(matches).collect();
@@ -149,7 +149,7 @@ mod tests {
         PathName::numbered(mesh, r#type, ord)
     }
 
-    fn digest(p: &PathName, status: MemberStatus) -> MeshDigest {
+    fn digest(p: &PathName, status: NodeStatus) -> MeshDigest {
         MeshDigest { 
             fabric_id: FabricId::mint(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
@@ -179,9 +179,9 @@ mod tests {
     fn checklist_names_every_planned_birth_that_has_not_checked_in_since_the_opening() {
         let (a1, r1, r2, r3) = (path("mesh1", "node-admin", 1), path("mesh1", "node", 1), path("mesh1", "node", 2), path("mesh1", "node", 3));
         let planned = vec![a1.clone(), r1.clone(), r2.clone(), r3.clone()];
-        let ready = digest(&r1, MemberStatus::Ready);
-        let pending = digest(&r2, MemberStatus::Pending);
-        let before_opening = digest(&r3, MemberStatus::Ready);
+        let ready = digest(&r1, NodeStatus::Ready);
+        let pending = digest(&r2, NodeStatus::Pending);
+        let before_opening = digest(&r3, NodeStatus::Ready);
         let me = birth();
         let none = |_: &str| false;
         let no_stop = |_: &PathName| false;
@@ -200,7 +200,7 @@ mod tests {
         let m = missing_members(&[r1.clone()], &me.node_id, &resolve, true, &[ready.clone()], &[ready.clone()], &gone, &no_stop);
         assert_eq!(m, vec![Missing { who: subject(&ready), why: "deleted" }]);
         let mut all = vec![ready.clone(), pending.clone(), before_opening.clone()];
-        for d in &mut all { d.status = MemberStatus::Ready; }
+        for d in &mut all { d.status = NodeStatus::Ready; }
         assert!(missing_members(&planned, &me.node_id, &resolve, true, &all, &all, &none, &no_stop).is_empty());
         let r3_stopped = |p: &PathName| p == &r3;
         let m = missing_members(&planned, &me.node_id, &unresolved, true, &[ready.clone()], &[ready.clone()], &none, &r3_stopped);

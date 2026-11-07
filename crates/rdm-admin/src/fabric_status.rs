@@ -686,7 +686,6 @@ fn unreadable(e: &crate::build_state::BuildStateError) -> Missing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::MemberStatus;
     use crate::model::{Fabric, Mesh, NodeStatus, ProviderKind, ScopeStatus};
 
     fn node(name: PathName, mesh: &str, r#type: &str, status: NodeStatus, primary: bool) -> Node {
@@ -1041,14 +1040,14 @@ mod tests {
     }
 
     /// `n`'s own digest: its exact birth (node id and incarnation), as the member publishes it.
-    fn digest_of(n: &crate::model::Node, status: MemberStatus) -> rdm_core::MeshDigest {
+    fn digest_of(n: &crate::model::Node, status: rdm_core::model::NodeStatus) -> rdm_core::MeshDigest {
         let mut d = digest(&n.location(), n.mesh.clone(), &n.r#type, status);
         d.node.node_id = n.node_id.clone();
         d.node.incarnation = n.incarnation_id.clone().expect("a member names its birth");
         d
     }
 
-    fn digest(p: &PathName, mesh: String, r#type: &str, status: MemberStatus) -> rdm_core::MeshDigest {
+    fn digest(p: &PathName, mesh: String, r#type: &str, status: rdm_core::model::NodeStatus) -> rdm_core::MeshDigest {
         rdm_core::MeshDigest {
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { mesh, r#type: r#type.to_string(),
@@ -1115,7 +1114,7 @@ mod tests {
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         let held = || capture.named("rdm.node_admin.mesh.update.via-checklist-held").into_iter().map(|s| s.attributes.get("missing").cloned().unwrap_or_default()).collect::<Vec<_>>();
         // The member was heard before the checklist began: held, not checked in.
-        let mut heard = digest_of(&rpc, MemberStatus::Ready);
+        let mut heard = digest_of(&rpc, rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(heard.clone()));
         assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "a digest heard before the checklist is not a check-in");
         assert_eq!(held(), [format!("node_id={}(not-heard-since-opening)", rpc.node_id)], "the hold names the planned birth that has not checked in, by its node id");
@@ -1230,7 +1229,7 @@ mod tests {
         let planned = vec![me.location(), rpc.location()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         // The member was heard before the checklist began (it is held, but it has not checked in).
-        let before = digest_of(&rpc, MemberStatus::Ready);
+        let before = digest_of(&rpc, rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(before.clone()));
         let done = fabric_states.adopted_step(awaiting, inputs());
         assert!(!done.mesh, "a digest heard before the checklist is not a check-in");
@@ -1264,7 +1263,7 @@ mod tests {
         let planned = vec![me.location(), rpc.location(), at_rest.location()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "mesh1.node.1 has not checked in");
-        assert!(digest_view.record(digest_of(&rpc, MemberStatus::Ready)));
+        assert!(digest_view.record(digest_of(&rpc, rdm_core::model::NodeStatus::Ready)));
         assert!(fabric_states.adopted_step(awaiting, inputs()).mesh, "every planned birth that is not stopped checked in: the stopped mesh1.node.2 holds nothing");
     }
 

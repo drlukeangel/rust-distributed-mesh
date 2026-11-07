@@ -454,7 +454,7 @@ pub enum MemberStatusReceipt<'a> {
 /// `Ok(false)` when it sets nothing (a birth of another mesh, or one the view holds nothing of);
 /// `Err` naming why a role fold adopts nothing. The view's own span of each cause is its record.
 pub fn set_member_status(digest_view: &rdm_gossip::digest_view::DigestView, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
-    use rdm_core::MemberStatus as M;
+    use rdm_core::model::NodeStatus as M;
     match receipt {
         MemberStatusReceipt::Declared(row) => Ok(match row.state {
             NodeState::Ready => digest_view.started(&row.node_id, &row.incarnation_id, &row.name, &row.mesh),
@@ -3026,7 +3026,7 @@ mod tests {
                 supersedes: None,
                 runtime: Some(first.runtime.clone()),
             },
-            status: rdm_core::MemberStatus::Pending,
+            status: rdm_core::model::NodeStatus::Pending,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,
@@ -3549,7 +3549,7 @@ mod tests {
                 supersedes: None,
                 runtime: None,
             },
-            status: rdm_core::MemberStatus::Ready,
+            status: rdm_core::model::NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 0,

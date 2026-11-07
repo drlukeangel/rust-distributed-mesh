@@ -174,7 +174,7 @@ impl TopologyObserver {
 pub async fn probed_hook_answer(client: &rdm_transport::NodeRpcClient, digest_view: &DigestView, node: &Node) -> Option<crate::node_hooks::ProbeAnswer> {
     let incarnation = node.incarnation_id.clone()?;
     let (digest, _) = digest_view.get(node.node_id.as_str()).filter(|(d, _)| d.node.incarnation == incarnation)?;
-    if digest.status != MemberStatus::Pending {
+    if digest.status != rdm_core::model::NodeStatus::Pending {
         return None;
     }
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
@@ -207,7 +207,7 @@ impl NodeObserver for TopologyObserver {
         let Some(d) = self.digest_of(node) else {
             return Err(format!("no digest from {} for this birth", node.node_id));
         };
-        if d.status == MemberStatus::Ready {
+        if d.status == rdm_core::model::NodeStatus::Ready {
             return Ok(());
         }
         // This admin's `StatusService` took the birth's node.started: fabric recovery's executor, of
@@ -618,7 +618,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
                 tracing::info!(error = %e, "this admin's own record's ready state is not written");
             }
         }
-        let (set, d) = set_own_status(&self.digest, Some(MemberStatus::Pending), MemberStatus::Ready);
+        let (set, d) = set_own_status(&self.digest, Some(rdm_core::model::NodeStatus::Pending), rdm_core::model::NodeStatus::Ready);
         if set {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
@@ -632,7 +632,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
 /// (whatever it holds when `from` is `None`), under one hold of the digest: the one place a node-admin
 /// sets its own status (every status its `NodeSelf` sets, and its Ready, from Pending only,
 /// at its Ready gate and at a start's report). Answers whether it was set, and the digest as it stands.
-pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, from: Option<MemberStatus>, to: MemberStatus) -> (bool, MeshDigest) {
+pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, from: Option<rdm_core::model::NodeStatus>, to: rdm_core::model::NodeStatus) -> (bool, MeshDigest) {
     let mut d = digest.lock().unwrap();
     if from.is_some_and(|from| d.status != from) {
         return (false, d.clone());

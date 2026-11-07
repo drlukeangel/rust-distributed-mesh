@@ -11,7 +11,7 @@
 //! read) carries each member as a [`ProjectionEntry`]: its digest, then the status the primary holds.
 
 use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
-use crate::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, NodeState, GossipStats};
+use crate::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, NodeState, GossipStats};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -130,7 +130,7 @@ impl From<WireDigest> for MeshDigest {
                 supersedes: n.supersedes,
                 runtime,
             },
-            status: MemberStatus::Pending,
+            status: NodeStatus::Pending,
             node_state: w.node_state,
             admin_api_base: w.admin_api_base,
             digest_seq: w.digest_seq,
@@ -154,7 +154,7 @@ pub struct ProjectionEntry {
     /// The member's digest.
     pub digest: WireDigest,
     /// The member's status, as its mesh-primary holds it.
-    pub status: MemberStatus,
+    pub status: NodeStatus,
 }
 
 impl From<&MeshDigest> for ProjectionEntry {

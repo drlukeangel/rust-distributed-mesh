@@ -16,7 +16,7 @@ use rdm_core::connections::{ConnectionEnd, ConnectionsHeld};
 use rdm_core::node_command::{NodeCommand, NodeCommandRequest};
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NotPrimary, StatusReply};
-use rdm_core::{ConnectionId, MemberStatus, MeshDigest, MeshNode};
+use rdm_core::{ConnectionId, MeshDigest, MeshNode};
 use rdm_gossip::topology::TopologyView;
 use rdm_transport::{
     LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder,
@@ -236,7 +236,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await
         .expect("join topology view");
 
-        let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
+        let status_cell = Arc::new(Mutex::new(rdm_core::model::NodeStatus::Ready));
         let digest_base = MeshDigest {
             fabric_id: fabric_id.clone(),
             node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
@@ -248,7 +248,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
                 transport_addr: subject_addr,
                 runtime: None,
             },
-            status: MemberStatus::Ready,
+            status: rdm_core::model::NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 0,
@@ -263,7 +263,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         };
         let status_for_set = status_cell.clone();
         let digest_for_set = digest_base.clone();
-        let set_status = Arc::new(move |s: MemberStatus| {
+        let set_status = Arc::new(move |s: rdm_core::model::NodeStatus| {
             *status_for_set.lock().unwrap() = s;
             let mut d = digest_for_set.clone();
             d.status = s;

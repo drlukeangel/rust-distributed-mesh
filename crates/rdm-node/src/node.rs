@@ -5,7 +5,7 @@ use rdm_core::launch::Launch;
 use anyhow::{anyhow, Context, Result};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
-use rdm_core::{IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
+use rdm_core::{IncarnationId, MeshDigest, MeshNode, NodeId};
 use rdm_gossip::topology::TopologyView;
 use rdm_transport::{NodeRpcServer, ServerBuilder};
 use rdm_core::catalog::OpOwner;
@@ -63,7 +63,7 @@ pub struct RunningNode {
     /// The node's Node RPC server.
     pub server: NodeRpcServer,
     /// The node's own status, as it publishes it.
-    pub status: Arc<Mutex<MemberStatus>>,
+    pub status: Arc<Mutex<rdm_core::model::NodeStatus>>,
     /// The node's current digest.
     pub digest: MeshDigest,
     /// This process's one Node RPC client and live resolver: every Node RPC
@@ -630,7 +630,7 @@ async fn start_booted(
             transport_addr: bound_addr,
             runtime: Some(runtime.clone()),
         },
-        status: MemberStatus::Ready,
+        status: rdm_core::model::NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
@@ -724,7 +724,7 @@ async fn start_booted(
             drop(step);
             let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &topology_view.digest_view, &current_name);
             // This node serves the topology it holds from here on (until now a read is `NotReady`).
-            let status = Arc::new(Mutex::new(MemberStatus::Pending));
+            let status = Arc::new(Mutex::new(rdm_core::model::NodeStatus::Pending));
             {
                 let (own, st, m) = (digest.clone(), status.clone(), topology_view.clone());
                 let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyService::new(
@@ -752,8 +752,8 @@ async fn start_booted(
                             let owed_state: Arc<OwedDeclarations> = Arc::default();
                             let own = {
                                 let (set_digest, set_status_cell, now_status) = (digest.clone(), status.clone(), status.clone());
-                                let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| set_own_status(&set_status_cell, &set_digest, st));
-                                let current: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || *now_status.lock().unwrap());
+                                let set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| set_own_status(&set_status_cell, &set_digest, st));
+                                let current: Arc<dyn Fn() -> rdm_core::model::NodeStatus + Send + Sync> = Arc::new(move || *now_status.lock().unwrap());
                                 // A declaration joins this birth's queue at the call, in the order owed (Q210);
                                 // `declare_loop` sends it. Its future ends once its call ended: answered, or its
                                 // receiver proven gone.
@@ -855,7 +855,7 @@ async fn start_booted(
                                         crate::node_records::write_own_roles(&records, topology_view.primaries(), &birth, &node.mesh, &node.r#type, &mut roles_written).await;
                                         let mut primary = topology_view.primaries().mesh(&node.mesh);
                                         if mesh_primary_moved(told.as_ref(), primary.as_ref()) && owed.is_empty() {
-                                            let state = node_state_of(*status.lock().unwrap());
+                                            let state = rdm_core::status::declared_of_member(*status.lock().unwrap());
                                             tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %node.node_id, state = ?state, to = %primary.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
                                                 .in_scope(|| tracing::info!("the mesh's primary moved to another birth: this birth's state is owed to it"));
                                             drop(owed.owe_again(state));
@@ -963,7 +963,7 @@ async fn start_booted(
 /// read, to `to`, and hand back `digest` carrying it: the one place an rpc or role node sets its own
 /// status (every status its `NodeSelf` sets, and its Ready at node.started). The rule a set
 /// applies before it is made is its caller's.
-fn set_own_status(status: &Mutex<MemberStatus>, digest: &MeshDigest, to: MemberStatus) -> MeshDigest {
+fn set_own_status(status: &Mutex<rdm_core::model::NodeStatus>, digest: &MeshDigest, to: rdm_core::model::NodeStatus) -> MeshDigest {
     *status.lock().unwrap() = to;
     let mut d = digest.clone();
     d.status = to;
@@ -971,7 +971,7 @@ fn set_own_status(status: &Mutex<MemberStatus>, digest: &MeshDigest, to: MemberS
 }
 
 /// The digest cadence of a node: its digest as it stands, its status and its in-flight count.
-fn spawn_publisher(channels: &rdm_gossip::channel::Channels, digest: &MeshDigest, status: &Arc<Mutex<MemberStatus>>, server: &NodeRpcServer) -> tokio::task::JoinHandle<()> {
+fn spawn_publisher(channels: &rdm_gossip::channel::Channels, digest: &MeshDigest, status: &Arc<Mutex<rdm_core::model::NodeStatus>>, server: &NodeRpcServer) -> tokio::task::JoinHandle<()> {
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
     channels.publish_every(rdm_core::cadence::gossip_interval(), move || {
         let mut d = d.clone();
@@ -1000,7 +1000,7 @@ struct NodeSession {
     client: Arc<rdm_transport::NodeRpcClient>,
     server: NodeRpcServer,
     digest: MeshDigest,
-    status: Arc<Mutex<MemberStatus>>,
+    status: Arc<Mutex<rdm_core::model::NodeStatus>>,
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     owed: Arc<OwedDeclarations>,
@@ -1330,7 +1330,7 @@ struct Becoming {
     topology_view: TopologyView,
     channels: rdm_gossip::channel::Channels,
     digest: MeshDigest,
-    status: Arc<Mutex<MemberStatus>>,
+    status: Arc<Mutex<rdm_core::model::NodeStatus>>,
     owed: Arc<OwedDeclarations>,
     /// The operation that makes this birth ready: the start's, or `None` at its first boot, a state
     /// the birth measured itself (i146 Q36).
@@ -1343,7 +1343,7 @@ impl Becoming {
     /// node.started: the report `node.start` makes once its steps after the hook ended.
     async fn go(&self) {
         // A node deleted while its hook ran is not Pending any more and is not made Ready.
-        if *self.status.lock().unwrap() != MemberStatus::Pending {
+        if *self.status.lock().unwrap() != rdm_core::model::NodeStatus::Pending {
             return;
         }
         tracing::info_span!(
@@ -1364,7 +1364,7 @@ impl Becoming {
             source = "self-published-topology"
         )
         .in_scope(|| tracing::info!("ready"));
-        let d = set_own_status(&self.status, &self.digest, MemberStatus::Ready);
+        let d = set_own_status(&self.status, &self.digest, rdm_core::model::NodeStatus::Ready);
         // Its Ready on its own record first (Q356; node-start.md: "the caller's node.start completes only
         // after the Ready record"): node.started, and the start's completion, follow it. The owed
         // declaration below then finds its state already written.
@@ -1732,7 +1732,7 @@ pub(crate) struct Kicked {
     held_name: crate::held_name::HeldName,
     channels: rdm_gossip::channel::Channels,
     digest: MeshDigest,
-    status: Arc<Mutex<MemberStatus>>,
+    status: Arc<Mutex<rdm_core::model::NodeStatus>>,
     /// This birth serving its node commands from its mesh-admin.
     own: Arc<crate::node_self::NodeSelf>,
     /// Where this birth's `pre_node_ready` stands (the cell a start's hook writes): while it answered
@@ -1893,15 +1893,6 @@ fn rows_len(frames: &[rdm_core::read::ReadReply]) -> u32 {
     frames.iter().map(|f| f.rows() as u32).sum()
 }
 
-fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
-    use rdm_core::status::NodeState as N;
-    match s {
-        MemberStatus::Pending => N::Pending,
-        MemberStatus::Ready => N::Ready,
-        MemberStatus::ConnectionsDeleting => N::ConnectionsDeleting,
-        MemberStatus::Leaving => N::Stopped,
-    }
-}
 
 /// The node command service (op 0x22, i144 R22; Luke Q6, Q7): a command from this birth's mesh-primary,
 /// answered on the command's ordered reply stream by [`crate::node_self::NodeSelf::serve_node_command`].
@@ -2001,7 +1992,7 @@ async fn apply_name(me: &Kicked, sender_name: &str, name: &str) -> rdm_core::sta
     let published = match decision {
         crate::node_name::NameApply::Applied => {
             me.held_name.set(asked.clone());
-            if *me.status.lock().unwrap() == MemberStatus::Leaving {
+            if *me.status.lock().unwrap() == rdm_core::model::NodeStatus::Leaving {
                 "off-mesh"
             } else {
                 let mut d = me.digest.clone();
@@ -2133,14 +2124,14 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         "rdm.node_admin.status.update.via-probe",
                         node = %me.digest.node.node_id,
                         sender = %sender_name,
-                        state = ?node_state_of(status),
+                        state = ?rdm_core::status::declared_of_member(status),
                     )
                     .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
-                    Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
+                    Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: rdm_core::status::declared_of_member(status) })
                 }
                 StatusRequest::ApplyNodeState { state, .. } => {
                     // Not a node command: a node's connections are deleted only by `node.connection.delete` on op 0x22.
-                    let current = node_state_of(*me.status.lock().unwrap());
+                    let current = rdm_core::status::declared_of_member(*me.status.lock().unwrap());
                     tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.digest.node.node_id, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
@@ -2242,7 +2233,7 @@ mod primary_tests {
             let digest = MeshDigest {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
-                status: MemberStatus::Pending,
+                status: rdm_core::model::NodeStatus::Pending,
                 node_state: Default::default(),
                 admin_api_base: None,
                 digest_seq: 1,
@@ -2257,7 +2248,7 @@ mod primary_tests {
             };
             let start = DeclaredOperation { operation: rdm_core::OperationId::node("node.start", &node_id) };
             let owed: Arc<OwedDeclarations> = Arc::default();
-            let status = Arc::new(Mutex::new(MemberStatus::Pending));
+            let status = Arc::new(Mutex::new(rdm_core::model::NodeStatus::Pending));
             let becoming = Becoming {
                 channels: channels.clone(),
                 boot: tracing::info_span!("rdm.mesh.node.update.via-start", node_id = %node_id),
@@ -2276,7 +2267,7 @@ mod primary_tests {
                 records: crate::node_records::NodePropertyWriter::new(Arc::new(crate::nodes_storage::MemoryNodesStorage::default()), || "memory".into()),
             };
             becoming.go().await;
-            assert_eq!(*status.lock().unwrap(), MemberStatus::Ready, "the start's hook passed: the birth is Ready");
+            assert_eq!(*status.lock().unwrap(), rdm_core::model::NodeStatus::Ready, "the start's hook passed: the birth is Ready");
             assert_eq!(owed.first().map(|(_, d)| d), Some((NodeState::Ready, Some(start))), "the start owes its mesh-primary Ready naming the start");
             endpoint.close().await;
         });

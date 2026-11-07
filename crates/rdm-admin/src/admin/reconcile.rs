@@ -425,7 +425,7 @@ mod tests {
                 supersedes: None,
                 runtime: None,
             },
-            status: MemberStatus::Ready,
+            status: NodeStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,

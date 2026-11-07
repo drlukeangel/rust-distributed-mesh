@@ -8,7 +8,7 @@
 //! the isolation), or counters that do not move when frames flow.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::topology::TopologyView;
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoin
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

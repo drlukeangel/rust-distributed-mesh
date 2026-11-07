@@ -969,7 +969,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             supersedes: supersedes.clone(),
             runtime: Some(runtime.clone()),
         },
-        status: MemberStatus::Pending,
+        status: rdm_core::model::NodeStatus::Pending,
         node_state: Default::default(),
         admin_api_base: Some(api_base.clone()),
         emitted_at_rafka_ms: 0,
@@ -1845,7 +1845,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     runtime: adoption.is_none().then(|| runtime.clone()),
                                 },
                                 // Pending until it can take authority at once (the Ready gate below).
-                                status: MemberStatus::Pending,
+                                status: rdm_core::model::NodeStatus::Pending,
                                 node_state: Default::default(),
                                 admin_api_base: Some(api_base.clone()),
                                 // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
@@ -2196,7 +2196,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let held: Vec<MeshDigest> = digest_view
                                                     .current(digest_view.staleness_floor())
                                                     .into_iter()
-                                                    .filter(|d| d.node.node_id != node_id && d.status != MemberStatus::Leaving)
+                                                    .filter(|d| d.node.node_id != node_id && d.status != rdm_core::model::NodeStatus::Leaving)
                                                     .collect();
                                                 let mut blocked = take_over_blockers(&held, &*provider);
                                                 if let Some(dir) = &day0 {
@@ -2249,7 +2249,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         tracing::info!(error = %e, "this admin's own record's ready state is not written: it stays pending");
                                                         break;
                                                     }
-                                                    let (set, d_ready) = super::session::set_own_status(&digest, Some(MemberStatus::Pending), MemberStatus::Ready);
+                                                    let (set, d_ready) = super::session::set_own_status(&digest, Some(rdm_core::model::NodeStatus::Pending), rdm_core::model::NodeStatus::Ready);
                                                     if !set {
                                                         break;
                                                     }
@@ -2359,8 +2359,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let digest_for_status = digest.clone();
                                         let digest_now = digest.clone();
-                                        let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| super::session::set_own_status(&digest_for_status, None, st).1);
-                                        let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
+                                        let set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| super::session::set_own_status(&digest_for_status, None, st).1);
+                                        let status: Arc<dyn Fn() -> rdm_core::model::NodeStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
                                         // Its stop's Stopped names the stop, as every node's does (node-status.md "Status
                                         // report", node-stop.md step 4; i146 Q37): owed in its declarer and sent from this
                                         // call, never from the declarer's own turns, which are held while it is stopped;

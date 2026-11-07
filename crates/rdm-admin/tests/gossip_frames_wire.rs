@@ -7,7 +7,7 @@
 //! bytes; a chunk the packers produce encodes under `MAX_MESSAGE_BYTES`; a frame this build does not
 //! read is refused with a named reason, a JSON frame included.
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::snapshot::{chunks_of, Full, PublisherId};
@@ -39,7 +39,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
             supersedes: full.then(IncarnationId::mint),
             runtime,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: rdm_core::NodeState::Alive,
         admin_api_base: full.then(|| "http://127.0.0.1:7000".to_string()),
         digest_seq: 3 + ordinal as u64,
@@ -55,7 +55,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
 /// A member's heartbeat: the digest with no status, for a heartbeat carries none (gossip.md §3.1
 /// `Digest`); a decoded one holds `Pending`, the status of a birth its receiver was not told of.
 fn heartbeat(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
-    MeshDigest { status: MemberStatus::Pending, ..digest(ordinal, runtime, full) }
+    MeshDigest { status: NodeStatus::Pending, ..digest(ordinal, runtime, full) }
 }
 
 fn process_runtime() -> RuntimeFact {

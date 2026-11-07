@@ -2359,8 +2359,8 @@ pub enum Transition<S> {
 
 /// What a node declared, as its mesh-primary's view holds it: the one mapping from the declaration
 /// vocabulary to the member status ([`declared_of_member`] is its inverse).
-pub fn member_of_declared(s: NodeState) -> crate::MemberStatus {
-    use crate::MemberStatus as M;
+pub fn member_of_declared(s: NodeState) -> crate::model::NodeStatus {
+    use crate::model::NodeStatus as M;
     match s {
         NodeState::Pending => M::Pending,
         NodeState::Ready => M::Ready,
@@ -2370,13 +2370,13 @@ pub fn member_of_declared(s: NodeState) -> crate::MemberStatus {
 }
 
 /// A member status in the declaration vocabulary: the inverse of [`member_of_declared`].
-pub fn declared_of_member(s: crate::MemberStatus) -> NodeState {
-    use crate::MemberStatus as M;
+pub fn declared_of_member(s: crate::model::NodeStatus) -> NodeState {
+    use crate::model::NodeStatus as M;
     match s {
-        M::Pending => NodeState::Pending,
+        M::Starting | M::Pending => NodeState::Pending,
         M::Ready => NodeState::Ready,
-        M::ConnectionsDeleting => NodeState::ConnectionsDeleting,
-        M::Leaving => NodeState::Stopped,
+        M::ConnectionsDeleting | M::ConnectionsDeleted => NodeState::ConnectionsDeleting,
+        M::Leaving | M::Left | M::Stopping | M::Stopped | M::PendingReconnect | M::Reserved5 | M::Dead | M::Deleting | M::Deleted | M::Withdrawn => NodeState::Stopped,
     }
 }
 

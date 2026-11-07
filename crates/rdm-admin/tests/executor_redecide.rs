@@ -154,7 +154,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
             supersedes: spec.env.get("RDM_SUPERSEDES").filter(|s| !s.is_empty()).map(|s| IncarnationId::parse(s).unwrap()),
             runtime,
         },
-        status: rdm_core::MemberStatus::Pending,
+        status: rdm_core::model::NodeStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

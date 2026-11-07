@@ -245,7 +245,7 @@ mod tests {
         for (i, v) in declared_variants(&root, file, "StatusReply").iter().enumerate() {
             assert_eq!(variant_doc(&root, file, "StatusReply", v).last().map(String::as_str), Some(format!("/// Position {i} on the wire.").as_str()), "StatusReply::{v}");
         }
-        let doc = variant_doc(&root, "crates/rdm-core/src/digest.rs", "MemberStatus", "ConnectionsDeleting");
+        let doc = variant_doc(&root, "crates/rdm-core/src/model.rs", "NodeStatus", "ConnectionsDeleting");
         assert_eq!(doc.last().map(String::as_str), Some("/// Position 2 on the wire; serialized as `connections-deleting`."), "a kebab-case status carried on the wire names its position and its serialized form");
         let doc = variant_doc(&root, "crates/rdm-gossip/src/frame.rs", "Frame", "Digest");
         assert_eq!(doc.last().map(String::as_str), Some("/// Schema index 0, never a wire kind."), "a frame's index is never a wire kind");
@@ -287,11 +287,11 @@ mod tests {
     fn a_status_whose_serialized_names_change_is_named() {
         let root = rafka_mesh_audit::workspace_root();
         let copy = Copy::of(&root, "renamed");
-        const DIGEST: &str = "crates/rdm-core/src/digest.rs";
-        copy.edit(DIGEST, |s| s.replacen("#[serde(rename = \"connections-deleting\")]", "#[serde(rename = \"connections-going\")]", 1));
+        const MODEL: &str = "crates/rdm-core/src/model.rs";
+        copy.edit(MODEL, |s| s.replacen("serialized as `connections-deleting`.\n    ConnectionsDeleting,", "serialized as `connections-deleting`.\n    #[serde(rename = \"connections-going\")]\n    ConnectionsDeleting,", 1));
         assert_eq!(
             copy.findings(),
-            [format!("{DIGEST}: MemberStatus::ConnectionsDeleting owes the last doc paragraph \"Position 2 on the wire; serialized as `connections-going`.\" (it ends \"Position 2 on the wire; serialized as `connections-deleting`.\")")],
+            [format!("{MODEL}: NodeStatus::ConnectionsDeleting owes the last doc paragraph \"Position 2 on the wire; serialized as `connections-going`.\" (it ends \"Position 2 on the wire; serialized as `connections-deleting`.\")")],
             "the one variant whose serialized name moved is named"
         );
     }

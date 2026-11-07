@@ -468,7 +468,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // The digest in the peer's view moves Pending to ready when the mesh-primary's projected
         // status reaches it (rdm.mesh.topology.update.via-projected-status), after the admin's row is written:
         // the renewal is compared against the peer's settled view of it, never its first digest.
-        let (digest_before, _) = until("mesh1.node.2's view holds mesh1.node.1's digest ready", BOUND, async || b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).filter(|(d, _)| d.status == rdm_core::digest::MemberStatus::Ready)).await;
+        let (digest_before, _) = until("mesh1.node.2's view holds mesh1.node.1's digest ready", BOUND, async || b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).filter(|(d, _)| d.status == rdm_core::model::NodeStatus::Ready)).await;
         let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connection.")).count();
         let before = connection_spans(&spans);
 

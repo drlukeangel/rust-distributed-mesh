@@ -488,7 +488,7 @@ mod tests {
     }
 
     use super::*;
-    use rdm_core::{EndpointId, MemberStatus, MeshNode};
+    use rdm_core::{EndpointId, model::NodeStatus, MeshNode};
 
     /// CONTRACT (gossip.md "A primary change on gossip": "The successor's next `Digest` carries
     /// `is_primary` (and `is_fabric_primary`) at the next revision, its normal announcement"; elections
@@ -531,14 +531,14 @@ mod tests {
         let digest_view = DigestView::default();
         let (a, ai) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let (b, bi) = (NodeId::parse("000000000001").unwrap(), IncarnationId::mint());
-        let mut da = digest(&a, &ai, None, MemberStatus::Ready, 1);
+        let mut da = digest(&a, &ai, None, NodeStatus::Ready, 1);
         da.is_primary = Some(3);
         da.is_fabric_primary = Some(7);
         assert!(digest_view.record(da.clone()));
         let held = |role| match role { PrimaryRole::FabricPrimary => digest_view.primaries.fabric(), _ => digest_view.primaries.node_type_primary("mesh1", "node") };
         assert_eq!(held(PrimaryRole::NodePrimary("node".into())), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
         assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
-        let mut db = digest(&b, &bi, None, MemberStatus::Ready, 1);
+        let mut db = digest(&b, &bi, None, NodeStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); db.node.path = at.path; db.node.name = at.name; }
         db.node.mesh = "mesh1".into();
         db.is_primary = Some(2);
@@ -566,10 +566,10 @@ mod tests {
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
         let (me, my_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let (other, other_inc) = (NodeId::parse("000000000003").unwrap(), IncarnationId::mint());
-        assert!(view.digest_view.record(digest(&me, &my_inc, None, MemberStatus::Ready, 5)));
-        let mut mine = digest(&me, &my_inc, None, MemberStatus::Ready, 3);
+        assert!(view.digest_view.record(digest(&me, &my_inc, None, NodeStatus::Ready, 5)));
+        let mut mine = digest(&me, &my_inc, None, NodeStatus::Ready, 3);
         mine.is_primary = Some(1);
-        let mut theirs = digest(&other, &other_inc, None, MemberStatus::Ready, 1);
+        let mut theirs = digest(&other, &other_inc, None, NodeStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); theirs.node.path = at.path; theirs.node.name = at.name; }
         theirs.node.mesh = "mesh1".into();
         let members = Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
@@ -590,19 +590,19 @@ mod tests {
         let (old, old_inc) = (NodeId::parse("000000000009").unwrap(), IncarnationId::mint());
         let (new, new_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let held = |id: &NodeId, inc: &IncarnationId, revision| Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision };
-        assert!(view.digest_view.record(digest(&old, &old_inc, None, MemberStatus::Ready, 1)));
+        assert!(view.digest_view.record(digest(&old, &old_inc, None, NodeStatus::Ready, 1)));
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &held(&old, &old_inc, 1));
         assert!(!view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &old_inc, Instant::now()), "a birth never replaced is no unheard mesh-primary");
         std::thread::sleep(Duration::from_millis(2));
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &held(&new, &new_inc, 2));
         assert!(view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &old_inc, Instant::now()), "replaced and unheard since: the fabric-primary's");
         std::thread::sleep(Duration::from_millis(2));
-        assert!(view.digest_view.record(digest(&old, &old_inc, None, MemberStatus::Ready, 2)));
+        assert!(view.digest_view.record(digest(&old, &old_inc, None, NodeStatus::Ready, 2)));
         assert!(!view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &old_inc, Instant::now()), "heard after it was replaced: its mesh-primary's");
         assert!(!view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &IncarnationId::mint(), Instant::now()), "another birth at the node id was never replaced here");
     }
 
-    fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
+    fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: NodeStatus, at: u64) -> MeshDigest {
         MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
@@ -633,8 +633,8 @@ mod tests {
     fn the_superseded_births_are_the_ones_every_held_digest_names() {
         let digest_view = DigestView::default();
         let (replaced, new) = (IncarnationId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&NodeId::mint(), &new, Some(replaced.clone()), MemberStatus::Ready, 10)));
-        assert!(digest_view.record(digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, 11)));
+        assert!(digest_view.record(digest(&NodeId::mint(), &new, Some(replaced.clone()), NodeStatus::Ready, 10)));
+        assert!(digest_view.record(digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, 11)));
         let copied: Vec<IncarnationId> = digest_view.all().into_iter().filter_map(|d| d.node.supersedes).collect();
         assert_eq!(digest_view.superseded(), vec![replaced]);
         assert_eq!(digest_view.superseded(), copied, "the same set as a copy of every digest");
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn topology_view_of_a_digest_with_gossip_stats_equals_the_view_without() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let plain = digest(&id, &inc, None, MemberStatus::Ready, 1);
+        let plain = digest(&id, &inc, None, NodeStatus::Ready, 1);
         let mut with = plain.clone();
         with.gossip = Some(rdm_core::GossipStats { heard: 3, neighbours: 2, frames_sent: 10, frames_received: 12 });
         assert_ne!(plain, with);
@@ -664,7 +664,7 @@ mod tests {
         let node_id = NodeId::mint();
         let (first, second) = (IncarnationId::mint(), IncarnationId::mint());
         let at = |port: u16, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, seq: u64| {
-            let mut d = digest(&node_id, incarnation, supersedes, MemberStatus::Ready, seq);
+            let mut d = digest(&node_id, incarnation, supersedes, NodeStatus::Ready, seq);
             d.node.endpoint_id = EndpointId(key.to_string());
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
@@ -689,7 +689,7 @@ mod tests {
         let (old_node, new_node) = (NodeId::mint(), NodeId::mint());
         let (old, new) = (IncarnationId::mint(), IncarnationId::mint());
         let at = |node: &NodeId, port: u16, incarnation: &IncarnationId, seq: u64| {
-            let mut d = digest(node, incarnation, None, MemberStatus::Ready, seq);
+            let mut d = digest(node, incarnation, None, NodeStatus::Ready, seq);
             d.node.endpoint_id = EndpointId(key.to_string());
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
@@ -717,12 +717,12 @@ mod tests {
         };
         let digest_view = DigestView::default();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        let mut first = digest(&id, &birth, None, MemberStatus::Ready, 100);
+        let mut first = digest(&id, &birth, None, NodeStatus::Ready, 100);
         first.node.runtime = Some(fact(11, "process:a:1"));
         assert!(digest_view.record(first.clone()));
         // Same birth, another locator or another control domain: refused, the held one stays.
         for other in [fact(12, "process:a:1"), fact(11, "process:b:1")] {
-            let mut moved = digest(&id, &birth, None, MemberStatus::Ready, 200);
+            let mut moved = digest(&id, &birth, None, NodeStatus::Ready, 200);
             moved.node.runtime = Some(other.clone());
             assert!(!digest_view.record(moved.clone()), "{other:?}");
             assert!(!digest_view.record_forwarded(moved));
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(digest_view.get(id.as_str()).unwrap().0.node.runtime, Some(fact(11, "process:a:1")));
         // A restart: a new birth with a new runtime is current; the old birth's fact never returns.
         let next = IncarnationId::mint();
-        let mut restarted = digest(&id, &next, Some(birth.clone()), MemberStatus::Ready, 300);
+        let mut restarted = digest(&id, &next, Some(birth.clone()), NodeStatus::Ready, 300);
         restarted.node.runtime = Some(fact(13, "process:a:1"));
         assert!(digest_view.record(restarted));
         assert!(!digest_view.record(first), "the superseded birth and its runtime are refused");
@@ -743,13 +743,13 @@ mod tests {
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
         let later = t0 + Duration::from_millis(30);
-        assert!(digest_view.record_at(digest(&id, &birth, None, MemberStatus::Leaving, 200), t0));
-        assert!(!digest_view.record_at(digest(&id, &birth, None, MemberStatus::Ready, 100), later), "an older digest of the same birth");
-        assert!(!digest_view.record_at(digest(&id, &birth, None, MemberStatus::Ready, 200), later), "a duplicate");
+        assert!(digest_view.record_at(digest(&id, &birth, None, NodeStatus::Leaving, 200), t0));
+        assert!(!digest_view.record_at(digest(&id, &birth, None, NodeStatus::Ready, 100), later), "an older digest of the same birth");
+        assert!(!digest_view.record_at(digest(&id, &birth, None, NodeStatus::Ready, 200), later), "a duplicate");
         let (held, age) = digest_view.get_at(id.as_str(), later).unwrap();
-        assert_eq!(held.status, MemberStatus::Leaving, "the status is not reverted");
+        assert_eq!(held.status, NodeStatus::Leaving, "the status is not reverted");
         assert_eq!(age, Duration::from_millis(30), "the member's unheard time is not reset");
-        assert!(digest_view.record_at(digest(&id, &birth, None, MemberStatus::Leaving, 300), later), "a newer digest is taken");
+        assert!(digest_view.record_at(digest(&id, &birth, None, NodeStatus::Leaving, 300), later), "a newer digest is taken");
     }
 
     /// `f` (a `members` frame) as the one chunk of a one-chunk snapshot.
@@ -809,13 +809,13 @@ mod tests {
         let digest_view = DigestView::default();
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 100)));
         assert!(!digest_view.routable(id.as_str()), "a Pending birth is a routing stop");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 110)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 110)));
         assert!(digest_view.routable(id.as_str()), "the birth and its mesh are ready");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120)));
         assert!(!digest_view.routable(id.as_str()), "a ConnectionsDeleting birth is a routing stop");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 130)), "the same birth's later ready is taken");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 130)), "the same birth's later ready is taken");
         assert!(digest_view.routable(id.as_str()), "a routing stop is no barrier: the later ready restores selection");
     }
 
@@ -828,7 +828,7 @@ mod tests {
     fn a_ready_birth_is_routable_only_while_its_mesh_is_held_ready() {
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
         assert!(!digest_view.routable(id.as_str()), "no status of mesh1 is held: mesh1 is not held ready");
         hold_mesh_status(&digest_view, "mesh2", "ready", 5);
         assert!(!digest_view.routable(id.as_str()), "another mesh's ready selects nothing in mesh1");
@@ -856,7 +856,7 @@ mod tests {
         let ready = publisher.observe("ready", Some(held), true, now, 10).expect("the held ready is sent once its checklist completes");
         assert!(peer.statuses.take(&ready, &fabric));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(peer.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(peer.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
         assert!(peer.routable(id.as_str()));
         let leaving = publisher.observe("leaving", None, true, now, 20).expect("the mesh's leaving is a change, sent at once");
         assert!(matches!(&leaving, Frame::MeshStatus { status, publisher, .. } if status == "leaving" && publisher == "mesh1.node-admin.1"), "{leaving:?}");
@@ -881,7 +881,7 @@ mod tests {
     async fn a_mesh_status_taken_moves_the_views_routing_watch() {
         let (digest_view, fabric) = (DigestView::default(), FabricId::parse("fab000000001").unwrap());
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
         let mut w = digest_view.routing_watch();
         w.seen();
         assert!(!moved_now(&mut w).await, "nothing moved yet");
@@ -891,7 +891,7 @@ mod tests {
         w.seen();
         assert!(!digest_view.statuses.take(&f, &fabric), "the same change again is taken once");
         assert!(!moved_now(&mut w).await, "a repeat moves nothing");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 110)));
         assert!(moved_now(&mut w).await, "a birth saying another status moves it");
     }
 
@@ -900,7 +900,7 @@ mod tests {
         let digest_view = DigestView::default();
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
         assert!(digest_view.routable(id.as_str()));
         let o = op(&id, &inc, "node.delete");
         assert!(digest_view.deleting(o.clone()));
@@ -935,20 +935,20 @@ mod tests {
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         *digest_view.observer_name.lock().unwrap() = "mesh1.node-admin.1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert_eq!(digest_view.adopt_status(&id, &inc, "mesh1", MemberStatus::Ready), Ok(None), "held before its heartbeat");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready));
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 10)));
-        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Ready), "the heartbeat heard after takes the adopted status");
-        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), "mesh2", MemberStatus::Ready), Err("another-mesh"));
+        assert_eq!(digest_view.adopt_status(&id, &inc, "mesh1", NodeStatus::Ready), Ok(None), "held before its heartbeat");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(NodeStatus::Ready));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 10)));
+        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "the heartbeat heard after takes the adopted status");
+        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), "mesh2", NodeStatus::Ready), Err("another-mesh"));
         // The holder's own predecessor is known by its exact birth, never by a path it stood at.
         let predecessor = IncarnationId::mint();
         *digest_view.own_predecessor.lock().unwrap() = Some(predecessor.clone());
-        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &predecessor, "mesh1", MemberStatus::Ready), Err("own-predecessor-birth"));
-        assert_eq!(digest_view.adopt_status(&id, &IncarnationId::mint(), "mesh1", MemberStatus::Leaving), Err("another-birth-held"), "an earlier birth of a node held at a later one");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "and the held birth's status stands");
+        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &predecessor, "mesh1", NodeStatus::Ready), Err("own-predecessor-birth"));
+        assert_eq!(digest_view.adopt_status(&id, &IncarnationId::mint(), "mesh1", NodeStatus::Leaving), Err("another-birth-held"), "an earlier birth of a node held at a later one");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(NodeStatus::Ready), "and the held birth's status stands");
         let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.depart(op(&gone, &gone_inc, "node.delete")));
-        assert_eq!(digest_view.adopt_status(&gone, &gone_inc, "mesh1", MemberStatus::Ready), Err("deleted"));
+        assert_eq!(digest_view.adopt_status(&gone, &gone_inc, "mesh1", NodeStatus::Ready), Err("deleted"));
     }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
@@ -962,8 +962,8 @@ mod tests {
         let digest_view = DigestView::default();
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 110)));
         let o = op(&id, &inc, "node.stop");
         assert!(digest_view.stopped(o.clone()));
         assert!(!digest_view.stopped(o.clone()), "the same event twice is applied once");
@@ -971,7 +971,7 @@ mod tests {
         assert!(!digest_view.routable(id.as_str()));
         assert_eq!(digest_view.in_flight(), vec![o.clone()]);
         assert!(digest_view.deleted().is_empty(), "a stop departs nothing");
-        for late in [digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 111), digest(&id, &inc, None, MemberStatus::Ready, 105), digest(&id, &inc, None, MemberStatus::Pending, 109), digest(&id, &inc, None, MemberStatus::Pending, 120)] {
+        for late in [digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 111), digest(&id, &inc, None, NodeStatus::Ready, 105), digest(&id, &inc, None, NodeStatus::Pending, 109), digest(&id, &inc, None, NodeStatus::Pending, 120)] {
             assert!(!digest_view.record(late.clone()), "{late:?}");
             assert!(!digest_view.record_forwarded(late.clone()), "{late:?}");
             assert!(!digest_view.record_topology(late.clone()), "{late:?}");
@@ -981,11 +981,11 @@ mod tests {
         assert!(!digest_view.joined(&op(&id, &IncarnationId::mint(), "node.start")), "node.joined of another birth ends nothing");
         assert!(digest_view.joined(&op(&id, &inc, "node.start")), "the mesh-primary's node.joined ends the stop");
         let (held, _) = digest_view.get(id.as_str()).expect("held again");
-        assert_eq!((held.node.incarnation.clone(), held.status, held.digest_seq), (inc.clone(), MemberStatus::Pending, 120), "the same birth, Pending, from the latest heartbeat heard of it");
+        assert_eq!((held.node.incarnation.clone(), held.status, held.digest_seq), (inc.clone(), NodeStatus::Pending, 120), "the same birth, Pending, from the latest heartbeat heard of it");
         assert!(digest_view.in_flight().is_empty(), "node.joined closes the stop");
         assert!(!digest_view.routable(id.as_str()), "the joined birth is Pending: a routing stop until it is ready");
-        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 118)), "a heartbeat older than the one it is held from is not taken");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 125)));
+        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 118)), "a heartbeat older than the one it is held from is not taken");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 125)));
         assert!(digest_view.routable(id.as_str()), "its ready restores selection");
         // A departure ends a stop for good.
         // A later stop of the same birth is another occurrence of node.stop (a Build has no attempts, Q344).
@@ -993,7 +993,7 @@ mod tests {
         assert!(digest_view.stopped(LifecycleOp { operation: o2.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()), ..o2 }));
         assert!(digest_view.depart(op(&id, &inc, "node.delete")));
         assert!(digest_view.in_flight().is_empty(), "the departure cleared the stop overlay");
-        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a deleted node never returns");
+        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 400)), "a deleted node never returns");
     }
 
     /// CONTRACT (gossip.md §3.1 `TopologyFull`; R-HB1): a non-primary node-admin of mesh1 takes its own
@@ -1032,31 +1032,31 @@ mod tests {
             deleted: Vec::new(),
         };
         let status = || view.digest_view.get(id.as_str()).map(|(d, _)| d.status);
-        assert!(view.digest_view.record(b(MemberStatus::Ready, 1)));
-        assert_eq!(status(), Some(MemberStatus::Pending), "a heartbeat gives no status: none is held until the projection gives one");
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
-        assert_eq!(status(), Some(MemberStatus::Ready), "the projection's status");
-        assert!(view.digest_view.record(b(MemberStatus::ConnectionsDeleting, 2)));
-        assert_eq!(status(), Some(MemberStatus::Ready), "a heartbeat moves no status");
+        assert!(view.digest_view.record(b(NodeStatus::Ready, 1)));
+        assert_eq!(status(), Some(NodeStatus::Pending), "a heartbeat gives no status: none is held until the projection gives one");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(NodeStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(status(), Some(NodeStatus::Ready), "the projection's status");
+        assert!(view.digest_view.record(b(NodeStatus::ConnectionsDeleting, 2)));
+        assert_eq!(status(), Some(NodeStatus::Ready), "a heartbeat moves no status");
 
         // The event from the primary, carrying the version its stop changed the birth at (v2).
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.digest_view.get(id.as_str()).is_none() && view.digest_view.in_flight() == vec![stop.clone()]);
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(NodeStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.digest_view.in_flight(), vec![stop.clone()], "a refresh at the version held, built before the stop, ends nothing");
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone);
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(3, vec![], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.digest_view.in_flight(), vec![stop.clone()], "a version listing neither the stop nor the birth ends nothing");
         assert!(!hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone), "v2 again, earlier than the v3 held, is ignored by the receive path");
-        assert!(!view.digest_view.record(b(MemberStatus::Pending, 3)), "a heartbeat of the stopped birth is refused");
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(4, vec![b(MemberStatus::Pending, 3)], vec![]), &fabric, Side::Backbone);
+        assert!(!view.digest_view.record(b(NodeStatus::Pending, 3)), "a heartbeat of the stopped birth is refused");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(4, vec![b(NodeStatus::Pending, 3)], vec![]), &fabric, Side::Backbone);
         assert!(view.digest_view.in_flight().is_empty(), "the projection moved past the stop: it is over");
-        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((3, MemberStatus::Pending)), "held again from the latest heartbeat it refused, with the projection's status");
-        assert!(view.digest_view.record(b(MemberStatus::Ready, 4)));
-        assert_eq!(status(), Some(MemberStatus::Pending), "the projection's Pending, not the heartbeat's Ready");
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(5, vec![b(MemberStatus::Ready, 4)], vec![]), &fabric, Side::Backbone);
-        assert_eq!(status(), Some(MemberStatus::Ready));
+        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((3, NodeStatus::Pending)), "held again from the latest heartbeat it refused, with the projection's status");
+        assert!(view.digest_view.record(b(NodeStatus::Ready, 4)));
+        assert_eq!(status(), Some(NodeStatus::Pending), "the projection's Pending, not the heartbeat's Ready");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(5, vec![b(NodeStatus::Ready, 4)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(status(), Some(NodeStatus::Ready));
 
         let refused = spans.named("rdm.mesh.topology.reject.via-stopped-birth");
         let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["via"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
@@ -1081,12 +1081,12 @@ mod tests {
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let itself = |status, seq| digest(&id, &inc, None, status, seq);
         let mesh_topology = |version: u64, d: MeshDigest| Frame::TopologyFull { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], deleted: vec![] };
-        view.take_snapshot(&mesh_topology(1, itself(MemberStatus::Pending, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+        view.take_snapshot(&mesh_topology(1, itself(NodeStatus::Pending, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         assert!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).is_none(), "before its first publication, by the node id it joined under");
         *view.digest_view.own.lock().unwrap() = Some(id.to_string());
-        assert!(view.digest_view.record(itself(MemberStatus::Ready, 2)));
-        view.take_snapshot(&mesh_topology(2, itself(MemberStatus::Leaving, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
-        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Ready), "after it, by its NodeId: its own status stands");
+        assert!(view.digest_view.record(itself(NodeStatus::Ready, 2)));
+        view.take_snapshot(&mesh_topology(2, itself(NodeStatus::Leaving, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "after it, by its NodeId: its own status stands");
     }
 
     /// CONTRACT (gossip.md §3: "the mesh topology/current birth projection preserves the current
@@ -1123,8 +1123,8 @@ mod tests {
         };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
-        let member = digest(&id, &inc, None, MemberStatus::Ready, 4);
-        let mut other = digest(&gone, &gone_inc, None, MemberStatus::Ready, 4);
+        let member = digest(&id, &inc, None, NodeStatus::Ready, 4);
+        let mut other = digest(&gone, &gone_inc, None, NodeStatus::Ready, 4);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); other.node.path = at.path; other.node.name = at.name; }
         other.node.mesh = "mesh1".into();
         view.take_snapshot(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
@@ -1141,7 +1141,7 @@ mod tests {
         assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "the primary dropping the silent member from its projection is no departure: the birth stays held");
         let listed: Vec<rdm_core::PathName> = view.digest_view.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d.node.location()).collect();
         assert_eq!(listed.len(), 2, "both projected births are held: {listed:?}");
-        assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 5)), "the member's own digest is taken");
+        assert!(view.digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 5)), "the member's own digest is taken");
         assert!(view.digest_view.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
         let mut departure = op(&gone, &gone_inc, "node.delete");
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); departure.path = at.path; departure.name = at.name; }
@@ -1158,18 +1158,18 @@ mod tests {
     fn a_projected_member_is_a_repair_target_unless_leaving_or_under_an_open_removal() {
         let view = View::new("mesh1", "mesh1.node-admin.1");
         let (id, inc, leaving_id, gone, gone_inc) = (NodeId::mint(), IncarnationId::mint(), NodeId::mint(), NodeId::mint(), IncarnationId::mint());
-        let projected = |id: &NodeId, inc: &IncarnationId, status: MemberStatus| {
+        let projected = |id: &NodeId, inc: &IncarnationId, status: NodeStatus| {
             let mut d = digest(id, inc, None, status, 1);
             d.node.endpoint_id = EndpointId(iroh::SecretKey::generate().public().to_string());
             d
         };
         let first_held = Instant::now() - Duration::from_secs(60);
-        let member = projected(&id, &inc, MemberStatus::Pending);
+        let member = projected(&id, &inc, NodeStatus::Pending);
         view.digest_view.hold_projected_at(&member, first_held);
         let leaving_inc = IncarnationId::mint();
-        view.digest_view.hold_projected_at(&projected(&leaving_id, &leaving_inc, MemberStatus::Leaving), first_held);
-        view.digest_view.member_statuses.lock().unwrap().insert(leaving_id.to_string(), (leaving_inc, MemberStatus::Leaving));
-        let doomed = projected(&gone, &gone_inc, MemberStatus::Ready);
+        view.digest_view.hold_projected_at(&projected(&leaving_id, &leaving_inc, NodeStatus::Leaving), first_held);
+        view.digest_view.member_statuses.lock().unwrap().insert(leaving_id.to_string(), (leaving_inc, NodeStatus::Leaving));
+        let doomed = projected(&gone, &gone_inc, NodeStatus::Ready);
         view.digest_view.hold_projected_at(&doomed, first_held);
         assert!(view.digest_view.deleting(op(&gone, &gone_inc, "node.delete")), "the removal opens over the projected birth");
 
@@ -1191,13 +1191,13 @@ mod tests {
         view.primary.store(true, Ordering::Relaxed);
         let predecessor = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
+        assert!(view.digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.node-admin.1".to_string()))] {
-            let late = Frame::TopologyFull { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
+            let late = Frame::TopologyFull { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
-            assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Ready, 5)), "{side:?}: the authored status stands");
-            assert_eq!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(MemberStatus::Ready));
+            assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((NodeStatus::Ready, 5)), "{side:?}: the authored status stands");
+            assert_eq!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(NodeStatus::Ready));
         }
     }
 
@@ -1215,14 +1215,14 @@ mod tests {
         let old_stop = LifecycleOp { build_id: "b0".into(), ..op(&id, &other, "node.stop") };
         let deleting = op(&id, &inc, "node.delete");
         let mut held = Full::new(Vec::new(), vec![stop.clone(), old_stop.clone(), deleting.clone()], Vec::new());
-        held.apply(&Delta { changed: vec![digest(&id, &inc, None, MemberStatus::Pending, 9)], ..Delta::default() });
+        held.apply(&Delta { changed: vec![digest(&id, &inc, None, NodeStatus::Pending, 9)], ..Delta::default() });
         let mut left = held.in_flight();
         left.sort_by(|a, b| a.key().cmp(&b.key()));
         let mut want = vec![old_stop, deleting];
         want.sort_by(|a, b| a.key().cmp(&b.key()));
         assert_eq!(left, want, "only the exact birth's stop overlay is cleared");
         let at_stop = Full::new(Vec::new(), vec![stop.clone()], Vec::new());
-        let joined = Full::new(vec![digest(&id, &inc, None, MemberStatus::Pending, 9)], Vec::new(), Vec::new());
+        let joined = Full::new(vec![digest(&id, &inc, None, NodeStatus::Pending, 9)], Vec::new(), Vec::new());
         let delta = at_stop.delta_to(&joined);
         assert_eq!((delta.changed.len(), delta.in_flight.len(), delta.removed.len()), (1, 0, 0), "the clear travels as the birth's own changed entry: {delta:?}");
         let mut receiver = at_stop.clone();
@@ -1246,17 +1246,17 @@ mod tests {
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let status = |digest_view: &DigestView| digest_view.get(id.as_str()).map(|(d, _)| d.status);
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)), "the heartbeat is taken as liveness");
-        assert_eq!(status(&digest_view), Some(MemberStatus::Pending), "a ready heartbeat before node.started sets nothing");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)), "the heartbeat is taken as liveness");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Pending), "a ready heartbeat before node.started sets nothing");
         assert!(!digest_view.routable(id.as_str()), "the birth is Pending: not routable");
-        assert_eq!(digest_view.current(digest_view.staleness_floor()).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), Some(MemberStatus::Pending), "its projection entry is Pending");
+        assert_eq!(digest_view.current(digest_view.staleness_floor()).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), Some(NodeStatus::Pending), "its projection entry is Pending");
         node_started(&digest_view, &id, &inc);
-        assert_eq!(status(&digest_view), Some(MemberStatus::Ready), "node.started sets it ready");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)), "the heartbeat is taken as liveness");
-        assert_eq!(status(&digest_view), Some(MemberStatus::Ready), "a heartbeat saying ConnectionsDeleting moves nothing");
-        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
+        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "node.started sets it ready");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 110)), "the heartbeat is taken as liveness");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "a heartbeat saying ConnectionsDeleting moves nothing");
+        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
         assert!(digest_view.record(heard), "the heartbeat from the wire is taken as liveness");
-        assert_eq!(status(&digest_view), Some(MemberStatus::Ready), "nor does one from the wire");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "nor does one from the wire");
         assert!(digest_view.routable(id.as_str()));
     }
 
@@ -1276,13 +1276,13 @@ mod tests {
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 100)));
         node_started(&digest_view, &id, &inc);
         assert!(digest_view.routable(id.as_str()), "the started birth is ready");
         assert!(!digest_view.joined(&op(&NodeId::mint(), &IncarnationId::mint(), "node.start")), "node.joined of a birth this view holds nothing of sets nothing");
         assert!(digest_view.joined(&op(&id, &inc, "node.start")), "the node.joined sets its birth Pending");
-        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "held Pending from node.joined");
-        assert_eq!(digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(i, s)| (i.clone(), *s)), Some((inc.clone(), MemberStatus::Pending)), "the status the projection carries is Pending");
+        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Pending), "held Pending from node.joined");
+        assert_eq!(digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(i, s)| (i.clone(), *s)), Some((inc.clone(), NodeStatus::Pending)), "the status the projection carries is Pending");
         assert!(!digest_view.routable(id.as_str()), "a Pending birth is not routable");
         let joined = spans.named("rdm.mesh.topology.update.via-node-joined");
         assert_eq!(joined.iter().map(|f| (f["status"].clone(), f["stops_cleared"].clone())).collect::<Vec<_>>(), vec![("Pending".to_string(), "[]".to_string())], "one node.joined, Pending, no stop cleared: {joined:#?}");
@@ -1306,15 +1306,15 @@ mod tests {
         digest_view.primary.store(true, Ordering::Relaxed);
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "the join report");
+        assert!(digest_view.record_joined(digest(&id, &inc, None, NodeStatus::Pending, 100)), "the join report");
         assert_eq!(digest_view.member_status(&id, &inc), None, "a join digest authors no status");
-        assert!(digest_view.reported(&id, &inc, MemberStatus::Pending), "its mesh-primary records the accepted join report's Pending");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Pending), "held Pending from the join report");
+        assert!(digest_view.reported(&id, &inc, NodeStatus::Pending), "its mesh-primary records the accepted join report's Pending");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(NodeStatus::Pending), "held Pending from the join report");
         assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
         // The digest the intake read the status for before node.started, written after it.
         let since = Instant::now();
-        digest_view.inner.lock().unwrap().insert(id.to_string(), (digest(&id, &inc, None, MemberStatus::Pending, 101), Instant::now(), Heard::Direct));
-        let ready = Some(MemberStatus::Ready);
+        digest_view.inner.lock().unwrap().insert(id.to_string(), (digest(&id, &inc, None, NodeStatus::Pending, 101), Instant::now(), Heard::Direct));
+        let ready = Some(NodeStatus::Ready);
         assert_eq!(digest_view.member_status(&id, &inc), ready, "node.started set it");
         assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), ready, "get");
         assert_eq!(digest_view.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
@@ -1346,20 +1346,20 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.get(id.as_str()).is_none(), "the view holds no digest of the birth");
         assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of a birth not held yet");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "held ready before its digest");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(NodeStatus::Ready), "held ready before its digest");
         let started = spans.named("rdm.mesh.topology.update.from-node-started");
         assert_eq!(started.iter().map(|f| (f["member_path"].clone(), f["member_name"].clone())).collect::<Vec<_>>(), vec![("mesh1.node".to_string(), "1".to_string())], "from-node-started names the birth: {started:#?}");
-        assert!(digest_view.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "its digest arrives with no status");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "nothing is seeded Pending");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 101)), "a heartbeat");
-        let ready = Some(MemberStatus::Ready);
+        assert!(digest_view.record_joined(digest(&id, &inc, None, NodeStatus::Pending, 100)), "its digest arrives with no status");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(NodeStatus::Ready), "nothing is seeded Pending");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 101)), "a heartbeat");
+        let ready = Some(NodeStatus::Ready);
         assert_eq!(digest_view.member_status(&id, &inc), ready, "the held status stands");
         assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), ready, "get hands it out ready");
         assert_eq!(digest_view.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
         assert!(digest_view.routable(id.as_str()), "the started birth of a ready mesh is routable");
         // A held digest's name wins over the one the caller names: here the caller's names another mesh.
         let (other, other_inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&other, &other_inc, None, MemberStatus::Pending, 100)));
+        assert!(digest_view.record(digest(&other, &other_inc, None, NodeStatus::Pending, 100)));
         assert!(digest_view.started(&other, &other_inc, &rdm_core::PathName::new("mesh2.node", "9").unwrap(), "mesh2"), "the held digest's name, of this view's mesh, decides");
         assert_eq!(digest_view.member_status(&other, &other_inc), ready);
     }
@@ -1373,15 +1373,15 @@ mod tests {
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 110)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 120)));
         assert!(digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 125)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 125)));
         assert!(digest_view.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "node.stop");
         assert!(digest_view.stopped(stop.clone()));
-        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 130)), "a heartbeat ends no stop");
+        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 130)), "a heartbeat ends no stop");
         assert!(digest_view.joined(&op(&id, &inc, "node.start")));
         assert!(!digest_view.stopped(stop), "a snapshot built before node.joined does not stop the node again");
         assert!(digest_view.get(id.as_str()).is_some());
@@ -1394,15 +1394,15 @@ mod tests {
     fn a_stop_of_another_birth_is_refused_and_one_for_an_unheld_node_still_stops_it() {
         let digest_view = DigestView::default();
         let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &new, Some(old.clone()), MemberStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &new, Some(old.clone()), NodeStatus::Ready, 100)));
         assert!(!digest_view.stopped(op(&id, &old, "node.stop")), "the stop names a birth the held one superseded");
         assert!(digest_view.get(id.as_str()).is_some());
         let late_joiner = DigestView::default();
         assert!(late_joiner.stopped(op(&id, &new, "node.stop")));
-        assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::ConnectionsDeleting, 90)));
-        assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Pending, 91)), "a heartbeat ends no stop");
+        assert!(!late_joiner.record(digest(&id, &new, None, NodeStatus::ConnectionsDeleting, 90)));
+        assert!(!late_joiner.record(digest(&id, &new, None, NodeStatus::Pending, 91)), "a heartbeat ends no stop");
         assert!(late_joiner.joined(&op(&id, &new, "node.start")), "node.joined ends it");
-        assert_eq!(late_joiner.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Pending, 91)), "held again from the latest heartbeat it refused");
+        assert_eq!(late_joiner.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((NodeStatus::Pending, 91)), "held again from the latest heartbeat it refused");
     }
 
     /// CONTRACT: a stop is an open overlay of its mesh's topology (`TopologyFull.in_flight`), recognised
@@ -1411,7 +1411,7 @@ mod tests {
     fn a_stop_overlay_rides_the_aggregate_and_is_told_by_its_operation() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let digest_view = DigestView::default();
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
         let stop = op(&id, &inc, "node.stop");
         assert!(stop.is_stop());
         assert!(!op(&id, &inc, "node.delete").is_stop());
@@ -1426,14 +1426,14 @@ mod tests {
         let digest_view = DigestView::with_retention(Duration::from_millis(40));
         let (id, inc, next) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
-        digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 100), t0);
+        digest_view.record_at(digest(&id, &inc, None, NodeStatus::Ready, 100), t0);
         digest_view.depart_at(op(&id, &inc, "node.delete"), t0);
-        assert!(!digest_view.record_at(digest(&id, &inc, None, MemberStatus::Leaving, 900), t0), "the deleted birth's late digest");
-        assert!(!digest_view.record_forwarded_at(digest(&id, &next, Some(inc.clone()), MemberStatus::Ready, 950), t0), "a later incarnation of the deleted NodeId");
+        assert!(!digest_view.record_at(digest(&id, &inc, None, NodeStatus::Leaving, 900), t0), "the deleted birth's late digest");
+        assert!(!digest_view.record_forwarded_at(digest(&id, &next, Some(inc.clone()), NodeStatus::Ready, 950), t0), "a later incarnation of the deleted NodeId");
         assert!(digest_view.is_deleted_at(id.as_str(), t0));
         let after = t0 + Duration::from_millis(60);
         assert!(!digest_view.is_deleted_at(id.as_str(), after), "forgotten after the retention");
-        assert!(digest_view.record_at(digest(&id, &next, Some(inc), MemberStatus::Ready, 960), after), "after the retention the id is unknown, not deleted");
+        assert!(digest_view.record_at(digest(&id, &next, Some(inc), NodeStatus::Ready, 960), after), "after the retention the id is unknown, not deleted");
     }
 
     /// Which routing watch moved, without waiting: `None` when none did.
@@ -1460,7 +1460,7 @@ mod tests {
 
         let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 100), t0));
+        assert!(digest_view.record_at(digest(&id, &inc, None, NodeStatus::Ready, 100), t0));
         let mut w = digest_view.routing_watch();
         w.seen();
         assert!(!digest_view.mark_silence_at(t0 + floor / 2), "heard within the floor: no birth is silent");
@@ -1471,14 +1471,14 @@ mod tests {
         assert!(!digest_view.mark_silence_at(t0 + floor * 3), "still silent: the same mark");
         assert_eq!(moved_named(&mut w).await, None, "a sweep that finds the same silence moves nothing");
         let t1 = t0 + floor * 4;
-        assert!(digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 101), t1));
+        assert!(digest_view.record_at(digest(&id, &inc, None, NodeStatus::Ready, 101), t1));
         w.seen();
         assert!(digest_view.mark_silence_at(t1), "heard again: the birth is silent no more");
         assert_eq!(moved_named(&mut w).await, Some("silence"), "the silence ending moves the routing watch at the sweep");
 
         let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        digest_view.hold_projected_at(&digest(&id, &inc, None, MemberStatus::Ready, 1), t0);
+        digest_view.hold_projected_at(&digest(&id, &inc, None, NodeStatus::Ready, 1), t0);
         let mut w = digest_view.routing_watch();
         w.seen();
         assert!(!digest_view.mark_silence_at(t0 + floor / 2), "held from the projection within the floor");
@@ -1488,7 +1488,7 @@ mod tests {
 
         let digest_view = DigestView::with_floor(Duration::from_millis(40), floor);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 100), t0));
+        assert!(digest_view.record_at(digest(&id, &inc, None, NodeStatus::Ready, 100), t0));
         assert!(digest_view.depart_at(op(&id, &inc, "node.delete"), t0));
         let mut w = digest_view.routing_watch();
         w.seen();
@@ -1516,29 +1516,29 @@ mod tests {
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let target = Target::default();
-        assert!(digest_view.take_projected_status(&digest(&id, &inc, None, MemberStatus::Pending, 1), &target));
+        assert!(digest_view.take_projected_status(&digest(&id, &inc, None, NodeStatus::Pending, 1), &target));
         let mut w = digest_view.routing_watch();
         w.seen();
-        assert!(digest_view.take_projected_status(&digest(&id, &inc, None, MemberStatus::Ready, 2), &target));
+        assert!(digest_view.take_projected_status(&digest(&id, &inc, None, NodeStatus::Ready, 2), &target));
         assert!(digest_view.get(id.as_str()).is_none(), "the birth is held only from its mesh-primary's projection");
         assert_eq!(moved_named(&mut w).await, Some("heard"), "its status moving moves the routing watch");
         w.seen();
-        assert!(!digest_view.take_projected_status(&digest(&id, &inc, None, MemberStatus::Ready, 3), &target));
+        assert!(!digest_view.take_projected_status(&digest(&id, &inc, None, NodeStatus::Ready, 3), &target));
         assert_eq!(moved_named(&mut w).await, None, "the same status taken again moves nothing");
 
         let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, MemberStatus::Ready, 10), t0));
+        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, NodeStatus::Ready, 10), t0));
         let mut w = digest_view.routing_watch();
         w.seen();
-        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, MemberStatus::Ready, 11), t0 + floor / 2));
+        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, NodeStatus::Ready, 11), t0 + floor / 2));
         assert_eq!(moved_named(&mut w).await, None, "a forwarded copy of a birth heard within the floor moves nothing");
-        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, MemberStatus::Ready, 12), t0 + floor / 2 + floor * 2));
+        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, NodeStatus::Ready, 12), t0 + floor / 2 + floor * 2));
         assert_eq!(moved_named(&mut w).await, Some("heard"), "a forwarded copy of a birth silent past the floor: heard again");
 
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 10)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 10)));
         assert!(digest_view.stopped(op(&id, &inc, "node.stop")));
         assert_eq!(digest_view.stopped_digests().len(), 1, "the stopped birth is listed from its mark");
         digest_view.in_flight.lock().unwrap().clear();
@@ -1582,7 +1582,7 @@ mod tests {
         assert_eq!(moved_named(&mut w).await, Some("meshes"), "a mesh status taken still wakes it");
         w.seen();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 10)));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 10)));
         assert!(moved_named(&mut w).await.is_some(), "a birth first held still wakes it");
     }
 
@@ -1613,13 +1613,13 @@ mod tests {
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.depart(op(&id, &inc, "node.delete")));
-        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
         assert!(!digest_view.deleting(op(&id, &inc, "node.delete")), "no overlay on a deleted node");
     }
 
     #[test]
     fn members_are_packed_into_frames_that_fit_one_gossip_message() {
-        let ds: Vec<MeshDigest> = (0..64).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, i)).collect();
+        let ds: Vec<MeshDigest> = (0..64).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, i)).collect();
         let in_flight: Vec<LifecycleOp> = (0..3).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "node.delete")).collect();
         let deleted: Vec<LifecycleOp> = (0..5).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "node.delete")).collect();
         let frame = |digests| mesh_topology("mesh1", "mesh1.node-admin.1", Some("mesh2.node-admin.1"), digests, in_flight.clone(), deleted.clone());
@@ -1647,7 +1647,7 @@ mod tests {
         assert_eq!(fact.validate(), Ok(()), "exactly at the bound");
         let ds: Vec<MeshDigest> = (0..40)
             .map(|i| {
-                let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, i);
+                let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, i);
                 d.node.runtime = Some(fact.clone());
                 d.data_dir = Some(format!("/var/lib/rafka/{}", "x".repeat(64)));
                 d
@@ -1669,14 +1669,14 @@ mod tests {
         let digest_view = DigestView::default();
         let (topo, heard, birth) = (NodeId::mint(), NodeId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
-        assert!(digest_view.record_topology(digest(&topo, &birth, None, MemberStatus::Ready, 10)));
-        assert!(digest_view.record_at(digest(&heard, &birth, None, MemberStatus::Ready, 10), t0));
+        assert!(digest_view.record_topology(digest(&topo, &birth, None, NodeStatus::Ready, 10)));
+        assert!(digest_view.record_at(digest(&heard, &birth, None, NodeStatus::Ready, 10), t0));
         let far = t0 + Duration::from_secs(3600);
         assert_eq!(digest_view.get_at(topo.as_str(), far).unwrap().1, Duration::ZERO, "topology never ages");
         assert!(digest_view.current_at(digest_view.staleness_floor(), far).iter().any(|d| d.node.node_id == topo), "a topology member stays current");
         let before = digest_view.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
-        assert!(digest_view.record_topology(digest(&heard, &birth, None, MemberStatus::Ready, 10)), "an equal forwarded copy");
-        assert!(digest_view.record_topology(digest(&heard, &birth, None, MemberStatus::ConnectionsDeleting, 11)), "a newer forwarded copy");
+        assert!(digest_view.record_topology(digest(&heard, &birth, None, NodeStatus::Ready, 10)), "an equal forwarded copy");
+        assert!(digest_view.record_topology(digest(&heard, &birth, None, NodeStatus::ConnectionsDeleting, 11)), "a newer forwarded copy");
         let after = digest_view.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
         assert_eq!(before, after, "a forwarded copy does not refresh when the member was heard");
         assert!(after >= Duration::from_secs(10), "the member stays as old as its last direct receipt");
@@ -1692,7 +1692,7 @@ mod tests {
     fn a_member_known_only_from_topology_never_ages_whatever_status_it_is_listed_with() {
         let digest_view = DigestView::default();
         let t0 = Instant::now();
-        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::Ready, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
+        let listed: Vec<(NodeId, NodeStatus)> = [NodeStatus::Ready, NodeStatus::ConnectionsDeleting, NodeStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
         for (id, status) in &listed {
             assert!(digest_view.record_topology_at(digest(id, &IncarnationId::mint(), None, *status, 10), t0));
         }
@@ -1710,10 +1710,10 @@ mod tests {
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
         let later = t0 + Duration::from_millis(30);
-        assert!(digest_view.record_at(digest(&id, &birth, None, MemberStatus::Ready, 200), t0));
-        assert!(digest_view.record_forwarded_at(digest(&id, &birth, None, MemberStatus::Ready, 200), later), "an equal forwarded copy");
+        assert!(digest_view.record_at(digest(&id, &birth, None, NodeStatus::Ready, 200), t0));
+        assert!(digest_view.record_forwarded_at(digest(&id, &birth, None, NodeStatus::Ready, 200), later), "an equal forwarded copy");
         assert_eq!(digest_view.get_at(id.as_str(), later).unwrap().1, Duration::ZERO, "keeps the member heard");
-        assert!(!digest_view.record_forwarded_at(digest(&id, &birth, None, MemberStatus::Pending, 100), later), "an older copy is not taken");
+        assert!(!digest_view.record_forwarded_at(digest(&id, &birth, None, NodeStatus::Pending, 100), later), "an older copy is not taken");
     }
 
     /// CONTRACT: every digest the view takes ticks `digest_changes`, a fresher digest of the same
@@ -1724,20 +1724,20 @@ mod tests {
         let digest_view = DigestView::default();
         let mut digests = digest_view.digest_changes();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &birth, None, MemberStatus::Ready, 100)));
+        assert!(digest_view.record(digest(&id, &birth, None, NodeStatus::Ready, 100)));
         assert!(digests.has_changed().unwrap(), "the first digest ticks");
         digests.borrow_and_update();
-        let mut renamed = digest(&id, &birth, None, MemberStatus::Ready, 101);
+        let mut renamed = digest(&id, &birth, None, NodeStatus::Ready, 101);
         renamed.data_dir = Some("d".into());
         assert!(digest_view.record(renamed));
         assert!(digests.has_changed().unwrap(), "a fresher digest of the same birth and status ticks");
         digests.borrow_and_update();
-        assert!(!digest_view.record(digest(&id, &birth, None, MemberStatus::Ready, 100)));
+        assert!(!digest_view.record(digest(&id, &birth, None, NodeStatus::Ready, 100)));
         assert!(!digests.has_changed().unwrap(), "a refused older digest does not tick");
-        assert!(digest_view.record_forwarded(digest(&id, &birth, None, MemberStatus::Ready, 102)));
+        assert!(digest_view.record_forwarded(digest(&id, &birth, None, NodeStatus::Ready, 102)));
         assert!(digests.has_changed().unwrap(), "a forwarded fresher digest ticks");
         digests.borrow_and_update();
-        assert!(digest_view.record_topology(digest(&id, &birth, None, MemberStatus::Ready, 103)));
+        assert!(digest_view.record_topology(digest(&id, &birth, None, NodeStatus::Ready, 103)));
         assert!(digests.has_changed().unwrap(), "a topology copy that moved the held digest ticks");
     }
 
@@ -1746,12 +1746,12 @@ mod tests {
         let digest_view = DigestView::default();
         let mut births = digest_view.birth_changes();
         let (id, first, second) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::Pending, 100)));
+        assert!(digest_view.record(digest(&id, &first, None, NodeStatus::Pending, 100)));
         assert!(births.has_changed().unwrap(), "first held");
         births.borrow_and_update();
-        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::Ready, 200)));
+        assert!(digest_view.record(digest(&id, &first, None, NodeStatus::Ready, 200)));
         assert!(!births.has_changed().unwrap(), "the same birth, fresher and with a new status");
-        assert!(digest_view.record_forwarded(digest(&id, &second, Some(first.clone()), MemberStatus::Pending, 50)));
+        assert!(digest_view.record_forwarded(digest(&id, &second, Some(first.clone()), NodeStatus::Pending, 50)));
         assert!(births.has_changed().unwrap(), "the next birth");
     }
 
@@ -1759,9 +1759,9 @@ mod tests {
     fn a_successor_birth_is_taken_and_its_predecessors_late_digests_are_not() {
         let digest_view = DigestView::default();
         let (id, first, second) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::Ready, 500)));
-        assert!(digest_view.record(digest(&id, &second, Some(first.clone()), MemberStatus::Ready, 100)), "a new birth, whatever its clock");
-        assert!(!digest_view.record(digest(&id, &first, None, MemberStatus::Ready, 900)), "the superseded birth's late digest");
+        assert!(digest_view.record(digest(&id, &first, None, NodeStatus::Ready, 500)));
+        assert!(digest_view.record(digest(&id, &second, Some(first.clone()), NodeStatus::Ready, 100)), "a new birth, whatever its clock");
+        assert!(!digest_view.record(digest(&id, &first, None, NodeStatus::Ready, 900)), "the superseded birth's late digest");
         assert_eq!(digest_view.get(id.as_str()).unwrap().0.node.incarnation, second);
     }
 
@@ -1775,8 +1775,8 @@ mod tests {
         let floor = staleness_floor();
         let (direct, backbone) = (NodeId::mint(), NodeId::mint());
         let t0 = Instant::now();
-        digest_view.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Ready, 100), t0);
-        assert!(digest_view.record_forwarded_at(digest(&backbone, &IncarnationId::mint(), None, MemberStatus::Ready, 100), t0));
+        digest_view.record_at(digest(&direct, &IncarnationId::mint(), None, NodeStatus::Ready, 100), t0);
+        assert!(digest_view.record_forwarded_at(digest(&backbone, &IncarnationId::mint(), None, NodeStatus::Ready, 100), t0));
         let within = t0 + floor;
         assert_eq!(digest_view.current_at(floor, within).len(), 2, "both are heard within the staleness floor");
         let past = t0 + floor + Duration::from_millis(1);
@@ -1800,8 +1800,8 @@ mod tests {
         let digest_view = DigestView::default();
         let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
         let t0 = Instant::now();
-        digest_view.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
-        digest_view.record_forwarded_at(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
+        digest_view.record_at(digest(&direct, &IncarnationId::mint(), None, NodeStatus::Leaving, 100), t0);
+        digest_view.record_forwarded_at(digest(&forwarded, &IncarnationId::mint(), None, NodeStatus::Leaving, 100), t0);
         let floor = digest_view.staleness_floor();
         assert_eq!(digest_view.current_at(floor, t0 + gossip_interval()).len(), 2, "within the interval it is current");
         assert_eq!(digest_view.current_at(floor, t0 + gossip_interval() + Duration::from_millis(1)).len(), 2, "a Leaving status is not a departure: one interval on it is still current");
@@ -1832,7 +1832,7 @@ mod tests {
         let view = test_view("mesh1", "mesh1.node-admin.1");
         let fabric = FabricId::parse("fab000000001").unwrap();
         let id = NodeId::mint();
-        let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::Ready, 100);
+        let d = digest(&id, &IncarnationId::mint(), None, NodeStatus::Ready, 100);
         assert!(view.digest_view.record(d.clone()));
         let aggregate = mesh_topology("mesh1", "mesh1.node-admin.1", None, vec![d], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
@@ -1841,7 +1841,7 @@ mod tests {
         let _ = at;
         // A peer mesh's member in the same kind of mesh topology is forwarded.
         let peer = NodeId::mint();
-        let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::Ready, 100);
+        let mut p = digest(&peer, &IncarnationId::mint(), None, NodeStatus::Ready, 100);
         { let at = rdm_core::PathName::new("mesh2.node", "1").unwrap(); p.node.path = at.path; p.node.name = at.name; }
         p.node.mesh = "mesh2".into();
         let aggregate = mesh_topology("mesh2", "mesh2.node-admin.1", None, vec![p], vec![], vec![]);
@@ -1859,7 +1859,7 @@ mod tests {
         let id = NodeId::mint();
         let incarnation = IncarnationId::mint();
         let at = |n: u64| {
-            let mut d = digest(&id, &incarnation, None, MemberStatus::Ready, n);
+            let mut d = digest(&id, &incarnation, None, NodeStatus::Ready, n);
             { let at = rdm_core::PathName::new("mesh2.node", "1").unwrap(); d.node.path = at.path; d.node.name = at.name; }
             d.node.mesh = "mesh2".into();
             d
@@ -1950,13 +1950,13 @@ mod tests {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let mut d = digest(&id, &inc, None, MemberStatus::Ready, 100);
+        let mut d = digest(&id, &inc, None, NodeStatus::Ready, 100);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = "mesh1".into();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         assert!(digest_view.record_at(d.clone(), long_ago));
         assert_eq!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").len(), 1, "a member silent with no event is unexplained");
-        let mut again = digest(&id, &inc, None, MemberStatus::Ready, 200);
+        let mut again = digest(&id, &inc, None, NodeStatus::Ready, 200);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(); again.node.path = at.path; again.node.name = at.name; }
         again.node.mesh = "mesh1".into();
         assert!(digest_view.record(again), "heard again");
@@ -1965,7 +1965,7 @@ mod tests {
         assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty(), "a stopped member is expected silence");
         assert!(digest_view.joined(&op(&id, &inc, "node.start")), "its start's node.joined holds it again");
         assert!(digest_view.unheard_unexplained("mesh1", "mesh1.node-admin.1").is_empty());
-        let mut later = digest(&id, &inc, None, MemberStatus::Pending, 300);
+        let mut later = digest(&id, &inc, None, NodeStatus::Pending, 300);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(); later.node.path = at.path; later.node.name = at.name; }
         later.node.mesh = "mesh1".into();
         assert!(digest_view.record(later));
@@ -1973,7 +1973,7 @@ mod tests {
     }
 
     fn born(mesh: &str, r#type: &str, ordinal: u32, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
-        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, at);
+        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, at);
         { let at = rdm_core::PathName::numbered(mesh, r#type, ordinal); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = mesh.into();
         d.node.r#type = r#type.to_string();
@@ -2012,7 +2012,7 @@ mod tests {
             in_flight: Vec::new(),
             deleted: Vec::new(),
         };
-        let said = |d: &MeshDigest, status: MemberStatus| {
+        let said = |d: &MeshDigest, status: NodeStatus| {
             let mut d = d.clone();
             d.status = status;
             d.digest_seq += 1;
@@ -2027,7 +2027,7 @@ mod tests {
         // from the replay.
         // As a peer receives it: authored by its publisher.
         primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
-        for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
+        for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, NodeStatus::ConnectionsDeleting), said(&leaving, NodeStatus::Leaving)])] {
             let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
             let _ = primary.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, &from, v, &full, version);
@@ -2072,7 +2072,7 @@ mod tests {
         let status = |d: &MeshDigest| joiner.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
         assert_eq!(
             (status(&admin), status(&connections_deleting), status(&leaving)),
-            (Some(MemberStatus::Ready), Some(MemberStatus::ConnectionsDeleting), Some(MemberStatus::Leaving)),
+            (Some(NodeStatus::Ready), Some(NodeStatus::ConnectionsDeleting), Some(NodeStatus::Leaving)),
             "the joiner installed each member at its address with the member's own state"
         );
         assert!(!joiner.digest_view.routable(connections_deleting.node.node_id.as_str()), "a member saying ConnectionsDeleting takes no new work");
@@ -2109,10 +2109,10 @@ mod tests {
         if b < a {
             std::mem::swap(&mut a, &mut b);
         }
-        let mut lower = digest(&a, &IncarnationId::mint(), None, MemberStatus::Ready, 10);
+        let mut lower = digest(&a, &IncarnationId::mint(), None, NodeStatus::Ready, 10);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(); lower.node.path = at.path; lower.node.name = at.name; }
         lower.node.mesh = "mesh1".into();
-        let mut higher = digest(&b, &IncarnationId::mint(), None, MemberStatus::Ready, 10);
+        let mut higher = digest(&b, &IncarnationId::mint(), None, NodeStatus::Ready, 10);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(); higher.node.path = at.path; higher.node.name = at.name; }
         higher.node.mesh = "mesh1".into();
         assert!(digest_view.record_at(lower.clone(), at) && digest_view.record_at(higher.clone(), at));
@@ -2167,7 +2167,7 @@ mod tests {
         let (lower, primary) = two_admins(&digest_view, Instant::now());
         digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lower, 3));
         let mut connections_deleting = lower.clone();
-        connections_deleting.status = MemberStatus::ConnectionsDeleting;
+        connections_deleting.status = NodeStatus::ConnectionsDeleting;
         connections_deleting.digest_seq += 1;
         connections_deleting.emitted_at_rafka_ms += 1;
         assert!(digest_view.record(connections_deleting));
@@ -2308,7 +2308,7 @@ mod tests {
         let renamed = test_view("mesh2", "mesh2.node-admin.1");
         *renamed.held_name.lock().unwrap() = Some(rdm_core::PathName::new("mesh2.node-admin.old", "1").unwrap());
         let (y, y_inc) = (NodeId::mint(), IncarnationId::mint());
-        let mut y_birth = digest(&y, &y_inc, None, MemberStatus::Pending, 100);
+        let mut y_birth = digest(&y, &y_inc, None, NodeStatus::Pending, 100);
         { let at = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(); y_birth.node.path = at.path; y_birth.node.name = at.name; }
         y_birth.node.mesh = "mesh2".into();
         let peer = test_view("mesh2", "mesh2.node.2");
@@ -2337,7 +2337,7 @@ mod tests {
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
-        let mut d = digest(&id, &inc, None, MemberStatus::Leaving, 100);
+        let mut d = digest(&id, &inc, None, NodeStatus::Leaving, 100);
         { let at = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = "mesh1".into();
         d.mesh_id = Some(mesh_id.clone());
@@ -2370,7 +2370,7 @@ mod tests {
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
-        let mut d = digest(&id, &inc, None, MemberStatus::Leaving, 100);
+        let mut d = digest(&id, &inc, None, NodeStatus::Leaving, 100);
         { let at = rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(); d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = "mesh2".into();
         d.mesh_id = Some(mesh_id.clone());
@@ -2391,7 +2391,7 @@ mod tests {
 
     /// A birth of `path` with a fresh NodeId and incarnation, ready, heartbeat `seq`.
     fn birth_at(path: rdm_core::PathName, mesh: &str, r#type: &str, seq: u64) -> MeshDigest {
-        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, seq);
+        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, seq);
         { let at = path; d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = mesh.into();
         d.node.r#type = r#type.to_string();
@@ -2470,7 +2470,7 @@ mod tests {
         for mesh in ["mesh2", "mesh1"] {
             let publisher = birth_at(rdm_core::PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), mesh, "node-admin", 1);
             let ready = birth_at(rdm_core::PathName::new(format!("{mesh}.node"), "1").unwrap(), mesh, "node", 3);
-            let pending = MeshDigest { status: MemberStatus::Pending, ..ready.clone() };
+            let pending = MeshDigest { status: NodeStatus::Pending, ..ready.clone() };
             let read = crate::snapshot::Chunk {
                 mesh: mesh.into(),
                 publisher: publisher_of(&publisher),
@@ -2484,10 +2484,10 @@ mod tests {
                 deleted: vec![],
             };
             assert!(matches!(reads(read), Taken::Installed(_)), "{mesh}: the read installs v5");
-            assert_eq!(status_of(&ready), Some(MemberStatus::Ready), "{mesh}: the read holds the member Ready");
+            assert_eq!(status_of(&ready), Some(NodeStatus::Ready), "{mesh}: the read holds the member Ready");
             let v4 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 4, 4, vec![publisher.clone(), pending.clone()], vec![], vec![]), 40);
             assert!(!hears(&v4), "{mesh}: the backbone's v4 is older than the v5 the read installed: ignored");
-            assert_eq!(status_of(&ready), Some(MemberStatus::Ready), "{mesh}: the member never leaves Ready");
+            assert_eq!(status_of(&ready), Some(NodeStatus::Ready), "{mesh}: the member never leaves Ready");
             let ignored = spans.named("rdm.mesh.topology.reject.via-stale");
             assert!(
                 ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "mesh-topology" && f["subject"] == mesh && f["held_key"].ends_with("topology_version=5") && f["frame_key"] == "published_at_rafka_ms=40 topology_version=4"),
@@ -2495,7 +2495,7 @@ mod tests {
             );
             let v5 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 5, 5, vec![publisher.clone(), ready.clone()], vec![], vec![]), 50);
             assert!(hears(&v5), "{mesh}: the backbone's v5 is not older than what is held");
-            assert_eq!(status_of(&ready), Some(MemberStatus::Ready), "{mesh}: the member never leaves Ready");
+            assert_eq!(status_of(&ready), Some(NodeStatus::Ready), "{mesh}: the member never leaves Ready");
         }
         let left_ready: Vec<_> = spans.named("rdm.mesh.topology.update.via-projected-status").into_iter().chain(spans.named("rdm.mesh.topology.update.via-member-state")).filter(|f| f.get("status").is_some_and(|s| s != "Ready")).collect();
         assert!(left_ready.is_empty(), "no member status moves off Ready: {left_ready:#?}");
@@ -2517,7 +2517,7 @@ mod tests {
         let hears = |f: &Frame| hear(&mut view.order.lock().unwrap(), &view, f, &fabric, Side::MeshChannel);
         let publisher = birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1);
         let ready = birth_at(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", 3);
-        let pending = MeshDigest { status: MemberStatus::Pending, ..ready.clone() };
+        let pending = MeshDigest { status: NodeStatus::Pending, ..ready.clone() };
         let held = |d: &MeshDigest| view.digest_view.member_status(&d.node.node_id, &d.node.incarnation);
         let read_at = |version: u64, broker: &MeshDigest| crate::snapshot::Chunk {
             mesh: "mesh1".into(),
@@ -2533,7 +2533,7 @@ mod tests {
         };
 
         assert!(matches!(view.take_read_chunk(read_at(5, &pending), Side::Read, &fabric), Taken::Installed(_)), "the read at v5 installs");
-        assert_eq!(held(&ready), Some(MemberStatus::Pending), "v5 holds the member Pending");
+        assert_eq!(held(&ready), Some(NodeStatus::Pending), "v5 holds the member Pending");
 
         // The member's own heartbeats reach this node first: it holds a later one than the primary's copy.
         let mut heard = pending.clone();
@@ -2542,11 +2542,11 @@ mod tests {
 
         // The top-up read at v7: the primary's status Ready, on its older copy of the heartbeat.
         assert!(matches!(view.take_read_chunk(read_at(7, &ready), Side::Read, &fabric), Taken::Installed(_)), "the top-up read installs v7");
-        assert_eq!(held(&ready), Some(MemberStatus::Ready), "the read at v7 holds the member Ready: a reader of v7 finds no older view");
+        assert_eq!(held(&ready), Some(NodeStatus::Ready), "the read at v7 holds the member Ready: a reader of v7 finds no older view");
 
         let v6 = stamped(snapshot_of("mesh1", &publisher_of(&publisher), None, 6, 6, vec![publisher.clone(), ready.clone()], vec![], vec![]), 60);
         assert!(!hears(&v6), "the channel's v6 is older than the read's v7: refused");
-        assert_eq!(held(&ready), Some(MemberStatus::Ready), "the refused v6 costs nothing: v7 carried it");
+        assert_eq!(held(&ready), Some(NodeStatus::Ready), "the refused v6 costs nothing: v7 carried it");
         let moved = spans.named("rdm.mesh.topology.update.via-projected-status");
         assert!(moved.iter().any(|f| f["status"] == "Ready" && f["channel"] == "topology-read"), "the status moved by the read is named: {moved:#?}");
     }
@@ -2929,7 +2929,7 @@ mod tests {
         late.digest_seq = 6;
         assert!(!view.digest_view.record(late), "the stopped birth's heartbeat is refused and kept as the latest");
         let mut listed = rpc.clone();
-        listed.status = MemberStatus::Pending;
+        listed.status = NodeStatus::Pending;
         let target = Target { publisher: publisher_of(&primary).to_string(), channel: "mesh-channel", held: Some((publisher_of(&primary).to_string(), 11)), version: 12, ..Target::default() };
         both_paths_end_the_stop(&view.digest_view, &listed, &target);
         assert!(view.digest_view.in_flight().is_empty(), "the stop is over");
@@ -3089,8 +3089,8 @@ mod tests {
     fn an_own_mesh_topology_read_overtaken_by_gossip_keeps_the_newer_projection_and_holds_the_mesh_primarys_digest() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (mut primary, mut admin2) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1));
-        primary.status = MemberStatus::Ready;
-        admin2.status = MemberStatus::Pending;
+        primary.status = NodeStatus::Ready;
+        admin2.status = NodeStatus::Pending;
         let p = publisher_of(&primary);
 
         let view = test_view("mesh1", "mesh1.node-admin.2");
@@ -3127,12 +3127,12 @@ mod tests {
         assert!(matches!(view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1)), RoleTaken::Held { .. }));
         let resolved = view.digest_view.mesh_primary("mesh1").expect("the primary's digest from the own-mesh topology read is held in the digest view");
         assert_eq!(resolved.node.node_id, primary.node.node_id);
-        assert_eq!(resolved.status, MemberStatus::Ready, "the projected status from v1 is preserved");
+        assert_eq!(resolved.status, NodeStatus::Ready, "the projected status from v1 is preserved");
     }
 
     /// A birth of `name` at endpoint key `key`, digest number `seq`.
     fn digest_at(name: rdm_core::PathName, mesh: &str, r#type: &str, key: &str, id: &NodeId, inc: &IncarnationId, seq: u64) -> MeshDigest {
-        let mut d = digest(id, inc, None, MemberStatus::Ready, seq);
+        let mut d = digest(id, inc, None, NodeStatus::Ready, seq);
         { let at = name; d.node.path = at.path; d.node.name = at.name; }
         d.node.mesh = mesh.into();
         d.node.r#type = r#type.to_string();

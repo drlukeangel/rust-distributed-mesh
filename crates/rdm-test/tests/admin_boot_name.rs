@@ -14,7 +14,7 @@
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId, PathName};
+use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId, PathName};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::join::Deployed;
@@ -43,7 +43,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::Ready {
+        while digest().status != NodeStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };

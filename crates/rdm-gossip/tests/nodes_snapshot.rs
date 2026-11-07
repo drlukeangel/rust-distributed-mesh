@@ -17,7 +17,7 @@
 //! primary's backbone mesh topology, the forwarding primary, and an ordinary member of its Mesh.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::{Frame, MAX_FRAME};
 use rdm_gossip::topology::TopologyView;
@@ -55,7 +55,7 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: seq,
@@ -204,7 +204,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         bumps.push(("loads alone", v.observe(&Full::new(heartbeat.clone(), vec![], vec![]))));
         bumps.push(("an unchanged republish", v.observe(&base)));
         let mut connections_deleting = mesh2.digests(2);
-        connections_deleting[1].status = MemberStatus::ConnectionsDeleting;
+        connections_deleting[1].status = NodeStatus::ConnectionsDeleting;
         bumps.push(("a status routing reads", v.observe(&Full::new(connections_deleting.clone(), vec![], vec![]))));
         let mut moved = connections_deleting.clone();
         moved[2].node.transport_addr = "127.0.0.1:49999".parse().unwrap();
@@ -316,7 +316,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // ---- 4. deltas: exactly the base, a copy is a no-op, anything else desynchronizes -------
         let f7 = rx.held_full("mesh2").unwrap().clone();
         let mut changed_member = big.digests(7);
-        changed_member[3].status = MemberStatus::ConnectionsDeleting;
+        changed_member[3].status = NodeStatus::ConnectionsDeleting;
         let f8 = Full::new(changed_member.clone(), vec![], vec![]);
         let d78 = f7.delta_to(&f8);
         assert_eq!((d78.changed.len(), d78.removed.len(), d78.in_flight.len(), d78.deleted.len()), (1, 0, 0, 0), "one remote change is one changed member");
@@ -339,7 +339,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(r.resumed);
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 9)));
         let mut f10 = changed_member.clone();
-        f10[0].status = MemberStatus::Pending;
+        f10[0].status = NodeStatus::Pending;
         let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10, vec![], vec![]));
         assert!(matches!(rx.take_delta("mesh2", &p, 9, 11, &d9_11), Moved::Applied { topology_version: 11, .. }), "the primary's next delta continues from the baseline");
         // A new source primary is a new revision: its delta before its full is a gap, its full resumes.
@@ -392,7 +392,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let src = publisher("mesh2.node-admin.1");
         let f41 = Full::new(mesh2.digests(10), vec![], vec![]);
         let mut d43 = mesh2.digests(900);
-        d43[1].status = MemberStatus::ConnectionsDeleting;
+        d43[1].status = NodeStatus::ConnectionsDeleting;
         d43[2].in_flight = Some(3);
         let f43 = Full::new(d43, vec![], vec![]);
         let mut fwd = Forwarder::default();
@@ -413,14 +413,14 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(rebuilt.same_topology(&f43), "the delta carries exactly the difference between the two fulls");
         // A heartbeat-only Mesh produces no delta; an older or equal version produces none.
         let mut beating = mesh2.digests(5_000);
-        beating[1].status = MemberStatus::ConnectionsDeleting;
+        beating[1].status = NodeStatus::ConnectionsDeleting;
         beating.iter_mut().for_each(|d| d.in_flight = Some(99));
         assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 43, &Full::new(beating, vec![], vec![]), 3), Forward::Nothing(_)));
         assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 40, &f41, 3), Forward::Nothing(_)));
         // A version bump that changes nothing a Mesh member holds sends nothing and keeps the base.
         assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 44, &f43, 3), Forward::Nothing(_)));
         let mut d45 = f43.digests();
-        d45[0].status = MemberStatus::Pending;
+        d45[0].status = NodeStatus::Pending;
         let Forward::Delta(next) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 45, &Full::new(d45, vec![], vec![]), 4) else { panic!("a further move is a delta") };
         let (_, _, base, to, _) = delta_of(&next);
         assert_eq!((base, to), (43, 45), "the base stays the last version published into the Mesh");
@@ -432,7 +432,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let huge = Mesh::new("mesh2", 80);
         let Forward::Full(_) = fwd.source("mesh1.node-admin.2", "mesh2", &src, 46, &Full::new(huge.digests(1), vec![], vec![]), 7) else { panic!("a different publisher: full") };
         let mut churned = huge.digests(2);
-        churned.iter_mut().for_each(|d| d.status = MemberStatus::ConnectionsDeleting);
+        churned.iter_mut().for_each(|d| d.status = NodeStatus::ConnectionsDeleting);
         assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 47, &Full::new(churned, vec![], vec![]), 8), Forward::Full(_)), "a delta that does not fit one message is the full");
         result.insert(
             "forwarder".into(),
@@ -513,7 +513,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(fwd_bb.held_source("mesh2").unwrap().1, v1, "a heartbeat-only Mesh does not bump topology_version");
         // One remote change: one version bump, one delta, applied by the ordinary member.
         let mut changed = remote.digests(500);
-        changed[7].status = MemberStatus::ConnectionsDeleting;
+        changed[7].status = NodeStatus::ConnectionsDeleting;
         let (changed_name, changed_id) = (changed[7].node.name.clone(), changed[7].node.node_id.to_string());
         src_bb.publish(&src_m, changed.clone()).await;
         let v2 = wait("the ordinary member to apply the delta", || {
@@ -525,7 +525,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(mem_m.desynced_sources().is_empty(), "the chain held: no gap, no top-up");
         // The member's view holds the changed member as the delta stated it.
         let seen = mem_m.digest_view.get(changed_id.as_str()).expect("the ordinary member holds the remote member").0;
-        assert_eq!(seen.status, MemberStatus::ConnectionsDeleting, "the delta's change is applied to the member's projection");
+        assert_eq!(seen.status, NodeStatus::ConnectionsDeleting, "the delta's change is applied to the member's projection");
         assert!(seen.in_flight.is_none(), "the ordinary member holds no load of a remote member");
 
         drop(src_bb);

@@ -7,7 +7,7 @@ use crate::common::{admin_side_serving, AdminSide, Spans};
 use rdm_core::digest::MeshDigest;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::{FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId};
 use rdm_admin::node_hooks::{HookOutcome, NodeHooks, PreNodeReadyState};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
@@ -33,7 +33,7 @@ fn rows() -> Vec<Row> {
 
 /// An authority (the rig's admin side) in `status`, its pull gate closed, and the launch of one
 /// node it deployed.
-async fn birth(status: MemberStatus) -> Birth {
+async fn birth(status: NodeStatus) -> Birth {
     let primary = PullServer::new(rows());
     let fabric = FabricId::mint();
     let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, status, {
@@ -76,8 +76,8 @@ fn start(b: &Birth, pre_node_ready: &Arc<TestPreNodeReady>) -> tokio::task::Join
 }
 
 /// The statuses the authority heard of the node, in order, from the moment it is called.
-fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<MemberStatus>>> {
-    let seen: Arc<std::sync::Mutex<Vec<MemberStatus>>> = Arc::default();
+fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<NodeStatus>>> {
+    let seen: Arc<std::sync::Mutex<Vec<NodeStatus>>> = Arc::default();
     let (digest_view, id, out) = (b.admin.observer.topology_view.digest_view.clone(), b.launch.node_id.to_string(), seen.clone());
     tokio::spawn(async move {
         let mut heard = digest_view.heard_changes();
@@ -188,15 +188,15 @@ fn a_node_pending_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
     let cap = crate::common::capture("a_node_pending_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Pending).await;
+        let b = birth(NodeStatus::Pending).await;
         let seen = observe(&b);
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
         pre_node_ready.set_attempts(HOLDING);
         let running = start(&b, &pre_node_ready).await.unwrap().expect("a node whose hook answered Pending still comes up, Pending");
 
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "a pending node is Pending");
-        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Pending", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "Ready was published while the hook answered Pending: {:?}", seen.lock().unwrap());
+        assert_eq!(*running.status.lock().unwrap(), NodeStatus::Pending, "a pending node is Pending");
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Pending", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Pending)).await;
+        assert!(!seen.lock().unwrap().contains(&NodeStatus::Ready), "Ready was published while the hook answered Pending: {:?}", seen.lock().unwrap());
         assert_eq!(b.primary.answered(), 0, "the authority answered no rows before its own hook passed");
         assert!(!spans_named(&spans, "rdm.node_rpc.request.reject.via-pre-node-ready-not-passed").is_empty(), "the authority's gate refused the pull typed NotReady");
         let before = attempts(&spans);
@@ -208,12 +208,12 @@ fn a_node_pending_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
         assert!(matches!(handle.state(), PreNodeReadyState::Pending { .. } | PreNodeReadyState::Running { .. }), "{:?}", handle.state());
 
         b.primary.gate.open();
-        b.admin.publish_status(MemberStatus::Ready).await;
+        b.admin.publish_status(NodeStatus::Ready).await;
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("a later attempt passes once the authority's gate is open");
         assert_eq!(settled, PreNodeReadyState::Passed);
-        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready)).await;
 
-        assert_eq!(*seen.lock().unwrap(), vec![MemberStatus::Pending, MemberStatus::Ready]);
+        assert_eq!(*seen.lock().unwrap(), vec![NodeStatus::Pending, NodeStatus::Ready]);
         let all = attempts(&spans);
         assert_eq!(all.last().map(String::as_str), Some("ok"), "the last attempt answered Ok: {all:?}");
         assert!(all[..all.len() - 1].iter().all(|o| o == "pending"), "every attempt before it answered Pending: {all:?}");
@@ -239,7 +239,7 @@ fn a_first_start_whose_hook_answered_pending_is_ready_once_a_later_attempt_passe
     let cap = crate::common::capture("a_first_start_whose_hook_answered_pending_is_ready_once_a_later_attempt_passes");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Ready).await;
+        let b = birth(NodeStatus::Ready).await;
         b.primary.gate.open();
         let (started, resume) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
         let pre_node_ready = TestPreNodeReady::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Pending { reason: "the rows of orders are not yet published".into() } });
@@ -254,8 +254,8 @@ fn a_first_start_whose_hook_answered_pending_is_ready_once_a_later_attempt_passe
         assert_eq!(attempts(&spans), vec!["pending".to_string(), "ok".to_string()]);
         // node.started follows the hook's pass by the start's Build-floor and topology steps
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
-        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Ready);
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready)).await;
+        assert_eq!(*running.status.lock().unwrap(), NodeStatus::Ready);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -280,7 +280,7 @@ fn a_pending_node_answers_status_and_connections_delete_and_its_hook_ends() {
     let cap = crate::common::capture("a_pending_node_answers_status_and_connections_delete_and_its_hook_ends");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Pending).await;
+        let b = birth(NodeStatus::Pending).await;
         let seen = observe(&b);
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
         pre_node_ready.set_attempts(HOLDING);
@@ -297,7 +297,7 @@ fn a_pending_node_answers_status_and_connections_delete_and_its_hook_ends() {
         let at_cancel = pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst);
         tokio::time::sleep(rdm_core::cadence::staleness_floor()).await;
         assert_eq!(pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst), at_cancel, "the hook is not called again after the cancel");
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&NodeStatus::Ready), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -319,7 +319,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
     let cap = crate::common::capture("a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Ready).await;
+        let b = birth(NodeStatus::Ready).await;
         b.primary.gate.open();
         b.primary.hold();
         let seen = observe(&b);
@@ -338,7 +338,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
         assert!(!calls[0].contains_key("outcome"), "the dropped call recorded no outcome: it ended with the hook, not with a reply: {:?}", calls[0]);
         b.primary.release();
         assert!(pre_node_ready.held().0.is_empty(), "no row was applied after the deletion");
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&NodeStatus::Ready), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -358,7 +358,7 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
     }
     let cap = crate::common::capture("rows_gossiped_during_the_pull_change_the_state_once_per_version");
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Ready).await;
+        let b = birth(NodeStatus::Ready).await;
         b.primary.gate.open();
         b.primary.hold();
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
@@ -373,7 +373,7 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
         assert_eq!(changes.into_iter().collect::<Vec<_>>(), vec![(1, 1), (2, 1), (3, 1)], "each version changed the state once");
         assert_eq!(ignored, 1, "row 2 arrived twice and the second was ignored");
         assert_eq!(pre_node_ready.effects.load(std::sync::atomic::Ordering::SeqCst), 3, "one side effect per version");
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Ready);
+        assert_eq!(*running.status.lock().unwrap(), NodeStatus::Ready);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -398,7 +398,7 @@ fn a_node_whose_hook_fails_stays_pending_and_its_probe_answers_start_failed() {
     let cap = crate::common::capture("a_node_whose_hook_fails_stays_pending_and_its_probe_answers_start_failed");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Ready).await;
+        let b = birth(NodeStatus::Ready).await;
         let seen = observe(&b);
         let why = "the snapshot of kind `config` is not complete at its boundary";
         let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Failed { reason: why.into() }));
@@ -412,8 +412,8 @@ fn a_node_whose_hook_fails_stays_pending_and_its_probe_answers_start_failed() {
         let step = spans_named(&spans, "rdm.mesh.node.reject.via-start-step-failed");
         assert!(step.iter().any(|s| s["step"] == "node.pre-node-ready" && s["reason"].contains("is not complete at its boundary")), "the start names its failed step: {step:?}");
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "the node stays Pending");
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
+        assert_eq!(*running.status.lock().unwrap(), NodeStatus::Pending, "the node stays Pending");
+        assert!(!seen.lock().unwrap().contains(&NodeStatus::Ready), "{:?}", seen.lock().unwrap());
         assert_eq!(pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst), 1, "nothing calls the hook again");
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -437,7 +437,7 @@ fn a_hook_pending_on_every_attempt_spends_them_and_the_node_answers_start_failed
     let cap = crate::common::capture("a_hook_pending_on_every_attempt_spends_them_and_the_node_answers_start_failed");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Pending).await;
+        let b = birth(NodeStatus::Pending).await;
         let seen = observe(&b);
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
         let running = start(&b, &pre_node_ready).await.unwrap().expect("a pending node comes up, Pending");
@@ -449,8 +449,8 @@ fn a_hook_pending_on_every_attempt_spends_them_and_the_node_answers_start_failed
         assert_eq!(command(&b, probe).await, StatusReply::StartFailed { step: "node.pre-node-ready".into(), reason: why.clone() }, "the probe answers StartFailed with the last reason");
         tokio::time::sleep(rdm_core::cadence::staleness_floor()).await;
         assert_eq!(pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst), 3, "nothing calls the hook a fourth time");
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "the node stays Pending");
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
+        assert_eq!(*running.status.lock().unwrap(), NodeStatus::Pending, "the node stays Pending");
+        assert!(!seen.lock().unwrap().contains(&NodeStatus::Ready), "{:?}", seen.lock().unwrap());
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -463,7 +463,7 @@ fn a_hook_pending_on_every_attempt_spends_them_and_the_node_answers_start_failed
 fn the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth() {
     let cap = crate::common::capture("the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth");
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::Ready).await;
+        let b = birth(NodeStatus::Ready).await;
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let running = start(&b, &pre_node_ready).await.unwrap().expect("the node comes up");
         assert_eq!(*pre_node_ready.contexts.lock().unwrap(), vec![(1, Some(b.admin.launcher.node_id.to_string()), None)], "the accepting mesh-primary is named by its node id");
@@ -484,12 +484,12 @@ fn the_launchers_ready_waits_for_the_births_own_ready_not_a_ping() {
     let cap = crate::common::capture("the_launchers_ready_waits_for_the_births_own_ready_not_a_ping");
     cap.run(crate::common::Threads::Current, async move {
         use rdm_admin::deployment::pipeline::NodeObserver;
-        let b = birth(MemberStatus::Pending).await;
+        let b = birth(NodeStatus::Pending).await;
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
         pre_node_ready.set_attempts(HOLDING);
         let running = start(&b, &pre_node_ready).await.unwrap().expect("a pending node still comes up, Pending");
         let digest_view = &b.admin.observer.topology_view.digest_view;
-        until(digest_view, "the authority heard the node's Pending digest", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
+        until(digest_view, "the authority heard the node's Pending digest", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Pending)).await;
         let (d, _) = digest_view.get(b.launch.node_id.as_str()).unwrap();
         let mut node = rdm_admin::model::Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
         node.node_id = d.node.node_id.clone();

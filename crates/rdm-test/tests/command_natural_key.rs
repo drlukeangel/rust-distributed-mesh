@@ -17,7 +17,7 @@
 use crate::common::admin_side_serving;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::{FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId};
 use rdm_admin::node_commands::CommandKey;
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
@@ -59,7 +59,7 @@ impl Birth {
 
     async fn launched(cell: &str, pre_node_ready: Option<std::sync::Arc<TestPreNodeReady>>, deadline: Duration) -> Self {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -102,7 +102,7 @@ impl Birth {
         }
         .expect("the node comes up");
         let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
-        birth.status_heard(MemberStatus::Ready).await;
+        birth.status_heard(NodeStatus::Ready).await;
         let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
         birth.admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         birth
@@ -110,7 +110,7 @@ impl Birth {
 
     /// Wait, bounded, until the birth's own state is `status`: what it is, for its heartbeat carries no
     /// status (gossip.md §3.1 `Digest`).
-    async fn own_status(&self, status: MemberStatus) {
+    async fn own_status(&self, status: NodeStatus) {
         tokio::time::timeout(Duration::from_secs(30), async {
             while *self.running.status.lock().unwrap() != status {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -122,7 +122,7 @@ impl Birth {
 
     /// Resolves once the admin side's view holds this birth at `status`: the status it set (its
     /// ready, from the birth's node.started).
-    async fn status_heard(&self, status: MemberStatus) {
+    async fn status_heard(&self, status: NodeStatus) {
         let digest_view = &self.admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
         let mut digests = digest_view.digest_changes();
@@ -227,7 +227,7 @@ fn a_start_sent_again_while_one_is_under_way_joins_it_and_answers_its_outcome() 
 
         assert_eq!(first.await.unwrap(), StatusReply::Started, "the first start completes");
         assert_eq!(second.await.unwrap(), StatusReply::Started, "the second send answers the outcome of the start it joined");
-        birth.status_heard(MemberStatus::Ready).await;
+        birth.status_heard(NodeStatus::Ready).await;
         let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
         assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
         let _ = std::fs::remove_dir_all(&birth.dir);
@@ -317,7 +317,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
         assert_eq!(start.await.unwrap(), StatusReply::Started);
-        birth.status_heard(MemberStatus::Ready).await;
+        birth.status_heard(NodeStatus::Ready).await;
 
         // The started birth's stop is a stop of its own cycle.
         let after = birth.call(&birth.stop()).await;

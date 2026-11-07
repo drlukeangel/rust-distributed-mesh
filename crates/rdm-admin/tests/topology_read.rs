@@ -4,7 +4,7 @@
 use rdm_core::topology::PrimaryKind;
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
 use rdm_admin::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyService, TopologyFailure, TopologySlot};
@@ -27,7 +27,7 @@ fn member_of(fabric: &FabricId, mesh: &str, r#type: &str, ordinal: u32) -> MeshD
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: rdm_core::model::NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

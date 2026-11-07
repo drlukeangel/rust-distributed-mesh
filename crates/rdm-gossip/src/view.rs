@@ -587,7 +587,7 @@ impl View {
     pub(crate) fn apply_full(&self, mesh: &str, full: &Full, complete: Option<&Full>, fabric: &FabricId, side: Side, target: &Target) -> Vec<MeshDigest> {
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
         let final_delete = if complete_digests.len() == 1
-            && complete_digests[0].status == rdm_core::MemberStatus::Leaving
+            && complete_digests[0].status == rdm_core::model::NodeStatus::Leaving
             && rdm_core::is_node_admin(&complete_digests[0].node.r#type)
         {
             let last_id = &complete_digests[0].node.node_id;
@@ -689,8 +689,8 @@ impl View {
 
     /// A peer mesh's member whose own state this node now holds changed (or was first held saying
     /// connections-deleting or Leaving): what this node routes to it follows that state alone (R4).
-    pub(crate) fn note_member_state(&self, d: &MeshDigest, prior: Option<rdm_core::MemberStatus>, side: Side) {
-        use rdm_core::MemberStatus::{ConnectionsDeleting, Leaving};
+    pub(crate) fn note_member_state(&self, d: &MeshDigest, prior: Option<rdm_core::model::NodeStatus>, side: Side) {
+        use rdm_core::model::NodeStatus::{ConnectionsDeleting, Leaving};
         if d.node.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, ConnectionsDeleting | Leaving)) {
             return;
         }
@@ -711,7 +711,7 @@ impl View {
     /// A peer mesh's member this node now holds stopped, from its mesh primary's `NodeStopped` overlay
     /// (gossip.md, node-stopped lifecycle overlay): Leaving and stopped, not routable. `channel` is
     /// where the overlay arrived: the frame itself, or the mesh topology's `in_flight`.
-    pub(crate) fn note_member_stopped(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::MemberStatus>, channel: &str) {
+    pub(crate) fn note_member_stopped(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::model::NodeStatus>, channel: &str) {
         if op.mesh == self.mesh {
             return;
         }
@@ -721,7 +721,7 @@ impl View {
             member_path = %op.path, member_name = %op.name,
             member_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
-            status = ?rdm_core::MemberStatus::Leaving,
+            status = ?rdm_core::model::NodeStatus::Leaving,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             channel,
             routable = self.digest_view.routable(op.node_id.as_str()),

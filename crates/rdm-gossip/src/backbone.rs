@@ -169,7 +169,7 @@ impl Backbone {
                 // nothing unless this node holds the forwarder role, read under its lock.
                 if let Some((source_mesh, publisher, version, full)) = taken.source {
                     let is_final_delete = full.digests().len() == 1
-                        && full.digests()[0].status == rdm_core::MemberStatus::Leaving
+                        && full.digests()[0].status == rdm_core::model::NodeStatus::Leaving
                         && rdm_core::is_node_admin(&full.digests()[0].node.r#type)
                         && full
                             .in_flight()
@@ -478,7 +478,7 @@ impl Backbone {
         let (mut in_flight, deleted) = topology_view.digest_view.overlays_of(&self.mesh);
         if members.len() == 1
             && rdm_core::is_node_admin(&members[0].node.r#type)
-            && members[0].status != rdm_core::MemberStatus::Leaving
+            && members[0].status != rdm_core::model::NodeStatus::Leaving
         {
             let last_id = &members[0].node.node_id;
             in_flight.retain(|op| op.is_stop() || &op.node_id != last_id);

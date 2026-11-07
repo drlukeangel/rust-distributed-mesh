@@ -13,7 +13,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
-use rdm_core::{FabricId, MemberStatus};
+use rdm_core::{FabricId};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, DeleteRequest, DeleteStep, Timeouts};
@@ -72,7 +72,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
         assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::Ready], "the pipeline does not publish Leaving from a stop answer; the command owner records the node report");
         let (digest, _) = admin.observer.topology_view.digest_view.get(first.node.node_id.as_str()).expect("the node's digest");
-        assert_eq!(digest.status, MemberStatus::Leaving, "the admin side holds the status it set from the node's last report, its stop's Leaving (node-status.md \"Status report\"); the node's heartbeats carry none (gossip.md §3.1 `Digest`)");
+        assert_eq!(digest.status, rdm_core::model::NodeStatus::Leaving, "the admin side holds the status it set from the node's last report, its stop's Leaving (node-status.md \"Status report\"); the node's heartbeats carry none (gossip.md §3.1 `Digest`)");
         assert!(matches!(provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }));
         assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
         // node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key." An

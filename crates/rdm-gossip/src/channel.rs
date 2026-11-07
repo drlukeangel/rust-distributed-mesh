@@ -154,7 +154,7 @@ pub(crate) fn held_targets(digest_view: &DigestView, pick: impl Fn(&MeshDigest) 
     digest_view.silent_held(now)
         .into_iter()
         .chain(digest_view.projected_unheard_at(now))
-        .filter(|(d, _)| pick(d) && d.status != rdm_core::MemberStatus::Leaving && !overlaid.contains(d.node.node_id.as_str()))
+        .filter(|(d, _)| pick(d) && d.status != rdm_core::model::NodeStatus::Leaving && !overlaid.contains(d.node.node_id.as_str()))
         .filter_map(|(d, silent_for)| gossip_addr(&d).map(|addr| RepairTarget { addr, node: d.node.node_id.to_string(), node_id: d.node.node_id.to_string(), silent_for }))
         .collect()
 }
@@ -1109,7 +1109,7 @@ impl Channels {
             self.topology_view.digest_view.record_joined(d.clone())
         } else {
             let held = self.topology_view.digest_view.get(d.node.node_id.as_str()).filter(|(h, _)| h.node.incarnation == d.node.incarnation).map(|(h, _)| h.status);
-            self.topology_view.digest_view.record_topology(MeshDigest { status: held.unwrap_or(rdm_core::MemberStatus::Pending), ..d.clone() })
+            self.topology_view.digest_view.record_topology(MeshDigest { status: held.unwrap_or(rdm_core::model::NodeStatus::Pending), ..d.clone() })
         };
         if taken {
             self.topology_view.view.note(&d, via);

@@ -20,7 +20,7 @@
 
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
 use serde_json::Value;
@@ -94,7 +94,7 @@ fn birth(node_id: &NodeId, key: iroh::PublicKey, socket: SocketAddr, incarnation
             supersedes,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

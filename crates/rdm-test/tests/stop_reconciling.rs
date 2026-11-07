@@ -67,7 +67,7 @@ fn an_admin_that_stopped_reconciling_starts_no_build_drive() {
             .map(|(_, (n, _, f))| (n.clone(), f.clone()))
             .collect();
         assert!(after.is_empty(), "a Build drive pass began after the admin stopped reconciling: {after:#?}");
-        assert_eq!(*rpc.status.lock().unwrap(), rdm_core::MemberStatus::Ready, "the hand-launched node runs on");
+        assert_eq!(*rpc.status.lock().unwrap(), rdm_core::model::NodeStatus::Ready, "the hand-launched node runs on");
 
         rpc.stop().await;
         root.leave().await;

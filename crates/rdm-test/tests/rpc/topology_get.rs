@@ -104,7 +104,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
         let births: Vec<_> = nodes.iter().filter(|n| n.mesh() == mesh).map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
         peers
             .fact(&member_view, mesh, &format!("{member_location:?} holds every settled birth of {mesh} ready"), |v| {
-                births.iter().all(|(id, inc)| v.birth(id).is_some_and(|d| Some(&d.node.incarnation) == inc.as_ref() && d.status == rdm_core::MemberStatus::Ready))
+                births.iter().all(|(id, inc)| v.birth(id).is_some_and(|d| Some(&d.node.incarnation) == inc.as_ref() && d.status == rdm_core::model::NodeStatus::Ready))
             })
             .await;
     }

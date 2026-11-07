@@ -4,7 +4,7 @@
 use crate::common::{admin_side_deaf_to_joins};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
-use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::{FabricId, IncarnationId, model::NodeStatus, MeshId, NodeId};
 use rdm_test::node;
 
 /// CONTRACT: a node whose launching admin answers every `JoinNode` with `NotReady` (the admin
@@ -56,7 +56,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
             Err(e) => Some(e.to_string()),
         };
         let node_id = launch.node_id.to_string();
-        let heard_ready = admin.observer.topology_view.digest_view.get(node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready);
+        let heard_ready = admin.observer.topology_view.digest_view.get(node_id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready);
         let ready_spans = spans.0.lock().unwrap().values().filter(|(name, _, _)| name == "rdm.mesh.node.update.via-ready").count();
         let _ = std::fs::remove_dir_all(&dir);
         let why = outcome.expect("a node whose join was never taken must end, not come up");

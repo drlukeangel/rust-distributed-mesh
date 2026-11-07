@@ -420,7 +420,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.status = if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
         } else if !silent {
-            node_status(d.status)
+            d.status
         } else {
             NodeStatus::PendingReconnect
         };
@@ -540,7 +540,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.status = if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
         } else if age <= digest_view.staleness_floor() {
-            node_status(d.status)
+            d.status
         } else {
             NodeStatus::PendingReconnect
         };
@@ -685,7 +685,7 @@ mod tests {
     fn digest_projection_preserves_explicit_ownership_and_primary_selection() {
         let view = DigestView::default();
         let records = Records::default();
-        let mut admin = super::super::tests::digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready);
+        let mut admin = super::super::tests::digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         let fabric = admin.fabric_id.clone();
         let mesh_id = MeshId::mint();
         { let at = rdm_core::PathName::new("elsewhere.node", "administrator").unwrap(); admin.node.path = at.path; admin.node.name = at.name; }
@@ -694,7 +694,7 @@ mod tests {
         admin.mesh_id = Some(mesh_id.clone());
         admin.is_primary = Some(7);
         admin.is_fabric_primary = Some(7);
-        let mut member = super::super::tests::digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
+        let mut member = super::super::tests::digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         { let at = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap(); member.node.path = at.path; member.node.name = at.name; }
         member.node.mesh = "mesh2".into();
         member.node.r#type = "compute".to_string();

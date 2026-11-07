@@ -1,7 +1,7 @@
 //! Held-member repair (gossip.md §6) reaches every member a node holds, heard or not.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_gossip::channel::{ChannelId, Channels};
 use rdm_gossip::topology::TopologyView;
 use std::time::{Duration, Instant};
@@ -38,7 +38,7 @@ fn birth(fabric: &FabricId, n: &Node, name: &str) -> MeshDigest {
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Pending,
+        status: NodeStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

@@ -11,7 +11,7 @@
 
 use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
 use rdm_admin::admin::{project, project_with, GossipLifecycle, Records, ViewReads};
@@ -38,7 +38,7 @@ fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str,
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Ready,
+        status: NodeStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,
