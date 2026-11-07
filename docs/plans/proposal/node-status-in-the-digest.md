@@ -9,7 +9,13 @@ clarifications. Code and architecture pages change together at implementation.
 1. **The final property is `status`.** Remove `node_state`, `NodeState`, `MemberStatus` and the
    duplicate status type/conversions; use the record's one status type. A node publishes
    `Digest { status }` on its own status change and on heartbeat. The envelope supplies its
-   exact birth, sequence and time. Local receipt time measures silence, never deletion.
+   exact birth, sequence and time. Local receipt time measures silence, never deletion. Inside
+   its mesh a node's status comes from its own Digest, ordered by its sequence, except at its own
+   mesh-primary: "since the MP is the one creating/starting the node it gets a op streamed to it
+   by the node" (Luke), so the mesh-primary takes the status from the node's reports and decides
+   from them, never from gossip (Q197); its Digests give the mesh-primary liveness. Built at
+   `25af643f2` (step 2 of #338), after a late, older Digest set a reported Ready back to Pending
+   at mesh2's primary and its successor check refused a stop.
 2. **Node details travel on the first gossip into the mesh.** That first publication carries
    the node details and pending at accepted join. Peers retain the details; subsequent
    Digests carry only status. Reads supply a joining node's existing view and repair anything
