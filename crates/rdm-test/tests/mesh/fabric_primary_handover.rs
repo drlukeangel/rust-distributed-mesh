@@ -195,7 +195,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // Peers hold the deleted mesh with its last admin while it lives (R-NS1 item 1, R-MD1 item 3):
     // an admin of each surviving mesh, in what it holds itself (query.md §2), holds mesh1 deleted with
     // that one node: the mesh status it took from the gossiped MeshStatus, and the mesh1 births its
-    // topology holds (`node.topology.get`). fabric.get at it answers a primary's atlas, never its own
+    // topology holds (`node.topology.get`), its deleted nodes listed `deleted` for the retention (Q390),
+    // not held. fabric.get at it answers a primary's atlas, never its own
     // view (query.md §1; Q243). The admin lives on here until its node.delete, so this interval is held,
     // not raced.
     let survivors = ["mesh2", "mesh3"];
@@ -205,7 +206,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
             wait_for(&format!("{who:?} holds mesh1 dead with {final_name:?} its only node"), Duration::from_secs(30), || async {
                 let dead = named(&estate.spans(), "rdm.mesh.topology.update.via-mesh-status").into_iter().any(|sp| on(sp, &ids, &who) && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "dead" && s(&sp["attributes"]["taken"]) == "true");
                 let held = estate.held_topology_at(&who).await?;
-                let mesh1: Vec<PathName> = held.members.iter().filter(|d| d.node.mesh == "mesh1").map(|d| d.node.location()).collect();
+                let mesh1: Vec<PathName> = held.members.iter().filter(|d| d.node.mesh == "mesh1" && d.status != rdm_core::model::NodeStatus::Deleted).map(|d| d.node.location()).collect();
                 (dead && mesh1 == [final_name.clone()]).then_some(())
             })
             .await;

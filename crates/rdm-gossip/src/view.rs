@@ -683,9 +683,11 @@ impl View {
         use rdm_core::model::NodeStatus as S;
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
         // A deleted mesh's final aggregate: its last node-admin, the only node, deleting (gossip.md "Mesh
-        // delete": "its final mesh topology, the mesh deleted and itself deleting").
-        let final_delete = (complete_digests.len() == 1 && complete_digests[0].status == S::Deleting && rdm_core::is_node_admin(&complete_digests[0].node.r#type))
-            .then(|| DigestView::listed_op(&complete_digests[0], "node.delete", at_rafka_ms));
+        // delete": "its final mesh topology, the mesh deleted and itself deleting"). A node it lists
+        // `deleted` is a departure held for the deleted retention (Q390), not a node of the mesh.
+        let nodes: Vec<&MeshDigest> = complete_digests.iter().filter(|d| d.status != S::Deleted).collect();
+        let final_delete = (nodes.len() == 1 && nodes[0].status == S::Deleting && rdm_core::is_node_admin(&nodes[0].node.r#type))
+            .then(|| DigestView::listed_op(nodes[0], "node.delete", at_rafka_ms));
         if let Some(op) = &final_delete {
             let deleted_mesh_id = complete.and_then(Full::mesh_id);
             if self.digest_view.holds_birth_of_mesh_under_another_id(mesh, &deleted_mesh_id) {

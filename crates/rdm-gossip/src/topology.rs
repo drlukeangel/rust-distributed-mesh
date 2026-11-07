@@ -3705,6 +3705,31 @@ mod tests {
         assert!(!admin.digest_view.stopped(stop), "a late copy of the frame opens nothing");
     }
 
+    /// CONTRACT (gossip.md "Mesh delete": "its final mesh topology, the mesh deleted and itself deleting",
+    /// "receivers hold the mesh for the deleted retention from that final mesh topology"; Q390): a
+    /// deleted mesh's final aggregate lists its last node-admin `deleting` beside the nodes it deleted,
+    /// listed `deleted` for the deleted retention. A peer node-admin that receives it holds the last
+    /// admin deleted with the rest, so that it resolves Gone. Must NOT happen: the deleted nodes the
+    /// aggregate lists taken for nodes of the mesh, so that the final aggregate is never told and the
+    /// last admin is held deleting for good (the gate's fabric_primary_handover red at 9d8d01079: mesh1's
+    /// final aggregate v19 installed `members 4, deleted 3, deleting 1`, no `via-node-deleted` of its last
+    /// admin).
+    #[test]
+    fn a_final_aggregate_listing_the_deleted_nodes_beside_its_last_admin_deleting_departs_the_last_admin() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let mesh1_id = rdm_core::MeshId::mint();
+        let last = born("mesh1", "node-admin", 1, 1);
+        let gone = born("mesh1", "node", 1, 1);
+        let peer = test_view("mesh2", "mesh2.node-admin.1");
+        let aggregate = |version: u64, nodes: Vec<MeshDigest>| Frame::aggregate("mesh1", Some(mesh1_id.clone()), &author_of(&publisher_of(&last)), version, version, 0, 1, nodes);
+        assert!(hear(&mut peer.order.lock().unwrap(), &peer, &aggregate(1, vec![last.clone(), gone.clone()]), &fabric, Side::Backbone));
+        let listed = |d: &MeshDigest, status: NodeStatus| MeshDigest { status, ..d.clone() };
+        assert!(hear(&mut peer.order.lock().unwrap(), &peer, &aggregate(2, vec![listed(&last, NodeStatus::Deleting), listed(&gone, NodeStatus::Deleted)]), &fabric, Side::Backbone));
+        assert!(peer.digest_view.is_deleted(gone.node.node_id.as_str()), "the node the final aggregate lists deleted departs");
+        assert!(peer.digest_view.is_deleted(last.node.node_id.as_str()), "the last admin, the only node not listed deleted, departs with the final aggregate");
+        assert!(peer.digest_view.get(last.node.node_id.as_str()).is_none(), "the last admin is not held as a node");
+    }
+
     /// CONTRACT (proposal edit 12's check, "preserve delivery of changed primary records"; gossip.md "A
     /// primary change on gossip"): each node entry of an aggregate carries the primary roles the node
     /// holds, and a receiver takes the primary records from them (`take_primaries`): the mesh-primary's

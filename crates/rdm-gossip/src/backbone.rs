@@ -166,10 +166,12 @@ impl Backbone {
                 // since it last published that source into its own Mesh. The forward path decides
                 // nothing unless this node holds the forwarder role, read under its lock.
                 if let Some((source_mesh, publisher, version, full)) = taken.source {
-                    // A deleted mesh's final aggregate: its last node-admin, the only node, deleting.
-                    let is_final_delete = full.digests().len() == 1
-                        && full.digests()[0].status == rdm_core::model::NodeStatus::Deleting
-                        && rdm_core::is_node_admin(&full.digests()[0].node.r#type);
+                    // A deleted mesh's final aggregate: its last node-admin, the only node, deleting. A
+                    // node it lists `deleted` is a departure held for the deleted retention (Q390).
+                    let nodes: Vec<MeshDigest> = full.digests().into_iter().filter(|d| d.status != rdm_core::model::NodeStatus::Deleted).collect();
+                    let is_final_delete = nodes.len() == 1
+                        && nodes[0].status == rdm_core::model::NodeStatus::Deleting
+                        && rdm_core::is_node_admin(&nodes[0].node.r#type);
                     let _ = m.forward_path.source_with_clock(&me, &source_mesh, version, &full, || m.topology_view.clock.now_rafka_ms());
                     if is_final_delete {
                         m.topology_view.view.forwarder.lock().unwrap().remove(&source_mesh);
