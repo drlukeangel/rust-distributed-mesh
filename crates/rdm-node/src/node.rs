@@ -1782,7 +1782,15 @@ async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core
         tracing::Span::current().record("mesh_primary", to.as_str());
         let (out, _) = me.own.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), req, &rdm_transport::CallOptions::default()).await;
         match out {
-            rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
+            // This node answers the read: its own row carries its own sample (Q394).
+            rdm_core::outcome::RpcOutcome::Reply(r) => match r.into_value() {
+                StatusReply::Nodes { mut nodes } => {
+                    let (load, gossip) = me.channels.own_sample();
+                    rdm_core::views::own_sample_on(&mut nodes, node, load, gossip);
+                    StatusReply::Nodes { nodes }
+                }
+                other => other,
+            },
             other => rdm_core::reply::status::not_ready(format!("{node:?} forwarded {op} to its mesh-primary {to}: the call ended {} with no reply", other.name())),
         }
     };
@@ -1860,7 +1868,11 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.node_id.to_string()).unwrap_or_else(|| primary.node_id.to_string());
                 tracing::Span::current().record("mesh_primary", to.as_str());
                 match rdm_client::NodeRpc::new(&me.own.client).read(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), entity, &filter, &rdm_transport::CallOptions::default()).await {
-                    Ok(rows) => rdm_client::read_frames(rows.into_rows(), op).map(|frames| (rows_len(&frames), frames)),
+                    // This node answers the read: its own row carries its own sample (Q394).
+                    Ok(rows) => {
+                        let (load, gossip) = me.channels.own_sample();
+                        rdm_client::read_frames(rows.with_own_sample(node, load, gossip).into_rows(), op).map(|frames| (rows_len(&frames), frames))
+                    }
                     Err(rdm_client::CallEnd::Rejected { reason, detail }) if reason == "rejected-filter" => Err(ReadReply::RejectedFilter { reason: detail }),
                     Err(e) => Err(ReadReply::NotReady { reason: format!("{node:?} forwarded {op} to its mesh-primary: the read ended {} ({e})", e.outcome()) }),
                 }

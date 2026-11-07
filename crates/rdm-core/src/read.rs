@@ -326,6 +326,17 @@ impl Rows {
         self.len() == 0
     }
 
+    /// The rows with `node_id`'s own load and mesh-channel counts on its own row: what the node that
+    /// answers a `node.get` serves of itself, whoever's atlas the rows came from (Q394;
+    /// node-identity-and-state.md §2.5: in-memory diagnostics of the node itself, served only for the
+    /// node that answers). Rows of another entity, and every other node's row, are as they were.
+    pub fn with_own_sample(mut self, node_id: &crate::NodeId, load: crate::NodeLoad, gossip: crate::GossipStats) -> Self {
+        if let Self::Nodes(nodes) = &mut self {
+            crate::views::own_sample_on(nodes, node_id, load, gossip);
+        }
+        self
+    }
+
     /// The empty rows of `entity`; `None` for an entity this request does not read.
     pub fn empty(entity: Entity) -> Option<Self> {
         match entity {

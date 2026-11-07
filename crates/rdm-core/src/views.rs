@@ -155,10 +155,21 @@ pub struct NodeView {
     pub config: std::collections::BTreeMap<String, String>,
     /// The node's tag labels (R-TG1).
     pub tags: std::collections::BTreeSet<String>,
-    /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
+    /// The node's CPU and RAM, its own sample: present only on the row of the node that answers the
+    /// read ([`own_sample_on`], Q394).
     pub load: Option<NodeLoad>,
-    /// The node's mesh-channel counts from its latest digest: heard, neighbours, frames.
+    /// The node's mesh-channel counts (heard, neighbours, frames), its own sample: present only on the
+    /// row of the node that answers the read ([`own_sample_on`], Q394).
     pub gossip: Option<GossipStats>,
+}
+
+/// `node_id`'s own load and mesh-channel counts on its own row of `nodes`, and on no other: what the
+/// node that answers a `node.get` serves of itself (Q394; node-identity-and-state.md §2.5: in-memory
+/// diagnostics of the node itself, served only for the node that answers).
+pub fn own_sample_on(nodes: &mut [NodeView], node_id: &NodeId, load: NodeLoad, gossip: GossipStats) {
+    for n in nodes.iter_mut().filter(|n| n.node_id == *node_id) {
+        (n.load, n.gossip) = (Some(load), Some(gossip));
+    }
 }
 
 impl NodeView {

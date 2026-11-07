@@ -14,7 +14,7 @@ use crate::build_log;
 use rdm_core::PathName;
 
 fn location(node: &Value) -> PathName { rdm_test::estate::location(&node) }
-use rdm_client::{FabricDesired, MeshDesired, NodeView};
+use rdm_client::{FabricDesired, Filter, MeshDesired, NodeView, Nodes};
 use rdm_test::estate::{wait_for, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -86,37 +86,48 @@ async fn roles_are_born_by_build_under_their_type() {
     assert_eq!(fabric_primaries.len(), 1, "{fabric_primaries:?}");
     assert_eq!(fabric_primaries[0]["type"], "node-admin");
 
-    // Every node, whatever its type, publishes its own CPU and RAM in its mesh digest, and the
-    // node-admin's view serves it. The load travels on the node's own digest only (the primary's
-    // mesh topology omits loads, rafka-mesh-transport topology.rs `publish`), so the view serves it once
-    // this admin has heard that digest, which can follow the status the mesh topology carried.
+    // Every node, whatever its type, samples its own CPU and RAM and its mesh-channel counts (R-L2):
+    // it has heard the members of its mesh, holds a gossip neighbour, and has sent and decoded topology
+    // frames. None of it rides gossip or is stored (Q394): each node serves its own sample on its own
+    // row of a node.get it answers, and the admin's view serves no other node's. A sample is periodic:
+    // the Build is ready on declarations, before every node has a sample taken after the others
+    // joined, so the cell reads each node until its sample is in.
     let names: BTreeSet<PathName> = nodes.iter().map(location).collect();
-    let loaded: Vec<Value> = wait_for("every node's own digest, with its load, in the admin's view", Duration::from_secs(15), || async {
-        let now = Estate::values(&estate.settles_to_named(&names, Duration::from_secs(15)).await);
-        now.iter().all(|n| n["load"]["ram_used_bytes"].as_u64().is_some_and(|b| b > 0)).then_some(now)
+    let views = estate.settles_to_named(&names, Duration::from_secs(15)).await;
+    let peers = estate.peers().await;
+    peers.learn(&views);
+    let sampled = |n: &NodeView| n.load.is_some_and(|l| l.ram_used_bytes > 0) && n.gossip.is_some_and(|g| g.neighbours >= 1 && g.frames_received >= 1 && g.frames_sent >= 1);
+    let own: Vec<Value> = wait_for("every node's own sample, on the node.get that node answers", Duration::from_secs(15), || async {
+        let mut rows = Vec::new();
+        for v in &views {
+            let row = Nodes::new(peers.carrier_for(v.node_id.clone())).get(&Filter::new().eq("id", [v.node_id.as_str()])).await.ok()?.into_iter().find(|n| n.node_id == v.node_id)?;
+            if !sampled(&row) {
+                return None;
+            }
+            rows.push(row);
+        }
+        Some(Estate::values(&rows))
     })
     .await;
-    for n in &loaded {
+    estate.artifact("nodes-own-sample.json", &json!(own));
+    assert_eq!(own.len(), nodes.len(), "every node answered its own node.get");
+    for n in &own {
         let l = &n["load"];
         assert!(l["ram_used_bytes"].as_u64().is_some_and(|b| b > 0), "{} carries its resident memory: {n}", n["name"]);
         assert!(l["ram_budget_bytes"].as_u64() >= l["ram_used_bytes"].as_u64(), "{} memory ceiling: {n}", n["name"]);
         assert!(l["cpu_budget_millicores"].as_u64().is_some_and(|c| c >= 1000), "{} cpu ceiling: {n}", n["name"]);
         assert!(l["cpu_used_millicores"].as_u64().is_some(), "{} cpu in use: {n}", n["name"]);
-    }
-
-    // The same digest carries the node's mesh-channel counts (R-L2): it has heard the members of
-    // its mesh, holds a gossip neighbour, and has sent and decoded topology frames.
-    // A digest is a periodic sample: the Build is ready on declarations, before every member has
-    // published a sample taken after the others joined. Read `node.get` until the samples are in.
-    let sampled = |ns: &[NodeView]| ns.iter().all(|n| n.gossip.as_ref().is_some_and(|g| g.neighbours >= 1 && g.frames_received >= 1 && g.frames_sent >= 1));
-    let gossip_nodes = Estate::values(&estate.until_view("every node published a digest sampled after the others joined", Duration::from_secs(15), |views| sampled(views).then(|| views.to_vec())).await);
-    estate.artifact("nodes-gossip.json", &json!(gossip_nodes));
-    for n in &gossip_nodes {
         let g = &n["gossip"];
         assert!(g["heard"].as_u64().is_some_and(|h| h >= 1), "{} has heard members: {n}", n["name"]);
         assert!(g["neighbours"].as_u64().is_some_and(|k| k >= 1), "{} has an active neighbour: {n}", n["name"]);
         assert!(g["frames_sent"].as_u64().is_some_and(|f| f >= 1), "{} sent frames: {n}", n["name"]);
         assert!(g["frames_received"].as_u64().is_some_and(|f| f >= 1), "{} decoded frames: {n}", n["name"]);
+    }
+    // The admin's node.get serves its own sample alone: every other node's row carries none.
+    let fp = views.iter().find(|v| v.is_fabric_primary).expect("the fabric-primary").node_id.clone();
+    let at_fp = Nodes::new(peers.carrier_for(fp.clone())).get(&Filter::new()).await.expect("node.get at the fabric-primary");
+    for n in &at_fp {
+        assert_eq!(n.node_id == fp, n.load.is_some() && n.gossip.is_some(), "{:?}: the fabric-primary's node.get serves its own sample and no other node's: {n:?}", n.location());
     }
 
     // The second Build deletes the compute node; the other nodes retain ID and incarnation.

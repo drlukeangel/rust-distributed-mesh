@@ -1653,7 +1653,11 @@ impl StatusService {
         };
         if let Some(to) = to {
             return match self.configs.get() {
-                Some(configs) => configs.carry_read(&me_name, &self.node_id, &view, read, to).await,
+                // This admin answers the read it carried: its own row carries its own sample (Q394).
+                Some(configs) => configs.carry_read(&me_name, &self.node_id, &view, read, to).await.map(|rows| match self.loads.as_ref().and_then(|l| l().remove(self.node_id.as_str())) {
+                    Some((Some(load), Some(gossip))) => rows.with_own_sample(&self.node_id, load, gossip),
+                    _ => rows,
+                }),
                 None => Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} has no node-RPC client yet to send {} on to {}", read.entity.read(), to.whom(), me_name_path = &me_name.path, me_name_name = &me_name.name) }),
             };
         }
