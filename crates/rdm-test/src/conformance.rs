@@ -851,7 +851,13 @@ where
     r.withhold.arm();
     let call = {
         let (client, target, req) = (r.client.clone(), r.target.clone(), f.answered.clone());
-        tokio::spawn(async move { answer_of(&client.call::<P>(&target, &req, &options()).await.0) }.instrument(tracing::Span::current()))
+        // This check is about the reply's recovery, not the attempts budget. Its cut comes when the
+        // handler is reached, and on a loaded host the default 3 attempts can be spent by then (the
+        // schedule here is 300 ms), with no ack held: an op acks with its first reply frame, and
+        // any other's ack can be dropped by the cut. The lost last stream then rightly ends the call
+        // `ReplyLost` (Rafka's red, forced in the trace 00a22185cfd13502ce9648cd024faa45).
+        let opts = CallOptions { send: rdm_transport::Send { attempts: u8::MAX, ..Default::default() }, ..options() };
+        tokio::spawn(async move { answer_of(&client.call::<P>(&target, &req, &opts).await.0) }.instrument(tracing::Span::current()))
     };
     tokio::time::timeout(FRAME_BOUND, r.withhold.reached()).await.map_err(|_| format!("the handler did not reach its reply within {FRAME_BOUND:?}"))?;
     if r.server.close_connections_except(&[], "conformance: the reply is lost after acceptance") == 0 {

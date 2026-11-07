@@ -113,5 +113,6 @@ Each patch goes when upstream merges an equivalent, unless its line says otherwi
 - With the move, on the same loss (Q383, Q385): `GOSSIP_SEND_QUEUE_BYTES`, 16 MiB per peer where the
   default is 1 MiB (a 300,000 x 256 B flood closed 44 connections at L1 at the default, none at this size),
   and the channel receive queue at 8192 events (`gossip.md` §3.4).
+- iroh-gossip counts a send queue's losses and logs them below what RDM exports, so RDM names them from the counters: `rdm.mesh.channel.reject.via-send-queue-full` and `via-send-queue-overflow` (`report_send_queue_losses`).
 - M11 at L1 and L2 after all of it: 100% of every burst in 3 L1 runs and 1 L2 run, and 95,000 of 95,000 and
   235,000 of 235,000 receipts on every receiver for the 5,000 burst.

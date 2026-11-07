@@ -806,6 +806,45 @@ pub struct Channels {
     pub(crate) forward_rx: Arc<Mutex<Option<ForwardRx>>>,
 }
 
+/// What the gossip net actor's send queues have lost so far, as last named. iroh-gossip counts a loss and
+/// logs it below what this process exports, so these spans are its only record (Q383).
+#[derive(Default)]
+struct SendQueueLosses {
+    dropped: u64,
+    closed: u64,
+}
+
+impl SendQueueLosses {
+    /// Name what moved since the last read: nothing is named when nothing moved.
+    fn report(&mut self, metrics: &iroh_gossip::metrics::Metrics) {
+        let (dropped, closed) = (metrics.msgs_dropped.get(), metrics.peers_send_queue_full.get());
+        if dropped > self.dropped {
+            tracing::info_span!("rdm.mesh.channel.reject.via-send-queue-full", dropped = dropped - self.dropped, total = dropped)
+                .in_scope(|| tracing::info!("a peer's send queue was full: messages to it were dropped; a dropped broadcast is announced to it again while it is cached"));
+        }
+        if closed > self.closed {
+            tracing::info_span!("rdm.mesh.channel.reject.via-send-queue-overflow", closed = closed - self.closed, total = closed)
+                .in_scope(|| tracing::info!("a control message did not fit a peer's send queue: the connection to it closed, for every channel it carried, and the peer rejoins"));
+        }
+        self.dropped = dropped;
+        self.closed = closed;
+    }
+}
+
+/// Name `gossip`'s send queue losses each gossip interval, for as long as it lives.
+pub fn report_send_queue_losses(gossip: &Gossip) {
+    let metrics = gossip.metrics().clone();
+    tokio::spawn(async move {
+        let mut losses = SendQueueLosses::default();
+        let mut tick = tokio::time::interval(rdm_core::cadence::gossip_interval());
+        // The actor and every handle hold the counters: alone here, the gossip has ended.
+        while Arc::strong_count(&metrics) > 1 {
+            tick.tick().await;
+            losses.report(&metrics);
+        }
+    });
+}
+
 impl Channels {
     /// The channels of the node whose topology view is `topology_view`, on `endpoint` through `gossip`:
     /// none joined yet.
@@ -1335,4 +1374,37 @@ impl Channels {
         .in_scope(|| tracing::info!("heartbeat"));
     }
 
+}
+
+#[cfg(test)]
+mod send_queue_tests {
+    use super::*;
+
+    /// A send queue's loss is named once, by what moved, with the count since the last read and the
+    /// total. Must NOT happen: a span when nothing moved, or the same loss named twice.
+    #[test]
+    fn a_send_queue_loss_is_named_once_by_what_moved() {
+        let dir = std::env::temp_dir().join(format!("send-queue-{}", rdm_core::NodeId::mint()));
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "send-queue").unwrap();
+        capture.run(1, async {
+            let metrics = iroh_gossip::metrics::Metrics::default();
+            let mut losses = SendQueueLosses::default();
+            losses.report(&metrics);
+            metrics.msgs_dropped.inc_by(7);
+            losses.report(&metrics);
+            losses.report(&metrics);
+            metrics.msgs_dropped.inc_by(2);
+            metrics.peers_send_queue_full.inc();
+            losses.report(&metrics);
+            let spans = capture.spans().unwrap();
+            let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
+            let full = named("rdm.mesh.channel.reject.via-send-queue-full");
+            let moved: Vec<(String, String)> = full.iter().map(|s| (s["attributes"]["dropped"].to_string().replace('"', ""), s["attributes"]["total"].to_string().replace('"', ""))).collect();
+            assert_eq!(moved, [("7".to_string(), "7".to_string()), ("2".to_string(), "9".to_string())], "each read names what moved, and the total");
+            let overflow = named("rdm.mesh.channel.reject.via-send-queue-overflow");
+            assert_eq!(overflow.len(), 1, "one connection closed, named once");
+            assert_eq!(overflow[0]["attributes"]["closed"].to_string().replace('"', ""), "1");
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

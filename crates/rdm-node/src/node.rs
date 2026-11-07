@@ -600,6 +600,7 @@ async fn start_booted(
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node_path = %launch.path, node_name = %launch.name);
     let g = iroh_gossip::net::Gossip::builder().send_queue(iroh_gossip::net::QueueOptions::default().size(GOSSIP_SEND_QUEUE_BYTES)).spawn(ep0.clone());
+    rdm_gossip::channel::report_send_queue_losses(&g);
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node_path = %launch.path, node_name = %launch.name, alpns = "node-rpc,gossip");
     let mut router_builder = Router::builder(ep0.clone())
