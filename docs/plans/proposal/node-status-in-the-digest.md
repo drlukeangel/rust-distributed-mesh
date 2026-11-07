@@ -1,104 +1,130 @@
 # The node's status in its Digest
 
-**Status:** proposal, open as Q387. Nothing here is built or applied. The architecture pages change
-with the code only after Luke's yes on the exact old and new text in [Page text](#page-text). It
-reverses R-HB1 ([node-status-heartbeat-connections](node-status-heartbeat-connections.md), Luke's
-direction of 2026-10-11: "the mesh-primary authors and publishes every member status; a heartbeat is
-liveness only") and the Pending point of Q97 and Q99 (the mesh-primary publishes a joining node's
-Pending once, at the accepted join report).
+**Status:** Q387 proposal, updated from `42cd260b8` through `5951a46bc`. This merges the supplied architecture
+review and the payload/repair review into this one proposal, including Luke's subsequent
+clarifications. Code and architecture pages change together at implementation.
 
-Luke, 2026-11-06 and 2026-11-07, in his words:
+## The design
 
-- "the node publishes its own gossip when its state changes to its local mesh and since the MP is
-  the one creating/starting the node it gets a op streamed to it by the node."
-- "the MP does publish the agregrate but to the backbone and the differential of peer meshses to the
-  mesh this shoul be in gossip.md"
-- "isn't the author in envelope"
-- "it would only reach fr teh MP proejction on create/join/start or direct pull on a sync issue"
-- "teh MP should only be sending digest from peer meshes it shouldn't be sending digest goissp from
-  teh internal mesh"
-- "status is the field node_state is why i told you to mreove"; "nodestate is dead / to be cleaer its
-  status"
-- "ALSO NODE"; "endpoints should also not be in the digest"; "and digest_seq and emited at time?"
-- "pending is the status its been the status / its the status before ready"
-- "pending-reconnect is the status of node-under investigation"
-- "the different frmo the bcakbone gossip of hte topology peeer mesh is MP just publishes the
-  differential from the last status"
+1. **The final property is `status`.** Remove `node_state`, `NodeState`, `MemberStatus` and the
+   duplicate status type/conversions; use the record's one status type. A node publishes
+   `Digest { status }` on its own status change and on heartbeat. The envelope supplies its
+   exact birth, sequence and time. Local receipt time measures silence, never deletion.
+2. **Node details travel on the first gossip into the mesh.** That first publication carries
+   the node details and pending at accepted join. Peers retain the details; subsequent
+   Digests carry only status. Reads supply a joining node's existing view and repair anything
+   missed. A new birth has its own first publication. Ready follows successful startup hooks.
+3. **The mesh-primary sends the aggregate out and the differential in.** Its own mesh's
+   `TopologyFull` goes on the backbone only. Onto its own mesh channel it publishes only
+   peer-mesh additions, status changes, removals and applicable lifecycle facts, relative to
+   its last publication. An addition carries node details; a later status change carries only
+   member identity and status. No own-mesh member projection or peer-mesh full is sent there.
 
-## The defect
+## Minimum payload and held view
 
-A node's status reached its peers from two sources, its own Digest and its mesh-primary's
-projection, under two orders (`digest_seq`, `topology_version`) that cannot be ordered against each
-other; a compute held a ready broker `Pending` for 34 s (D68, rdm#337). The Digest also repeated the
-envelope (`source`, `sequence`, `time`) and the record (identity, endpoints, runtime, `data_dir`,
-`admin_api_base`, the primary revisions): twenty fields, one of them needed.
+| Path | Payload |
+|---|---|
+| First node gossip → own mesh | Node identity/endpoint details and status |
+| Subsequent node gossip → own mesh | `Digest { status }` |
+| Mesh-primary → backbone | Each member's identity, endpoints and status; frame-level open lifecycle operations and retained deletions |
+| Mesh-primary → own mesh | Peer-mesh differential only; details on addition, identity and status on status change, identity on removal; applicable lifecycle facts |
+| Directed read → node | Current view and ordering state needed to initialise or repair it |
 
-## The design: three rules
+An ordinary member holds the facts needed to resolve peers, their statuses, primary facts,
+mesh/fabric statuses, applicable lifecycle/deletion facts and ordering state. Node-admins also
+need runtime identity and management metadata for the births they may manage, obtained through
+records and hydration before becoming ready. A mesh-primary additionally holds its own mesh's
+aggregate and one last-published baseline per peer mesh/source publisher. Holding a fact does
+not require receiving it on every heartbeat.
 
-1. **A node's Digest is its status.** `Digest { status }`, states.md's values plus
-   `PendingReconnect`, one type. Published at once when the node writes a new status on its own
-   record (Q356) and on every heartbeat. The envelope carries the birth (`source`), the order
-   (`sequence`, the birth's `digest_seq`) and the time (`time`); nothing of them is repeated inside.
-   The first status a Digest carries is pending, at the accepted join (node-mesh-join step 10); a
-   receiver never gives a birth a status it has not published. `NodeState`, `MemberStatus` and the
-   second `NodeStatus` are removed.
-2. **Everything else about a node is on its record and reaches a peer only by a read**: the start
-   read, and the top-up when a Digest arrives from a birth the peer does not hold. A projection entry
-   is the record's identity and endpoints with the node's latest status as the mesh-primary holds it.
-   Inside its mesh a node's own status comes only from its Digest; `PendingReconnect`, deleting and
-   deleted are its mesh-primary's, on the record, and deleting and deleted ride `NodeDeleting` and
-   `NodeDeleted` as today.
-3. **The mesh-primary publishes its mesh's aggregate (`TopologyFull`) on the backbone only, and onto
-   its own mesh channel only each peer mesh's differential from the last delta it published of that
-   mesh (`TopologyDelta`): the nodes whose status changed, were added or removed, no loads.** Never
-   its own mesh's nodes there, which publish themselves, and never a peer mesh's full: neighbour-up
-   on the mesh channel replays nothing. A joining node holds the peer meshes its mesh-primary holds
-   from its start read (rule 2); a delta whose `base_version` the receiver does not hold triggers the
-   GetTopology repair, as today.
+## Validated payload reductions
 
-`TopologyFull` keeps `in_flight` (the mesh's in-flight operations, derived from Build facts at each
-publication) and `deleted` (the retention refusal). Per entry it loses `runtime`, `data_dir`,
-`admin_api_base`, `supersedes`, `mesh_id`, the gossip stats, the load and the primary revisions.
+Checked [`MeshDigest` / `MeshNode`](../../../crates/rdm-core/src/digest.rs),
+[`WireDigest` / `ProjectionEntry`](../../../crates/rdm-core/src/wire.rs),
+[the envelope](../../../crates/rdm-gossip/src/envelope.rs) and
+[the forwarder](../../../crates/rdm-gossip/src/snapshot.rs).
 
-### Open, for Luke
+| Current content | Merged design |
+|---|---|
+| Author identity, `digest_seq`, `emitted_at_rafka_ms` repeated in the body | Use envelope `source`, `sequence`, `time`; retain described member identities inside aggregates/deltas |
+| `node_state` alongside held `status` | Keep `status`; delete `node_state` and the `NodeState` enum |
+| `mesh`, `mesh_id`, `type`, `path`, `name`, `endpoint_id`, `transport_addr`, `supersedes` | First publication and reads; retain locally, omit from subsequent status changes |
+| `runtime`, `data_dir`, `admin_api_base` | Record/control metadata; keep available through the required admin/read paths, omit from recurring status gossip |
+| `is_primary`, `is_fabric_primary` | Preserve the leadership workflow's role facts; remove repeated copies from recurring Digests |
+| `load`, numeric `in_flight`, `gossip` | Remove from the minimum gossip payload; they are telemetry, not node status |
+| Frame-level `in_flight`, `deleted` | Keep lifecycle operations and deletion retention; these are not the numeric work counter |
 
-1. **`is_primary` and `is_fabric_primary`.** The record's; a primary change reaches a node's peers
-   by the read like every other record fact, and the election never read the flag. No election
-   behaviour changes; the `NewFabricPrimary` row changes as edit 12 has it. Closable on his word.
-2. **An address that moves within one birth.** Not checked, and the code allows it (`live.rs`
-   `Applied::Updated`: "the held birth's address or name changed"). If iroh can re-bind a live birth,
-   a Digest without the address needs a trigger for the peer to re-read; a dial that fails on the
-   held address is the natural one, an event, not a timer. Open until iroh's endpoint API is read.
-3. **`Dead`.** The TRUE OFFLINE mark the mesh-primary writes, 79 uses in code and the
-   `a_true_offline_member` cells; a second mark beside `PendingReconnect` that "is never itself a
-   reason to act". Drop or keep is a recovery change, Luke's.
-4. **The load.** Out of the Digest and the `TopologyFull` entry. RDM decides nothing on it; Rafka
-   samples its own (`rafka-node-base/src/load.rs`) and reads nothing off the digest's load, verified.
-   `node.get` then answers no load unless the application supplies its own. Luke's word, since it is
-   a wire change under the same cutover.
+The current codec actually sends the duplicated envelope fields. Its agreement checks must
+change with the smaller body. `TopologyDelta.changed` currently serializes an entire
+`ProjectionEntry`; additions and status changes need separate payloads so a status change
+stops resending node details. `without_load` already removes load, numeric work count and
+gossip counters from peer forwarding.
 
-## RDM
+**Gossip counters must never be persisted.** `heard`, `neighbours`, `frames_sent` and
+`frames_received` are sampled in memory today. [`node.get`](../../../crates/rdm-admin/src/views.rs)
+combines the stored node record with samples from the in-memory digest view.
+[`NodeRecord`](../../../crates/rdm-node/src/nodes_storage.rs) has no counter fields. Keep them
+out of records, storage writes and durable history.
 
-`rdm-core`: `NodeState`, `MemberStatus` and the second `NodeStatus` removed; `MeshDigest` becomes
-`Digest { status }`, sent whole; `ProjectionEntry` per rule 2; "durable format moved".
-`rdm-gossip`: publish on a status write and on the heartbeat with the envelope filled from the birth;
-`DigestView` takes an own-mesh node's status from its Digest only; a Digest from a birth not held
-starts the top-up; the forwarder and `ForwardPath::replay` take peer meshes only. `rdm-admin`: the
-mesh-primary publishes nothing of its own mesh on its own channel; the join answer no longer publishes
-the node's Pending. `rdm-node`: a status write publishes the Digest. Cells: rdm#337's 34 s order ends
-with the Digest's status; the mesh-primary's own channel carries no frame about its own nodes; a
-status change reaches every node of its mesh within one heartbeat with no read. Removal debt: R-HB1's
-text in node-status-heartbeat-connections.md; `e805dad46`'s read status move.
+Eight existing frame kinds remain: `Digest`, `TopologyFull`, `TopologyDelta`, `NodeStopped`,
+`NodeDeleting`, `NodeDeleted`, `MeshStatus`, `FabricStatus`. The supplied review's count of
+seven omitted `NodeStopped`; this proposal does not remove it.
 
-## Rafka
+## Repair and implementation checks
 
-Takes the pin with the cutover: every live mesh is taken down and deployed again; its ~50
-`MemberStatus::` matches move to the one status type; its own `NodeState` enum (unused) goes; its
-reads of a held entry's `endpoint_id` stay (rule 2); its own primary-role read follows open item 1.
+- Preserve accepted member sequence across reads and gossip. An older read cannot replace a
+  newer self-authored status. Investigation, stop and deletion evidence stands;
+  a late ready heartbeat cannot undo it. Subscribe before reading and install complete reads
+  with their source versions atomically; coalesce repair requests.
+- A delta with an unheld base triggers GetTopology repair. A missed final delta has no later
+  base mismatch to reveal it; retain transport repair and a heal/read repair path.
+- Replace every mesh-channel full fallback: first source, changed publisher, role acquisition,
+  oversized delta, failed send and replay. Preserve bounded messages and source baselines.
+  Removing topology-full replay must preserve mesh/fabric status repair, because those
+  statuses are absent from `TopologyFull`.
+- Keep node-admin runtime adoption working through record/read hydration when management
+  metadata leaves the backbone projection. No completed Build history is needed.
+- Preserve lineage validation when `supersedes` leaves aggregate entries. The current
+  `LiveNodeResolver::apply` refuses a different incarnation without the held birth's lineage.
+  Obtain that evidence from the first publication or a repair read before accepting the
+  replacement; do not interpret an omitted field as permission to replace any birth.
+- Verify first publication, missed first publication, late join/heal, read/gossip races,
+  additions/status changes/removals, source-primary changes, failed/oversized deltas and
+  deletion retention. Measure complete encoded frames, including the envelope.
+
+## Remaining decisions
+
+- **`Dead`:** removing `NodeState` is settled. Removing the separate TRUE OFFLINE mark is not;
+  preserve its current behavior until that decision is made.
+- **Telemetry reads:** the supplied review reports that Rafka samples load locally and does
+  not use digest load for placement. RDM's `node.get` does consume digest load/counters today.
+  After removal from gossip it must return no remote sample or obtain an explicit in-memory
+  sample through a defined read path. Never solve this by persisting counters.
+- **Record/role updates:** preserve the existing leadership update/read paths. Whether a live
+  birth's `transport_addr` can change is unverified; `Applied::Updated` alone does not prove
+  endpoint rebinding. Check the actual transport path before defining any new update trigger.
+  This is not a requirement to repeat node details on every gossip.
+
+Apply the wire codec, publishers, readers and architecture edits together in RDM and Rafka.
+This reverses R-HB1 and the Pending publication rule in Q97/Q99. Mark the implementation
+**durable format moved** and perform the full mesh cutover; no dual-format reader.
 
 ## Page text
 
-Exact old and new text. Nothing is applied before Luke's yes.
+The thirty architecture edits from `42cd260b8` and edits 31–36 from `5951a46bc`,
+updated to the merged design above.
+They are applied with the wire and consumer changes, not by this proposal edit.
+
+**Shared wording for edits 6–9 and 13:**
+“The mesh-primary publishes its own mesh's aggregate on the backbone only. Each member has
+its identity, endpoints and status. Onto its own mesh channel it publishes only the peer-mesh
+differential from its last publication: additions with node details and status, subsequent
+status changes with member identity and status, removals with member identity, and applicable
+lifecycle facts. It never republishes its own mesh's members or a peer mesh's full there.”
+
+The frame's source/version, chunking, open operations and retained deletions remain. Member
+identity is required inside an aggregate: the envelope identifies its publisher. Metadata
+needed only for runtime management is obtained by node-admins through records and hydration.
 
 ### gossip.md
 
@@ -123,13 +149,15 @@ Exact old and new text. Nothing is applied before Luke's yes.
    Old: "that node's current identity, endpoints, liveness and runtime fact. `node_state` (Joining /
    Alive / Overloaded / Degraded, node-identity-and-state.md §4) is liveness only: a heartbeat never
    carries or moves a status, and a member's status comes only from its mesh-primary"
-   New: "that node's status ([states](lifecycles/states.md)), as the node writes it on its own record
+   New: "that node's status ([states](../../architecture/lifecycles/states.md)), as the node writes it on its own record
    (Q356), and nothing else; its arrival is its liveness. The first status a Digest carries is pending,
-   from the node's accepted join ([node-mesh-join](lifecycles/node-mesh-join.md) step 10); a receiver
+   from the node's accepted join ([node-mesh-join](../../architecture/lifecycles/node-mesh-join.md) step 10); a receiver
    never gives a birth a status it has not published. Inside its mesh, a status the node writes comes
    only from its own Digest; `PendingReconnect`, deleting and deleted are its mesh-primary's, on the
    node's record, and deleting and deleted ride `NodeDeleting` and `NodeDeleted`. Its identity,
-   endpoints and runtime are on its record (node-identity-and-state.md §2.5), never in a Digest"
+   endpoints are sent with its first gossip into the mesh and retained by peers; subsequent
+   Digests carry only status. A read repairs missed node details. Runtime management metadata
+   is read from the node record"
 6. **TopologyFull row, channel**
    Old: "backbone; and the source Mesh's primary's own mesh channel (its own member projection)"
    New: "backbone"
@@ -137,12 +165,12 @@ Exact old and new text. Nothing is applied before Luke's yes.
    Old: "In `digests`, each member is a projection entry `{ digest, status }`, the status authored by
    the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's
    versioned member projection."
-   New: "In `digests`, each node is a projection entry: its record's identity and endpoints, and the
-   status of its latest Digest as the mesh-primary holds it."
+   New: use the shared wording above for the aggregate's member entries.
    Old: "For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its
    Digest and status from the projection; NodeStopped and NodeDeleting stay immediate events."
-   New: "For an own-mesh birth, its status comes from its Digest and its identity and
-   endpoints from a read (§3.3); NodeStopped and NodeDeleting stay immediate events."
+   New: "An own-mesh birth supplies its node details on its first gossip and its status on
+   subsequent Digests. Reads initialise and repair the held view; NodeStopped and NodeDeleting
+   stay immediate events."
 8. **TopologyDelta row, author**
    Old: "the local mesh primary, when a source Mesh it holds moved from one version to another; and
    the source Mesh's primary, for its own Mesh, on its own mesh channel"
@@ -151,12 +179,11 @@ Exact old and new text. Nothing is applied before Luke's yes.
    Old: "In `changed`, each member is a projection entry `{ digest, status }`, the status authored by
    the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's
    versioned member projection."
-   New: "In `changed`, each node of the peer Mesh whose status changed, or that was added, since the
-   forwarder's last delta of that Mesh, a projection entry as in `TopologyFull`: the differential from
-   the last status, never the aggregate."
+   New: use the shared wording above for additions, status changes and removals. A status
+   change no longer serializes a complete `ProjectionEntry`.
    Old: "For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its
    Digest and status from the projection; NodeStopped and NodeDeleting stay immediate events."
-   New: "An own-mesh birth: as `TopologyFull`."
+   New: remove this own-mesh explanation from the peer-only delta row; it is stated in edit 7.
 10. **`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving` row, author**
     Old: "none: connections-deleting and stopping reach peers as the member's status in its
     mesh-primary's projection (the `TopologyFull` and `TopologyDelta` rows above); node.connection.deleted
@@ -165,19 +192,22 @@ Exact old and new text. Nothing is applied before Luke's yes.
     own Digest, and peer meshes in its mesh-primary's `TopologyFull` and the deltas derived from it;
     node.connection.deleted is a reply on the call, never gossip"
 11. **`NodeLeft` row, author**
-    Old: "none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay)"
-    New: "none: a stopping node's last Digest carries stopping, and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay)"
+    Old: "none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](../../architecture/gossip.md#node-stopped-lifecycle-overlay)"
+    New: "none: a stopping node's last Digest carries stopping, and its mesh-primary publishes [NodeStopped](../../architecture/gossip.md#node-stopped-lifecycle-overlay)"
 12. **`NewFabricPrimary` row, author**
     Old: "none: a primary change rides the successor's `Digest` and the mesh-primary's `TopologyFull`
     projection, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest`
     and `TopologyFull` projection"
-    New: (follows Open item 1) "…, and every birth's contact addresses (`endpoint_id`,
-    `transport_addr`) are on its record and ride the `TopologyFull` projection"
+    New: "none: this frame position remains reserved. Contact fields are supplied with the
+    node's first gossip, retained in its projection and recoverable by read. Primary records
+    remain governed by the leadership workflow; they are not inferred from `status`."
+    Implementation check: preserve delivery of changed primary records when removing their
+    repeated copies from Digests.
 13. **Reserved lifecycle frame positions**
     Old: "connections-deleting, connections-deleted and stopping reach peers as the member's status in
     its mesh-primary's member projection (the `TopologyFull` and `TopologyDelta` rows of the catalog)"
-    New: "connections-deleting, connections-deleted and stopping reach the node's own mesh in its own
-    Digest, and peer meshes in its mesh-primary's `TopologyFull` and the deltas derived from it"
+    New: "connections-deleting, connections-deleted and stopping reach the node's own mesh in
+    its Digest; their peer-mesh dissemination follows the shared wording above"
 14. **§3.2 cadence**
     Old: "Digest heartbeat         every node; configurable cadence; never slower than 2 s"
     New: "Digest heartbeat         every node; configurable cadence; never slower than 2 s; and at once on the node's status change"
@@ -185,15 +215,16 @@ Exact old and new text. Nothing is applied before Luke's yes.
     Old: "NODE -> OWN MESH            Digest heartbeat, full local facts, <= 2 s"
     New: "NODE -> OWN MESH            Digest: status, <= 2 s, and at once on its status change"
 16. **§3.3, a new paragraph after that table**
-    New: "An ordinary node holds its own mesh's nodes from their own Digests. It takes its
-    mesh-primary's view of them only by a read: at create, join and start, and on a sync issue (the
-    top-up below); a Digest from a birth it does not hold is a sync issue. Nothing of its own mesh
-    reaches it from its mesh-primary over gossip."
+    New: "A node's first gossip into its mesh supplies its node details and status; subsequent
+    Digests carry status only. At create, join and start, a read supplies the joining node's
+    existing view. A missed first publication, unknown birth or unmatched delta base requests
+    a top-up. Subscribe before the read and preserve newer facts received during it. The
+    mesh-primary does not gossip its own mesh's member projection. Removing topology-full
+    neighbour replay does not remove mesh/fabric status replay."
 
 31. **TopologyFull row, use, first sentence**
     Old: "the complete Mesh with loads: what every node-admin holds of every Mesh for routing and control decisions."
     New: "the complete Mesh: what every node-admin holds of every Mesh for routing and control decisions."
-    (if open item 4 is yes)
 32. **§2 overview, the forwarding line**
     Old: "       as deltas backed by periodic full snapshots, loads omitted"
     New: "       as the differential of each peer Mesh from the last delta; no full on the mesh channel"
@@ -204,7 +235,6 @@ Exact old and new text. Nothing is applied before Luke's yes.
     New: "The backbone stays the rich source: every node-admin holds every Mesh complete, because
     routing and control decisions are an admin's. Inside a Mesh, ordinary nodes need a remote Mesh's
     identity, endpoints, status, overlays and deletions; one"
-    (the loads words if open item 4 is yes; the "with freshness" words in any case)
 34. **§3.3 table, two rows**
     Old: "MESH PRIMARY -> BACKBONE    TopologyFull, the complete Mesh with loads, versioned, anti-entropy + change"
     New: "MESH PRIMARY -> BACKBONE    TopologyFull, the complete Mesh, versioned, anti-entropy + change"
@@ -217,10 +247,7 @@ Exact old and new text. Nothing is applied before Luke's yes.
       "fabric_id": "fabric1",
       "node": {
         "node_id": "k8pag1qx95gw",
-        "mesh": "mesh1",
-        "type": "node",
-        "path": "mesh1.node",
-        "name": "1",
+        "name": "mesh1.node.1",
         "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
         "transport_addr": "127.0.0.1:54473",
         "incarnation": "0000000000000008",
@@ -249,20 +276,22 @@ Exact old and new text. Nothing is applied before Luke's yes.
         "name": "1",
         "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
         "transport_addr": "127.0.0.1:54473",
-        "incarnation": "0000000000000008"
+        "incarnation": "000000000008"
       },
       "status": "ready"
     }
     ```
-    (the entry's `node` fields are the record's identity and endpoints as the page's example names them today, checked against the page before landing; the example's `Digest` frame becomes `{ "status": "ready" }` under its envelope)
+    The new example uses a canonical 12-character incarnation. The recurring `Digest`
+    example becomes `{ "status": "ready" }` under its envelope. Its first publication
+    additionally supplies node details, as rule 2 states.
 
 ### lifecycles/node-mesh-join.md
 
 17. **Completion row**
     Old: "the first `Digest` heartbeat follows it; the mesh-primary's one Pending publish for this join
     came before it, when the report was accepted (step 10)"
-    New: "the node's Digest carrying pending went out when it wrote pending (step 10); its heartbeats
-    follow"
+    New: "the node's first gossip carried its node details and pending when it wrote pending
+    (step 10); its subsequent heartbeats carry status only"
 18. **Step 9**
     Old: "9. `node.mesh.joined`. The node's first `Digest` heartbeat follows."
     New: "9. `node.mesh.joined`. The node's heartbeats follow its pending Digest (step 10)."
@@ -270,7 +299,8 @@ Exact old and new text. Nothing is applied before Luke's yes.
     Old: "publishes the node once as Pending when it accepts the node's join report, before it answers
     it, and the node writes pending on its own record (Q356)."
     New: "records the node pending when it accepts the node's join report, before it answers it; the
-    node writes pending on its own record (Q356) and publishes its Digest at once, carrying it."
+    node writes pending on its own record (Q356) and publishes its first gossip at once,
+    carrying its node details and pending. Subsequent Digests carry status only."
     Old: "and starts no other; the node publishes no Pending of its own."
     New: "and starts no other."
     Old: "and is published ready only once its hook has passed"
@@ -280,7 +310,7 @@ Exact old and new text. Nothing is applied before Luke's yes.
     New: "10. records the node pending when it accepts the node's join report, before it answers it"
 21. **Checked against**
     Old: "the Pending publish from the mesh-primary, never from the node."
-    New: "pending published by the node, in its Digest; the mesh-primary records it."
+    New: "pending published by the node with its first gossip; the mesh-primary records it."
 
 ### node-identity-and-state.md
 
@@ -300,22 +330,27 @@ Exact old and new text. Nothing is applied before Luke's yes.
     Old: "`GossipDigest`, `GossipEnvelope`, `NodeState` and `NodeDigest` are postcard-positional."
     New: "`GossipDigest`, `GossipEnvelope` and `NodeDigest` are postcard-positional."
 26. **§4, from "A node has TWO kinds of state" through the Self-publication bullet**
-    New: "A node has one state, its **status**: starting, pending, ready, connections-deleting,
+    New: "The node's final property is **`status`**. The `node_state` property and `NodeState`
+    type are removed. Its lifecycle status values are starting, pending, ready, connections-deleting,
     connections-deleted, leaving, left, stopping, stopped, deleting and deleted, each set by its
-    workflow as [States](lifecycles/states.md#states) and
-    [node status](lifecycles/node-status.md#node-status-change) define, and `PendingReconnect`, the
-    status of a node under [node investigation](lifecycles/node-investigation.md). The node writes
+    workflow as [States](../../architecture/lifecycles/states.md#states) and
+    [node status](../../architecture/lifecycles/node-status.md#node-status-change) define, and `PendingReconnect`, the
+    status of a node under [node investigation](../../architecture/lifecycles/node-investigation.md). The node writes
     its status on its own record (Q356) and publishes it in its Digest at once when it changes and on
-    every heartbeat ([gossip](gossip.md#31-frame-catalog)); its mesh-primary writes
+    every heartbeat ([gossip](../../architecture/gossip.md#31-frame-catalog)); its mesh-primary writes
     `PendingReconnect`, deleting and deleted. A stopping node's last Digest carries stopping, and its
     mesh-primary publishes `NodeStopped` from the stop stream's `node.stopped` frame."
     (The "Shutdown is signal-driven" bullet stays.)
+    Add to §2.5: "Gossip counters (`heard`, `neighbours`, `frames_sent`, `frames_received`) are
+    in-memory diagnostics only. Never write them to the node record, storage or durable history.
+    A `node.get` response may combine the stored record with an available in-memory sample;
+    exposing a counter in that response does not persist it."
 27. **§4.1 rows**
     Delete the `Joining`, `Alive`, `Overloaded` and `Degraded` rows; add:
-    "| pending | the node, at its accepted join ([node-mesh-join](lifecycles/node-mesh-join.md) step 10) | the traffic/topology filters — routed no traffic |"
+    "| pending | the node, at its accepted join ([node-mesh-join](../../architecture/lifecycles/node-mesh-join.md) step 10) | the traffic/topology filters — routed no traffic |"
     "| ready | the node, at its node.started | the rebind path; every traffic and topology filter |"
     Old: "| `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |"
-    New: "| leaving, stopping, stopped | the node, on its own record ([States](lifecycles/states.md#who-sets-each-state)) | the routing rule: routed no traffic |"
+    New: "| leaving, stopping, stopped | the node, on its own record ([States](../../architecture/lifecycles/states.md#who-sets-each-state)) | the routing rule: routed no traffic |"
     The `Dead` and `PendingReconnect` rows stay.
 28. **§4.2**
     Old: "`NodeState` (`rdm-core/src/digest.rs`) and a node's status (its row, §1 rule 2) are separate
@@ -324,7 +359,7 @@ Exact old and new text. Nothing is applied before Luke's yes.
     New: "A node's status is its one state family; an application's own entity lifecycle is the
     second, the application's."
 
-36. **§2.5 table, the gossip row** (if open item 4 is yes)
+36. **§2.5 table, the gossip row**
     Old: "| per-heartbeat liveness — `cpu_used`, `ram_used`, reachability | gossip, in memory only | every node, about itself |"
     New: "| per-heartbeat liveness: the node's Digest arriving, carrying its status | gossip, in memory only | every node, about itself |"
 
@@ -333,10 +368,10 @@ Exact old and new text. Nothing is applied before Luke's yes.
 29. **Line 14**
     Old: "- **Node row silence marks:** a node row may carry the observer-inferred marks
     `PendingReconnect` and `Dead` (TRUE OFFLINE), written by the node's mesh-primary. They are never
-    themselves a reason to act ([node recovery](node-recovery.md))."
+    themselves a reason to act ([node recovery](../../architecture/lifecycles/node-recovery.md))."
     New: "- **Node under investigation:** `PendingReconnect` is the status of a node under
-    [node investigation](node-investigation.md), written on its record by its mesh-primary
-    ([node recovery](node-recovery.md) step 1); the verdict ends it. A node row may also carry the
+    [node investigation](../../architecture/lifecycles/node-investigation.md), written on its record by its mesh-primary
+    ([node recovery](../../architecture/lifecycles/node-recovery.md) step 1); the verdict ends it. A node row may also carry the
     observer-inferred mark `Dead` (TRUE OFFLINE), written by the node's mesh-primary, never itself a
     reason to act."
 
