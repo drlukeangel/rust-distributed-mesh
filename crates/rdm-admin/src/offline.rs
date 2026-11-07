@@ -2114,6 +2114,82 @@ pub(crate) mod tests {
         assert_eq!((verdict[0].attributes.get("verdict").map(String::as_str), verdict[0].attributes.get("follows").map(String::as_str), verdict[0].attributes.get("reason").map(String::as_str)), (Some("running"), Some("node.mesh.join"), Some("self-heal")));
     }
 
+    /// One investigation of the silent birth "a", listed for `reason` at the topology `status`, whose
+    /// ladder ends as `ladder` makes it: the tick that starts it half a floor after the mark, then the
+    /// tick that folds it. Returns the fold's report.
+    async fn investigated_as(t: &mut OfflineTickle, reason: crate::node_investigation::Reason, status: crate::model::NodeStatus, ladder: impl Fn() -> Ladder + Send + Sync + Clone + 'static) -> OfflineTickReport {
+        let set = vec![SilentNode { node_id: "a".into(), path: crate::model::PathName::new("mesh1.node", "a").unwrap(), incarnation: None, marked_at_ms: Some(0), reason, status }];
+        let once = async |t: &mut OfflineTickle, now: u64| {
+            let ladder = ladder.clone();
+            t.tick(now, true, set.clone(), |_| true, PROBE_DELAY, move |_| { let end = ladder(); async move { end } }, |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() }).await
+        };
+        once(t, PROBE_DELAY).await;
+        while t.ladders().1 < t.ladders().0 {
+            tokio::task::yield_now().await;
+        }
+        once(t, PROBE_DELAY + 1).await
+    }
+
+    fn found(finding: crate::node_investigation::Finding) -> Ladder {
+        Ladder::Unreached(match unreached(&[]) { Tickle::Unreached(u) => u, _ => unreachable!("an unreached ladder") }, finding)
+    }
+
+    /// CONTRACT (node-recovery.md step 3, Q393: "A self-heal ...: `running` is commanded back through
+    /// node.mesh.join ... and `os-stopped` commanded to start (node.start; ...), each sent until answered;
+    /// `exited`, a birth not proven by the end of the retries ... is written `dead`, and the recovery
+    /// below runs at once"): a self-heal's fold sends `running` to the rejoin, `os-stopped` (proven by the
+    /// inspect, no tickle sent) to the start, and writes `exited` and `dead` dead at once, each named on
+    /// one `via-verdict` span with what follows; a dead one also on its `via-dead` span. Must NOT happen:
+    /// an os-stopped birth written dead before its start was sent, or an exited one commanded back.
+    // @feature: node-recovery
+    #[tokio::test(start_paused = true)]
+    async fn a_self_heals_verdict_is_commanded_back_commanded_to_start_or_written_dead() {
+        use crate::node_investigation::{Finding, Reason};
+        let capture = crate::span_capture::Capture::new("q393-self-heal-verdicts");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let heal = |ladder: fn() -> Ladder| async move { investigated_as(&mut OfflineTickle::new(), Reason::SelfHeal, crate::model::NodeStatus::PendingReconnect, ladder).await };
+        let r = heal(|| found(Finding::Running)).await;
+        assert_eq!((r.rejoin.clone(), r.start.clone(), r.offline.clone()), (vec!["a".to_string()], vec![], vec![]), "running: commanded back through node.mesh.join");
+        let r = heal(|| Ladder::Gone(Finding::OsStopped)).await;
+        assert_eq!((r.rejoin.clone(), r.start.clone(), r.offline.clone()), (vec![], vec!["a".to_string()], vec![]), "os-stopped: commanded to start");
+        for ladder in [(|| Ladder::Gone(Finding::Exited { code: Some(137) })) as fn() -> Ladder, || found(Finding::Dead { reason: "not proven by the end of the investigation's retries".into() })] {
+            let r = heal(ladder).await;
+            assert_eq!((r.rejoin.clone(), r.start.clone(), r.offline.clone()), (vec![], vec![], vec!["a".to_string()]), "exited, or not proven: written dead at once");
+        }
+        let verdicts: Vec<(String, String, String)> = capture.named("rdm.node_admin.node.resolve.via-verdict").iter().map(|sp| ["verdict", "follows", "reason"].map(|k| sp.attributes.get(k).cloned().unwrap_or_default())).map(|[v, f, r]| (v, f, r)).collect();
+        assert_eq!(verdicts, [("running", "node.mesh.join"), ("os-stopped", "node.start"), ("exited", "dead"), ("dead", "dead")].map(|(v, f)| (v.to_string(), f.to_string(), "self-heal".to_string())));
+        let dead: Vec<String> = capture.named("rdm.node_admin.node.update.via-dead").iter().map(|sp| sp.attributes.get("verdict").cloned().unwrap_or_default()).collect();
+        assert_eq!(dead, ["exited", "dead"], "one dead span for each birth written dead at the fold");
+    }
+
+    /// CONTRACT (node-recovery.md step 3, Q393: "An ordered investigation (...) sets no
+    /// `PendingReconnect`: a verdict that matches the birth's status in the topology does nothing
+    /// (`running` and a live status, or a lifecycle state the node reported; `os-stopped` and `stopped`;
+    /// `exited` and `dead`); one that differs follows the self-heal"): an ordered investigation of a birth
+    /// the topology holds ready whose verdict is `running`, or whose exact birth answered, does nothing
+    /// (`matched`, no rejoin, no command back), and a birth that leaves the silent set once its mark ends
+    /// is not heard again; one whose verdict differs (`os-stopped`, `exited`) follows the self-heal. Must
+    /// NOT happen: an ordered `running` commanded back or written dead, an answered ordered birth commanded
+    /// back through node.mesh.join (rdm#295), or its leaving read as a return.
+    // @feature: node-recovery
+    #[tokio::test(start_paused = true)]
+    async fn an_ordered_investigation_that_matches_the_topology_does_nothing_and_one_that_differs_follows_the_self_heal() {
+        use crate::model::NodeStatus as S;
+        use crate::node_investigation::{Finding, Reason};
+        let ordered = Reason::Ordered { trigger: ATTEMPTS_SPENT };
+        let mut t = OfflineTickle::new();
+        let r = investigated_as(&mut t, ordered, S::Ready, || found(Finding::Running)).await;
+        assert_eq!((r.matched.clone(), r.rejoin.clone(), r.offline.clone()), (vec!["a".to_string()], vec![], vec![]), "running and ready: nothing");
+        let left = t.tick(PROBE_DELAY + 2, true, vec![], |_| true, PROBE_DELAY, |_| async { Ladder::Tickled(Err("none".into())) }, |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() }).await;
+        assert!(left.returned.is_empty() && left.gone.is_empty(), "its mark ended: never a birth heard again: {left:?}");
+        let r = investigated_as(&mut OfflineTickle::new(), ordered, S::Ready, || Ladder::Tickled(Ok(Tickle::Reached { answer: rdm_core::status::StatusReply::Current { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint(), state: rdm_core::status::NodeState::Ready }, carrier: None }))).await;
+        assert_eq!((r.matched.clone(), r.answered_current.clone()), (vec!["a".to_string()], vec![]), "answered and ready: nothing, not commanded back");
+        let r = investigated_as(&mut OfflineTickle::new(), ordered, S::Ready, || Ladder::Gone(Finding::OsStopped)).await;
+        assert_eq!((r.matched.clone(), r.start.clone()), (vec![], vec!["a".to_string()]), "os-stopped and ready differ: commanded to start");
+        let r = investigated_as(&mut OfflineTickle::new(), ordered, S::Ready, || Ladder::Gone(Finding::Exited { code: None })).await;
+        assert_eq!((r.matched.clone(), r.offline.clone()), (vec![], vec!["a".to_string()]), "exited and ready differ: written dead");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn unreadable_candidates_change_no_status() {
         let mut t = OfflineTickle::new();

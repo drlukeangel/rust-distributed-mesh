@@ -1078,7 +1078,7 @@ mod tests {
     /// The mesh primary `mesh2.node-admin.1`'s recovery of its own mesh's births, over `digest_view`, `provider`
     /// and `nodes_storage`, and the TRUE OFFLINE member `mesh2.node.1` of `view`.
     fn recovery_of(view: &Topology, digest_view: DigestView, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>) -> (RecoverySubmitter, Arc<dyn crate::storage::NodesStorage>, Node) {
-        let member = view.node(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).cloned().expect("the member is in the view");
+        let member = view.node(&rdm_core::PathName::new("mesh2.node", "1").unwrap()).cloned().expect("the node is in the view");
         let recovery = RecoverySubmitter {
             me_path: "mesh2.node-admin".into(), me_name: "1".into(),
             me_id: view.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().node_id.clone(),
@@ -1113,7 +1113,7 @@ mod tests {
 
     /// CONTRACT (node-recovery.md step 3: "... is written `dead`, and the recovery below runs at once
     /// ... Nothing waits for the provider's `Exited`" (Q393); node-runtime-inspect.md "Spans"): the mesh
-    /// primary asks the provider about the exact runtime of a member written dead, and whatever the provider reads, the
+    /// primary asks the provider about the exact runtime of a node written dead, and whatever the provider reads, the
     /// verdict is spanned with its page name and the recovery is submitted on that same tick, keyed on
     /// the exact birth, and again on the next tick while it is still owed. Must NOT happen: a member
     /// held because its runtime runs, is suspended or cannot be told; a submit only on an exit.
@@ -1560,14 +1560,14 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md step 3: the provider is asked "about the exact runtime recorded at
-    /// launch"; a birth written `dead` is recovered at once, Q393): a member written dead whose digest
+    /// launch"; a birth written `dead` is recovered at once, Q393): a node written dead whose digest
     /// carries no runtime is inspected through its durable runtime row, and that point read is refused.
     /// With no runtime fact the provider is not asked: the inspect's answer is `unavailable`, naming the
     /// row and the store's own cause, and the recovery is submitted on it. Must NOT happen: the refusal
     /// read as "no row", an inspection of a guessed runtime, a member held for want of a verdict.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_member_written_dead_whose_runtime_row_cannot_be_read_is_recovered() {
+    async fn a_node_written_dead_whose_runtime_row_cannot_be_read_is_recovered() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unreadable")).unwrap();
         let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         let digest_view = DigestView::default();
@@ -1703,7 +1703,7 @@ mod tests {
 
     /// CONTRACT (node-tickle.md step 1; R-PV1: a `NotSent` command "is a reason to ask now"; i144 R9;
     /// node-recovery.md step 1, Q393: it "starts an ordered investigation of it, which sets no
-    /// `PendingReconnect`"): a member heard a moment ago (well within the floor) that a command never
+    /// `PendingReconnect`"): a node heard a moment ago (well within the floor) that a command never
     /// reached for a reachability reason is watched by its mesh-primary's tick at the status its view
     /// holds, counted silent as an ordered investigation whose trigger is the mark's reason, and its
     /// silence window starts at the mark, not at the floor. A digest of the birth heard after
@@ -1748,6 +1748,56 @@ mod tests {
         let held = crate::offline::held_marks(&marks, &view, &digest_view, later);
         assert_eq!(held.keys().cloned().collect::<Vec<_>>(), vec![peer.node.node_id.clone()], "heard after the mark: the mark ends; the unheard one stands");
         assert!(!marks.lock().unwrap().contains_key(&own.node.node_id), "an ended mark is dropped");
+    }
+
+    /// CONTRACT (states.md "Who sets each state", Q393: "node pending-reconnect | the node's
+    /// mesh-primary, on the node's record | the start of its self-heal"; "node dead | the node's
+    /// mesh-primary, on the node's record | an investigation concluded in failure"; lead note 0001 C2:
+    /// `PendingReconnect` from Starting | Pending | Ready, `Dead` from every status but Deleting, Deleted,
+    /// Withdrawn and Dead): the mesh-primary writes its node's record `PendingReconnect` over a live
+    /// status and `dead` over it, each once; over a lifecycle state the node reported it writes no
+    /// `PendingReconnect` but writes `dead`; a record of another birth of the node is left as it is, and
+    /// an admin that is not the mesh's primary is refused by name. Must NOT happen: `PendingReconnect`
+    /// over `stopped`, a write over another birth's record, or a write by a node that is not the writer.
+    // @feature: node-recovery
+    #[tokio::test]
+    async fn the_mesh_primary_writes_pending_reconnect_and_dead_on_its_nodes_record_by_the_records_order() {
+        use crate::storage::NodesStorage as _;
+        use rdm_core::model::NodeStatus::*;
+        let digest_view = DigestView::default();
+        let me = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
+        let own = with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000");
+        for d in [&me, &own] {
+            digest_view.record((*d).clone());
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        for n in view.nodes.iter_mut().filter(|n| n.node_id == me.node.node_id) {
+            n.is_primary = true;
+        }
+        let view = Arc::new(RwLock::new(view));
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let rows = crate::node_rows::NodeRows::new(me.node.location(), me.node.node_id.clone(), view.clone(), storage.clone());
+        let member = view.read().await.births().find(|n| n.node_id == own.node.node_id).cloned().expect("the node is in the view");
+        let put = |state| rdm_node::nodes_storage::fixture_record(&member.location(), "node", member.node_id.clone(), member.incarnation_id.clone().unwrap(), state);
+        let state = || async { storage.node(&member.node_id).await.unwrap().expect("its record").record.state };
+        storage.put_node(&put(Ready)).await.unwrap();
+        assert_eq!(rows.investigated(&member, PendingReconnect).await, Ok(true), "the self-heal starts");
+        assert_eq!(state().await, PendingReconnect);
+        assert_eq!(rows.investigated(&member, PendingReconnect).await, Ok(false), "written once");
+        assert_eq!(rows.investigated(&member, Dead).await, Ok(true), "the investigation concluded in failure");
+        assert_eq!(state().await, Dead);
+        assert_eq!(rows.investigated(&member, Dead).await, Ok(false), "written once");
+        storage.put_node(&put(Stopped)).await.unwrap();
+        assert_eq!(rows.investigated(&member, PendingReconnect).await, Ok(false), "never over a lifecycle state the node reported");
+        assert_eq!(state().await, Stopped);
+        assert_eq!(rows.investigated(&member, Dead).await, Ok(true), "dead over a stopped node whose investigation concluded in failure");
+        storage.put_node(&put(Ready)).await.unwrap();
+        let another = crate::model::Node { incarnation_id: Some(IncarnationId::mint()), ..member.clone() };
+        assert_eq!(rows.investigated(&another, Dead).await, Ok(false), "another birth's record is not this one's");
+        assert_eq!(state().await, Ready);
+        let not_primary = crate::node_rows::NodeRows::new(own.node.location(), own.node.node_id.clone(), view.clone(), storage.clone());
+        assert!(matches!(not_primary.investigated(&member, Dead).await, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "only the record's writer writes it");
+        assert_eq!(state().await, Ready);
     }
 
     /// CONTRACT (i151.s2; node-rpc.md §43, Q311: "a call whose attempts end unanswered starts node
@@ -1797,7 +1847,7 @@ mod tests {
         assert!(!marks.lock().unwrap().contains_key(&peer.node.node_id), "another mesh's birth is reported to its own mesh-primary, never marked here");
         decider.decide(&spent(&own)).await;
         assert_eq!(marks.lock().unwrap().get(&own.node.node_id), Some(&first), "a later spent call keeps the first mark");
-        // The tick: the marked member is watched at its view's status, silent from the mark's instant.
+        // The tick: the marked node is watched at its view's status, silent from the mark's instant.
         let floor = std::time::Duration::from_secs(30);
         let now = std::time::Instant::now();
         let held = crate::offline::held_marks(&marks, &view, &digest_view, now);

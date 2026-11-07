@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// What the mesh primary's recovery of one member written dead reads and calls
+/// What the mesh primary's recovery of one node written dead reads and calls
 /// (node-recovery.md "Detection and proof" step 3, sequence step 1).
 #[derive(Clone)]
 pub(crate) struct RecoverySubmitter {
@@ -44,7 +44,7 @@ impl RecoverySubmitter {
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-/// What the provider's inspection of a member written dead found: node.runtime.inspect's own answer
+/// What the provider's inspection of a node written dead found: node.runtime.inspect's own answer
 /// ([`crate::deployment::provider::inspect_runtime`]).
 pub use crate::deployment::provider::Inspected;
 
@@ -216,7 +216,7 @@ impl RecoverySubmitter {
     /// The inspection's span (node-runtime-inspect.md "Spans"), with `handle` the exact runtime handle
     /// the provider was asked about (none when nothing was asked).
     pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>) {
-        crate::node_investigation::span_inspection(&self.me_id.to_string(), node, outcome, handle, "the mesh primary asked the provider about the exact runtime of the member written dead");
+        crate::node_investigation::span_inspection(&self.me_id.to_string(), node, outcome, handle, "the mesh primary asked the provider about the exact runtime of the node written dead");
     }
 
     /// The recovery of `node`'s unreached birth on its verdict `outcome`: this mesh primary submits

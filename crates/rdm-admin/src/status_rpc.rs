@@ -3171,7 +3171,7 @@ mod tests {
         assert!(standby.unreachable.lock().unwrap().is_empty());
         assert_eq!(service.apply(None, &report(birth(&own))).await, R::Applied, "the primary above the birth takes it");
         let mark = service.unreachable.lock().unwrap().get(&own.node_id).cloned().expect("the birth is marked at once");
-        assert_eq!((mark.incarnation, mark.reason), (own.incarnation_id.clone().unwrap(), "attempts-spent"));
+        assert_eq!((mark.incarnation, mark.reason), (own.incarnation_id.clone().unwrap(), "report-call-failed"), "another caller's report orders the investigation by its own trigger (Q393)");
         // The fabric-primary: the primary above mesh2's primary, and above nothing of mesh2 beside it.
         let fabric_primary = mesh_primary_of(&m1p, view.clone());
         for (receiver, what) in [(birth(&own), "a member of a peer mesh, its mesh-primary's"), (birth(&m1p), "itself: nothing is above the fabric-primary")] {
@@ -3180,7 +3180,7 @@ mod tests {
         assert!(fabric_primary.unreachable.lock().unwrap().is_empty(), "a refused report marks nothing");
         assert_eq!(fabric_primary.apply(None, &report(birth(&m2p))).await, R::Applied, "the fabric-primary takes a report of a spent call to a mesh-primary");
         let mark = fabric_primary.unreachable.lock().unwrap().get(&m2p.node_id).cloned().expect("the mesh-primary is marked at the fabric-primary at once");
-        assert_eq!((mark.incarnation, mark.reason), (m2p.incarnation_id.clone().unwrap(), "attempts-spent"));
+        assert_eq!((mark.incarnation, mark.reason), (m2p.incarnation_id.clone().unwrap(), "report-call-failed"), "another caller's report orders the investigation by its own trigger (Q393)");
     }
 
     fn mesh_primary_of(me: &crate::model::Node, view: Topology) -> StatusService {

@@ -59,7 +59,7 @@ pub enum SelfHealEnd {
     /// node.start refused as already live: the birth runs, and it is `running`.
     Live(String),
     /// No command went out, by name (a command of the primary's in flight, one already sent this
-    /// silence, no authority): nothing is concluded.
+    /// silence, no `StatusService` open yet): nothing is concluded.
     NotSent(String),
 }
 
@@ -144,7 +144,7 @@ impl HeardAgain {
         );
         let ended = async {
             let Some(runner) = self.runner.get() else { return SelfHealEnd::NotSent("no-runner".into()) };
-            let Some(status_service) = self.status_service.get() else { return SelfHealEnd::NotSent("no-authority".into()) };
+            let Some(status_service) = self.status_service.get() else { return SelfHealEnd::NotSent("no-status-service".into()) };
             {
                 let view = status_service.topology.read().await;
                 if let Err(why) = commands_join(&view, &status_service.node_id, node) {
