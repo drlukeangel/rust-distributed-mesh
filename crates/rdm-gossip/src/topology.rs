@@ -815,6 +815,75 @@ mod tests {
         assert!(!signalled(), "a held birth's heartbeat signals nothing");
     }
 
+    /// The frame `Channels::publish` sends of `d`, after `last`, the details and status its birth's
+    /// last Digest carried: [`details_owed`] decides whether it carries the details.
+    fn published(last: &mut Option<(rdm_core::wire::NodeDetails, NodeStatus)>, d: &MeshDigest) -> Frame {
+        let now = rdm_core::wire::NodeDetails::of(&d.node);
+        let owed = details_owed(last.as_ref(), &now, d);
+        *last = Some((now, d.status));
+        Frame::digest(d, owed)
+    }
+
+    fn carries_details(f: &Frame) -> bool {
+        matches!(f.data(), Frame::Digest { details: Some(_), .. })
+    }
+
+    /// CONTRACT (gossip.md §3.1 `Digest`, Q401: the details ride every Digest of a node holding a
+    /// mesh-primary role; §3.3: a node tops up from its own mesh-primary): a node that missed a
+    /// mesh-primary's first Digest, the one that carried its details, holds it, its endpoint and its
+    /// primary record from the next Digest it sends in the role, and so from every one after; a node
+    /// holding no role, or a node-type primary role of another type, carries its details only on its
+    /// first publication and its pending of an accepted join. A fabric-primary is its mesh's primary as
+    /// well. Must NOT happen: a mesh-primary's later Digests sent without its details, so a node that
+    /// never held them cannot address the primary its top-ups and start read go to (build_sections
+    /// `a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_events`, node_records
+    /// `current_node_reads_survive_fabric_primary_restart`: `via-top-up reason="pull-refused" …
+    /// Resolve(Unknown)` at every node that missed the new primary's first Digest).
+    #[test]
+    fn a_node_that_missed_a_mesh_primarys_first_digest_holds_it_from_the_next_one() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = test_view("mesh1", "mesh1.node.1");
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let mut admin = digest(&id, &inc, None, NodeStatus::Pending, 1);
+        (admin.node.r#type, admin.node.path, admin.node.name) = ("node-admin".into(), "mesh1.node-admin".into(), "2".into());
+        let mut last = None;
+        // Its pending at its accepted join carries its details: this receiver never hears it.
+        assert!(carries_details(&published(&mut last, &admin)), "the first Digest carries the details");
+        (admin.status, admin.digest_seq) = (NodeStatus::Ready, 2);
+        let ready = published(&mut last, &admin);
+        assert!(!carries_details(&ready), "a node holding no role carries its status only");
+        assert!(view.take(&ready, &fabric, "mesh-channel").is_empty(), "the receiver holds no details of it: nothing is held");
+        // It takes its mesh's primary role (an election, a restart): every Digest it sends in the role
+        // carries its details, and the receiver holds the birth from the first it hears.
+        admin.set_primary(Some(2));
+        for seq in [3, 4] {
+            admin.digest_seq = seq;
+            let f = published(&mut last, &admin);
+            assert!(carries_details(&f), "Digest {seq} of a mesh-primary carries its details");
+            let carried = view.take(&f, &fabric, "mesh-channel");
+            assert_eq!(carried.iter().map(|d| (d.node.clone(), d.digest_seq)).collect::<Vec<_>>(), vec![(admin.node.clone(), seq)], "Digest {seq}: the birth is held with its endpoint");
+        }
+        assert_eq!(view.digest_view.node_of(&id, &inc), Some(admin.node.clone()), "the details are retained");
+        assert_eq!(view.digest_view.primaries.mesh("mesh1"), Some(Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision: 2 }), "its primary record is held: the node tops up from it");
+        // It gives up the role: its status only again.
+        admin.set_primary(None);
+        admin.digest_seq = 5;
+        assert!(!carries_details(&published(&mut last, &admin)), "a node that gave up the role carries its status only");
+        // A fabric-primary is its own mesh's primary: its Digests carry its details.
+        admin.set_primary(Some(3));
+        admin.set_fabric_primary(Some(1));
+        admin.digest_seq = 6;
+        assert!(carries_details(&published(&mut last, &admin)), "a fabric-primary carries its details");
+        // A node-type primary of another type carries its details only on its first publication.
+        let (rpc_id, rpc_inc) = (NodeId::mint(), IncarnationId::mint());
+        let mut rpc = digest(&rpc_id, &rpc_inc, None, NodeStatus::Ready, 1);
+        rpc.set_primary(Some(1));
+        let mut rpc_last = None;
+        assert!(carries_details(&published(&mut rpc_last, &rpc)), "its first publication carries the details");
+        rpc.digest_seq = 2;
+        assert!(!carries_details(&published(&mut rpc_last, &rpc)), "a node-type primary of another type carries its status and roles only");
+    }
+
     #[test]
     fn a_late_digest_never_refreshes_a_member_or_reverts_its_status() {
         let digest_view = DigestView::default();

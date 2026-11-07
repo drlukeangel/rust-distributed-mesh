@@ -802,12 +802,26 @@ pub struct Channels {
     /// This process's CPU and RAM, sampled in memory for its own `node.get` (Q394): never gossiped.
     pub(crate) load: Arc<rdm_transport::load::LoadSampler>,
     /// What this birth's last Digest carried of it: its node details and its status. A Digest carries
-    /// the details again when they changed, or at its pending of an accepted join.
+    /// the details again when they changed, at its pending of an accepted join, or while the birth
+    /// holds a mesh-primary role ([`details_owed`]).
     pub(crate) last_digest: Arc<Mutex<Option<(rdm_core::wire::NodeDetails, rdm_core::model::NodeStatus)>>>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     pub(crate) forward_path: ForwardPath,
     /// The forward path's sender end, until the mesh channel it sends on is joined.
     pub(crate) forward_rx: Arc<Mutex<Option<ForwardRx>>>,
+}
+
+/// Whether this birth's Digest `d` carries its node details `now` (gossip.md §3.1 `Digest`), from
+/// `last`, the details and status its last Digest carried: on its first publication, on its pending of
+/// an accepted join (node-mesh-join.md step 10), when they changed since its last one (a rename), and
+/// on every Digest while it holds a mesh-primary role (Q401). A node's top-ups and its start read go to
+/// its mesh-primary, which it addresses by the details it holds: a node that missed the Digest that
+/// carried them (they rode its first Digest, long before it took the role, or that Digest was lost)
+/// reaches it from the next one.
+pub(crate) fn details_owed(last: Option<&(rdm_core::wire::NodeDetails, rdm_core::model::NodeStatus)>, now: &rdm_core::wire::NodeDetails, d: &MeshDigest) -> bool {
+    let joined = d.status == rdm_core::model::NodeStatus::Pending && last.is_none_or(|(_, s)| *s != rdm_core::model::NodeStatus::Pending);
+    let mesh_primary = d.primary.iter().any(|r| r.role == rdm_core::PrimaryRole::MeshPrimary);
+    joined || mesh_primary || last.is_none_or(|(held, _)| held != now)
 }
 
 /// What the gossip net actor's send queues have lost so far, as last named. iroh-gossip counts a loss and
@@ -1126,9 +1140,10 @@ impl Channels {
     /// stamped here, once, for every caller: `digest_seq` is the next of this birth's own
     /// sequence (from 1) and `emitted_at_rafka_ms` is the composed clock's reading; its status is
     /// the node's own, as the caller hands it. The order a receiver acts on is the sequence, whatever the
-    /// clock reads. The Digest carries the birth's node details on its first publication, on its
-    /// pending of an accepted join (node-mesh-join.md step 10) and when they changed since its last
-    /// one (a rename); otherwise its status and primary roles only (gossip.md §3.1 `Digest`).
+    /// clock reads. The Digest carries the birth's node details as [`details_owed`] decides: on its
+    /// first publication, on its pending of an accepted join (node-mesh-join.md step 10), when they
+    /// changed since its last one (a rename), and on every Digest while it holds a mesh-primary role
+    /// (Q401); otherwise its status and primary roles only (gossip.md §3.1 `Digest`).
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
         {
             let birth = crate::envelope::Birth { fabric: d.fabric_id.clone(), node: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() };
@@ -1146,8 +1161,7 @@ impl Channels {
         let details = {
             let mut last = self.last_digest.lock().unwrap();
             let now = rdm_core::wire::NodeDetails::of(&d.node);
-            let joined = d.status == rdm_core::model::NodeStatus::Pending && last.as_ref().is_none_or(|(_, s)| *s != rdm_core::model::NodeStatus::Pending);
-            let owed = joined || last.as_ref().is_none_or(|(held, _)| *held != now);
+            let owed = details_owed(last.as_ref(), &now, &d);
             *last = Some((now, d.status));
             owed
         };
