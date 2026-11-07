@@ -757,10 +757,11 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         // The member stands far ahead of the primary's 5 000 000 ms: an adoption would stall it.
         caller.time.adopt(9_000_000);
         let _ = target_of(&caller, &server);
-        let mut primary = own_digest(&server, &fabric);
-        primary.node.name = server.resolved.name.clone();
+        // The top-up reads from the primary its record names: the mesh and the exact birth.
+        let primary = own_digest(&server, &fabric);
+        let record = rdm_core::Primary { mesh: primary.node.mesh.clone(), node_id: primary.node.node_id.clone(), incarnation: primary.node.incarnation.clone(), revision: 1 };
         let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
-        let done = fetch(caller.channels.clone(), primary, vec!["mesh2".into()]).await.unwrap();
+        let done = fetch(caller.channels.clone(), record, vec!["mesh2".into()]).await.unwrap();
         assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
         let before = caller.time.now_ms();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
