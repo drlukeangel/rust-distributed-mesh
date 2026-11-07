@@ -1306,7 +1306,8 @@ impl Channels {
                 // so a top-up that failed is attempted when the primary next speaks. A pull that
                 // installed a copy older than a delta dropped while it was in flight pulls again
                 // (gossip.md §3.3, Q130), on the one backoff rule, and so does one that left a
-                // node-admin a birth of its mesh with no runtime fact (Q400).
+                // node-admin a birth of its mesh with no runtime fact (Q400), and a mesh-primary's read
+                // of its own mesh from a birth it heard without its details that was not answered.
                 if again == 0 {
                     me.topology_view.view.desync.notified().await;
                 } else {
@@ -1320,7 +1321,8 @@ impl Channels {
 
     /// One pull of `gaps`: `true` when it installed a copy of a source older than a delta that
     /// source dropped while the pull was in flight, so the source is still behind, or when it left a
-    /// node-admin holding a birth of its mesh with no runtime fact (Q400).
+    /// node-admin holding a birth of its mesh with no runtime fact (Q400), or when the mesh-primary's
+    /// read of its own mesh from a birth it heard without its details was not answered.
     pub(crate) async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) -> bool {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
@@ -1345,14 +1347,23 @@ impl Channels {
             return false;
         };
         // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
-        // publishes and every peer mesh from the backbone, never from its mesh-channel sources.
-        if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node_id.as_str()) {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name, reason = "this-node-is-the-mesh-primary")
-                .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
-            return false;
-        }
-        let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
-        match fetch(self.clone(), primary.clone(), names).await {
+        // publishes and every peer mesh from the backbone, never from its mesh-channel sources. A birth
+        // of its own mesh it heard by a Digest whose details it does not hold is the one exception: it
+        // reads its own mesh from that birth, which serves its own mesh from what it holds (gossip.md
+        // §3.1 `Digest`: "a receiver that hears a birth whose details it does not hold tops up by a
+        // read"), and installs it as a read of its own mesh.
+        let (served_mesh, served_by, served_by_path, served_by_name, names, from_unknown_birth) = if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node_id.as_str()) {
+            let Some(birth) = self.topology_view.view.unknown_birth_read(&gaps) else {
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name, reason = "this-node-is-the-mesh-primary")
+                    .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
+                return false;
+            };
+            (mesh.clone(), birth, String::new(), String::new(), vec![mesh.clone()], true)
+        } else {
+            let birth = rdm_core::framing::Birth { node_id: primary.node_id.clone(), incarnation: primary.incarnation.clone() };
+            (primary.mesh.clone(), birth, path.clone(), name.clone(), gaps.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>(), false)
+        };
+        match fetch(self.clone(), served_mesh, served_by.clone(), names).await {
             Ok(done) => {
                 // A node-admin that still holds a birth of its mesh with no runtime fact once the read is
                 // installed (its mesh-primary held none of it yet) keeps its own mesh desynchronized: it
@@ -1369,19 +1380,21 @@ impl Channels {
                     meshes = %meshes,
                     reasons = %reasons,
                     mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name,
-                    served_by_path = %path, served_by_name = %name,
+                    served_by_id = %served_by.node_id, served_by_path = %served_by_path, served_by_name = %served_by_name,
                     installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
                     runtime_facts_owed = owed.len(),
                     pulls_again = behind,
                 )
-                .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));
+                .in_scope(|| tracing::info!("topped up from this Mesh's own primary, or at that primary from a birth of its mesh it heard without its details"));
                 behind
             }
             Err(e) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name, reason = "pull-refused", error = %e)
-                    .in_scope(|| tracing::info!("the Mesh's primary did not answer the top-up"));
-                false
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name, served_by_id = %served_by.node_id, reason = "pull-refused", error = %e)
+                    .in_scope(|| tracing::info!("the Mesh's primary, or the birth its primary heard without its details, did not answer the top-up"));
+                // The mesh-primary's read of its own mesh from such a birth goes again on the one
+                // backoff rule; any other refused pull is attempted at the next signal.
+                from_unknown_birth
             }
         }
     }

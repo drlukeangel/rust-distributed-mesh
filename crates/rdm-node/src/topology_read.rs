@@ -446,8 +446,9 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// The top-up read every receiver of a mesh channel hands [`TopologyView::top_ups`] (gossip.md §3.3: a
 /// node whose source desynchronized "pulls the current full fabric topology from its own current
 /// mesh-primary with GetTopology, installs it atomically, records the publisher and version baseline,
-/// and resumes"): one [`get_topology`] of each desynchronized mesh to the exact birth of the primary
-/// the topology view names, installed through the topology view's own receiver. The one workflow a
+/// and resumes"): one [`get_topology`] of each desynchronized mesh to the exact birth the top-up
+/// names (the primary the topology view names, or, at that primary, a birth of its own mesh it heard
+/// without its details), installed through the topology view's own receiver. The one workflow a
 /// node-admin and every other node run.
 ///
 /// A top-up is a topology read repair (`lifecycles/node-topology-get.md`) and adopts no rafka-time:
@@ -455,12 +456,12 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// (`crate::rafka_time`), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
 pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFetch {
-    Arc::new(move |channels: rdm_gossip::channel::Channels, primary: rdm_core::Primary, meshes: Vec<String>| {
+    Arc::new(move |channels: rdm_gossip::channel::Channels, served_mesh: String, served_by: rdm_core::framing::Birth, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
             let mut done = rdm_gossip::topology::TopUpDone::default();
             for mesh in meshes {
-                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node_id.clone()), &primary.mesh, &channels, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
+                let read = get_topology(&client, &NodeTarget::ExactNode(served_by.node_id.clone()), &served_mesh, &channels, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)
