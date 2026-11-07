@@ -597,7 +597,7 @@ mod tests {
             n.data_dir = Some(format!("/srv/domain-{}/{}", 9 - i, n.node_id));
             n.deployment_id = Some(crate::model::DeploymentId::mint());
             n.transport_addr = Some(std::net::SocketAddr::from(([10, 0, i as u8, 1], 40000 - i as u16)));
-            n.admin_api_base = Some(format!("http://host-{}:{}", 9 - i, 9000 + i));
+            n.listeners = vec![("api".to_string(), std::net::SocketAddr::from(([10, 0, i as u8, 1], 9000 + i as u16)))];
         }
         resolve(&mut nodes);
         assert_eq!((primaries(&nodes), fabric(&nodes)), plain, "the same roles with or without runtime metadata");

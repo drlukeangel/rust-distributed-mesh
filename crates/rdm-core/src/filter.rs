@@ -145,7 +145,6 @@ const MESH: &[Property] = &[
     p("name", Takes::Text),
     p("status", Takes::OneOf(SCOPE_STATUSES)),
     p("primary_admin", Takes::Text),
-    p("admin_api_base", Takes::Text),
     p("nodes", Takes::Text),
 ];
 
@@ -155,7 +154,6 @@ const FABRIC: &[Property] = &[
     p("status", Takes::OneOf(SCOPE_STATUSES)),
     p("provider", Takes::OneOf(PROVIDERS)),
     p("fabric_primary", Takes::Text),
-    p("admin_api_base", Takes::Text),
     p("build_id", Takes::Id),
     p("meshes", Takes::Text),
     p("topology_storage_provider", Takes::Text),
@@ -290,7 +288,6 @@ impl Row for MeshView {
             "name" => Value::One(self.name.clone()),
             "status" => Value::of(page_name(&self.status)),
             "primary_admin" => Value::of(self.primary_admin.as_ref()),
-            "admin_api_base" => Value::of(self.admin_api_base.as_ref()),
             "nodes" => Value::set(&self.nodes),
             _ => Value::Absent,
         }
@@ -305,7 +302,6 @@ impl Row for FabricView {
             "status" => Value::of(page_name(&self.status)),
             "provider" => Value::of(page_name(&self.provider)),
             "fabric_primary" => Value::of(self.fabric_primary.as_ref()),
-            "admin_api_base" => Value::of(self.admin_api_base.as_ref()),
             "build_id" => Value::of(self.build_id.as_ref()),
             "meshes" => Value::set(self.meshes.iter().map(|m| &m.name)),
             "topology_storage_provider" => Value::of(self.topology_storage_provider.as_ref()),

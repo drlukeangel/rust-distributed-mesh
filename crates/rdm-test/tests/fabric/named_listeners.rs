@@ -109,8 +109,9 @@ async fn published(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)
     node.listeners.clone()
 }
 
-/// Cell 1 (Q151): a gateway's three listeners are bound by its process, reported at its join and
-/// published on its row and in the node view.
+/// Cell 1 (Q151, Q402): a gateway's three listeners are bound by its process, reported at its join and
+/// published on its row and in the node view: `node.get` returns each at the address it bound, which is
+/// how a peer reads an application's contact (RDM carries no other contact field).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_row() {
     let test = "a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_row";

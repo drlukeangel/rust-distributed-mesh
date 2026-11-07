@@ -259,8 +259,6 @@ pub enum Frame {
         endpoint_id: String,
         /// The primary's bound QUIC UDP address.
         transport_addr: std::net::SocketAddr,
-        /// The primary's control API base URL with its bound HTTP port, when it runs one.
-        admin_api_base: Option<String>,
     },
     /// Reserved position (Q171): never sent; a receiver refuses it by name.
     ///

@@ -171,7 +171,6 @@ pub(crate) async fn adopt_from_reachable(
                     transition: None,
                     ready: false,
                     data_dir: None,
-                    admin_api_base: None,
                 });
             }
         }

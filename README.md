@@ -59,7 +59,7 @@ cargo build -p rdm-admin --bin rdm-node-admin -p rdm-test --bin rdm-rpc-probe
 ```
 
 Start a Day-0 [node-admin](docs/architecture/node-admin-lifecycle.md) (`mesh1.admin.1`), wait for it
-to print its birth record (`RDM_NODE_BIRTH`) and API address (`RDM_NODE_ADMIN_API_BASE`), and read
+to print its birth record (`RDM_NODE_BIRTH`), and read
 its live [topology](docs/architecture/lifecycles/node-topology-get.md) over
 [Node RPC](docs/architecture/node-rpc-envelope.md):
 
@@ -72,7 +72,7 @@ MESH_SPAWN_TYPE=process RDM_FABRIC=fabric-quick RDM_MESH=mesh1 \
   ./target/debug/rdm-node-admin > "$ROOT/admin.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 40); do
-  grep -q '^RDM_NODE_ADMIN_API_BASE=' "$ROOT/admin.log" 2>/dev/null && break
+  grep -q '^RDM_NODE_BIRTH=' "$ROOT/admin.log" 2>/dev/null && break
   sleep 0.25
 done
 grep '^RDM_NODE_' "$ROOT/admin.log"
@@ -86,7 +86,6 @@ Output:
 
 ```text
 RDM_NODE_BIRTH={"node_id":"hp3fh7v6wf8j","name":"mesh1.admin.1","endpoint_id":"281aec62378f3ba09bd85557bc48e11775aa899a44355b176ef7503dd2bce3a3","transport_addr":"127.0.0.1:51742","incarnation":"3bbtwqd0gwsx","supersedes":null,"runtime":{"deployment_id":"jsdc78afasar","provider":"process","control_domain":"process:b9454213-c995-438d-a30c-b3ee338ce38a:4026531836","locator":{"kind":"process","pid":2237731,"start":3519619}}}
-RDM_NODE_ADMIN_API_BASE=rdm://hp3fh7v6wf8j
 {"frames":[{"detail":"Started","frame":"started"},{"chunk_count":1,"chunk_index":0,"deleted":0,"frame":"snapshot","in_flight":0,"members":["mesh1.admin.1"],"mesh":"mesh1","publisher_incarnation":"3bbtwqd0gwsx","publisher_node":"mesh1.admin.1","publisher_node_id":"hp3fh7v6wf8j","snapshot_id":1,"topology_version":1},{"detail":"Primaries { kind: MeshPrimary, primary: Primary { mesh: \"mesh1\", node_id: NodeId(\"hp3fh7v6wf8j\"), incarnation: IncarnationId(\"3bbtwqd0gwsx\"), revision: 1 }, gone: false }","frame":"primaries"},{"detail":"Primaries { kind: FabricPrimary, primary: Primary { mesh: \"mesh1\", node_id: NodeId(\"hp3fh7v6wf8j\"), incarnation: IncarnationId(\"3bbtwqd0gwsx\"), revision: 1 }, gone: false }","frame":"primaries"},{"detail":"RafkaTime { ms: 1793269551338, kind: Some(FabricPrimary) }","frame":"rafka-time"},{"frame":"end","meshes":1}],"outcome":"Reply"}
 ```
 

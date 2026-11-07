@@ -963,7 +963,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         let configs = node_configs_at(&rig.admin.key, &mp).await;
         let (tick, views) = tokio::sync::watch::channel(0u64);
         configs.watch_views(views);
-        let told: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh2".to_string())].into();
+        let told: BTreeMap<String, String> = [("log_level".to_string(), "info".to_string())].into();
         let req = NodeCommandRequest::UpdateConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
         let view = rig.topology.read().await.clone();
         let rows = MemoryNodesStorage::default();
@@ -1004,7 +1004,7 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let node = serve_node(rpc1).await;
         node_configs(&rig, &node).await;
         let me = &rig.admin.node;
-        let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
+        let config: BTreeMap<String, String> = [("log_level".to_string(), "info".to_string())].into();
         let client = client_of(&rig, admin2).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), (me.node_id.clone(), me.incarnation_id.clone().unwrap(), config.clone()));
@@ -1274,7 +1274,7 @@ fn a_node_admins_own_config_update_is_written_by_its_own_writer_and_nothing_trav
         let admin2 = &b["admin2"];
         let joined = second_admin(&rig, admin2, &[rig.resolved.clone()]).await;
         fabric_primary_atlas(&rig, &[joined.resolved.clone()]).await;
-        let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh1.node-admin.2".to_string())].into();
+        let config: BTreeMap<String, String> = [("log_level".to_string(), "info".to_string())].into();
         let reply = tokio::time::timeout(Duration::from_secs(20), joined.status.own_config_update(admin2.node.incarnation_id.clone().unwrap(), config.clone())).await.expect("the command completes");
         assert_eq!(updated(&reply), updated_of(admin2, &config));
         assert_eq!(config_of(&admin2.node.node_id).await, config, "mesh1.node-admin.2's own record holds the whole config");
@@ -1391,8 +1391,8 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         quiet_node_configs(&rig).await;
-        let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
-        let later: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:10".to_string())].into();
+        let config: BTreeMap<String, String> = [("log_level".to_string(), "info".to_string())].into();
+        let later: BTreeMap<String, String> = [("log_level".to_string(), "debug".to_string())].into();
         let me = &rig.admin.node;
         let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| NodeCommandRequest::UpdateConfig { node_id: me.node_id.clone(), incarnation, config };
         assert_eq!(own_command(&rig, &told(me.incarnation_id.clone().unwrap(), config.clone())).await, StatusReply::Applied);

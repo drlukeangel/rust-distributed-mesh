@@ -1098,7 +1098,7 @@ impl Bound {
         }
         // The listeners the join verified against the assignment (Q151: exactly the assigned names, each
         // on its assigned address with a port that is not 0; `Deployed::verify`). A node-admin opens no
-        // listener (rdm-crate-and-test-layout.md §2): its `admin_api_base` is config.
+        // listener (rdm-crate-and-test-layout.md §2).
         Ok(Self { transport, listeners: r.listeners.clone() })
     }
 }

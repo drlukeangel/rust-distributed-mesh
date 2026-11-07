@@ -45,9 +45,8 @@ pub(crate) struct MapNode {
     /// What the source knew: a birth the source holds ready is ready, anything else settled is
     /// not yet reached.
     pub ready: bool,
-    /// The birth's data dir and control API as the source held them.
+    /// The birth's data dir as the source held it.
     pub data_dir: Option<String>,
-    pub admin_api_base: Option<String>,
 }
 
 impl MapNode {
@@ -69,7 +68,6 @@ impl MapNode {
             transition: None,
             ready: false,
             data_dir: None,
-            admin_api_base: None,
         })
     }
 
@@ -96,7 +94,6 @@ impl MapNode {
         node.provider = Some(provider);
         node.status = status;
         node.data_dir = self.data_dir.clone();
-        node.admin_api_base = self.admin_api_base.clone();
         node
     }
 
@@ -123,7 +120,6 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rd
                 transition,
                 ready: false,
                 data_dir,
-                admin_api_base: rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id),
                 node_id: d.node.node_id.clone(),
                 path: d.node.path.clone(), name: d.node.name.clone(),
                 endpoint_id: d.node.endpoint_id.clone(),
@@ -147,7 +143,6 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
                 transition: None,
                 ready: false,
                 data_dir: None,
-                admin_api_base: None,
                 node_id: n.node_id.clone(),
                 path: n.path.clone(), name: n.name.clone(),
                 endpoint_id: n.endpoint_id.clone(),
@@ -357,7 +352,6 @@ mod tests {
             transition: (status != rdm_core::model::NodeStatus::Ready).then(|| status),
             ready: false,
             data_dir: None,
-            admin_api_base: None,
         }
     }
 
@@ -577,7 +571,6 @@ mod tests {
                 transition: None,
                 ready: false,
                 data_dir: None,
-                admin_api_base: None,
             };
             let own_map_node = MapNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: local_node_id.clone(),
@@ -588,7 +581,6 @@ mod tests {
                 transition: None,
                 ready: false,
                 data_dir: None,
-                admin_api_base: None,
             };
             let durable_rows = get_topology(TopologySource::DurableMap(&[peer_map_node, own_map_node])).await.unwrap();
 

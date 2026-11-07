@@ -114,8 +114,9 @@ pub enum ProviderKind {
 }
 
 /// One node as `node.get` answers it: the node record's fields under its names (Q366), each from the
-/// node's record at its node id, and the live stats its latest digest carried (`load`, `gossip`),
-/// which are the view's and never stored. A node's mesh is the first location of its `path`.
+/// node's record at its node id, and, when the answering node is the node itself, its own live sample
+/// (`load`, `gossip`), never stored and never carried on gossip (Q394). A node's mesh is the first
+/// location of its `path`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeView {
     /// The node's minted id.
@@ -246,8 +247,6 @@ pub struct MeshView {
     pub status: ScopeStatus,
     /// The node-admin that is the mesh's primary, when one is elected.
     pub primary_admin: Option<NodeId>,
-    /// The control API base of the mesh's primary.
-    pub admin_api_base: Option<String>,
     /// The globally unique ID of every node of the mesh.
     pub nodes: Vec<NodeId>,
     /// The mesh's member renewals, when they stall (fabric-certs.md §Tracking).
@@ -268,8 +267,6 @@ pub struct FabricView {
     pub provider: ProviderKind,
     /// The node-admin that is the fabric primary, when one is elected.
     pub fabric_primary: Option<NodeId>,
-    /// The control API base of the fabric primary.
-    pub admin_api_base: Option<String>,
     /// The fabric's meshes.
     pub meshes: Vec<MeshView>,
     /// `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the

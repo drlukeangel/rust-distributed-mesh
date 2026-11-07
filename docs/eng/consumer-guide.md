@@ -13,7 +13,7 @@ the linked page before asking: every answer here was already on one.
 | know every environment variable a node reads | [Configuration](../reference/rdm/config.md) (no other configuration mechanism exists) |
 | hand a node a secret | `RDM_DECLARED_SECRETS` in [build-deployment.md §3](../architecture/build-deployment.md) and [Configuration](../reference/rdm/config.md) (Q150): declared by name with the kinds it is set on; never in a row, a span or a record |
 | pass a variable through to every node (`RUST_LOG`, `RUST_BACKTRACE`, …) | RDM's fixed pass-through list (`crates/rdm-admin/src/admin/records.rs` `PASSTHROUGH`); under the process provider the host environment also reaches the child, minus `RDM_*`, the trace context and declared names |
-| bind my listeners (REST, Kafka, …) | `RDM_LISTENERS` in [Configuration](../reference/rdm/config.md): one per listener my wiring declares on the kind, port 0, the bound port reported at the join and published on the node row |
+| bind my listeners (REST, Kafka, …) | `RDM_LISTENERS` in [Configuration](../reference/rdm/config.md): one per listener my wiring declares on the kind, port 0, the bound port reported at the join and published on the node row. Each listener is a named port binding, whatever my application serves on it (a gateway's Kafka port, a REST API); a peer reads them with `node.get` (`listeners`). RDM carries no other contact field. |
 | run on processes or containers | `MESH_SPAWN_TYPE`; [deployment-provider.md §2.6–2.7](../architecture/deployment-provider.md#26-the-process-provider) |
 
 ## Changing the topology
@@ -49,8 +49,8 @@ nothing matches.
 
 | Read | Address | Properties a pair may name | Answers, in order | Served by |
 |---|---|---|---|---|
-| `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
-| `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
+| `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
+| `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `nodes` | meshes, by name | the fabric-primary |
 | `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path` and `name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from the node records |
 | `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact node's own connections from its connections log | the exact node |
 

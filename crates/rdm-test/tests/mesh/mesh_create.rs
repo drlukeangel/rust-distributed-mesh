@@ -120,11 +120,11 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let day0_admin = node_at("mesh1.node-admin", "1");
     assert_eq!(last_run_executor(&build), mesh2_primary, "the Build's last run ran on mesh2's own primary: {build:#}");
 
-    // mesh2's control endpoint, from the advertised topology only.
+    // mesh2's primary, from the fabric's view and mesh.get alike.
     let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
-    let mesh2_base = fabric["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").map(|m| s(&m["admin_api_base"])).unwrap();
+    let mesh2_named = fabric["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").map(|m| s(&m["primary_admin"])).unwrap();
     let mesh2_view = serde_json::to_value(estate.mesh_view("mesh2").await).expect("a view serializes");
-    assert_eq!(s(&mesh2_view["admin_api_base"]), mesh2_base);
+    assert_eq!(s(&mesh2_view["primary_admin"]), mesh2_named, "fabric.get and mesh.get name one primary of mesh2");
     assert_eq!(s(&mesh2_view["primary_admin"]), mesh2_primary);
     // The created mesh is a new identity, distinct from every mesh the fabric already had.
     let m1 = serde_json::to_value(estate.mesh_view("mesh1").await).expect("a view serializes");

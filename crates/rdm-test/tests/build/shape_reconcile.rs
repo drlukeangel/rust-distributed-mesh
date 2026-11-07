@@ -74,7 +74,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
     assert_eq!(fabric["fabric_primary"], fp["node_id"], "{shape}: {fabric}");
     for m in fabric["meshes"].as_array().unwrap() {
-        assert!(m["admin_api_base"].as_str().is_some_and(|b| !b.is_empty()), "{shape}: mesh {m} names its application contact");
+        assert!(m["primary_admin"].as_str().is_some_and(|p| nodes.iter().any(|n| n["node_id"] == p && n["type"] == "node-admin" && n["is_primary"] == true)), "{shape}: mesh {m} names its primary node-admin");
     }
 
     // Build -> deployment -> lifecycle, by parent span id. Every process

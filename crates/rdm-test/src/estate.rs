@@ -5,7 +5,7 @@
 //! binary and the JSONL evidence files. No internal map is read.
 
 use rdm_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated};
-use rdm_client::{birth_of_line, MeshNode, BIRTH_LINE};
+use rdm_client::{birth_of_line, MeshNode};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -57,24 +57,17 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
-/// What a started node-admin prints before it serves: the birth its readiness gate opens for
-/// (`rdm_client::BIRTH_LINE`), then its control base. The receiver gets the birth once the
-/// base line is read, or the refusal of an admin that printed its base and no birth (or a birth that
-/// does not decode). The reader goes on reading the pipe after it.
+/// What a started node-admin prints before it serves, its whole announcement: the birth its readiness
+/// gate opens for (`rdm_client::BIRTH_LINE`). The receiver gets the birth once its line is read, or the
+/// refusal of a birth line that does not decode. The reader goes on reading the pipe after it.
 fn read_announcement(stdout: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Result<MeshNode, String>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut birth: Option<Result<MeshNode, String>> = None;
+        let mut sent = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(b) = birth_of_line(&line) {
-                birth = Some(b);
-            } else if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
-                let base = base.trim().to_string();
-                let _ = tx.send(match birth.take() {
-                    Some(Ok(b)) => Ok(b),
-                    Some(Err(e)) => Err(e),
-                    None => Err(format!("printed its control base {base} and no birth ({BIRTH_LINE}) before it")),
-                });
+            if let Some(b) = birth_of_line(&line).filter(|_| !sent) {
+                sent = true;
+                let _ = tx.send(b);
             }
         }
     });
@@ -93,7 +86,7 @@ fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, MeshNo
     let refusal = match rx.recv_timeout(Duration::from_secs(30)) {
         Ok(Ok(birth)) => return (child, birth),
         Ok(Err(e)) => format!("{what} {e}"),
-        Err(_) => format!("{what} never advertised RDM_NODE_ADMIN_API_BASE within 30 s"),
+        Err(_) => format!("{what} never printed its birth within 30 s"),
     };
     // No Estate exists yet to stop it: the process is stopped here, before the refusal.
     let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
@@ -303,7 +296,7 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     let birth = match rx.recv_timeout(within.saturating_sub(begun.elapsed())) {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => return Err(give_up(e, Some(child))),
-        Err(_) => return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child))),
+        Err(_) => return Err(give_up(format!("never printed its birth within {within:?}"), Some(child))),
     };
     eprintln!("[container] {name} advertised its birth {:?} {:?} after docker start", birth.name, started.elapsed());
     Ok((child, birth, fabric_id))
@@ -1976,8 +1969,8 @@ mod spawn_tests {
         assert_eq!(read, files.iter().map(|(_, body)| Some(body.to_string())).collect::<Vec<_>>(), "every evidence file is kept, whole, under its own relative path");
     }
 
-    /// CONTRACT: a node-admin that never names its application contact is refused by name, and the
-    /// refusal leaves nothing running: no Estate exists yet to stop it. What must NOT happen: a
+    /// CONTRACT: a node-admin that never prints its birth is refused by name, and the refusal leaves
+    /// nothing running: no Estate exists yet to stop it. What must NOT happen: a
     /// panic that leaves the process alive.
     #[test]
     fn an_admin_that_never_advertises_is_stopped_before_the_refusal() {
@@ -1993,7 +1986,7 @@ mod spawn_tests {
         assert!(wrote.success(), "the silent admin's script is written");
         let err = std::panic::catch_unwind(|| spawn_admin(&script, &[], "the silent admin")).expect_err("refused");
         let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
-        assert!(msg.contains("the silent admin never advertised RDM_NODE_ADMIN_API_BASE"), "{msg}");
+        assert!(msg.contains("the silent admin never printed its birth"), "{msg}");
         let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         assert!(!Path::new(&format!("/proc/{pid}")).exists() || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.contains(") Z ")), "pid {pid} still runs after the refusal");
         let _ = std::fs::remove_dir_all(&dir);

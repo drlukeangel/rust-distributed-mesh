@@ -376,7 +376,7 @@ mod tests {
             births.sort_by_key(|b| b.location());
             let want: Vec<crate::reenter::MapNode> = [&rpc, &admin, &other]
                 .into_iter()
-                .map(|d| crate::reenter::MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
+                .map(|d| crate::reenter::MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone(), transition: None, ready: false, data_dir: None })
                 .collect();
             assert_eq!(births, want, "{backend}: each live record at the address its node wrote, every mesh's; no Deleted record's");
             // The durable map on an inherited root.
@@ -499,13 +499,11 @@ mod tests {
         }
     }
 
-    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; lifecycles/node-name-update.md: "Config on the
-    /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
-    /// node-admin birth this admin's view holds ready is Ready, its digest carrying no
-    /// `admin_api_base`. What must NOT happen: a node-admin refused Ready for a config value RDM
-    /// never reads.
+    /// CONTRACT (R-OW1: config is never checked; Q402: RDM carries no contact field): a node-admin
+    /// birth this admin's view holds ready is Ready. What must NOT happen: a node-admin refused Ready for a value RDM never
+    /// reads.
     #[tokio::test]
-    async fn a_node_admin_with_no_admin_api_base_is_ready_once_its_view_holds_it_ready() {
+    async fn a_node_admin_is_ready_once_its_view_holds_it_ready() {
         let digest_view = DigestView::default();
         let d = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(d.clone()), "the view takes the node-admin's digest");
@@ -583,7 +581,7 @@ mod tests {
         // A launched birth's publication writes no record.
         let records = Records::default();
         let _ = records.contacts.set(nodes.clone());
-        records.publish(crate::reenter::MapNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId("key-x".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), transition: None, ready: false, data_dir: None, admin_api_base: None }.as_node(NodeStatus::Pending, ProviderKind::Process));
+        records.publish(crate::reenter::MapNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId("key-x".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), transition: None, ready: false, data_dir: None }.as_node(NodeStatus::Pending, ProviderKind::Process));
         for _ in 0..3 {
             tokio::task::yield_now().await;
         }
@@ -3415,7 +3413,7 @@ mod tests {
         let first = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         digest_view.record(first.clone());
         // This admin's entry sweep reached the birth (`spawn_entry_sweep`): its record stands in for it.
-        let reached = crate::reenter::MapNode { mesh: first.node.mesh.clone(), r#type: first.node.r#type.clone(), node_id: first.node.node_id.clone(), path: first.node.path.clone(), name: first.node.name.clone(), endpoint_id: first.node.endpoint_id.clone(), transport_addr: first.node.transport_addr, incarnation: first.node.incarnation.clone(), transition: None, ready: true, data_dir: None, admin_api_base: None };
+        let reached = crate::reenter::MapNode { mesh: first.node.mesh.clone(), r#type: first.node.r#type.clone(), node_id: first.node.node_id.clone(), path: first.node.path.clone(), name: first.node.name.clone(), endpoint_id: first.node.endpoint_id.clone(), transport_addr: first.node.transport_addr, incarnation: first.node.incarnation.clone(), transition: None, ready: true, data_dir: None };
         records.publish(reached.as_node(NodeStatus::Ready, ProviderKind::Process));
         let topology = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records));
         let listed = |t: &Topology| t.node(&first.node.location()).map(|n| (n.node_id.clone(), n.status));

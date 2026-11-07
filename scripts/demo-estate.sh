@@ -86,22 +86,23 @@ up() {
   RDM_NODE_ADMIN_API_BIND=127.0.0.1:0 \
     setsid nohup "$BIN/rshape-node-admin" > "$ROOT/admin1.log" 2>&1 < /dev/null &
   echo $! > "$ROOT/admin1.pid"
-  local birth="" base=""
+  local birth=""
   for _ in $(seq 1 120); do
     birth=$(grep -m1 '^RDM_NODE_BIRTH=' "$ROOT/admin1.log" 2>/dev/null | cut -d= -f2- || true)
-    base=$(grep -m1 '^RDM_NODE_ADMIN_API_BASE=' "$ROOT/admin1.log" 2>/dev/null | cut -d= -f2- || true)
-    [ -n "$birth" ] && [ -n "$base" ] && break; sleep 0.5
+    [ -n "$birth" ] && break; sleep 0.5
   done
-  [ -n "$birth" ] && [ -n "$base" ] || { echo "node-admin never printed its birth and API base; see $ROOT/admin1.log"; exit 1; }
-  echo "$birth" > "$ROOT/birth.json"; echo "$base" > "$ROOT/api_base"
-  echo "day-0 admin up: $base (pid $(cat "$ROOT/admin1.pid"))"
+  [ -n "$birth" ] || { echo "node-admin never printed its birth; see $ROOT/admin1.log"; exit 1; }
+  echo "$birth" > "$ROOT/birth.json"
+  # The Day-0 admin's node.id, from the birth it printed: the record the UI writes its port on.
+  local admin_id; admin_id=$(echo "$birth" | python3 -c 'import json,sys; print(json.load(sys.stdin)["node_id"])')
+  echo "day-0 admin up: $admin_id (pid $(cat "$ROOT/admin1.pid"))"
   RDM_NODE_ADMIN_BIRTH="$birth" RDM_ADMIN_UI_BIND_ADDR=$UI_BIND RDM_UI_STATIC_DIR=$WEB JAEGER_QUERY_URL=$JAEGER \
     setsid nohup "$BIN/rdm-admin-ui" > "$ROOT/ui.log" 2>&1 < /dev/null &
   echo $! > "$ROOT/ui.pid"
   # The UI's port is the one it bound, as its admin's row config holds it (admin_ui_port).
   local port=""
   for _ in $(seq 1 120); do
-    port=$(ui_port "${base#rdm://}")
+    port=$(ui_port "$admin_id")
     [ -n "$port" ] && curl -sf "http://${UI_BIND%:*}:$port/api/health" >/dev/null 2>&1 && break; sleep 0.5
   done
   [ -n "$port" ] || { echo "the UI's port is not on $M1.node-admin.1's row config; see $ROOT/ui.log"; exit 1; }

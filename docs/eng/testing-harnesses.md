@@ -50,15 +50,7 @@ Build node-admin runs.
 ## 2. node-admin's surface
 
 node-admin serves Node RPC only. `RDM_NODE_ADMIN_API_BIND` names the address its transport binds;
-no HTTP server is bound (CLAUDE.md env table). Once serving, a node-admin prints two lines on
-stdout, which is how an estate learns where it is:
-
-- `RDM_NODE_BIRTH=<json>`: its birth, the `MeshNode` its readiness gate opens for
-  (`rdm_client::BIRTH_LINE`, `crates/rdm-client/src/peers.rs`);
-- `RDM_NODE_ADMIN_API_BASE=rdm://<node id>` (`crates/rdm-admin/src/admin/boot.rs`).
-
-`estate.rs::spawn_admin` waits up to 30 s for both and refuses an admin that prints its base
-without a birth.
+no HTTP server is bound (CLAUDE.md env table). Once serving, a node-admin prints one line on stdout, which is how an estate learns where it is: `RDM_NODE_BIRTH=<json>`, its birth, the `MeshNode` its readiness gate opens for (`rdm_client::BIRTH_LINE`, `crates/rdm-client/src/peers.rs`). `estate.rs::spawn_admin` waits up to 30 s for it and refuses a birth line that does not decode.
 
 The client is `rdm-client` (`crates/rdm-client/src/lib.rs`): the typed objects `Nodes`, `Meshes`,
 `Fabrics` and `Builds`, the `BuildStream` and `WorkflowStream` a submitted Build or workflow

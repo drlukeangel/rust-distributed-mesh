@@ -9,7 +9,7 @@
 //!
 //! One run is a set of jobs; a job is ONE process (one stem of one crate's executable), with the
 //! gate's cadence env and its own `RDM_ARTIFACTS_DIR`. Tests birth their own estates: this server's
-//! own `RDM_NODE_ADMIN_API_BASE` / `RDM_EVIDENCE_DIR` (the live estate it draws) are removed from every
+//! own `RDM_EVIDENCE_DIR` (the live estate it draws) is removed from every
 //! child's environment, and a child runs in its own process group so a cancel or timeout kills that
 //! group and nothing else.
 
@@ -47,7 +47,6 @@ const CADENCE: &[(&str, &str)] = &[
 
 /// Removed from every child: the live estate this server draws, and the server's own settings.
 const SCRUBBED: &[&str] = &[
-    "RDM_NODE_ADMIN_API_BASE",
     "RDM_NODE_ADMIN_API_BIND",
     "RDM_EVIDENCE_DIR",
     "RDM_UI_STATIC_DIR",

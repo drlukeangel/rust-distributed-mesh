@@ -11,8 +11,6 @@ pub struct Running {
     /// returned)`; an app that stamps its records with rafka-time (the OrderKey's
     /// `writer_timestamp_ms`) reads it here and never from the OS clock.
     pub rafka_time: rdm_transport::clock::RafkaTime,
-    /// The base of this admin's control API.
-    pub api_base: String,
     /// The control plane the API serves.
     pub control: Arc<ControlPlane>,
     /// The runner that realises Build operations.
@@ -89,10 +87,9 @@ impl Running {
 
     /// Print what the process that started this admin reads on its stdout: the birth it runs under
     /// (`rdm_client::BIRTH_LINE`), by which that process reaches it over Node RPC holding
-    /// nothing else, then its control base.
+    /// nothing else. It is the whole announcement.
     pub fn announce(&self) {
         println!("{}{}", rdm_client::BIRTH_LINE, serde_json::to_string(&self.birth()).expect("a birth serializes"));
-        println!("RDM_NODE_ADMIN_API_BASE={}", self.api_base);
     }
 
     /// The gate a stop stops and a start opens: every task this admin runs is held at its own wait
@@ -923,9 +920,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         step.record("outcome", "taken");
         step.in_scope(|| tracing::info!("fabric recovery: a new node over the inherited data dir, at its (path, name)"));
     }
-    // No crate of RDM serves a route or opens an HTTP listener (rdm-crate-and-test-layout.md §2): the
-    // admin's application contact (`admin_api_base`, config, never checked) names this admin's node id.
-    let api_base = rdm_core::meta::admin_api_base(rdm_core::meta::NODE_ADMIN, &node_id).expect("a node-admin names its application contact");
     // A launched admin takes the runtime record its launcher's pipeline made available; it is
     // part of the digest it reports at its join.
     let launched_runtime = match &cfg.launch {
@@ -3394,7 +3388,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, topology_view, channels: channels.clone(), digest, own_writer: configs_slot.get().and_then(|c| c.own_writer()), node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), status_service: status_service.clone(), status_service_set: status_service_set.clone(), data_connections: data_connections.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), control, runner, topology_view, channels: channels.clone(), digest, own_writer: configs_slot.get().and_then(|c| c.own_writer()), node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, runs: runs.clone(), hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), pre_node_ready_cancel, pre_node_ready: pre_node_ready_cell.clone(), member_cert, gate: stop_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), status_service: status_service.clone(), status_service_set: status_service_set.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });

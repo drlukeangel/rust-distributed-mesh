@@ -95,7 +95,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
 }
 
 fn mesh_view(m: crate::topology::MeshView) -> MeshView {
-    MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
+    MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, nodes: m.nodes }
 }
 
 /// `n` with `load` and `gossip`, and every field its node record `row` holds (Q366), under the record's
@@ -289,7 +289,6 @@ pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
         status: scope_status(f.status),
         provider: provider(f.provider),
         fabric_primary: f.fabric_primary,
-        admin_api_base: f.admin_api_base,
         meshes: f.meshes.into_iter().map(mesh_view).collect(),
         build_id,
     }
@@ -448,7 +447,6 @@ mod tests {
             admin_node.status = ModelNodeStatus::Ready;
             admin_node.is_primary = true;
             admin_node.is_fabric_primary = true;
-            admin_node.admin_api_base = Some("http://127.0.0.1:18001".to_string());
 
             let rpc_path = PathName::numbered("mesh1", "node", 1);
             let mut rpc_succ = Node::allocated(rpc_path.clone(), "mesh1", "node");

@@ -8,8 +8,8 @@
 //! holds the fabric-primary role (`{mesh1, mesh2}` -> the other mesh), executed by an admin outside it.
 //! Fabric authority leaves with that Build, through the rectifier; the former primary's runtimes
 //! end only after, by the delete pipeline's own terminate. While it runs, every survivor admin
-//! is asked who holds the fabric and the advertised endpoint is asked at once (the request the
-//! original failure refused); each pair is recorded with the run's own map of control endpoints.
+//! is asked who holds the fabric and the primary it names is asked at once (the request the
+//! original failure refused); each pair is recorded with the run's own node-admins.
 
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -58,9 +58,8 @@ fn mesh(name: &str) -> (&str, u32, u32) {
 }
 
 /// One process of the run, as the control APIs and the host describe it: its `path` and `name` the two
-/// strings its view carries ([`rdm_test::estate::location`] reads them), its `admin_api_base` the one
-/// its digest carries, as `advertised` holds it ([`Estate::admin_api_bases_at`]).
-async fn describe(estate: &Estate, node: &Value, advertised: &BTreeMap<String, String>) -> Value {
+/// strings its view carries ([`rdm_test::estate::location`] reads them).
+async fn describe(estate: &Estate, node: &Value) -> Value {
     let name: rdm_core::PathName = rdm_test::estate::location(&node);
     let pid = match estate.bootstrap_pid() {
         Some(p) if name == rdm_core::PathName::new("mesh1.node-admin", "1").unwrap() => u64::from(p),
@@ -74,7 +73,7 @@ async fn describe(estate: &Estate, node: &Value, advertised: &BTreeMap<String, S
     json!({
         "path": name.path, "name": name.name, "mesh": rdm_test::estate::mesh_of(&node), "type": node["type"], "node_id": node["node_id"], "incarnation_id": node["incarnation"],
         "endpoint_id": node["endpoint_id"], "status": node["state"], "is_primary": node["is_primary"], "is_fabric_primary": node["is_fabric_primary"],
-        "admin_api_base": advertised.get(&s(&node["node_id"])), "transport_addr": node["transport_addr"], "listeners": node["listeners"],
+        "transport_addr": node["transport_addr"], "listeners": node["listeners"],
         "data_dir": data_dir, "data_dir_exists": std::path::Path::new(&data_dir).is_dir(), "node_key_present": std::path::Path::new(&format!("{data_dir}/node-key")).is_file(),
         "deployment_json": deployment,
         "host": {"pid": pid, "start_token": start_token, "cmdline": cmdline, "alive": alive(pid)},
@@ -82,8 +81,8 @@ async fn describe(estate: &Estate, node: &Value, advertised: &BTreeMap<String, S
 }
 
 /// CONTRACT (#2892): when the mesh that holds the fabric is deleted through a Build, the fabric
-/// authority every surviving admin advertises is, at every instant it is asked, a control
-/// endpoint of a birth of this run (never a port outside the run's data dirs); once the Build
+/// authority every surviving admin names is, at every instant it is asked, a node-admin of
+/// this run (never a node outside the run's data dirs); once the Build
 /// is complete the authority is a ready admin of the surviving mesh that answers for this
 /// Fabric, from every survivor, repeatedly; the former primary's runtimes are gone only after
 /// the surviving admins named the new primary, and each survivor's evidence runs past the loss.
@@ -103,56 +102,49 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let lost_mesh = s(&rdm_test::estate::mesh_of(&primary_record));
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
 
-    // Every process of the run before the loss: API/control endpoints, data-dir bindings, host.
+    // Every process of the run before the loss: endpoints, data-dir bindings, host.
     let mut described: BTreeMap<String, Value> = BTreeMap::new();
-    let advertised = estate.admin_api_bases_at(&primary_location).await;
     for n in &before {
-        described.insert(s(&n["node_id"]), describe(&estate, n, &advertised).await);
+        described.insert(s(&n["node_id"]), describe(&estate, n).await);
     }
-    let run_bases: BTreeSet<String> = described.values().filter(|d| d["type"] == "node-admin").map(|d| s(&d["admin_api_base"])).collect();
-    let admin_base_owner: BTreeMap<String, String> = described.values().filter(|d| d["type"] == "node-admin").map(|d| (s(&d["admin_api_base"]), s(&d["node_id"]))).collect();
-    assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
+    let run_admins: BTreeSet<String> = described.values().filter(|d| d["type"] == "node-admin").map(|d| s(&d["node_id"])).collect();
+    assert_eq!(run_admins.len(), 4, "four admins: {run_admins:?}");
     let lost_pids: Vec<(String, u64)> = described.values().filter(|d| d["mesh"] == lost_mesh.as_str()).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
     let survivors: Vec<String> = described.values().filter(|d| d["mesh"] == survivor_mesh.as_str() && d["type"] == "node-admin").map(|d| s(&d["node_id"])).collect();
     let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["node_id"]))).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
-    let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| s(&described[n]["admin_api_base"])).collect();
+    let survivor_admins: BTreeSet<String> = survivors.iter().cloned().collect();
     // Control moves to the surviving mesh's admins before the loss: they execute the delete.
     let entry: rdm_core::PathName = rdm_test::estate::location(&described[&survivors[0]]);
     estate.enter(&entry).await;
     let fabric_id = estate.fabric_id.clone();
 
     // Every survivor is asked, continuously through the loss, who holds the fabric, and the
-    // advertised endpoint is asked straight after: the pair the original failure broke.
+    // primary it names is asked straight after: the pair the original failure broke.
     let samples: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
     let sampler = {
         let (samples, stop, fabric_id) = (samples.clone(), stop.clone(), fabric_id.clone());
-        let asked: Vec<(String, String)> = survivors.iter().map(|n| (n.clone(), s(&described[n]["admin_api_base"]))).collect();
+        let asked: Vec<String> = survivors.clone();
         let peers = estate.peers().await;
         tokio::spawn(async move {
             while !stop.load(Ordering::SeqCst) {
-                for (from, from_base) in &asked {
+                for from in &asked {
                     let at = now_ns();
                     let row = match fabric_view_of_id(&peers, &from.parse().unwrap(), &fabric_id).await {
-                        None => json!({"at_unix_nano": at, "asked": from_base, "answered": false}),
-                        Some(f) => {
-                            let advertised = f.admin_api_base.clone().unwrap_or_default();
-                            let primary = f.fabric_primary.as_ref().map(|h| h.to_string()).unwrap_or_default();
-                            if advertised.is_empty() {
-                                json!({"at_unix_nano": at, "asked": from_base, "answered": true, "fabric_primary": primary, "advertised": null})
-                            } else {
-                                // The advertised primary is asked straight after, by the node ID the view gave.
-                                let followed = match f.fabric_primary.as_ref() {
-                                    Some(h) => fabric_view_of_id(&peers, h, &fabric_id).await,
-                                    None => None,
-                                };
+                        None => json!({"at_unix_nano": at, "asked": from, "answered": false}),
+                        Some(f) => match f.fabric_primary.as_ref() {
+                            None => json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": "", "advertised": null}),
+                            Some(h) => {
+                                // The named primary is asked straight after, by the node ID the view gave.
+                                let primary = h.to_string();
+                                let followed = fabric_view_of_id(&peers, h, &fabric_id).await;
                                 json!({
-                                    "at_unix_nano": at, "asked": from_base, "answered": true, "fabric_primary": primary, "advertised": advertised,
+                                    "at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": primary, "advertised": primary,
                                     "advertised_answers": followed.is_some(), "advertised_names": followed.as_ref().map(|f| f.fabric_primary.as_ref().map(|h| h.to_string())),
-                                    "advertised_agrees": followed.as_ref().is_some_and(|f| f.fabric_primary.as_ref().map(|h| h.to_string()).as_deref() == Some(primary.as_str()) && f.admin_api_base.as_deref() == Some(advertised.as_str())),
+                                    "advertised_agrees": followed.as_ref().is_some_and(|f| f.fabric_primary.as_ref().map(|h| h.to_string()).as_deref() == Some(primary.as_str())),
                                 })
                             }
-                        }
+                        },
                     };
                     samples.lock().unwrap().push(row);
                 }
@@ -191,9 +183,9 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         for name in &survivors {
             let peers = estate.peers().await;
             let f = fabric_view_of_id(&peers, &name.parse().unwrap(), &fabric_id).await?;
-            let (primary, advertised) = (f.fabric_primary.clone()?, f.admin_api_base.clone().unwrap_or_default());
+            let primary = f.fabric_primary.clone()?;
             let own = fabric_view_of_id(&peers, &primary, &fabric_id).await?;
-            if !after.iter().any(|n| n["node_id"] == primary.as_str() && rdm_test::estate::mesh_of(&n) == survivor_mesh && n["type"] == "node-admin" && n["state"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
+            if !after.iter().any(|n| n["node_id"] == primary.as_str() && rdm_test::estate::mesh_of(&n) == survivor_mesh && n["type"] == "node-admin" && n["state"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_admins.contains(primary.as_str()) {
                 return None;
             }
         }
@@ -214,20 +206,16 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     sampler.await.unwrap();
     let fabric_now = estate.fabric_view().await;
     let new_primary = fabric_now.fabric_primary.as_ref().map(|h| h.to_string()).unwrap_or_default();
-    let new_base = fabric_now.admin_api_base.clone().unwrap_or_default();
     let primary_record = after.iter().find(|n| s(&n["node_id"]) == new_primary).unwrap_or_else(|| panic!("the new primary {new_primary} is a ready admin of the surviving view: {after:#?}")).clone();
-    let advertised_after = estate.admin_api_bases_at(&rdm_test::estate::location(&primary_record)).await;
-    assert_eq!(advertised_after.get(&new_primary), Some(&new_base), "the advertised fabric endpoint is the holder's own control endpoint");
-    assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base} not in {survivor_bases:?}");
+    assert!(survivor_admins.contains(&new_primary), "the authority is a surviving node-admin of this run: {new_primary} not in {survivor_admins:?}");
     let mut survivors_after = BTreeMap::new();
     for n in after.iter().filter(|n| n["type"] == "node-admin") {
         let name = s(&n["node_id"]);
-        let base = advertised_after.get(&name).cloned().unwrap_or_default();
         let peers = estate.peers().await;
         let node_id: rdm_core::NodeId = name.parse().unwrap();
         let fabric_view = fabric_view_of_id(&peers, &node_id, &fabric_id).await.map(|f| serde_json::to_value(f).expect("a view serializes"));
         let nodes_view = rdm_client::Nodes::new(peers.carrier_for(node_id)).get(&rdm_client::Filter::new()).await.expect("survivor node view").into_iter().map(|n| serde_json::to_value(n).unwrap()).collect::<Vec<_>>();
-        survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n, &advertised_after).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["state"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
+        survivors_after.insert(name.clone(), json!({"node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["state"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "listeners": v["listeners"]})).collect::<Vec<_>>()}));
     }
 
     let entry: rdm_core::PathName = rdm_test::estate::location(&primary_record);
@@ -235,15 +223,15 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     estate.stop().await;
     let spans = estate.spans();
 
-    // Every pair asked during the loss: an advertised endpoint is always one of the run's own
-    // control endpoints, and every refusal is accounted for by the birth that held the port.
+    // Every pair asked during the loss: a named fabric-primary is always one of the run's own
+    // node-admins, and every refusal is accounted for by the birth it names.
     let rows = samples.lock().unwrap().clone();
-    let outside: Vec<&Value> = rows.iter().filter(|r| r["advertised"].as_str().is_some_and(|a| !run_bases.contains(a))).collect();
-    assert!(outside.is_empty(), "an advertised fabric endpoint is a port of no birth of this run: {outside:#?}");
+    let outside: Vec<&Value> = rows.iter().filter(|r| r["advertised"].as_str().is_some_and(|a| !run_admins.contains(a))).collect();
+    assert!(outside.is_empty(), "a named fabric-primary is no node-admin of this run: {outside:#?}");
     let refused: Vec<Value> = rows
         .iter()
         .filter(|r| r["advertised"].as_str().is_some() && r["advertised_answers"] == false)
-        .map(|r| json!({"row": r, "port_belonged_to": admin_base_owner.get(&s(&r["advertised"])), "former_primary_mesh": lost_mesh}))
+        .map(|r| json!({"row": r, "former_primary_mesh": lost_mesh}))
         .collect();
     let after_complete: Vec<&Value> = rows.iter().filter(|r| r["at_unix_nano"].as_u64().unwrap() > build_complete && r["asked"].is_string()).collect();
     assert!(!after_complete.is_empty(), "the survivors were asked after the Build completed");
@@ -292,7 +280,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         "lost_mesh": lost_mesh,
         "survivor_mesh": survivor_mesh,
         "new_primary": new_primary,
-        "primary_endpoint": new_base,
+        "new_primary_record": primary_record,
         "started_unix_nano": started,
         "build_complete_unix_nano": build_complete,
         "first_handoff_announcement_unix_nano": first_handoff,
@@ -300,7 +288,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         "former_primary_runtime_gone_unix_nano": terminated_at,
         "before": described,
         "survivors_after": survivors_after,
-        "survivor_control_endpoints": survivor_bases,
+        "survivor_admins": survivor_admins,
         "samples": {"total": rows.len(), "after_complete": after_complete.len(), "advertised_outside_run": outside.len(), "refused_follow_ups": refused},
         "evidence_by_pid": evidence,
         "lost_runtimes": lost_pids.iter().map(|(n, p)| json!({"name": n, "pid": p, "alive": alive(*p)})).collect::<Vec<_>>(),

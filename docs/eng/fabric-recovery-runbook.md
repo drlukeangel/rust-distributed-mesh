@@ -55,8 +55,7 @@ Do not set:
   restore, never from a flag, and either flag is refused by name.
 - `RDM_SEEDS`: the mesh's nodes are read from the store.
 
-Once it serves, it prints `RDM_NODE_ADMIN_API_BASE=rdm://<node id>`, with a new node id. Enter the
-fabric there.
+Once it serves, it prints its birth, `RDM_NODE_BIRTH=<json>`, with a new node id. Enter the fabric there.
 
 ## What it does on its own
 

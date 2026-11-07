@@ -124,25 +124,24 @@ The node's report, its own call to its primary, op `0x1D` (29); here a first sta
       "digest": {
         "fabric_id": "fab4m8n2p6q1",
         "node": {
+          "mesh": "mesh1",
+          "type": "node",
           "node_id": "k8pag1qx95gw",
-          "name": "mesh1.node.1",
+          "path": "mesh1.node",
+          "name": "1",
           "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
           "transport_addr": "127.0.0.1:54473",
-          "incarnation": "0000000000000001",
-          "supersedes": null,
-          "runtime": null
+          "incarnation": "000000000001",
+          "supersedes": null
         },
         "status": "pending",
-        "admin_api_base": null,
+        "primary": [],
         "digest_seq": 1,
-        "emitted_at_rafka_ms": 1718290000010,
-        "data_dir": "/var/lib/rdm/mesh1.node.1",
-        "mesh_id": "mesh1",
-        "in_flight": null,
-        "config": {},
-        "load": null,
-        "gossip": null
-      }
+        "emitted_at_rafka_ms": 1718290000010
+      },
+      "runtime": null,
+      "data_dir": "/var/lib/rdm/mesh1.node.1",
+      "listeners": []
     }
   }
 }

@@ -116,8 +116,6 @@ pub struct MeshView {
     pub status: crate::model::ScopeStatus,
     /// The mesh's primary node-admin, when one is elected.
     pub primary_admin: Option<NodeId>,
-    /// The control API base of the mesh's primary.
-    pub admin_api_base: Option<String>,
     /// The globally unique IDs of every node of the mesh.
     pub nodes: Vec<NodeId>,
 }
@@ -135,8 +133,6 @@ pub struct FabricView {
     pub provider: crate::model::ProviderKind,
     /// The fabric's primary node-admin, when one is elected.
     pub fabric_primary: Option<NodeId>,
-    /// The control API base of the fabric primary.
-    pub admin_api_base: Option<String>,
     /// The fabric's meshes.
     pub meshes: Vec<MeshView>,
 }
@@ -261,16 +257,6 @@ impl Topology {
         }
     }
 
-    /// The control endpoint of `mesh`'s primary (its admin primary's).
-    pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
-        self.node_type_primary(mesh, "node-admin")?.admin_api_base.as_deref()
-    }
-
-    /// The fabric-primary's control endpoint.
-    pub(crate) fn fabric_control_endpoint(&self) -> Option<&str> {
-        self.fabric_primary()?.admin_api_base.as_deref()
-    }
-
     /// Resolve an admitted node reference without falling back from identity to location.
     /// Non-node subjects do not select a node.
     pub fn node_subject(&self, subject: &rdm_core::OperationSubject) -> Option<&Node> {
@@ -366,7 +352,6 @@ impl Topology {
             name: m.name.clone(),
             status: m.status,
             primary_admin: self.node_type_primary(&m.name, "node-admin").map(|n| n.node_id.clone()),
-            admin_api_base: self.mesh_control_endpoint(&m.name).map(str::to_string),
             nodes,
         })
     }
@@ -379,7 +364,6 @@ impl Topology {
             status: self.fabric.status,
             provider: self.fabric.provider,
             fabric_primary: self.fabric_primary().map(|n| n.node_id.clone()),
-            admin_api_base: self.fabric_control_endpoint().map(str::to_string),
             meshes: self.meshes.iter().filter_map(|m| self.mesh_view(&m.name)).collect(),
         }
     }
@@ -395,10 +379,6 @@ mod tests {
         n.status = status;
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
-        if rdm_core::is_node_admin(&n.r#type) {
-            // Each admin its own port in the fixture: mesh1.node-admin.1 serves 18001, mesh1.node-admin.2 18002.
-            n.admin_api_base = Some(format!("http://127.0.0.1:{}", 18000 + n.name.parse::<u16>().expect("the fixture's admins are numbered")));
-        }
         n
     }
 
@@ -516,7 +496,8 @@ mod tests {
     }
 
     /// CONTRACT: a primary marked silent after the election that named it is a view that has not
-    /// converged, and until the next election it is still the holder the view names and advertises. Must NOT happen: the readers dropping a silent primary,
+    /// converged, and until the next election it is still the primary the view names, `mesh.get`'s
+    /// `primary_admin` included. Must NOT happen: the readers dropping a silent primary,
     /// so the mesh shows no primary while its primary record names one.
     #[test]
     fn a_silent_primary_is_unconverged_and_still_the_named_primary() {
@@ -526,17 +507,19 @@ mod tests {
         assert!(v.contains(&TopologyViolation::PrimaryNotLive { path: "mesh1.node-admin".into(), name: "1".into() }), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoNodePrimary { mesh: "mesh1".into(), r#type: "node-admin".into() }), "{v:?}");
         assert_eq!(t.node_type_primary("mesh1", "node-admin").map(|n| n.node_id.clone()), Some(t.nodes[0].node_id.clone()), "the silent primary is still the one named");
-        assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
+        assert_eq!(t.mesh_view("mesh1").and_then(|m| m.primary_admin), Some(t.nodes[0].node_id.clone()), "mesh.get names the silent primary");
     }
 
+    /// CONTRACT: `fabric.get` and `mesh.get` name the live primary node-admin by its node id, and
+    /// the name moves with the primary, never to a hidden map. RDM carries no contact field (Q402,
+    /// Q403): a node's contact is one of its named listeners, read with `node.get`.
     #[test]
-    fn views_advertise_the_live_owning_admin_endpoint() {
+    fn views_name_the_live_owning_admin() {
         let t = mn();
         let f = t.fabric_view();
         assert_eq!(f.fabric_primary.as_ref(), Some(&t.nodes[0].node_id));
-        assert_eq!(f.admin_api_base.as_deref(), Some("http://127.0.0.1:18001"));
         assert_eq!(f.meshes.len(), 1);
-        assert_eq!(f.meshes[0].admin_api_base.as_deref(), Some("http://127.0.0.1:18001"));
+        assert_eq!(f.meshes[0].primary_admin.as_ref(), Some(&t.nodes[0].node_id));
         assert_eq!(f.meshes[0].nodes.len(), 5);
         let id = t.meshes[0].id.clone().unwrap().to_string();
         assert_eq!(t.mesh_view(&id), t.mesh_view("mesh1"));
@@ -546,7 +529,9 @@ mod tests {
         t.nodes[0].is_fabric_primary = false;
         t.nodes[1].is_primary = true;
         t.nodes[1].is_fabric_primary = true;
-        assert_eq!(t.fabric_view().admin_api_base.as_deref(), Some("http://127.0.0.1:18002"));
+        let f = t.fabric_view();
+        assert_eq!(f.fabric_primary.as_ref(), Some(&t.nodes[1].node_id));
+        assert_eq!(f.meshes[0].primary_admin.as_ref(), Some(&t.nodes[1].node_id));
         assert!(t.is_converged());
     }
 
@@ -561,19 +546,5 @@ mod tests {
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::DuplicateNode { path: "mesh1.node".into(), name: "3".into() }), "{v:?}");
         assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { path: "mesh1.node".into(), name: "1".into(), mesh: "mesh9".into() }), "{v:?}");
-    }
-
-    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; lifecycles/node-name-update.md: "Config on the
-    /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
-    /// fabric whose node-admins advertise no `admin_api_base` names no violation and is converged.
-    /// What must NOT happen: a topology held unconverged for a config value RDM never reads.
-    #[test]
-    fn a_node_admin_primary_with_no_admin_api_base_names_no_violation() {
-        let mut t = mn();
-        for n in t.nodes.iter_mut() {
-            n.admin_api_base = None;
-        }
-        assert_eq!(t.violations(), vec![]);
-        assert!(t.is_converged());
     }
 }

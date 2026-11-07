@@ -45,9 +45,9 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["executing_node"], node_id.as_str(), "{put}");
 
-    // 3. Capture identity, ports, deployment id and the advertised admin endpoint.
+    // 3. Capture identity, ports, deployment id and the mesh's primary node-admin.
     let fabric_before = estate.fabric_view().await;
-    let control_before = fabric_before.meshes[0].admin_api_base.clone().expect("advertised admin endpoint");
+    let control_before = fabric_before.meshes[0].primary_admin.clone().expect("the mesh names its primary node-admin");
     let incarnation_before = before["incarnation"].as_str().expect("incarnation_id").to_string();
     let deployment_before = before["runtime"]["deployment_id"].as_str().expect("deployment_id").to_string();
     estate.artifact("nodes-before.json", &json!(estate.node_values().await));
@@ -109,9 +109,9 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(absent["outcome"], "Reply", "{absent}");
     assert_eq!(absent["reply"]["result"]["found"], false, "the cut request was never applied: {absent}");
 
-    // 10. Control did not move: the advertised admin endpoint is unchanged and still serving.
+    // 10. Control did not move: the mesh's primary node-admin is unchanged.
     let fabric_after = estate.fabric_view().await;
-    assert_eq!(fabric_after.meshes[0].admin_api_base.as_deref(), Some(control_before.as_str()));
+    assert_eq!(fabric_after.meshes[0].primary_admin.as_ref(), Some(&control_before), "the mesh's primary node-admin did not move");
 
     assert_eq!(estate.node_views().await.iter().filter(|n| n.location() == node).count(), 1, "the path holds exactly one birth");
 

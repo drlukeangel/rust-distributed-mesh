@@ -1105,15 +1105,15 @@ const DELETE_CELL: &str = "container_primary_mesh_deleted_hands_over_fabric_prim
 /// CONTRACT (#2784, fabric loss): on a real Docker estate of two meshes (two node-admins and three
 /// nodes each) the mesh that holds the fabric-primary role is lost the way a caller loses it: one
 /// Build deletes it, executed by an admin outside it. While the Build runs, every surviving admin
-/// is asked who holds the fabric and the advertised endpoint is asked at once; an advertised
-/// endpoint is always a control endpoint of a birth of this run. Fabric authority moves to a ready
+/// is asked who holds the fabric and the primary it names is asked at once; a named primary is
+/// always a node-admin of this run. Fabric authority moves to a ready
 /// admin of the surviving mesh, through an election a surviving admin announces before the former
 /// primary's terminate step ends; the former primary's containers are then gone from the Docker
 /// daemon's running set (each one's terminal state read from the daemon, or the container removed),
 /// while every surviving container is the one it was (same id, same init, same start, running) and
 /// every survivor answers for the Fabric from the new primary. What must NOT happen: the former
-/// primary's containers ended before the hand-off, a survivor's container replaced, an advertised
-/// endpoint that belongs to no birth of the run.
+/// primary's containers ended before the hand-off, a survivor's container replaced, a named
+/// primary that is no node-admin of the run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end() {
     if crate::own_process::delegated(module_path!(), "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end") {
@@ -1144,13 +1144,11 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
         let ins = container_faults::inspect(&id).unwrap_or_else(|e| panic!("{name:?}: {e}"));
         containers_before.insert(name, (id, ins));
     }
-    // Each node-admin's advertised contact, as the fabric-primary holds its digest.
-    let advertised = estate.admin_api_bases_at(&primary).await;
-    let admin_bases: BTreeMap<PathName, String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(&n), advertised.get(&s(&n["node_id"])).cloned().unwrap_or_default())).collect();
-    let run_bases: BTreeSet<String> = admin_bases.values().cloned().collect();
-    assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
-    let survivors: Vec<PathName> = admin_bases.keys().filter(|n| n.path.starts_with(&format!("{survivor_mesh}."))).cloned().collect();
-    let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| admin_bases[n].clone()).collect();
+    // Each node-admin of the run, by its location and its node id.
+    let admins: BTreeMap<PathName, String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| (location(&n), s(&n["node_id"]))).collect();
+    let run_admins: BTreeSet<String> = admins.values().cloned().collect();
+    assert_eq!(run_admins.len(), 4, "four admins: {run_admins:?}");
+    let survivors: Vec<PathName> = admins.keys().filter(|n| n.path.starts_with(&format!("{survivor_mesh}."))).cloned().collect();
     estate.enter(&survivors[0]).await;
     let fabric_id = estate.fabric_id.clone();
     let peers = estate.peers().await;
@@ -1169,10 +1167,10 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
                     let row = match fabric_view_of(&peers, from, &fabric_id).await {
                         None => json!({"at_unix_nano": at, "asked": from, "answered": false}),
                         Some(f) => match f.fabric_primary {
-                            None => json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": "", "advertised": f.admin_api_base}),
+                            None => json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": "", "advertised": null}),
                             Some(primary) => {
                                 let followed = rdm_test::typed::fabric_view_of_id(&peers, &primary, &fabric_id).await;
-                                json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": primary.to_string(), "advertised": f.admin_api_base, "advertised_answers": followed.is_some()})
+                                json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": primary.to_string(), "advertised": primary.to_string(), "advertised_answers": followed.is_some()})
                             }
                         },
                     };
@@ -1219,9 +1217,9 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     let agrees = || async {
         for name in &survivors {
             let f = fabric_view_of(&peers, name, &fabric_id).await?;
-            let (h, advertised) = (f.fabric_primary.clone()?, f.admin_api_base.clone().unwrap_or_default());
+            let h = f.fabric_primary.clone()?;
             let own = rdm_test::typed::fabric_view_of_id(&peers, &h, &fabric_id).await?;
-            if !survivor_admin_ids.contains(h.as_str()) || own.fabric_primary.as_ref() != Some(&h) || !survivor_bases.contains(&advertised) {
+            if !survivor_admin_ids.contains(h.as_str()) || own.fabric_primary.as_ref() != Some(&h) {
                 return None;
             }
         }
@@ -1241,11 +1239,8 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     sampler.await.unwrap();
     let fabric_now = fabric_json(&estate).await;
     let new_primary = s(&fabric_now["fabric_primary"]);
-    let new_base = s(&fabric_now["admin_api_base"]);
     assert!(survivor_admin_ids.contains(&new_primary), "the new primary {new_primary} is an admin of {survivor_mesh}");
-    let advertised_after = estate.admin_api_bases_at(&survivors[0]).await;
-    assert!(after.iter().any(|n| s(&n["node_id"]) == new_primary) && advertised_after.get(&new_primary) == Some(&new_base), "the new primary {new_primary} is a ready admin of the surviving view and its advertised endpoint is its own: {after:#?}");
-    assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base}");
+    assert!(after.iter().any(|n| s(&n["node_id"]) == new_primary), "the new primary {new_primary} is a ready admin of the surviving view: {after:#?}");
     // Every surviving container is the one it was.
     let mut survivors_inspected: BTreeMap<PathName, Value> = BTreeMap::new();
     for (name, (id, was)) in containers_before.iter().filter(|(n, _)| n.path.starts_with(&format!("{survivor_mesh}."))) {
@@ -1259,8 +1254,8 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     estate.stop().await;
     let spans = estate.spans();
     let rows = samples.lock().unwrap().clone();
-    let outside: Vec<&Value> = rows.iter().filter(|r| r["advertised"].as_str().is_some_and(|a| !run_bases.contains(a))).collect();
-    assert!(outside.is_empty(), "an advertised fabric endpoint is a port of no birth of this run: {outside:#?}");
+    let outside: Vec<&Value> = rows.iter().filter(|r| r["advertised"].as_str().is_some_and(|a| !run_admins.contains(a))).collect();
+    assert!(outside.is_empty(), "a named fabric-primary is no node-admin of this run: {outside:#?}");
     let after_complete = rows.iter().filter(|r| r["at_unix_nano"].as_u64().unwrap() > build_complete && !r["asked"].is_null()).count();
     assert!(after_complete > 0, "the survivors were asked after the Build completed");
     // The hand-off precedes the former primary's end: a surviving admin announced the new fabric
@@ -1285,7 +1280,6 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
         "lost_mesh": lost_mesh,
         "survivor_mesh": survivor_mesh,
         "new_primary": new_primary,
-        "primary_endpoint": new_base,
         "started_unix_nano": started,
         "build_complete_unix_nano": build_complete,
         "first_handoff_announcement_unix_nano": first_handoff,

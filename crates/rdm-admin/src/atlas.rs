@@ -611,7 +611,6 @@ impl Atlas {
                 status: r.state,
                 is_primary: false,
                 is_fabric_primary: false,
-                admin_api_base: None,
                 transport_addr: Some(r.transport_addr),
                 listeners: r.listeners.clone(),
                 routable: false,

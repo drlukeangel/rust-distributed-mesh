@@ -199,7 +199,6 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> No
     n.is_primary = primary;
     n.incarnation_id = Some(IncarnationId::mint());
     if n.r#type == "node-admin" {
-        n.admin_api_base = Some("http://127.0.0.1:18001".into());
         n.is_fabric_primary = primary;
     }
     n

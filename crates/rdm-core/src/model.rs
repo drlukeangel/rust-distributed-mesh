@@ -218,8 +218,6 @@ pub struct Node {
     pub is_primary: bool,
     /// Whether the node holds the fabric-primary role.
     pub is_fabric_primary: bool,
-    /// The control API base a node-admin serves; `None` for other kinds.
-    pub admin_api_base: Option<String>,
     /// The one address of the birth's Iroh endpoint; `None` until it is born.
     pub transport_addr: Option<std::net::SocketAddr>,
     /// Non-Iroh listeners the birth binds, by name.
@@ -272,7 +270,6 @@ impl Node {
             status: NodeStatus::Pending,
             is_primary: false,
             is_fabric_primary: false,
-            admin_api_base: None,
             transport_addr: None,
             listeners: Vec::new(),
             // Nothing realised yet: not ready, so not selected.

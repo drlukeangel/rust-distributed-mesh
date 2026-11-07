@@ -58,7 +58,6 @@ impl AdminRunner {
         n.provider = Some(self.provider.kind());
         n.status = d.status;
         n.routable = false;
-        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
         let held = self.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).unwrap_or_default();
         n.data_dir = held.data_dir;

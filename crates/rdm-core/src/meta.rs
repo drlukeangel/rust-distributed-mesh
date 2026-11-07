@@ -212,12 +212,6 @@ pub fn is_node_admin(r#type: &str) -> bool {
     r#type == NODE_ADMIN
 }
 
-/// A node-admin's application contact (`admin_api_base`, config, never checked): `rdm://<node id>`,
-/// named by its node id alone (no crate of RDM opens an HTTP listener). `None` for another type.
-pub fn admin_api_base(r#type: &str, node_id: &crate::NodeId) -> Option<String> {
-    is_node_admin(r#type).then(|| format!("rdm://{node_id}"))
-}
-
 /// One of the application's node types (the Fabrics schema's `types`, node-rpc-envelope.md "#
 /// Schemas"): it extends `node` and overrides its defaults. Never named `node` or `node-admin`, RDM's
 /// two (refused by name).

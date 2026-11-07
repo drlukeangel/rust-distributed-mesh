@@ -41,13 +41,14 @@ fn spans_in(evidence: &std::path::Path) -> Vec<Value> {
 
 /// CONTRACT (node-rpc-envelope.md, "Node RPC readiness gate": "The router refuses every op, Ping
 /// included, with typed NotReady until the readiness gate is open. A node-admin waits until its Status
-/// authority is filled and its view holds it"): a node-admin prints, beside its control base, the birth
-/// it runs under (`RDM_NODE_BIRTH=`: node id, path and name, endpoint, address and incarnation). It is the
+/// authority is filled and its view holds it"): a node-admin prints the birth it runs under
+/// (`RDM_NODE_BIRTH=`: node id, path and name, endpoint, address and incarnation), its whole
+/// announcement. It is the
 /// exact birth its boot span names and the one its readiness gate opens for
 /// (`rdm.node_admin.node.serve.via-view-holds-birth`), and a caller that holds only that line reaches it
 /// over Node RPC: its `fabric.get`, refused NotReady until the readiness gate opens, names it the fabric-primary.
 /// The estate hands its typed objects to an admin it started this way; the admin's view lists the admin
-/// only once its readiness gate opens, which can be after the admin printed its base.
+/// only once its readiness gate opens, which can be after the admin printed its birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     let artifacts = artifacts_root().join("estate-handover").join(TEST);
@@ -74,21 +75,21 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
         .expect("the node-admin starts");
     let stdout = child.stdout.take().unwrap();
     let admin = Started(child);
-    // Every line the admin prints, up to its control base.
+    // Every line the admin prints, up to its birth.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut lines = Vec::new();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let base = line.starts_with("RDM_NODE_ADMIN_API_BASE=");
+            let birth = line.starts_with("RDM_NODE_BIRTH=");
             lines.push(line);
-            if base {
+            if birth {
                 let _ = tx.send(lines.clone());
             }
         }
     });
-    let printed = rx.recv_timeout(Duration::from_secs(30)).expect("the node-admin prints its control base within 30 s");
+    let printed = rx.recv_timeout(Duration::from_secs(30)).expect("the node-admin prints its birth within 30 s");
     std::fs::write(artifacts.join("printed.txt"), printed.join("\n")).unwrap();
-    let line = printed.iter().find_map(|l| l.strip_prefix("RDM_NODE_BIRTH=")).unwrap_or_else(|| panic!("the node-admin prints no birth beside its control base; it printed {printed:?}"));
+    let line = printed.iter().find_map(|l| l.strip_prefix("RDM_NODE_BIRTH=")).unwrap_or_else(|| panic!("the node-admin prints no birth; it printed {printed:?}"));
     let birth: MeshNode = serde_json::from_str(line).unwrap_or_else(|e| panic!("the birth line is a birth: {e}: {line}"));
 
     // A caller that holds nothing but the line.

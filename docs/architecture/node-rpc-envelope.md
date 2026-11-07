@@ -407,7 +407,7 @@ Each command goes to the node's mesh-primary.
 Status moves only through [node status](lifecycles/node-status.md), never a put. A new exe requires a new node.
 
 node.config is an application property bag, separate from tags, join cert/time and topology.
-Config is a map of name to value; duplicate keys take the last value, including `admin_api_base`.
+Config is a map of name to value; duplicate keys take the last value.
 The node persists it in its record. Neither primary holds a copy in its atlas and the
 map is never carried in the digest. RDM stores application values without interpreting them.
 The initial entry is retained with the row and applied by the node; recovery inherits acknowledged
@@ -1526,14 +1526,7 @@ answers the same PrimaryUpdated before any revision check. A different payload f
 RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: the call ends on its `Send`,
 node investigation of the successor's exact birth decides, and a `reached` verdict makes the identical call again.
 
-The primary's full digest
-carries `admin_api_base`, the application contact URL including its bound port. Consumers
-resolve the successor's application contact from that exact birth's contact record;
-The primary's digest carries its contact addresses.
-The two contact fields are explicit: `transport_addr` is the bound QUIC UDP ip:port;
-`admin_api_base` is an application-supplied contact URL with its bound port.
-RDM serves Node RPC; the application contact is independent of that endpoint; consumers cannot derive either port from the other. Contact changes
-are learned from the exact birth's digest.
+The primary's Digest carries `transport_addr`, the bound QUIC UDP ip:port that RDM serves Node RPC on. The application's contact is one of the birth's named `listeners`, at the address it bound, which the node writes on its own record at its join; consumers read it from that exact birth's record. The two are independent: consumers cannot derive either port from the other.
 
 Spans: the caller emits `rdm.node_rpc.request.update.via-call` with op=0x21; the successor's install and
 every refusal carry the operation, build_id, both exact births and each entry's revision. A change

@@ -63,10 +63,10 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     for n in &held {
         match meshes.iter_mut().find(|m| m.name == n.mesh()) {
             Some(m) => m.nodes.push(n.node_id.clone()),
-            None => meshes.push(MeshView { renewals: None, id: None, name: n.mesh().clone(), status: ScopeStatus::Ready, primary_admin: Some(node_id.clone()), admin_api_base: None, nodes: vec![n.node_id.clone()] }),
+            None => meshes.push(MeshView { renewals: None, id: None, name: n.mesh().clone(), status: ScopeStatus::Ready, primary_admin: Some(node_id.clone()), nodes: vec![n.node_id.clone()] }),
         }
     }
-    let fabric = FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process, fabric_primary: Some(node_id.clone()), admin_api_base: None, meshes, build_id: None };
+    let fabric = FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process, fabric_primary: Some(node_id.clone()), meshes, build_id: None };
     let seen: Arc<Mutex<Vec<ReadRequest>>> = Arc::default();
     let s = seen.clone();
     let server = ServerBuilder::new()

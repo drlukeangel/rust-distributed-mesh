@@ -107,7 +107,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
             Frame::NodeDeleted{op:delete.clone(),forwarded_by:None},
             Frame::Concern{role:PrimaryRole::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:NodeId::mint().to_string()},
             Frame::NodeConnectionsDeleting{op:delete.clone(),forwarded_by:None},Frame::NodeConnectionsDeleted{op:delete.clone(),forwarded_by:None},Frame::NodeLeaving{op:delete.clone(),forwarded_by:None},Frame::NodeLeft{op:delete,forwarded_by:None},
-            Frame::NewFabricPrimary{primary:primary_of(&restarted,99),endpoint_id:bad.to_string(),transport_addr:"127.0.0.1:12099".parse().unwrap(),admin_api_base:None},
+            Frame::NewFabricPrimary{primary:primary_of(&restarted,99),endpoint_id:bad.to_string(),transport_addr:"127.0.0.1:12099".parse().unwrap()},
         ];
         for frame in frames.drain(..) {
             serial+=1;send(&sender,&receiver,frame,serial,&author).await;

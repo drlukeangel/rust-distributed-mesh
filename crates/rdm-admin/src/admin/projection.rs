@@ -428,7 +428,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // holds it and its mesh ready. Anything else is a routing stop.
         n.routable = n.status == NodeStatus::Ready && digest_view.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
@@ -473,7 +472,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.stopped = true;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
@@ -541,7 +539,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         };
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();

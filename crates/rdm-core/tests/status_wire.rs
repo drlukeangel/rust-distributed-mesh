@@ -181,13 +181,14 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
                 "01047469657204676f6c64", "0103726564", "0101020304", "0102010304",
             ),
         ),
-        (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010c303132333435363738396162", "00", "010c343132333435363738396162", "00")),
+        // id | name | status | primary_admin | nodes | renewals None
+        (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010c303132333435363738396162", "010c343132333435363738396162", "00")),
         (
-            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | next_expiry None
-            Fabric { fabric: FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
+            // id | name | status | provider | fabric_primary | meshes | build_id Some("b") | next_expiry None
+            Fabric { fabric: FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, meshes: vec![], build_id: Some("b".into()) } },
             // ... | topology_storage_provider None | previous_topology_storage_providers [] (storage.md §2)
             // | roots None | ca None (fabric-ca-renew.md)
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "00", "00", "00", "00", "00", "010162", "00", "00", "00", "00", "00"),
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "00", "00", "00", "00", "010162", "00", "00", "00", "00", "00"),
         ),
         (
             Connections {
@@ -344,7 +345,7 @@ fn node_view() -> NodeView {
 
 /// One mesh as a `mesh.get` answer carries it.
 fn mesh_view() -> MeshView {
-    MeshView { renewals: None, id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::Ready, primary_admin: Some(node()), admin_api_base: None, nodes: vec![NodeId::parse("4123456789ab").unwrap()] }
+    MeshView { renewals: None, id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::Ready, primary_admin: Some(node()), nodes: vec![NodeId::parse("4123456789ab").unwrap()] }
 }
 
 fn golden<T: serde::Serialize>(value: T, expected: &str) {

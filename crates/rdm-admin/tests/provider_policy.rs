@@ -20,7 +20,6 @@ async fn first_admin(spawn_type: Option<&str>) -> (Arc<MemoryBuildStateAdapter>,
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
-    admin.admin_api_base = Some("http://127.0.0.1:18001".into());
     let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: IncarnationId::mint() };
     admin.incarnation_id = Some(executor.incarnation.clone());
     let topology = Topology {

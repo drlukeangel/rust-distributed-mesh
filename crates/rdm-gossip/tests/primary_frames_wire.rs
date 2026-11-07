@@ -57,20 +57,20 @@ fn the_view_holds_the_superseding_primary_record() {
 }
 
 /// CONTRACT: `NewFabricPrimary` is variant 14, appended after `NodeConnectionsDeleted` (13), a reserved position (R-G3): the committed
-/// primary (mesh, NodeId, incarnation, revision), the endpoint key, the bound QUIC UDP address
-/// (socket-address variant 0 is IPv4: four octets then the port as a varint) and the optional HTTP
-/// API base. The two addresses are separate fields: neither is derived from the other.
+/// primary (mesh, NodeId, incarnation, revision), the endpoint key and the bound QUIC UDP address
+/// (socket-address variant 0 is IPv4: four octets then the port as a varint). RDM carries no other
+/// contact field (Q402).
 #[test]
 fn new_fabric_primary_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
-    let frame = Frame::NewFabricPrimary { primary: primary(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
-    // 0e = variant 14; primary 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
-    let hex = format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
+    let frame = Frame::NewFabricPrimary { primary: primary(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap() };
+    // 0e = variant 14; primary 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474.
+    let hex = format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903");
     let expected = golden(&frame, &bytes(&hex));
     assert_eq!(frame.golden_encode(), expected);
     assert_roundtrip(&frame, &expected);
-    let none = Frame::NewFabricPrimary { primary: primary(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
-    assert_eq!(none.golden_encode(), golden(&none, &bytes(&format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00"))));
+    let low = Frame::NewFabricPrimary { primary: primary(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap() };
+    assert_eq!(low.golden_encode(), golden(&low, &bytes(&format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50"))));
 }
 
 
