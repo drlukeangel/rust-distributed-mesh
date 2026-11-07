@@ -10,7 +10,7 @@
 //! ([`TopologyView::take_read_chunk`]): there is no second install path.
 
 use rdm_core::wire::ReadNode;
-use rdm_core::{MeshDigest, PublisherId};
+use rdm_core::MeshDigest;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
 use rdm_transport::stream::StreamItem;

@@ -19,7 +19,7 @@ mod tests {
     use iroh::protocol::Router;
     use rdm_core::topology::{SourceVersion, StoredNode, TopologyReply};
     use rdm_core::views::{NodeStatus, NodeView, ProviderKind};
-    use rdm_core::{MeshDigest, MeshNode, PublisherId};
+    use rdm_core::{MeshDigest, MeshNode};
     use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
     use rdm_gossip::topology::TopologyView;
     use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -79,10 +79,6 @@ mod tests {
             let caller_inc = IncarnationId::mint();
             let caller_path = PathName::numbered("mesh1", "node", 1);
 
-            let pub_id = PublisherId {
-                incarnation: server_inc.clone(),
-                node_id: server_node_id.clone(),
-            };
             let own_digest = MeshDigest {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
