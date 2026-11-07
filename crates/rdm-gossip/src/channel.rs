@@ -1263,7 +1263,7 @@ impl Channels {
     /// snapshot carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let side = if answerer_mesh == self.topology_view.view.mesh { Side::Read } else { Side::ReadPeer };
-        let own_digests = (chunk.mesh == self.topology_view.view.mesh).then(|| chunk.digests.clone());
+        let own_digests = (side == Side::Read && chunk.mesh == self.topology_view.view.mesh).then(|| chunk.digests.clone());
         let taken = self.topology_view.view.take_read_chunk(chunk, side, &self.topology_view.fabric);
         if let Taken::Installed(i) = &taken {
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.topology_view.fabric) {

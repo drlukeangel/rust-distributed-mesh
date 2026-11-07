@@ -573,8 +573,7 @@ impl View {
         for (node_id, incarnation, runtime) in &chunk.runtimes {
             self.digest_view.hold_runtime(node_id, incarnation, runtime.clone());
         }
-        // A read of this node's own mesh holds its members whoever serves it (`apply_full`).
-        let own_digests = (chunk.mesh == self.mesh).then(|| chunk.digests.clone());
+        let own_digests = (side == Side::Read && chunk.mesh == self.mesh).then(|| chunk.digests.clone());
         let record_own = |digests: Option<Vec<MeshDigest>>| {
             if let Some(digests) = digests {
                 let me_name = self.current_name();
@@ -742,7 +741,11 @@ impl View {
             let taken = match (side, own) {
                 // An own-mesh node's status comes only from its own Digest (gossip.md §3.1 `Digest`): its
                 // primary's projection gives nothing of a node this view hears, and holds one it does not.
-                (Side::Backbone, true) | (Side::MeshChannel, true) => {
+                // A read served from another mesh's node gives no liveness of this node's own mesh
+                // (R-G2) either: it holds each member's details as that projection does, so the
+                // member's own Digest, its status only, is known when it comes (a re-born
+                // mesh-primary whose start read the fabric-primary serves).
+                (Side::Backbone, true) | (Side::MeshChannel, true) | (Side::ReadPeer, true) => {
                     if self.digest_view.own_mesh_member(&d) {
                         self.digest_view.hold_projected_at(&d, std::time::Instant::now());
                     }
@@ -754,11 +757,8 @@ impl View {
                 // (R-G2): a peer mesh's member is topology and refreshes no liveness; a node of this
                 // node's own mesh is held as the answerer heard it, its status the one its own Digest
                 // carried, ordered by that Digest's sequence (gossip.md §3.1, four orderings): a later
-                // Digest already held refuses the primary's older copy, status included. A read of its
-                // own mesh does so whoever serves it, a node of another mesh (the fabric-primary
-                // serving a re-born mesh-primary's start read) included: the start read is the truth,
-                // and the details its members' first Digests carried ride nothing else.
-                (Side::Read | Side::ReadPeer, true) => self.digest_view.record_forwarded(d.clone()),
+                // Digest already held refuses the primary's older copy, status included.
+                (Side::Read, true) => self.digest_view.record_forwarded(d.clone()),
                 (Side::Read, false) | (Side::ReadPeer, false) => self.digest_view.record_topology(d.clone()),
             };
             if taken {

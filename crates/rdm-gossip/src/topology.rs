@@ -954,10 +954,11 @@ mod tests {
     }
 
     /// CONTRACT (node-start.md: a starting node reads its topology; gossip.md §3.1 `Digest`: "peers
-    /// retain them"; the start read is the truth): a read of the reader's own mesh holds the members it
-    /// carries, with their details, whoever serves it; here a re-born mesh-primary's start read that
-    /// the fabric-primary, a node of another mesh, serves. Each member's later Digest, which carries
-    /// its status only, is then taken as that member's, and the view its aggregate is built from
+    /// retain them"; R-G2: a read from another mesh's node gives no liveness of the reader's own mesh):
+    /// a read of the reader's own mesh that a node of another mesh serves (here the fabric-primary
+    /// serving a re-born mesh-primary's start read) holds each member's details as its mesh-primary's
+    /// projection does, and no member as heard. Each member's later Digest, which carries its status
+    /// only, is then taken as that member's, and the view its aggregate is built from
     /// (`Backbone::own_members`: the current births of its mesh) lists every one of them. Must NOT
     /// happen: the members of its own mesh held as a peer mesh's source projection only, so each of their
     /// Digests is an unknown birth to the one node with no primary to top up from (node_records
@@ -980,12 +981,15 @@ mod tests {
         assert!(matches!(view.take_read_chunk(read, Side::ReadPeer, &fabric), Taken::Installed(_)), "the read is installed");
         for d in [&one, &two] {
             assert_eq!(view.digest_view.node_of(&d.node.node_id, &d.node.incarnation), Some(d.node.clone()), "{}: its details are held", d.node.name);
+            assert!(view.digest_view.get(d.node.node_id.as_str()).is_none(), "{}: a read from another mesh gives no liveness (R-G2)", d.node.name);
         }
         // It takes the role: each member's later Digest, its status only, is that member's.
         view.primary.store(true, Ordering::Relaxed);
-        let mut later = one.clone();
-        later.digest_seq = 5;
-        assert_eq!(view.take(&Frame::digest(&later, false), &fabric, "mesh-channel").len(), 1, "a member's status-only Digest is taken");
+        for d in [&one, &two] {
+            let mut later = d.clone();
+            later.digest_seq = 5;
+            assert_eq!(view.take(&Frame::digest(&later, false), &fabric, "mesh-channel").len(), 1, "{}: its status-only Digest is taken", d.node.name);
+        }
         assert!(view.mesh_rx.lock().unwrap().desynced().is_empty(), "no unknown birth");
         let listed: BTreeSet<String> = view.digest_view.current(view.digest_view.staleness_floor()).into_iter().filter(|d| d.node.mesh == "mesh2").map(|d| d.node.name).collect();
         assert_eq!(listed, ["1".to_string(), "2".to_string()].into(), "the view its aggregate is built from lists both nodes");
