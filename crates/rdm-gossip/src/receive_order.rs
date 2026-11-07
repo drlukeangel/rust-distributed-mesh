@@ -54,7 +54,7 @@
 
 use crate::frame::Frame;
 use crate::snapshot::PublisherId;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// Reserved page positions have one receive outcome. Inspect only the kind, before any view,
 /// identity receipt, ordinary apply span or completion carrier can run.

@@ -186,7 +186,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         .all()
         .iter()
         .filter_map(|x| match x.frame.data() {
-            Frame::TopologyFull { published_at_rafka_ms, .. } if x.channel == "backbone" => Some(x.heard_at_ms.abs_diff(*published_at_rafka_ms)),
+            // The aggregate's publication time is its envelope's `time` (Q389).
+            Frame::TopologyFull { .. } if x.channel == "backbone" => x.frame.context().map(|c| x.heard_at_ms.abs_diff(c.time_ms)),
             _ => None,
         })
         .collect();

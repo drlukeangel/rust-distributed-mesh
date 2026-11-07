@@ -9,7 +9,6 @@
 //! original publisher; and no status travels inside `TopologyFull`.
 
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_gossip::snapshot::PublisherId;
 use rdm_gossip::frame::{forward_of, Frame};
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
@@ -175,24 +174,11 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert_eq!(status_view.mesh("mesh1").unwrap().publisher, peer);
         assert!(!status_view.take(&republish(peer), &fabric), "the same publisher with the same changed_at is a repeat");
 
-        // Nothing rides inside TopologyFull: its fields are digests and overlays only.
-        let members = Frame::TopologyFull {
-            mesh: "mesh1".into(),
-            mesh_id: None,
-            publisher: PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
-            forwarded_by: None,
-            topology_version: 1,
-            published_at_rafka_ms: 1,
-            snapshot_id: 1,
-            chunk_index: 0,
-            chunk_count: 1,
-            digests: vec![],
-            in_flight: vec![],
-            deleted: vec![],
-        };
+        // No mesh status rides inside TopologyFull: its fields are the mesh, the chunk and its nodes only.
+        let members = Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, chunk_index: 0, chunk_count: 1, nodes: vec![] };
         // The frame is positional postcard: this pattern names every field the frame carries, and
-        // none of them is a status.
-        let Ok(Frame::TopologyFull { mesh: _, mesh_id: None, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, deleted: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
+        // none of them is a mesh's status.
+        let Ok(Frame::TopologyFull { mesh: _, mesh_id: None, chunk_index: _, chunk_count: _, nodes: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
             panic!("TopologyFull round-trips as TopologyFull, carrying no status field");
         };
 

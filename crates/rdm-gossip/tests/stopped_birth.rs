@@ -20,7 +20,7 @@ use rdm_gossip::digest_view::DigestView;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::status::StatusEvent;
-use rdm_gossip::snapshot::{chunks_of, Chunk, PublisherId};
+use rdm_gossip::snapshot::{Chunk, PublisherId};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -160,29 +160,11 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
     }
 }
 
-/// The chunks of `mesh`'s snapshot in `topology` as a topology read delivers them.
+/// `mesh`'s snapshot in `topology` as a topology read delivers it: one chunk, naming no author (a
+/// read's reply carries none).
 fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
     let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
-    chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
-        mesh: s.mesh.clone(),
-        mesh_id: None,
-        publisher: s.publisher.clone(),
-        forwarded_by: None,
-        topology_version: s.topology_version,
-        published_at_rafka_ms: 1,
-        snapshot_id: 900,
-        chunk_index,
-        chunk_count,
-        digests,
-        in_flight,
-        deleted,
-    }.authored(&crate::gossip_wire::author(), 0, 1))
-    .into_iter()
-    .map(|f| match f.into_data() {
-        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), },
-        _ => unreachable!("chunks_of shapes TopologyFull"),
-    })
-    .collect()
+    vec![Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() }]
 }
 
 /// CONTRACT (gossip.md §3.1 `Digest`, §3.3, Q387: inside its mesh a node's status comes from its own
@@ -218,9 +200,8 @@ fn an_own_mesh_node_holding_node_stopped_ends_the_stop_by_the_nodes_next_cycle_d
         let bb = p_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
         m_channels.wait_for_neighbour().await;
-        let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
-        let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
+        let version_at_m = || m.held_source_version("mesh1").map(|(_, v)| v);
 
         // The mesh-primary's own digest, heard by the member directly.
         let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, None, NodeStatus::Ready, 0, 41_001);
@@ -347,7 +328,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         m_channels.wait_for_neighbour().await;
         let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
-        let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
+        let version_at_m = || m.held_source_version("mesh1").map(|(_, v)| v);
 
         let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, None, NodeStatus::Ready, 0, 41_021);
         p_channels.publish(&p_digest).await.unwrap();

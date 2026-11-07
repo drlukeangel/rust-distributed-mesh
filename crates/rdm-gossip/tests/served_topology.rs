@@ -10,9 +10,8 @@
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::backbone::Backbone;
-use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::snapshot::{chunks_of, Chunk, PublisherId, SourceSnapshot, Taken};
+use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
 use serde_json::Value;
 
 fn fabric() -> FabricId {
@@ -56,30 +55,10 @@ fn of(served: Vec<SourceSnapshot>, mesh: &str) -> SourceSnapshot {
     served.into_iter().find(|s| s.mesh == mesh).expect("the primary serves its own mesh")
 }
 
-/// The chunks of `s` as one topology read delivers them, under the `TopologyService`'s `snapshot_id`.
-fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
-    chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
-        mesh: s.mesh.clone(),
-        mesh_id: None,
-        publisher: s.publisher.clone(),
-        forwarded_by: None,
-        topology_version: s.topology_version,
-        published_at_rafka_ms: 1,
-        snapshot_id,
-        chunk_index,
-        chunk_count,
-        digests,
-        in_flight,
-        deleted,
-    }.authored(&crate::gossip_wire::author(), 0, 1))
-    .into_iter()
-    .map(|f| match f.into_data() {
-        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
-            Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), }
-        }
-        other => panic!("not a TopologyFull chunk: {other:?}"),
-    })
-    .collect()
+/// `s` as one topology read delivers it, served at Rafka-time `time_ms`: one chunk, naming no author
+/// (a read's reply carries none).
+fn read_chunks(s: &SourceSnapshot, time_ms: u64) -> Vec<Chunk> {
+    vec![Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() }]
 }
 
 /// Every chunk of one read, taken by `reader` as the joiner takes a read from its own mesh: the last
@@ -115,7 +94,6 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         p_channels.join(rdm_gossip::channel::ChannelId::backbone(p.fabric_id()), vec![]).await.unwrap();
         let bb = p_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
-        let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
         let p_digest = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, NodeStatus::Ready, 0, 41_101);
@@ -128,7 +106,6 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         // Version N: the publication puts the projection into the mesh; a joiner reads it and installs it.
         publication().await;
         let published = of(p.held_topology(&own()), "mesh1");
-        assert_eq!(published.publisher, publisher);
         let n = published.topology_version;
         assert!(n >= 1, "the publication published a version: {n}");
         assert!(matches!(take_read(&reader_channels, &published, 1), Taken::Installed(_)), "the joiner installs version {n}");
@@ -140,7 +117,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
 
         let served = of(p.held_topology(&own()), "mesh1");
         let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>();
-        assert_eq!((served.publisher.clone(), served.topology_version), (publisher.clone(), n), "the read serves the version its content was published at");
+        assert_eq!(served.topology_version, n, "the read serves the version its content was published at");
         let again = take_read(&reader_channels, &served, 2);
         assert!(!matches!(again, Taken::Refused(rdm_gossip::snapshot::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
         assert!(served.digests.iter().all(|d| d.node.node_id != two), "the read serves no member under version {n} that version {n} does not carry: {:?}", names(&served));
@@ -190,7 +167,7 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
             let whole = of(p.held_topology(&own()), "mesh1");
             let one_mesh = p.held_topology_of(&own(), Some("mesh1"));
             assert_eq!(one_mesh.len(), 1, "{when}: one source for one mesh: {:?}", one_mesh.iter().map(|s| &s.mesh).collect::<Vec<_>>());
-            assert_eq!((one_mesh[0].publisher.clone(), one_mesh[0].topology_version, one_mesh[0].full()), (whole.publisher.clone(), whole.topology_version, whole.full()), "{when}: the one-mesh read serves what the whole read serves of mesh1");
+            assert_eq!((one_mesh[0].topology_version, one_mesh[0].full()), (whole.topology_version, whole.full()), "{when}: the one-mesh read serves what the whole read serves of mesh1");
             assert!(p.held_topology_of(&own(), Some("mesh2")).is_empty(), "{when}: a read of a mesh with no source serves nothing, not the primary's own source");
             whole.topology_version
         };

@@ -1421,9 +1421,43 @@ impl DigestView {
     }
 
     /// A node an aggregate or a read lists `deleted` (Q390): its departure, held for the retention, unless
-    /// this view holds the node deleted already.
+    /// this view holds the node deleted already. The listed entry is what the departure keeps of the
+    /// node when this view held no digest of it: a mesh-primary that took the deletion from its start
+    /// read lists the node deleted in its own aggregate.
     pub(crate) fn depart_listed(&self, d: &MeshDigest, at_rafka_ms: u64) -> bool {
-        !self.is_deleted(d.node.node_id.as_str()) && self.depart(Self::listed_op(d, "node.delete", at_rafka_ms))
+        if self.is_deleted(d.node.node_id.as_str()) || !self.depart(Self::listed_op(d, "node.delete", at_rafka_ms)) {
+            return false;
+        }
+        if let Some((_, _, held)) = self.deleted.lock().unwrap().get_mut(d.node.node_id.as_str()).filter(|(_, _, held)| held.is_none()) {
+            *held = Some(d.clone());
+        }
+        true
+    }
+
+    /// `nodes`, a peer mesh's list as this node serves it in a read, with each node of `mesh` whose
+    /// deletion this process executed listed `deleted` for the retention (Q390, Q335): its entry the
+    /// listed one, else the digest the departure kept.
+    pub(crate) fn with_executed_deletions(&self, mesh: &str, mut nodes: Vec<MeshDigest>) -> Vec<MeshDigest> {
+        let executed = self.executed_deletions.lock().unwrap().clone();
+        if executed.is_empty() {
+            return nodes;
+        }
+        self.expire_deleted();
+        let deleted = self.deleted.lock().unwrap();
+        for id in &executed {
+            let Some((op, _, kept)) = deleted.get(id).filter(|(op, _, _)| op.mesh == mesh) else { continue };
+            let exact = |d: &MeshDigest| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation;
+            match nodes.iter_mut().find(|d| exact(d)) {
+                Some(d) => d.status = rdm_core::model::NodeStatus::Deleted,
+                None => {
+                    if let Some(mut d) = kept.clone().filter(exact) {
+                        d.status = rdm_core::model::NodeStatus::Deleted;
+                        nodes.push(d);
+                    }
+                }
+            }
+        }
+        nodes
     }
 
     /// A node an aggregate or a read lists `stopped` (Q390): its stop ([`Self::stopped`]), unless this view

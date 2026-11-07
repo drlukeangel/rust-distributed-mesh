@@ -154,9 +154,9 @@ impl Observer {
             .collect()
     }
 
-    /// The forwarded full chunks for `mesh` on mesh1's channel.
+    /// The aggregate chunks of `mesh` on mesh1's channel (an aggregate travels on the backbone only, Q387).
     fn forwarded_fulls_of(&self, mesh: &str) -> Vec<Seen> {
-        self.all().into_iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::TopologyFull { mesh: m, forwarded_by: Some(_), .. } if m == mesh)).collect()
+        self.all().into_iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::TopologyFull { mesh: m, .. } if m == mesh)).collect()
     }
 
     async fn broadcast(&self, f: &Frame) {
@@ -233,7 +233,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // of each peer mesh into the Mesh (gossip.md §3.3).
     // The backbone mesh topology of mesh2 carries its nodes once they published themselves.
     until_arrival("the observer hears a differential of mesh2 on mesh1's channel and the backbone mesh topology of mesh2's nodes", Duration::from_secs(60), &observer.arrivals, || {
-        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" && !digests.is_empty()));
+        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, nodes, .. } if mesh == "mesh2" && !nodes.is_empty()));
         (!observer.deltas_of("mesh2").is_empty() && backbone).then_some(())
     })
     .await;
@@ -244,7 +244,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .all()
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::TopologyFull { mesh, publisher, .. } if mesh == "mesh2" && x.channel == "backbone" => Some(publisher.clone()),
+            // The aggregate's author is its envelope's `source` (Q389).
+            Frame::TopologyFull { mesh, .. } if mesh == "mesh2" && x.channel == "backbone" => x.frame.context().map(|c| rdm_core::PublisherId { node_id: c.source.node.clone(), incarnation: c.source.incarnation.clone() }),
             _ => None,
         })
         .unwrap();
@@ -253,8 +254,10 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let differential_bytes: usize = differentials.iter().map(|x| x.bytes).max().unwrap();
     let backbone_full_bytes: usize = {
         let all = observer.all();
-        let newest = all.iter().filter_map(|x| match x.frame.data() { Frame::TopologyFull { mesh, snapshot_id, forwarded_by: None, publisher: p, .. } if mesh == "mesh2" && *p == publisher && x.channel == "backbone" => Some(*snapshot_id), _ => None }).max().unwrap();
-        all.iter().filter(|x| matches!(x.frame.data(), Frame::TopologyFull { mesh, snapshot_id, forwarded_by: None, .. } if mesh == "mesh2" && *snapshot_id == newest && x.channel == "backbone")).map(|x| x.bytes).sum()
+        // One publication: the author's chunks at one version and time, the newest.
+        let publication = |x: &Seen| match (x.frame.data(), x.frame.context()) { (Frame::TopologyFull { mesh, .. }, Some(c)) if mesh == "mesh2" && c.source.node == publisher.node_id && c.source.incarnation == publisher.incarnation && x.channel == "backbone" => Some((c.version(), c.time_ms)), _ => None };
+        let newest = all.iter().filter_map(publication).max().unwrap();
+        all.iter().filter(|x| publication(x) == Some(newest)).map(|x| x.bytes).sum()
     };
     // The member holds mesh2 before anything changes: by its first differential, from 0, or by a read.
     let member_installed: Vec<Value> = wait_for("the member holds mesh2's projection", Duration::from_secs(60), || async {
@@ -302,7 +305,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .iter()
         .filter(|x| x.channel == "backbone")
         .find_map(|x| match x.frame.data() {
-            Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" => digests.iter().find(|d| d.node.location() == Estate::path("mesh2.node", "1")).cloned(),
+            Frame::TopologyFull { mesh, nodes, .. } if mesh == "mesh2" => nodes.iter().map(|n| n.digest(&x.frame.context().expect("an aggregate is authored").source.fabric, mesh)).find(|d| d.node.location() == Estate::path("mesh2.node", "1")),
             _ => None,
         })
         .expect("mesh2.node.1 is in mesh2's aggregate on the backbone");

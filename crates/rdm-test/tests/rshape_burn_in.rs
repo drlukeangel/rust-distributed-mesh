@@ -5527,9 +5527,9 @@ async fn control_run(cell: &str, shape: Shape) {
                 (Frame::Digest { details: d, .. }, Some(c)) => {
                     location_of.insert((c.source.node.to_string(), c.source.incarnation.to_string()), PathName::new(d.path.clone(), d.name.clone()).expect("a Digest's details name a path"));
                 }
-                (Frame::TopologyFull { digests, .. }, _) => {
-                    for d in digests {
-                        location_of.insert((d.node.node_id.to_string(), d.node.incarnation.to_string()), d.node.location());
+                (Frame::TopologyFull { nodes, .. }, _) => {
+                    for n in nodes {
+                        location_of.insert((n.node_id.to_string(), n.incarnation.to_string()), PathName::new(n.path.clone(), n.name.clone()).expect("an aggregate's entry names a path"));
                     }
                 }
                 _ => {}
@@ -5551,7 +5551,11 @@ async fn control_run(cell: &str, shape: Shape) {
                         None => unnamed.entry(birth).or_default().push(seq),
                     }
                 }
-                Frame::TopologyFull { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
+                // The aggregate's author and the mesh's version are its envelope's `source` and `sequence` (Q389).
+                Frame::TopologyFull { .. } => {
+                    let c = fr.context().expect("an aggregate heard carries its envelope");
+                    members_versions.entry(format!("{:?}", c.source)).or_default().push(c.version().expect("an aggregate's version"));
+                }
                 Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
                 _ => {}
             }

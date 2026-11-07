@@ -34,16 +34,9 @@ pub(crate) async fn read_until(running: &node::RunningNode, primary: &crate::com
         loop {
             let served = primary.observer.topology_view.held_topology(&primary.own_digest());
             if let Some(s) = served.iter().find(|s| s.mesh == "mesh1") {
-                let chunks = rdm_gossip::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| rdm_gossip::frame::Frame::TopologyFull {
-                    mesh: s.mesh.clone(),
-                    mesh_id: None, publisher: s.publisher.clone(), forwarded_by: None, topology_version: s.topology_version,
-                    published_at_rafka_ms: 1, snapshot_id: s.topology_version, chunk_index, chunk_count, digests, in_flight, deleted,
-                }.authored(&rdm_gossip::envelope::Birth::publisher(&primary.fabric, &s.publisher), 0, 1));
-                for f in chunks {
-                    if let rdm_gossip::frame::Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } = f.into_data() {
-                        let _ = running.channels.take_read_chunk(rdm_gossip::snapshot::Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), }, "mesh1");
-                    }
-                }
+                // One chunk, as the read serves it: it names no author.
+                let chunk = rdm_gossip::snapshot::Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: s.topology_version, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() };
+                let _ = running.channels.take_read_chunk(chunk, "mesh1");
             }
             if holds(running) {
                 return;

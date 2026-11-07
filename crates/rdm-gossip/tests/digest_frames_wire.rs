@@ -8,6 +8,8 @@
 use crate::gossip_wire::{WireGolden, golden};
 
 use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, MeshId, PrimaryRole, PublisherId, RoleRevision};
+use rdm_core::wire::NodeEntry;
+use rdm_gossip::envelope::Birth;
 use rdm_gossip::frame::Frame;
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -42,6 +44,15 @@ fn wire_entry(status: &str) -> String {
     format!("0c 313132333435363738396162 \
     05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 \
     {status} 00 07 09")
+}
+
+/// An aggregate's node entry (`NodeEntry`, Q390): node id, incarnation, type (a string), path, name,
+/// endpoint id, transport address (variant V4, four address bytes, port), the status, then the
+/// primary roles. Nothing else: no fabric id, mesh, lineage, digest sequence or emitted time (the
+/// envelope and the aggregate name the fabric, the mesh and the version), no runtime, control API,
+/// data dir, load or gossip counters.
+fn wire_node(status: &str, primary: &str) -> String {
+    format!("0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 {status} {primary}")
 }
 
 /// The mesh id the projection frames name beside the mesh: `Some` (`01`), then the id's twelve characters.
@@ -82,36 +93,61 @@ fn every_digest_carries_its_status_its_primary_roles_and_its_details() {
     assert_eq!(back.digest_of("mesh1"), Some(primary), "the Digest and its envelope are the node's digest");
 }
 
-/// CONTRACT (gossip.md §3.1, lead note 0001): a projection entry, in `TopologyFull` (variant 1) and
-/// `TopologyDelta` (variant 2), is the node with its status and primary roles, and decodes to that
-/// status; each frame names the mesh's id beside its name (a recreated mesh of the same name has
-/// another). Must NOT happen: an entry without its status, an entry carrying runtime, control API,
+/// CONTRACT (gossip.md §3.1 `TopologyFull`, Q387, Q389, Q390): the aggregate (variant 1) is the mesh,
+/// the mesh's id, the chunk's index and count, then its one list of nodes, each with its identity,
+/// endpoints, status and primary roles. Its author, version and time are the envelope's alone: `source`
+/// the mesh-primary's exact birth, `sequence` the mesh's version, `time` the publication's, `id`
+/// `rdm.mesh.members/<mesh>/<version>/<chunk>`, `subject` `mesh/<mesh>`. It decodes to the same nodes
+/// and context. Must NOT happen: a body repeating its publisher, forwarder, version, time or a
+/// publication counter; an `in_flight` or `deleted` list; an entry carrying a fabric id, lineage,
+/// digest sequence, emitted time, runtime, control API, data dir, load or gossip counters.
+#[test]
+fn an_aggregate_is_its_mesh_its_chunk_and_one_list_of_nodes_under_its_authors_envelope() {
+    let author = Birth::publisher(&digest("ready").fabric_id, &PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("2123456789ab").unwrap() });
+    let mesh_id = MeshId::parse(MESH_ID).unwrap();
+    let mut node = digest("ready");
+    node.set_primary(Some(4));
+    let members = Frame::aggregate("mesh1", Some(mesh_id.clone()), &author, 3, 5, 0, 1, vec![node.clone()]);
+    // One node, ready (`01`), holding the node-type primary role of `node` at revision 4 (`01 02 04
+    // 6e6f6465 04`: one role, `NodePrimary` = 2, its type, the revision).
+    let hex = format!("01 05 6d65736831 {WIRE_MESH_ID} 00 01 01 {}", wire_node("01", "01 02 04 6e6f6465 04"));
+    let topology_full_golden = golden(&members, &bytes(&hex));
+    assert_eq!(members.golden_encode(), topology_full_golden, "TopologyFull: the mesh, its id, the chunk, one node");
+    let back = Frame::decode(&topology_full_golden).expect("the TopologyFull frame decodes");
+    let context = back.context().expect("a decoded aggregate carries its envelope");
+    assert_eq!(context.source, author, "the envelope's source is the mesh-primary that authored it");
+    assert_eq!((context.version(), context.sequence.as_deref(), context.time_ms), (Some(3), Some("00000000000000000003"), 5), "its sequence is the mesh's version, its time the publication's");
+    assert_eq!((context.id.as_str(), context.subject.as_str(), context.kind.as_str()), ("rdm.mesh.members/mesh1/3/0", "mesh/mesh1", "rdm.mesh.members"));
+    assert_eq!(back.aggregate_version(), Some(3));
+    let Frame::TopologyFull { mesh, mesh_id: carried, chunk_index, chunk_count, nodes } = back.into_data() else { panic!("not TopologyFull") };
+    assert_eq!((mesh.as_str(), carried, chunk_index, chunk_count), ("mesh1", Some(mesh_id.clone()), 0, 1), "the frame names the mesh, its id and the chunk");
+    assert_eq!(nodes, vec![NodeEntry::of(&node)], "the one node, as listed");
+    assert_eq!(nodes[0].primary, vec![RoleRevision { role: PrimaryRole::NodePrimary("node".into()), revision: 4 }], "the entry carries the primary roles the node holds");
+    assert_eq!(nodes[0].digest(&node.fabric_id, "mesh1"), MeshDigest { digest_seq: 0, emitted_at_rafka_ms: 0, ..node.clone() }, "a receiver holds the entry as the node, under the aggregate's fabric and mesh");
+    // A stopped, a deleting and a deleted node are each one entry with its status (Q390): `Stopped` (12),
+    // `Deleting` (13) and `Deleted` (7) at their record positions, never a list of operations beside the nodes.
+    for (status, byte) in [(NodeStatus::Stopped, "0c"), (NodeStatus::Deleting, "0d"), (NodeStatus::Deleted, "07")] {
+        let listed = Frame::aggregate("mesh1", Some(mesh_id.clone()), &author, 4, 6, 0, 1, vec![MeshDigest { status, ..digest("ready") }]);
+        let golden_listed = golden(&listed, &bytes(&format!("01 05 6d65736831 {WIRE_MESH_ID} 00 01 01 {}", wire_node(byte, "00"))));
+        assert_eq!(listed.golden_encode(), golden_listed, "a {status:?} node is one entry with its status");
+        let Frame::TopologyFull { nodes, .. } = Frame::decode(&golden_listed).unwrap().into_data() else { panic!("not TopologyFull") };
+        assert_eq!(nodes.iter().map(|n| n.status).collect::<Vec<_>>(), vec![status]);
+    }
+    // A body that names a version the envelope does not is refused: the envelope alone carries it.
+    let Frame::Authored { mut context, frame } = members.clone() else { unreachable!() };
+    context.sequence = Some("00000000000000000004".into());
+    let tampered = Frame::Authored { context, frame };
+    assert!(Frame::decode(&tampered.encode()).is_err(), "an envelope whose sequence disagrees with its id is refused");
+}
+
+/// CONTRACT (gossip.md §3.1, lead note 0001): a projection entry in `TopologyDelta` (variant 2) is the
+/// node with its status and primary roles, and decodes to that status; the frame names the mesh's id
+/// beside its name. Must NOT happen: an entry without its status, an entry carrying runtime, control API,
 /// data dir, mesh id, in-flight count, load or gossip counters, or a frame without its mesh's id.
 #[test]
 fn a_projection_entry_carries_the_nodes_status_and_its_frame_the_meshs_id() {
     let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
     let mesh_id = MeshId::parse(MESH_ID).unwrap();
-    let members = Frame::TopologyFull {
-        mesh: "mesh1".into(),
-        mesh_id: Some(mesh_id.clone()),
-        publisher: publisher.clone(),
-        forwarded_by: None,
-        topology_version: 3,
-        published_at_rafka_ms: 5,
-        snapshot_id: 9,
-        chunk_index: 0,
-        chunk_count: 1,
-        digests: vec![digest("ready")],
-        in_flight: vec![],
-        deleted: vec![],
-    };
-    let topology_full_hex = format!("01 05 6d65736831 {WIRE_MESH_ID} 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {} 00 00", wire_entry("01"));
-    let topology_full_golden = golden(&members, &bytes(&topology_full_hex));
-    assert_eq!(members.golden_encode(), topology_full_golden, "TopologyFull: the mesh's id, one projection entry");
-    let Frame::TopologyFull { mesh_id: carried, digests, .. } = Frame::decode(&topology_full_golden).expect("the TopologyFull frame decodes").into_data() else { panic!("not TopologyFull") };
-    assert_eq!(carried, Some(mesh_id.clone()), "the frame names the mesh's id");
-    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is its node's");
-
     // The differential (Q387, Q389): the mesh, its id, the base version, the chunk's index and count,
     // then `added` (each node entry: node id, incarnation, type, path, name, endpoint id, transport
     // address, status, primary roles), `changed`, `removed`, `in_flight` and `deleted`. The forwarder
@@ -180,15 +216,18 @@ fn members_chunks_are_sized_against_the_complete_message() {
     let mut first = digest("ready"); first.node.endpoint_id = rdm_core::EndpointId("x".repeat(1800));
     let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.path = "mesh1.node".into(); second.node.name = "2".into();
     let author = crate::gossip_wire::author();
-    let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
-    let shape = |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted }.authored(&author, 0, 1);
-    let complete = shape(vec![first.clone(), second.clone()], vec![], vec![], 0, 1).encode();
+    let shape = |nodes, chunk_index, chunk_count| Frame::aggregate("mesh1", None, &author, 1, 1, chunk_index, chunk_count, nodes);
+    let complete = shape(vec![first.clone(), second.clone()], 0, 1).encode();
     let (_, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&complete).unwrap();
     assert!(body.len() < 4032);
     assert!(complete.len() > 4032, "metadata makes this otherwise fitting body too large");
     let chunks = rdm_gossip::snapshot::chunks_of(&rdm_gossip::snapshot::Full::new(vec![first, second], vec![], vec![]), shape);
     assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks.iter().map(|f| match f.data() { Frame::TopologyFull { digests, .. } => digests.len(), _ => unreachable!() }).sum::<usize>(), 2);
+    assert_eq!(chunks.iter().map(|f| match f.data() { Frame::TopologyFull { nodes, .. } => nodes.len(), _ => unreachable!() }).sum::<usize>(), 2);
+    // Chunk k of n: the envelope id names it, every chunk under the one author and version.
+    let ids: Vec<String> = chunks.iter().map(|f| f.context().unwrap().id.clone()).collect();
+    assert_eq!(ids, vec!["rdm.mesh.members/mesh1/1/0".to_string(), "rdm.mesh.members/mesh1/1/1".to_string()]);
+    assert!(chunks.iter().all(|f| f.context().unwrap().source == author && matches!(f.data(), Frame::TopologyFull { chunk_count: 2, .. })));
     assert!(chunks.iter().all(|f| f.encode().len() <= 4032));
 }
 
@@ -221,19 +260,18 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
 #[test]
 fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     let author = crate::gossip_wire::author();
-    let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
     let state = format!("a={},b={}", "x".repeat(256), "y".repeat(251));
     assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
     let mut d = digest("ready"); d.node.endpoint_id = rdm_core::EndpointId("x".repeat(1600));
     let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.path = "mesh1.node".into(); other.node.name = "2".into();
-    let shape = |digests, in_flight, deleted, chunk_index, chunk_count| {
-        let mut f = Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: deleted }.authored(&author, 0, 1);
+    let shape = |nodes, chunk_index, chunk_count| {
+        let mut f = Frame::aggregate("mesh1", None, &author, 1, 1, chunk_index, chunk_count, nodes);
         let Frame::Authored { context, .. } = &mut f else { unreachable!() };
         context.traceparent = Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into());
         context.tracestate = Some(state.clone()); f
     };
     let full = rdm_gossip::snapshot::Full::new(vec![d, other], vec![], vec![]);
-    let oversized = shape(full.digests(), vec![], vec![], 0, 1).encode();
+    let oversized = shape(full.digests(), 0, 1).encode();
     assert!(oversized.len() > rdm_gossip::frame::MAX_FRAME);
     let chunks = rdm_gossip::snapshot::chunks_of(&full, shape);
     assert_eq!(chunks.len(), 2);

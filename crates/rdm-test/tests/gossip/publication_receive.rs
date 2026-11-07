@@ -1,9 +1,11 @@
-//! Snapshot/delta receiver contracts, through the live channel and real `TopologyService`.
+//! Aggregate/delta receiver contracts, through the live channels and real `TopologyService`: an
+//! aggregate on the backbone (the one channel it travels on, Q387), a differential on the mesh channel.
 use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::snapshot::{Chunk, PublisherId, Taken};
+use rdm_gossip::envelope::Birth;
 use std::time::Duration;
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
@@ -45,30 +47,32 @@ fn story(story: Story) {
         let (sender, _rx) = subscription.split();
 
 
-        let mut role = None;
-        let mut backbone_sender = None;
-        if matches!(story, Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat) {
-            let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
-            let mut backbone_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric).topic(), vec![]).await.unwrap();
-            receiver_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
-            receiver_channels.join(rdm_gossip::channel::ChannelId::backbone(&fabric), vec![address]).await.unwrap();
-            role = Some(receiver_channels.backbone().expect("the backbone is joined"));
-            tokio::time::timeout(Duration::from_secs(5), backbone_channel.joined()).await.unwrap().unwrap();
-            backbone_sender = Some(backbone_channel.split().0);
-        }
+        // The receiver, a node-admin, hears mesh2's aggregate on the backbone.
+        let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
+        let mut backbone_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric).topic(), vec![]).await.unwrap();
+        receiver_channels.set_publisher(&rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        receiver_channels.join(rdm_gossip::channel::ChannelId::backbone(&fabric), vec![address]).await.unwrap();
+        let role = Some(receiver_channels.backbone().expect("the backbone is joined"));
+        tokio::time::timeout(Duration::from_secs(5), backbone_channel.joined()).await.unwrap().unwrap();
+        let backbone = backbone_channel.split().0;
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let author = Birth::publisher(&fabric, &publisher);
+        // The version this node installed of mesh2, whichever channel or read installed it.
+        let installed = || receiver.installed_snapshot("mesh2").map(|(v, _)| v);
         let id = NodeId::mint();
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh2".into(), r#type: "node".into(), node_id: id.clone(), path: "mesh2.node".into(), name: "1".into(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, }, status: NodeStatus::Ready, digest_seq: 1, emitted_at_rafka_ms: 1, primary: Vec::new(), };
-        let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::TopologyFull { mesh: "mesh2".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
-        let read = |digests| Chunk { mesh: "mesh2".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
+        // An aggregate of mesh2 by its mesh-primary: (mesh, version, author) names its chunk set and its
+        // `time` the publication (Q389).
+        let snapshot = |version, index, count, digests: Vec<MeshDigest>, stamp| Frame::aggregate("mesh2", None, &author, version, stamp, index, count, digests);
+        let read = |digests| Chunk { mesh: "mesh2".into(), mesh_id: None, author: None, topology_version: 10, time_ms: 3, chunk_index: 0, chunk_count: 1, digests, runtimes: Vec::new() };
         // A differential of mesh2 whose nodes' details moved: each is an added entry (Q387). Its author is
         // the envelope's source and its version the envelope's sequence.
         let delta = |base, version, added: Vec<MeshDigest>, stamp| Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: base, chunk_index: 0, chunk_count: 1, added: added.iter().map(rdm_core::wire::NodeEntry::of).collect(), changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
             .authored_delta(&rdm_gossip::envelope::Birth::publisher(receiver.fabric_id(), &publisher), version, stamp);
-        let baseline = snapshot(10, 1, 0, 1, vec![digest.clone()], 100);
+        let baseline = snapshot(10, 0, 1, vec![digest.clone()], 100);
         if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
-        else { send(&sender, &receiver, baseline.clone(), 1).await; }
-        assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)));
+        else { send(&backbone, &receiver, baseline.clone(), 1).await; }
+        assert_eq!(installed(), Some(10));
         let heard_before = receiver.digest_view.get(id.as_str()).unwrap().1;
         let before = receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
         // The content a later version changes: the node's transport address (version eleven's).
@@ -76,9 +80,13 @@ fn story(story: Story) {
         let mut expected = 10;
         match story {
             Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat => {
-                let mut full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, if matches!(story, Story::CrossRepeat) { 1 } else { 2 }, 0, 1, vec![if matches!(story, Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { let mut current = digest.clone(); if matches!(story, Story::NewPublication) { current.digest_seq += 1; } current } else { changed.clone() }], if matches!(story, Story::CrossRepeat) { 100 } else { 101 });
-                if let Frame::TopologyFull { forwarded_by, .. } = &mut full { *forwarded_by = None; }
-                send(backbone_sender.as_ref().unwrap(), &receiver, full, 2).await;
+                if matches!(story, Story::CrossRepeat) {
+                    // The publication installed from the backbone, then a read of the same version: the
+                    // read never replaces the author's publication, whose exact repeat is not heard again.
+                    assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_)));
+                }
+                let full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, 0, 1, vec![if matches!(story, Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { let mut current = digest.clone(); if matches!(story, Story::NewPublication) { current.digest_seq += 1; } current } else { changed.clone() }], if matches!(story, Story::CrossRepeat) { 100 } else { 101 });
+                send(&backbone, &receiver, full, 2).await;
                 if matches!(story, Story::CrossRepeat) { assert_eq!(receiver.digest_view.get(id.as_str()).unwrap().1, heard_before, "a publication already installed on another channel is not heard again"); }
                 if matches!(story, Story::NewPublication) {
                     assert!(receiver.digest_view.get(id.as_str()).unwrap().1 > heard_before, "a fresh publication at an unchanged material version carries new hearing evidence");
@@ -89,39 +97,39 @@ fn story(story: Story) {
                     expected=12;
                 }
             },
-            Story::Stale | Story::ReadFloor => send(&sender, &receiver, snapshot(9, 2, 0, 1, vec![], 200), 2).await,
-            Story::Duplicate => send(&sender, &receiver, baseline, 2).await,
-            Story::Inconsistent => send(&sender, &receiver, snapshot(10, 1, 0, 1, vec![changed.clone()], 100), 2).await,
-            Story::LowerStamp => { send(&sender, &receiver, snapshot(11, 2, 0, 1, vec![changed.clone()], 1), 2).await; expected = 11; },
+            Story::Stale | Story::ReadFloor => send(&backbone, &receiver, snapshot(9, 0, 1, vec![], 200), 2).await,
+            Story::Duplicate => send(&backbone, &receiver, baseline, 2).await,
+            Story::Inconsistent => send(&backbone, &receiver, snapshot(10, 0, 1, vec![changed.clone()], 100), 2).await,
+            Story::LowerStamp => { send(&backbone, &receiver, snapshot(11, 0, 1, vec![changed.clone()], 1), 2).await; expected = 11; },
             Story::Chunks | Story::PendingConflict => {
                 let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.path = "mesh2.node".into(); second.node.name = "2".into();
-                let first = snapshot(11, 2, 0, 2, vec![changed.clone()], 101);
-                let last = snapshot(11, 2, 1, 2, vec![second.clone()], 101);
+                let first = snapshot(11, 0, 2, vec![changed.clone()], 101);
+                let last = snapshot(11, 1, 2, vec![second.clone()], 101);
                 if matches!(story, Story::Chunks) {
-                    send(&sender, &receiver, last.clone(), 2).await;
-                    send(&sender, &receiver, last.clone(), 3).await;
+                    send(&backbone, &receiver, last.clone(), 2).await;
+                    send(&backbone, &receiver, last.clone(), 3).await;
                 } else {
-                    send(&sender, &receiver, first.clone(), 2).await;
+                    send(&backbone, &receiver, first.clone(), 2).await;
                     let mut wrong = changed.clone(); wrong.node.transport_addr = "127.0.0.1:12099".parse().unwrap();
-                    send(&sender, &receiver, snapshot(11, 2, 0, 2, vec![wrong], 101), 3).await;
+                    send(&backbone, &receiver, snapshot(11, 0, 2, vec![wrong], 101), 3).await;
                 }
-                assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)), "unfinished publication never advances the installed floor");
+                assert_eq!(installed(), Some(10), "unfinished publication never advances the installed floor");
                 assert_eq!(receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id), Some(before.clone()), "no partial projection install");
                 assert!(!receiver.digest_view.all().iter().any(|d| d.node.node_id == second.node.node_id));
-                send(&sender, &receiver, if matches!(story, Story::Chunks) { first } else { last }, 4).await;
+                send(&backbone, &receiver, if matches!(story, Story::Chunks) { first } else { last }, 4).await;
                 assert!(receiver.digest_view.all().iter().any(|d| d.node.node_id == second.node.node_id));
                 expected = 11;
             },
             Story::Gap | Story::ReadRepair => {
                 send(&sender, &receiver, delta(20, 21, vec![changed.clone()], if matches!(story, Story::Gap) { 1 } else { 101 }), 2).await;
-                assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)));
+                assert_eq!(installed(), Some(10));
                 assert!(receiver.desynced_sources().iter().any(|(m, _)| m=="mesh2"), "a base ahead requests repair, even with an earlier publication timestamp");
                 if matches!(story, Story::ReadRepair) {
-                    send(&sender, &receiver, baseline, 3).await;
+                    send(&backbone, &receiver, baseline, 3).await;
                     assert!(!receiver.desynced_sources().is_empty(), "repeated gossip does nothing, including no repair completion");
-                    // A gossip publication is half assembled at this same version. Its snapshot
-                    // ordinal belongs to the author, whereas the read's chunks belong to its answer.
-                    send(&sender, &receiver, snapshot(10, 99, 0, 2, vec![digest.clone()], 100), 4).await;
+                    // A later publication of the author is half assembled at this same version. Its chunk
+                    // set is the author's (mesh, version, author), whereas the read's chunks belong to its answer.
+                    send(&backbone, &receiver, snapshot(10, 0, 2, vec![digest.clone()], 150), 4).await;
                     assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_)), "the directed repair read installs the held version despite unfinished gossip and resumes the source");
                     assert!(receiver.desynced_sources().is_empty());
                     send(&sender, &receiver, delta(10, 11, vec![changed.clone()], 102), 5).await; expected=11;
@@ -135,22 +143,27 @@ fn story(story: Story) {
                 expected=11;
             },
             Story::TwoForwarders => {
-                let owner_b = rdm_gossip::envelope::Birth { fabric: receiver.fabric_id().clone(), node: NodeId::mint(), incarnation: IncarnationId::mint() };
-                send(&sender, &receiver, baseline.clone().authored(&owner_b, 0, 100), 2).await;
+                // Two authors at one version (a successor that continued mesh2's version, Q389, Q391): each
+                // chunk set is its (mesh, version, author), kept apart; each author's exact repeat is its own.
+                let author_b = Birth { fabric: receiver.fabric_id().clone(), node: NodeId::mint(), incarnation: IncarnationId::mint() };
+                let of_b = |index, count, digests: Vec<MeshDigest>| Frame::aggregate("mesh2", None, &author_b, 10, 100, index, count, digests);
                 let installs = || capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed").count();
-                assert_eq!(installs(), 2, "a second forwarder's counter 1 is a distinct publication install");
-                let repeated = |by: &str| { let mut f = baseline.clone(); if let Frame::TopologyFull { forwarded_by, .. } = &mut f { *forwarded_by = Some(by.into()); } f };
-                send(&sender, &receiver, repeated("mesh1.node-admin.4"), 3).await;
-                assert_eq!(installs(), 2, "the first owner's resend is still a duplicate after the other owner's publication");
-                send(&sender, &receiver, snapshot(10, 2, 0, 1, vec![digest.clone()], 101), 4).await;
-                assert_eq!(installs(), 3, "the first owner's new counter is a new publication install");
-                send(&sender, &receiver, repeated("mesh1.node-admin.5"), 5).await;
-                assert_eq!(installs(), 3, "an older exact publication id stays seen after a newer counter");
-                assert_eq!(receiver.digest_view.get(id.as_str()).unwrap().1, heard_before, "a peer mesh projection on this mesh channel supplies no liveness");
+                let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.name = "2".into();
+                // The first author's chunk 0 of 2 and the second author's chunk 1 of 2 at the one version
+                // and time: neither completes the other's set.
+                send(&backbone, &receiver, snapshot(10, 0, 2, vec![digest.clone()], 120), 2).await;
+                send(&backbone, &receiver, of_b(1, 2, vec![second.clone()]), 3).await;
+                assert_eq!(installs(), 1, "two authors' chunks at one version are two sets: neither installs");
+                send(&backbone, &receiver, of_b(0, 2, vec![digest.clone()]), 4).await;
+                assert_eq!(installs(), 2, "the second author's set completes and installs");
+                send(&backbone, &receiver, of_b(0, 2, vec![digest.clone()]), 5).await;
+                assert_eq!(installs(), 2, "its exact repeat is a duplicate");
+                assert_eq!(role.as_ref().unwrap().held_source("mesh2").map(|(p, v)| (p.map(|p| p.node_id), v)), Some((Some(author_b.node.clone()), 10)), "the installed set names its author");
+                expected = 10;
             },
             Story::DeltaStale => send(&sender, &receiver, delta(8, 9, vec![], 200), 2).await,
         }
-        assert_eq!(receiver.held_source_version("mesh2"), Some((publisher, expected)));
+        assert_eq!(installed(), Some(expected));
         let held=receiver.digest_view.all().into_iter().find(|d| d.node.node_id == id).unwrap();
         assert_eq!(held.node.transport_addr, if expected>=11 { changed.node.transport_addr } else { before.node.transport_addr }, "only a newer complete publication or applicable delta replaces content");
         drop(role);
@@ -164,7 +177,7 @@ fn story(story: Story) {
         if matches!(story, Story::Gap | Story::ReadRepair) { assert_eq!(named["attributes"]["repair_requested"], "true"); }
         else if matches!(story, Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat) { assert_eq!(named["attributes"]["outcome"], "ignored"); }
     }
-    let snapshots=if matches!(story, Story::TwoForwarders) { 3 } else if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication) { 2 } else { 1 };
+    let snapshots=if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication | Story::TwoForwarders | Story::CrossRepeat) { 2 } else { 1 };
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.topology.update.via-snapshot-installed").count(),snapshots);
     let deltas=usize::from(matches!(story, Story::DeltaApply | Story::DeltaRepeat | Story::DeltaInconsistent | Story::ReadRepair | Story::CrossDeltaBase));
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.topology.update.via-delta").count(),deltas);

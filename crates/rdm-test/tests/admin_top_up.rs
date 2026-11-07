@@ -124,7 +124,8 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let launch = provider.launch(&at);
         let admin = provider.admin(&at).await;
         until_ready("mesh1.node-admin.2", || admin.digest.lock().unwrap().clone()).await;
-        until("mesh1.node-admin.2 to hold mesh1's projection under the primary's revision", WRONG, || admin.topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
+        // Its own mesh's list reaches it by a read, whose reply names no author (Q387, Q389).
+        until("mesh1.node-admin.2 to hold mesh1's projection", WRONG, || admin.topology_view.held_source_version("mesh1").is_some()).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.node-admin.2 is not its mesh's primary");
         // The top-up pulls from the birth the node's primary record names, through that birth's own
         // Digest (gossip.md §3.1, §3.3): a gap signalled before the node holds it is one refused
@@ -204,7 +205,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         assert!(top_up["reasons"].contains("mesh1:stopped-birth-heard"), "the span names the sync issue it pulled for: {top_up:?}");
         let own = admin.digest.lock().unwrap().clone();
         let served = admin.topology_view.held_topology(&own);
-        assert!(served.iter().any(|s| s.mesh == "mesh1" && s.publisher == root_publisher), "mesh1.node-admin.2 serves mesh1 again under the primary's revision: {:?}", served.iter().map(|s| (&s.mesh, &s.publisher, s.topology_version)).collect::<Vec<_>>());
+        assert!(served.iter().any(|s| s.mesh == "mesh1"), "mesh1.node-admin.2 serves mesh1 again: {:?}", served.iter().map(|s| (&s.mesh, s.topology_version)).collect::<Vec<_>>());
 
         // The primary decides its own mesh from its nodes' reports (Q197): a stopped node's Digest pulls
         // nothing there.

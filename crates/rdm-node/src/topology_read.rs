@@ -19,7 +19,6 @@ use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::streaming::FrameKind;
 use rdm_core::topology::{SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tracing::Instrument as _;
 
