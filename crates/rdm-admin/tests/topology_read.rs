@@ -761,7 +761,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         let primary = own_digest(&server, &fabric);
         let record = rdm_core::Primary { mesh: primary.node.mesh.clone(), node_id: primary.node.node_id.clone(), incarnation: primary.node.incarnation.clone(), revision: 1 };
         let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
-        let done = fetch(caller.channels.clone(), record.mesh.clone(), rdm_core::framing::Birth { node_id: record.node_id.clone(), incarnation: record.incarnation.clone() }, vec!["mesh2".into()]).await.unwrap();
+        let done = fetch(caller.channels.clone(), record, vec!["mesh2".into()]).await.unwrap();
         assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
         let before = caller.time.now_ms();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

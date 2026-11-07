@@ -415,11 +415,10 @@ pub struct TopUpDone {
     pub installed: Vec<(String, u64)>,
 }
 
-/// Reads the topology of `meshes` from the exact birth given, a node of the mesh given, and installs
-/// it into the given topology view (the topology read, over Node RPC): the node's mesh-primary, or,
-/// at the mesh-primary itself, a birth of its own mesh it heard without its details. The topology view
-/// holds no Node RPC client, the process composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, String, rdm_core::framing::Birth, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+/// Reads the topology of `meshes` from a mesh primary and installs it into the given topology view
+/// (the topology read, over Node RPC): the topology view holds no Node RPC client, the process
+/// composition hands it one.
+pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, Primary, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -994,58 +993,6 @@ mod tests {
         assert!(view.mesh_rx.lock().unwrap().desynced().is_empty(), "no unknown birth");
         let listed: BTreeSet<String> = view.digest_view.current(view.digest_view.staleness_floor()).into_iter().filter(|d| d.node.mesh == "mesh2").map(|d| d.node.name).collect();
         assert_eq!(listed, ["1".to_string(), "2".to_string()].into(), "the view its aggregate is built from lists both nodes");
-    }
-
-    /// CONTRACT (gossip.md §3.1 `Digest`: "peers retain them, and a receiver that hears a birth whose
-    /// details it does not hold tops up by a read (`via-unknown-birth`)"; 3a: a node serves its own mesh
-    /// from what it holds): a re-created mesh-primary whose start read the fabric-primary served (its mesh
-    /// as stored records, never installed) holds none of its mesh's two nodes, and their Digests carry
-    /// their status only. Each is an unknown birth; the top-up of the mesh-primary, which has no primary
-    /// to read from, reads its own mesh from the last such birth it heard, and installs that birth's
-    /// answer as a read of its own mesh: both nodes are held, their later Digests are taken, and the view
-    /// its next aggregate is built from (`Backbone::own_members`) lists both. Any other gap of a
-    /// mesh-primary has nobody to read from. Must NOT happen: the mesh-primary refusing its own top-up
-    /// `this-node-is-the-mesh-primary` at every Digest, its aggregate listing itself alone (node_records
-    /// `current_node_reads_survive_fabric_primary_restart`: 0ag8saq69jam `via-top-up
-    /// reason=this-node-is-the-mesh-primary reasons=mesh2:unknown-birth` from 21:08:47.098041,
-    /// `via-topology-version members=1 topology_version=1`).
-    #[test]
-    fn a_re_created_mesh_primary_reads_its_mesh_from_a_birth_it_heard_without_its_details() {
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh2", "mesh2.node-admin.1");
-        let mut own = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, 1);
-        (own.node.mesh, own.node.r#type, own.node.path, own.node.name) = ("mesh2".into(), "node-admin".into(), "mesh2.node-admin".into(), "1".into());
-        *view.digest_view.own.lock().unwrap() = Some(own.node.node_id.to_string());
-        assert!(view.digest_view.record(own));
-        view.primary.store(true, Ordering::Relaxed);
-        let node = |name: &str| {
-            let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, NodeStatus::Ready, 12);
-            (d.node.mesh, d.node.path, d.node.name) = ("mesh2".into(), "mesh2.node".into(), name.into());
-            d
-        };
-        let (one, two) = (node("1"), node("2"));
-        // Its start read held nothing of its mesh: each node's status-only Digest is an unknown birth.
-        for d in [&one, &two] {
-            assert!(view.take(&Frame::digest(d, false), &fabric, "mesh-channel").is_empty(), "{}: a Digest without details of a birth not held is taken as nothing", d.node.name);
-        }
-        let gaps = view.mesh_rx.lock().unwrap().desynced();
-        assert_eq!(gaps, vec![("mesh2".to_string(), Gap::UnknownBirth)], "the gap is named on its own mesh");
-        assert_eq!(view.unknown_birth_read(&gaps), Some(rdm_core::framing::Birth { node_id: two.node.node_id.clone(), incarnation: two.node.incarnation.clone() }), "the mesh-primary reads its own mesh from the last birth it heard without its details");
-        // That birth serves its own mesh from what it holds: its previous mesh-primary's aggregate.
-        let held_by_two = crate::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: None, publisher: PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, forwarded_by: None, topology_version: 12, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![one.clone(), two.clone()], in_flight: Vec::new(), deleted: Vec::new(), runtimes: Vec::new() };
-        assert!(matches!(view.take_read_chunk(held_by_two, Side::Read, &fabric), Taken::Installed(_)), "the read of its own mesh is installed");
-        assert!(view.mesh_rx.lock().unwrap().desynced().is_empty(), "the gap is closed");
-        for d in [&one, &two] {
-            assert_eq!(view.digest_view.node_of(&d.node.node_id, &d.node.incarnation), Some(d.node.clone()), "{}: its details are held", d.node.name);
-            let mut later = d.clone();
-            later.digest_seq = 13;
-            assert_eq!(view.take(&Frame::digest(&later, false), &fabric, "mesh-channel").len(), 1, "{}: its status-only Digest is taken", d.node.name);
-        }
-        let listed: BTreeSet<String> = view.digest_view.current(view.digest_view.staleness_floor()).into_iter().filter(|d| d.node.mesh == "mesh2" && d.node.r#type != "node-admin").map(|d| d.node.name).collect();
-        assert_eq!(listed, ["1".to_string(), "2".to_string()].into(), "the view its next aggregate is built from lists both nodes");
-        // Any other gap of the mesh-primary has nobody to read from.
-        assert_eq!(view.unknown_birth_read(&[("mesh2".to_string(), Gap::NoBaseline)]), None, "no other gap of its own mesh is read from that birth");
-        assert_eq!(view.unknown_birth_read(&[("mesh1".to_string(), Gap::UnknownBirth)]), None, "nor another mesh's");
     }
 
     #[test]

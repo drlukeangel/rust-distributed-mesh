@@ -86,25 +86,9 @@ pub(crate) struct View {
     /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
     /// the topology view; `None` while the birth holds its launch name (`node`).
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
-    /// The last birth of this node's own mesh heard by a Digest whose details this node does not hold
-    /// (`Gap::UnknownBirth`), as the Digest's envelope `source` names it: what this node, as its mesh's
-    /// primary, reads its own mesh from (gossip.md §3.1 `Digest`).
-    pub(crate) unknown_birth: Arc<Mutex<Option<rdm_core::framing::Birth>>>,
 }
 
 impl View {
-    /// The birth this node, its mesh's primary, reads its own mesh from to top up `gaps`: the last
-    /// birth of its mesh it heard by a Digest whose details it does not hold, while its own mesh's gap
-    /// is that unknown birth (gossip.md §3.1 `Digest`: "a receiver that hears a birth whose details it
-    /// does not hold tops up by a read"). The birth serves its own mesh from what it holds. `None` for
-    /// any other gap: a mesh-primary has no primary to top up from.
-    pub(crate) fn unknown_birth_read(&self, gaps: &[(String, crate::snapshot::Gap)]) -> Option<rdm_core::framing::Birth> {
-        gaps.iter()
-            .any(|(m, g)| *m == self.mesh && *g == crate::snapshot::Gap::UnknownBirth)
-            .then(|| self.unknown_birth.lock().unwrap().clone())
-            .flatten()
-    }
-
     /// Whether this node is a node-admin that is not its mesh's primary: it manages its mesh's births
     /// with the runtime fact of each, which their mesh-primary took from their join reports and which
     /// reaches it by a read of its own mesh from that primary (Q400). The mesh-primary has no primary to
@@ -243,9 +227,6 @@ impl View {
                     // by a read of its own mesh (gossip.md §3.3). Each such Digest pulls again until a
                     // read supplies the birth, as a node held stopped heard again does: a pull refused
                     // (this node mid-start, holding no primary record yet) is attempted at the next one.
-                    // The birth is held as the one to read from: a mesh-primary has no primary to read its
-                    // own mesh from, and this birth serves its own mesh from what it holds.
-                    *self.unknown_birth.lock().unwrap() = Some(rdm_core::framing::Birth { node_id: source.node.clone(), incarnation: source.incarnation.clone() });
                     if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::UnknownBirth) {
                         tracing::info_span!("rdm.mesh.topology.update.via-unknown-birth", node = %self.current_name(), node_id = %source.node, incarnation_id = %source.incarnation, digest_seq = f.context().and_then(|c| c.digest_seq()).unwrap_or_default(), via)
                             .in_scope(|| tracing::info!("a Digest of a birth whose details this node does not hold: its mesh-primary's view is read"));
