@@ -308,7 +308,7 @@ own beyond the frames in the catalog:
 - each member's stop and delete publish exactly what [node.stop](lifecycles/node-stop.md) and
   [node.delete](lifecycles/node-delete.md) publish;
 - after `mesh.deleted` the mesh's last node-admin, still its primary, keeps publishing its
-  `TopologyFull` on the backbone, itself the only member and the mesh deleted;
+  `TopologyFull` on the backbone, itself the only node not listed `deleted` and the mesh deleted;
 - the separate node.delete of that admin, the fabric-primary as executor, ends its publishing:
   when the delete reaches it, its final mesh topology, the mesh deleted and itself deleting, is its
   last gossip, the node.delete's NodeDeleting in mesh topology form. It is best-effort dissemination,

@@ -445,7 +445,7 @@ impl Backbone {
             (full, version, sent, version != before)
         };
         if bumped {
-            tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, members = full.member_count())
+            tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, members = full.member_count(), deleted = full.digests().iter().filter(|d| d.status == rdm_core::model::NodeStatus::Deleted).count())
                 .in_scope(|| tracing::info!("the normalized projection of this mesh changed: its topology_version bumped"));
         }
         let mesh = self.mesh.clone();

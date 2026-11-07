@@ -19,8 +19,8 @@
 //! mesh1 node (subfeature `fabric-primary-handover`). Then `node.delete` of mesh1's last admin.
 //!
 //! R-NS1 (gossip.md, "Mesh delete"): after mesh.deleted the last admin, still its mesh's primary,
-//! keeps publishing its mesh topology with itself the only member and MeshStatus Dead, and every peer
-//! holds the deleted mesh with that one member while it lives. "From the stop on the fabric-primary
+//! keeps publishing its mesh topology with itself the only node not listed `deleted` and MeshStatus
+//! Dead, and every peer holds the deleted mesh with that one node while it lives. "From the stop on the fabric-primary
 //! is that mesh's publisher of record ... it publishes the deleted mesh's own mesh topology on
 //! the backbone, publisher itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped
 //! ... until ... a delete moves the birth to `deleted` as NodeDeleted." The
@@ -89,8 +89,8 @@ fn alive(pid: u64) -> bool {
 /// CONTRACT: deleting the mesh that holds the fabric-primary role hands the role to a surviving mesh's
 /// primary first, then deletes the mesh. The mesh.delete ends at mesh.deleted: the fabric-primary
 /// validates the handoff and writes the MeshDeleted step event, and stops nothing of mesh1's final
-/// primary, which stays alive, publishing mesh1's topology with itself the only member and
-/// MeshStatus Dead, while every peer holds mesh1 with that one member. Its end is a separate
+/// primary, which stays alive, publishing mesh1's topology with itself the only node not listed
+/// `deleted` and MeshStatus Dead, while every peer holds mesh1 with that one node. Its end is a separate
 /// node.delete the fabric-primary executes: node.stop, exact exited verdict, its row Deleted,
 /// NodeDeleted in `deleted`, then the fabric-primary's own mesh topology for mesh1; only then, with
 /// every birth proven exited, mesh-left. No MeshLeft is published between the handoff and the final
@@ -409,12 +409,13 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let installed = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
 
     // 1. While it lives: after mesh.deleted the last admin keeps publishing
-    // mesh1's topology with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
-    // with that one member while it lived (read above, on each surviving admin's own view); which
-    // frame brought it there is best-effort dissemination (R-NS2), so no particular one is expected.
+    // mesh1's topology with itself the only node not listed `deleted` and MeshStatus Dead (Q390: the
+    // aggregate lists the deleted nodes for the retention). Every peer held mesh1 dead with that one
+    // node while it lived (read above, on each surviving admin's own view); which frame brought it
+    // there is best-effort dissemination (R-NS2), so no particular one is expected.
     let final_exit = terminal_end(&final_name, true);
-    let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && on(sp, &ids, &final_name) && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
-    assert!(!lone.is_empty(), "the last admin {final_name:?} published mesh1's topology with itself the only member while it lived");
+    let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && on(sp, &ids, &final_name) && attr_u(sp, "members").saturating_sub(attr_u(sp, "deleted")) == 1 && start_ns(sp) < final_exit).collect();
+    assert!(!lone.is_empty(), "the last admin {final_name:?} published mesh1's topology with itself the only node not listed deleted while it lived");
     let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-deleted-row").into_iter().filter(|sp| on(sp, &ids, &final_name) && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
     assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= start_ns(&completion)), "the last admin {final_name:?} committed mesh1's row deleted at mesh.deleted: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| on(sp, &ids, &final_name) && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();

@@ -47,7 +47,7 @@ executor, deletes it afterwards.
    receipt manifest and its own exact birth. The fabric-primary validates the manifest against
    the captured roster ([mesh delete pair](../node-rpc-envelope.md#mesh-delete-command-pair))
    before it accepts the report.
-6. After mesh.deleted the mesh-primary keeps publishing its mesh topology, itself the only member and
+6. After mesh.deleted the mesh-primary keeps publishing its mesh topology, itself the only node not listed `deleted` and
    the mesh deleted ([Mesh delete gossip](../gossip.md#mesh-delete)).
 7. A separate [node.delete](node-delete.md) deletes the mesh-primary, the fabric-primary its
    executor. When the delete reaches the mesh-primary, its final mesh topology, the mesh deleted and
