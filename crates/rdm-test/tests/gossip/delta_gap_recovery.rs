@@ -320,8 +320,6 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         added: vec![],
         changed: vec![rdm_core::wire::NodeStatusEntry::of(&forged)],
         removed: vec![],
-        in_flight: vec![],
-        deleted: vec![],
     }
     .authored_delta(&rdm_gossip::envelope::Birth::publisher(&forged.fabric_id, &publisher), latest + 2, os_now_ms());
     let t_gap = now_ns();

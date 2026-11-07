@@ -1448,12 +1448,12 @@ mod tests {
         assert_eq!(view.digest_view.member_status(&id, &inc), Some(NodeStatus::Ready));
     }
 
-    /// CONTRACT (gossip.md §3.1 `TopologyDelta` carries "overlay and deleted changes"; §3.3 a delta is
-    /// "the complete difference between the two projections"): a differential's entry of a birth clears
-    /// that exact birth's stop overlay in the held projection: its source lists a stopped birth again
-    /// only after node.joined cleared the stop. A deleting overlay of the birth, and a stop of another
-    /// incarnation, stay. The forwarder's differential for a joined birth carries it in `added` (the
-    /// projection at the stop did not list it) and no overlay.
+    /// CONTRACT (gossip.md §3.1 `TopologyDelta`: `added`, `changed` and `removed`; a node under a stop
+    /// says so by its status, Q390): a differential's entry of a birth clears that exact birth's stop
+    /// overlay in the held projection: its source lists a stopped birth again only after node.joined
+    /// cleared the stop. A deleting overlay of the birth, and a stop of another incarnation, stay. The
+    /// forwarder's differential for a joined birth carries it in `added` (the projection at the stop did
+    /// not list it).
     #[test]
     fn a_delta_listing_a_birth_again_clears_only_that_births_stop_overlay() {
         use crate::snapshot::{Delta, Full};
@@ -1471,7 +1471,7 @@ mod tests {
         let at_stop = Full::new(Vec::new(), vec![stop.clone()], Vec::new());
         let joined = Full::new(vec![digest(&id, &inc, None, NodeStatus::Pending, 9)], Vec::new(), Vec::new());
         let delta = at_stop.delta_to(&joined);
-        assert_eq!((delta.added.len(), delta.changed.len(), delta.in_flight.len(), delta.removed.len()), (1, 0, 0, 0), "the clear travels as the birth's own added entry: {delta:?}");
+        assert_eq!((delta.added.len(), delta.changed.len(), delta.removed.len()), (1, 0, 0), "the clear travels as the birth's own added entry: {delta:?}");
         let mut receiver = at_stop.clone();
         receiver.apply(&delta).expect("the differential applies");
         assert!(receiver.same_topology(&joined), "the receiver holds what the source holds");
@@ -2242,7 +2242,7 @@ mod tests {
         primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, NodeStatus::ConnectionsDeleting), said(&leaving, NodeStatus::Leaving)])] {
             let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
-            let (mesh, _, v, full) = taken.source.expect("a complete source snapshot");
+            let (mesh, v, full) = taken.source.expect("a complete source snapshot");
             let _ = primary.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, v, &full, version);
         }
         // A new mesh2 node joins: it reads the primary's topology (0x1E), then hears its replay.
@@ -2294,23 +2294,10 @@ mod tests {
         let m1 = MeshId::mint();
         let (admin, rpc) = (born("mesh1", "node-admin", 1, 1), born("mesh1", "node", 1, 1));
         let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
-        let mesh_topology = |version: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, deleted: Vec<LifecycleOp>| Frame::TopologyFull {
-            mesh: "mesh1".into(),
-            mesh_id: Some(m1.clone()),
-            publisher: publisher.clone(),
-            forwarded_by: None,
-            topology_version: version,
-            published_at_rafka_ms: version,
-            snapshot_id: version,
-            chunk_index: 0,
-            chunk_count: 1,
-            digests,
-            in_flight,
-            deleted,
-        };
-        let delete_of = |d: &MeshDigest| LifecycleOp { build_id: "b9".into(), ..op_at(rdm_core::PathName::numbered("mesh1", &d.node.r#type, 1), "mesh1", &d.node.r#type, &d.node.node_id, &d.node.incarnation, "node.delete") };
+        // mesh1's aggregate by its last admin: each node with its status (Q390).
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::aggregate("mesh1", Some(m1.clone()), &author_of(&publisher), version, version, 0, 1, digests);
         let mut last = admin.clone();
-        last.status = NodeStatus::Leaving;
+        last.status = NodeStatus::Deleting;
         last.digest_seq += 1;
         let primary = test_view("mesh2", "mesh2.node-admin.1");
         primary.primary.store(true, Ordering::Relaxed);
@@ -2319,7 +2306,7 @@ mod tests {
         // What the primary puts into its Mesh for a mesh topology it installed from the backbone (backbone.rs).
         let forward = |frame: &Frame| -> Vec<Frame> {
             let taken = primary.take_snapshot(frame, &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
-            let (mesh, _, version, full) = taken.source.expect("a complete source snapshot");
+            let (mesh, version, full) = taken.source.expect("a complete source snapshot");
             let held = primary.forwarder.lock().unwrap().published_version(&mesh);
             assert_eq!(held, (version > 1).then_some(1), "the install leaves what the forwarder last published of {mesh}");
             match primary.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, version, &full, version) {
@@ -2330,15 +2317,16 @@ mod tests {
         let base_of = |frames: &[Frame]| -> Vec<(u64, u64)> {
             frames.iter().map(|f| match f.data() { Frame::TopologyDelta { base_version, .. } => (*base_version, f.delta_version().expect("an authored differential")), other => panic!("not a differential: {other:?}") }).collect()
         };
-        let first = forward(&mesh_topology(1, vec![admin.clone(), rpc.clone()], vec![], vec![]));
+        let first = forward(&mesh_topology(1, vec![admin.clone(), rpc.clone()]));
         assert_eq!(base_of(&first), vec![(0, 1)], "mesh1's first differential into the Mesh is from 0");
         for f in &first {
             member.take_snapshot(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
         }
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(1));
 
-        // mesh1's last admin's final mesh topology: itself Leaving and its node.delete, the other node deleted.
-        let last_one = forward(&mesh_topology(2, vec![last.clone()], vec![delete_of(&admin)], vec![delete_of(&rpc)]));
+        // mesh1's last admin's final aggregate: itself the only node not listed deleted, deleting; the
+        // other node listed deleted.
+        let last_one = forward(&mesh_topology(2, vec![last.clone(), listed(&rpc, NodeStatus::Deleted)]));
         assert_eq!(base_of(&last_one), vec![(1, 2)], "the final differential is from the version last published, never from 0");
         assert!(primary.digest_view.is_deleted(admin.node.node_id.as_str()), "the primary's install holds the last admin deleted");
         for f in &last_one {
@@ -2710,8 +2698,6 @@ mod tests {
             added: added.iter().map(rdm_core::wire::NodeEntry::of).collect(),
             changed: changed.iter().map(rdm_core::wire::NodeStatusEntry::of).collect(),
             removed: removed.iter().map(|d| rdm_core::framing::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }).collect(),
-            in_flight: vec![],
-            deleted: vec![],
         }
         .authored_delta(&birth_of(by), version, at)
     }
@@ -3690,7 +3676,7 @@ mod tests {
         assert!(admin.digest_view.holds_stopped(id.as_str(), &inc), "the node the aggregate lists stopped is held stopped");
         let mut stop = op_at(node.node.location(), "mesh1", "node", &id, &inc, "node.stop");
         stop.operation = stop.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint());
-        let frame = StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 2);
+        let frame = event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&primary), 2);
         let mut channel = crate::receive_order::ReceiveOrder::default();
         assert!(hear(&mut channel, &admin, &frame, &fabric, Side::MeshChannel));
         assert!(admin.digest_view.in_flight().iter().any(|op| op.key() == stop.key()), "the frame's identity is held with the stop");
@@ -3771,8 +3757,8 @@ mod tests {
         fp.view.primary.store(true, Ordering::Relaxed);
         fp.view.forwarder.lock().unwrap().set_author(test_author());
         let taken = fp.view.take_snapshot(&Frame::aggregate("mesh1", None, &author_of(&publisher_of(&lost)), 7, 70, 0, 1, vec![lost.clone(), x.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut fp.view.order.lock().unwrap());
-        let (mesh, from, v, full) = taken.source.expect("a complete peer aggregate");
-        let _ = fp.view.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, &from, v, &full, 70);
+        let (mesh, v, full) = taken.source.expect("a complete peer aggregate");
+        let _ = fp.view.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, v, &full, 70);
         // mesh1's mesh-primary is lost; the fabric-primary deletes mesh1.node.1 (node recovery, Q335).
         let delete = op_at(x.node.location(), "mesh1", "node", &x.node.node_id, &x.node.incarnation, "node.delete");
         fp.digest_view.note_executed_deletion(&delete);

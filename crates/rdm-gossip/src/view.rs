@@ -17,9 +17,9 @@ use crate::{frame::*, status::*, primary::*, channel::*, digest_view::*};
 pub(crate) struct SnapshotTaken {
     /// The digests applied to the view, for their addresses.
     pub(crate) carried: Vec<MeshDigest>,
-    /// A complete backbone aggregate of a peer Mesh: `(mesh, author, version, full)`, for the
-    /// forwarding primary.
-    pub(crate) source: Option<(String, PublisherId, u64, Full)>,
+    /// A complete backbone aggregate of a peer Mesh: `(mesh, version, full)`, for the forwarding
+    /// primary.
+    pub(crate) source: Option<(String, u64, Full)>,
     /// A complete snapshot installed from the backbone: who published it, when, and the
     /// publisher's own digest as the snapshot lists it. Evidence for the clock's discipline.
     pub(crate) publication: Option<Publication>,
@@ -490,11 +490,9 @@ impl View {
                             added = delta.added.len(),
                             changed = delta.changed.len(),
                             removed = delta.removed.len(),
-                            in_flight = delta.in_flight.len(),
-                            deleted = delta.deleted.len(),
                         )
                         .in_scope(|| tracing::info!("a differential applied at exactly its base version, every chunk of it held"));
-                        let full = Full::new(moved, delta.in_flight.clone(), delta.deleted.clone());
+                        let full = Full::new(moved, Vec::new(), Vec::new());
                         let held_full = rx.held_full(mesh);
                         let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
@@ -657,7 +655,7 @@ impl View {
         .in_scope(|| tracing::debug!("a complete list of nodes installed"));
         let target = prior.target(&i.publisher.as_ref().map(ToString::to_string).unwrap_or_default(), side, i.topology_version, Some(&i.full));
         let carried = self.apply_full(&i.mesh, &i.full, Some(&i.full), fabric, side, &target, i.time_ms);
-        let source = i.publisher.clone().filter(|_| side == Side::Backbone && i.mesh != self.mesh).map(|p| (i.mesh.clone(), p, i.topology_version, i.full.clone()));
+        let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.topology_version, i.full.clone()));
         // An aggregate with no nodes lists no birth of its author: it carries no rafka-time sample.
         let publication = i.publisher.clone().filter(|_| side == Side::Backbone && i.full.member_count() > 0).map(|publisher| Publication {
             publisher_digest: i.full.digests().into_iter().find(|d| d.node.node_id == publisher.node_id && d.node.incarnation == publisher.incarnation),

@@ -36,16 +36,6 @@ fn wire_digest_body(status: &str) -> String {
     format!("{status} 00 {WIRE_DETAILS}")
 }
 
-/// A projection entry's wire shape: fabric id, node (mesh, type (a string), node id, path, name,
-/// endpoint id, transport address, incarnation, supersedes), the status, the primary roles, then
-/// digest_seq and emitted_at. No runtime, control API, data dir, mesh id, in-flight count, load or
-/// gossip counters (Q387, Q394).
-fn wire_entry(status: &str) -> String {
-    format!("0c 313132333435363738396162 \
-    05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 \
-    {status} 00 07 09")
-}
-
 /// An aggregate's node entry (`NodeEntry`, Q390): node id, incarnation, type (a string), path, name,
 /// endpoint id, transport address (variant V4, four address bytes, port), the status, then the
 /// primary roles. Nothing else: no fabric id, mesh, lineage, digest sequence or emitted time (the
@@ -150,8 +140,9 @@ fn a_projection_entry_carries_the_nodes_status_and_its_frame_the_meshs_id() {
     let mesh_id = MeshId::parse(MESH_ID).unwrap();
     // The differential (Q387, Q389): the mesh, its id, the base version, the chunk's index and count,
     // then `added` (each node entry: node id, incarnation, type, path, name, endpoint id, transport
-    // address, status, primary roles), `changed`, `removed`, `in_flight` and `deleted`. The forwarder
-    // is the envelope's `source` and the peer mesh's version its `sequence`; the body repeats neither.
+    // address, status, primary roles), `changed` and `removed`: a node under a stop or delete says so
+    // by its status (Q390). The forwarder is the envelope's `source` and the peer mesh's version its
+    // `sequence`; the body repeats neither.
     let _ = publisher;
     let delta = Frame::TopologyDelta {
         mesh: "mesh1".into(),
@@ -162,11 +153,9 @@ fn a_projection_entry_carries_the_nodes_status_and_its_frame_the_meshs_id() {
         added: vec![rdm_core::wire::NodeEntry::of(&digest("ready"))],
         changed: vec![],
         removed: vec![],
-        in_flight: vec![],
-        deleted: vec![],
     }
     .authored_delta(&crate::gossip_wire::author(), 3, 5);
-    let delta_hex = format!("02 05 6d65736831 {WIRE_MESH_ID} 02 00 01 01 0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 01 00 00 00 00 00");
+    let delta_hex = format!("02 05 6d65736831 {WIRE_MESH_ID} 02 00 01 01 0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 01 00 00 00");
     let delta_golden = golden(&delta, &bytes(&delta_hex));
     assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: the mesh's id, the base, one chunk of one, one added node entry");
     let back = Frame::decode(&delta_golden).expect("the TopologyDelta frame decodes");

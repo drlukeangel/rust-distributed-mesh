@@ -67,7 +67,7 @@ fn story(story: Story) {
         let read = |digests| Chunk { mesh: "mesh2".into(), mesh_id: None, author: None, topology_version: 10, time_ms: 3, chunk_index: 0, chunk_count: 1, digests, runtimes: Vec::new() };
         // A differential of mesh2 whose nodes' details moved: each is an added entry (Q387). Its author is
         // the envelope's source and its version the envelope's sequence.
-        let delta = |base, version, added: Vec<MeshDigest>, stamp| Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: base, chunk_index: 0, chunk_count: 1, added: added.iter().map(rdm_core::wire::NodeEntry::of).collect(), changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
+        let delta = |base, version, added: Vec<MeshDigest>, stamp| Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: base, chunk_index: 0, chunk_count: 1, added: added.iter().map(rdm_core::wire::NodeEntry::of).collect(), changed: vec![], removed: vec![]}
             .authored_delta(&rdm_gossip::envelope::Birth::publisher(receiver.fabric_id(), &publisher), version, stamp);
         let baseline = snapshot(10, 0, 1, vec![digest.clone()], 100);
         if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver_channels.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }

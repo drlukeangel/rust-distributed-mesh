@@ -547,7 +547,7 @@ mod tests {
     /// An empty differential of `mesh` from `base_version` to `topology_version`, authored by the
     /// forwarder `by` at `at`.
     fn delta(mesh: &str, by: &PublisherId, at: u64, base_version: u64, topology_version: u64) -> Frame {
-        Frame::TopologyDelta { mesh: mesh.into(), mesh_id: None, base_version, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }.authored_delta(&birth_of(by), topology_version, at)
+        Frame::TopologyDelta { mesh: mesh.into(), mesh_id: None, base_version, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![] }.authored_delta(&birth_of(by), topology_version, at)
     }
 
     /// `kind`'s frame of `op` at `topology_version`, published by the mesh-primary `by`.

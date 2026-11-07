@@ -264,10 +264,10 @@ async fn send_forward(sink: &Sink, me: String, source: Option<(String, u64)>, ou
     };
     if let (Some(Frame::TopologyDelta { base_version, chunk_count, .. }), Some((mesh, version))) = (frames.first().map(Frame::data), &source) {
         let count = |f: &Frame| match f.data() {
-            Frame::TopologyDelta { added, changed, removed, in_flight, deleted, .. } => [added.len(), changed.len(), removed.len(), in_flight.len(), deleted.len()],
-            _ => [0; 5],
+            Frame::TopologyDelta { added, changed, removed, .. } => [added.len(), changed.len(), removed.len()],
+            _ => [0; 3],
         };
-        let [added, changed, removed, in_flight, deleted] = frames.iter().map(count).fold([0; 5], |a, b| std::array::from_fn(|k| a[k] + b[k]));
+        let [added, changed, removed] = frames.iter().map(count).fold([0; 3], |a, b| std::array::from_fn(|k| a[k] + b[k]));
         tracing::info_span!(
             "rdm.mesh.topology.update.via-forwarded-delta",
             node = %me,
@@ -278,8 +278,6 @@ async fn send_forward(sink: &Sink, me: String, source: Option<(String, u64)>, ou
             added,
             changed,
             removed,
-            in_flight,
-            deleted,
         )
         .in_scope(|| tracing::info!("a peer mesh moved: one differential from the version last published into this mesh"));
     }

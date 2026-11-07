@@ -109,8 +109,6 @@ fn frames() -> Vec<Frame> {
             added: vec![rdm_core::wire::NodeEntry::of(&digest(4, true))],
             changed: vec![rdm_core::wire::NodeStatusEntry::of(&digest(5, true))],
             removed: vec![rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }],
-            in_flight: vec![op("node.stop", PathName::new("mesh2.node", "4").unwrap(), "mesh2", "node")],
-            deleted: vec![],
         }
         .authored_delta(&crate::gossip_wire::author(), 9, 12),
         Frame::NodeDeleting { op: op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: None, topology_version: 10 },

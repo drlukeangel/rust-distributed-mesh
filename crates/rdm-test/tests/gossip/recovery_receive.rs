@@ -107,7 +107,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
             aggregate(99,200,vec![stale.clone(),listed(&started,NodeStatus::Stopped),listed(&deleted,NodeStatus::Deleting)]),
-            Frame::TopologyDelta{mesh:"mesh1".into(), mesh_id: None,base_version:98,chunk_index:0,chunk_count:1,added:vec![rdm_core::wire::NodeEntry::of(&stale)],changed:vec![],removed:vec![rdm_core::framing::Birth{node_id:rpc_primary.node.node_id.clone(),incarnation:rpc_primary.node.incarnation.clone()}],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]}.authored_delta(&author,99,200),
+            Frame::TopologyDelta{mesh:"mesh1".into(), mesh_id: None,base_version:98,chunk_index:0,chunk_count:1,added:vec![rdm_core::wire::NodeEntry::of(&stale)],changed:vec![],removed:vec![rdm_core::framing::Birth{node_id:rpc_primary.node.node_id.clone(),incarnation:rpc_primary.node.incarnation.clone()}]}.authored_delta(&author,99,200),
             StatusEvent::Stopped.frame(stop,10),StatusEvent::Deleting.frame(delete.clone(),10),
             Frame::NodeDeleted{op:delete.clone(),forwarded_by:None},
             Frame::Concern{role:PrimaryRole::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:NodeId::mint().to_string()},

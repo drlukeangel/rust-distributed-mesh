@@ -146,11 +146,9 @@ impl Full {
     /// from a held version to a newer one, never a replay of the versions between). `added` are the
     /// births `new` lists that this one does not list as the same exact birth, or lists with other
     /// details; `changed` the births both list whose status or primary roles moved; `removed` the
-    /// births this one lists that `new` does not. `in_flight` and `deleted` carry the overlays and
-    /// departures `new` holds that this one does not. A cleared stop overlay travels as its birth's
-    /// own entry: a source's primary never lists a stopped birth, and lists it again only after its
-    /// `node.joined` cleared the stop ([`Full::apply`]). An expired departure is a local fact of the
-    /// receiver's age.
+    /// births this one lists that `new` does not. A node under a stop or delete, or deleted, says so by
+    /// its status in `added` or `changed` (Q390). An expired departure is a local fact of the receiver's
+    /// age.
     pub fn delta_to(&self, new: &Full) -> Delta {
         let (mut added, mut changed) = (Vec::new(), Vec::new());
         for (id, d) in &new.digests {
@@ -165,8 +163,6 @@ impl Full {
             added,
             changed,
             removed: self.digests.values().filter(|o| new.digests.get(o.node.node_id.as_str()).is_none_or(|d| d.node.incarnation != o.node.incarnation)).map(|o| NodeBirth { node_id: o.node.node_id.clone(), incarnation: o.node.incarnation.clone() }).collect(),
-            in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
-            deleted: new.deleted.iter().filter(|(k, _)| !self.deleted.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             mesh_id: new.mesh_id.clone(),
         }
     }
@@ -177,9 +173,7 @@ impl Full {
     /// differential does not carry. A `changed` entry moves the held birth's status and primary roles;
     /// one naming a birth neither held nor added is [`Gap::ChangedBirthNotHeld`] and moves nothing. An added
     /// or changed birth clears that exact birth's stop overlay (`NodeStopped`, `node.stop:`): the
-    /// source lists the birth again once its primary's `node.joined` ended the stop. A departure ends
-    /// every overlay of its exact birth, its stop included: node.delete replaces NodeStopped with the
-    /// deleted retention (gossip.md §3.1).
+    /// source lists the birth again once its primary's `node.joined` ended the stop.
     pub fn apply(&mut self, delta: &Delta) -> Result<Vec<MeshDigest>, Gap> {
         let mut next = self.clone();
         if delta.mesh_id.is_some() {
@@ -210,13 +204,6 @@ impl Full {
             moved.push(d);
             next.listed(moved.last().expect("just pushed").clone());
         }
-        for o in &delta.in_flight {
-            next.in_flight.insert(o.key(), o.clone());
-        }
-        for o in &delta.deleted {
-            next.in_flight.retain(|_, x| !(x.node_id == o.node_id && x.incarnation == o.incarnation));
-            next.deleted.insert(o.node_id.to_string(), o.clone());
-        }
         *self = next;
         Ok(moved)
     }
@@ -237,10 +224,6 @@ pub struct Delta {
     pub changed: Vec<NodeStatusEntry>,
     /// Births no longer listed.
     pub removed: Vec<NodeBirth>,
-    /// The overlays opened or advanced.
-    pub in_flight: Vec<LifecycleOp>,
-    /// The departures recorded.
-    pub deleted: Vec<LifecycleOp>,
     /// The id of the mesh the delta moves, as its frame names it.
     pub mesh_id: Option<rdm_core::MeshId>,
 }
@@ -248,7 +231,7 @@ pub struct Delta {
 impl Delta {
     /// Whether the delta moves nothing.
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty() && self.in_flight.is_empty() && self.deleted.is_empty()
+        self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty()
     }
 
     /// The differential `parts` make, in chunk order: what a receiver applies once it holds them all.
@@ -258,8 +241,6 @@ impl Delta {
             whole.added.extend(p.added);
             whole.changed.extend(p.changed);
             whole.removed.extend(p.removed);
-            whole.in_flight.extend(p.in_flight);
-            whole.deleted.extend(p.deleted);
             whole.mesh_id = whole.mesh_id.or(p.mesh_id);
         }
         whole
@@ -268,13 +249,11 @@ impl Delta {
     /// A differential chunk's body (`TopologyDelta` data) as a receiver reads it: an added node is held
     /// of fabric `fabric` (its envelope's) and `mesh` (its frame's).
     pub fn of_frame(f: &Frame, fabric: &rdm_core::FabricId) -> Option<Delta> {
-        let Frame::TopologyDelta { mesh, mesh_id, added, changed, removed, in_flight, deleted, .. } = f.data() else { return None };
+        let Frame::TopologyDelta { mesh, mesh_id, added, changed, removed, .. } = f.data() else { return None };
         Some(Delta {
             added: added.iter().map(|e| e.digest(fabric, mesh)).collect(),
             changed: changed.clone(),
             removed: removed.clone(),
-            in_flight: in_flight.clone(),
-            deleted: deleted.clone(),
             mesh_id: mesh_id.clone(),
         })
     }
@@ -286,34 +265,28 @@ enum DeltaItem {
     Added(NodeEntry),
     Changed(NodeStatusEntry),
     Removed(NodeBirth),
-    InFlight(LifecycleOp),
-    Deleted(LifecycleOp),
 }
 
 /// The chunks of `delta`, the differential of `mesh` from `base_version` to `version`, authored by
 /// the forwarding mesh-primary `author` at `now_ms` (gossip.md §3.1 `TopologyDelta`): each chunk
 /// encodes within one gossip message, sized as a complete message with the widest index and count,
-/// and an empty differential is one empty chunk. `Err` names the encoded size of each node entry,
-/// overlay or departure that fits no message on its own: the differential is not sent.
+/// and an empty differential is one empty chunk. `Err` names the encoded size of each node entry
+/// that fits no message on its own: the differential is not sent.
 pub fn delta_chunks(mesh: &str, base_version: u64, version: u64, delta: &Delta, author: &crate::envelope::Birth, now_ms: u64) -> Result<Vec<Frame>, Vec<usize>> {
     let items: Vec<DeltaItem> = delta.added.iter().map(|d| DeltaItem::Added(NodeEntry::of(d)))
         .chain(delta.changed.iter().cloned().map(DeltaItem::Changed))
         .chain(delta.removed.iter().cloned().map(DeltaItem::Removed))
-        .chain(delta.in_flight.iter().cloned().map(DeltaItem::InFlight))
-        .chain(delta.deleted.iter().cloned().map(DeltaItem::Deleted))
         .collect();
     let shape = |run: &[DeltaItem], chunk_index: u32, chunk_count: u32| {
-        let (mut added, mut changed, mut removed, mut in_flight, mut deleted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut added, mut changed, mut removed) = (Vec::new(), Vec::new(), Vec::new());
         for it in run.iter().cloned() {
             match it {
                 DeltaItem::Added(v) => added.push(v),
                 DeltaItem::Changed(v) => changed.push(v),
                 DeltaItem::Removed(v) => removed.push(v),
-                DeltaItem::InFlight(v) => in_flight.push(v),
-                DeltaItem::Deleted(v) => deleted.push(v),
             }
         }
-        Frame::TopologyDelta { mesh: mesh.to_string(), mesh_id: delta.mesh_id.clone(), base_version, chunk_index, chunk_count, added, changed, removed, in_flight, deleted }.authored_delta(author, version, now_ms)
+        Frame::TopologyDelta { mesh: mesh.to_string(), mesh_id: delta.mesh_id.clone(), base_version, chunk_index, chunk_count, added, changed, removed }.authored_delta(author, version, now_ms)
     };
     let (sized, refused) = rdm_transport::chunking::pack_in_order(items, |run: &[DeltaItem]| {
         let bytes = shape(run, u32::MAX, u32::MAX).encode();
@@ -728,7 +701,7 @@ fn same_delta(a: &Delta, b: &Delta) -> bool {
     let changed = |d: &Delta| d.changed.iter().map(|c| (c.node_id.to_string(), c.incarnation.to_string(), format!("{:?} {:?}", c.status, c.primary))).collect::<BTreeSet<_>>();
     removed(a) == removed(b)
         && changed(a) == changed(b)
-        && Full::new(a.added.clone(), a.in_flight.clone(), a.deleted.clone()).same_topology(&Full::new(b.added.clone(), b.in_flight.clone(), b.deleted.clone()))
+        && Full::new(a.added.clone(), Vec::new(), Vec::new()).same_topology(&Full::new(b.added.clone(), Vec::new(), Vec::new()))
 }
 
 /// Borrow the complete image under ReceiveOrder's shared installation lock; inspecting a chunk
@@ -1334,20 +1307,22 @@ mod tests {
         LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b1".into(), operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }), node_id: node_id.clone(), incarnation: incarnation.clone(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
-    /// CONTRACT (gossip.md §3.1 NodeStopped: "stays in the in-flight overlay until the next lifecycle
-    /// op on the same (node.id, incarnation) … node.delete replaces it with NodeDeleted's deleted
-    /// retention"): a delta that carries a birth's departure ends every overlay of that exact birth
-    /// at the receiver, its stop included, so the receiver's full equals the publisher's. Must NOT
-    /// happen: the stop overlay kept beside the departure, and every later full of that version
-    /// refused as inconsistent.
+    /// CONTRACT (gossip.md §3.1 NodeStopped: "node.delete replaces it with NodeDeleted's deleted
+    /// retention"; Q390: a node under a stop or delete, or deleted, says so by its status): the
+    /// differential from a full listing a birth stopped to one listing it deleted carries that birth's
+    /// status, so the receiver's full equals the publisher's. Must NOT happen: the birth held stopped
+    /// beside its departure, and every later full of that version refused as inconsistent.
     #[test]
-    fn a_departure_ends_every_overlay_of_its_birth_so_the_receiver_holds_the_publishers_full() {
-        let (node, inc) = (rdm_core::NodeId::mint(), IncarnationId::mint());
-        let stopped = Full::new(vec![], vec![op("node.stop", &node, &inc)], vec![]);
-        let deleted = Full::new(vec![], vec![], vec![op("node.delete", &node, &inc)]);
+    fn a_departure_is_its_births_status_so_the_receiver_holds_the_publishers_full() {
+        let mut birth = member("2");
+        birth.status = rdm_core::model::NodeStatus::Stopped;
+        let stopped = Full::new(vec![birth.clone()], vec![], vec![]);
+        birth.status = rdm_core::model::NodeStatus::Deleted;
+        let deleted = Full::new(vec![birth], vec![], vec![]);
+        let delta = stopped.delta_to(&deleted);
+        assert_eq!((delta.added.len(), delta.changed.len(), delta.removed.len()), (0, 1, 0), "the departure is the birth's status: {delta:?}");
         let mut held = stopped.clone();
-        held.apply(&stopped.delta_to(&deleted));
-        assert!(held.in_flight().is_empty(), "the departure ended the birth's stop overlay: {:?}", held.in_flight());
+        held.apply(&delta).expect("the differential applies");
         assert!(held.same_topology(&deleted), "the receiver holds the publisher's full");
     }
 

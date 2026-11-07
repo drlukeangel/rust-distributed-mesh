@@ -308,7 +308,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         changed_member[3].status = NodeStatus::ConnectionsDeleting;
         let f8 = Full::new(changed_member.clone(), vec![], vec![]);
         let d78 = f7.delta_to(&f8);
-        assert_eq!((d78.changed.len(), d78.removed.len(), d78.in_flight.len(), d78.deleted.len()), (1, 0, 0, 0), "one remote change is one changed member");
+        assert_eq!((d78.added.len(), d78.changed.len(), d78.removed.len()), (0, 1, 0), "one remote change is one changed member");
         assert_eq!(d78.changed[0].node_id, changed_member[3].node.node_id);
         assert!(matches!(rx.take_delta("mesh2", &author_of(&p), 7, 8, &d78), Moved::Applied { topology_version: 8, .. }));
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 8)));
@@ -503,7 +503,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             })
             .await
         };
-        assert_eq!(at_member, (fwd_publisher.clone(), v1), "the member holds mesh2 at the version its primary holds, sent by its primary: the differential's source (Q389)");
+        assert_eq!(at_member, (Some(fwd_publisher.clone()), v1), "the member holds mesh2 at the version its primary holds, sent by its primary: the differential's source (Q389)");
         // Heartbeats alone: many more of them, digest_seq and emitted_at moving, no version, no delta.
         for beat in 0..12u64 {
             let mut hb = remote.digests(100 + beat);

@@ -215,8 +215,7 @@ fn a_mesh_primary_that_reads_a_higher_version_of_its_own_mesh_continues_the_mesh
         assert_eq!(served(), 1, "the first publication of a mesh-primary that held no version of its mesh");
 
         // A read of its own mesh, served by a node of its mesh, at the version the mesh's nodes hold.
-        let predecessor = PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
-        let held_by_the_mesh = SourceSnapshot { mesh: "mesh1".into(), mesh_id: None, publisher: predecessor, topology_version: 11, digests: vec![one_at(3)], in_flight: vec![], deleted: vec![] };
+        let held_by_the_mesh = SourceSnapshot { mesh: "mesh1".into(), mesh_id: None, topology_version: 11, digests: vec![one_at(3)] };
         assert!(matches!(take_read(&p_channels, &held_by_the_mesh, 7), Taken::Installed(_)), "the read of version 11 installs");
         assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
         assert_eq!(served(), 12, "the next publication continues the mesh's version from the read's (its topology is another)");

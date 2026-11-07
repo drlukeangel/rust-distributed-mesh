@@ -74,10 +74,11 @@ pub enum Frame {
     /// mesh's version, whichever of its mesh-primaries sent it (Q389). The envelope's `source` is the
     /// forwarding mesh-primary; the body repeats neither. `added` are the nodes added with their
     /// details (and a held birth whose details changed), `changed` the held nodes whose status or
-    /// primary roles changed, `removed` the births no longer listed, and `in_flight` and `deleted` the
-    /// overlays and deletions added since `base_version`. A differential that does not fit one message
-    /// is sent as `chunk_count` chunks; a receiver applies it once it holds every chunk of that (mesh,
-    /// `base_version`, version, author), and only when it holds exactly `base_version` of the mesh.
+    /// primary roles changed, and `removed` the births no longer listed. A node under a stop or delete,
+    /// or deleted, says so by its status in `added` or `changed` (Q390). A differential that does not
+    /// fit one message is sent as `chunk_count` chunks; a receiver applies it once it holds every chunk
+    /// of that (mesh, `base_version`, version, author), and only when it holds exactly `base_version`
+    /// of the mesh.
     ///
     /// Schema index 2, never a wire kind.
     TopologyDelta {
@@ -97,10 +98,6 @@ pub enum Frame {
         changed: Vec<NodeStatusEntry>,
         /// The births no longer listed.
         removed: Vec<Birth>,
-        /// The overlays added since the base version.
-        in_flight: Vec<LifecycleOp>,
-        /// The deletions added since the base version.
-        deleted: Vec<LifecycleOp>,
     },
     /// The mesh executor holding `op` has started removing its exact birth:
     /// the node is still found, and application routing stops selecting it.

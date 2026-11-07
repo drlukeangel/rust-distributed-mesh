@@ -127,7 +127,7 @@ impl Context {
         let kind = TYPES[index].to_string();
         let source = author.clone();
         let mut sequence = None;
-        let mut identity: Vec<String> = Vec::new();
+        let mut identity: Vec<String>;
         let mut time_ms = now_ms;
         let subject = match frame {
             Frame::Digest { .. } => panic!("a Digest is authored by its own birth at its sequence (Frame::digest)"),
@@ -487,7 +487,7 @@ mod tests {
     fn a_differential_is_authored_by_its_forwarder_at_the_peer_mesh_version() {
         let forwarder = author();
         let node = rdm_core::wire::NodeStatusEntry { node_id: NodeId::parse("2123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh5").unwrap(), status: rdm_core::model::NodeStatus::Ready, primary: vec![] };
-        let data = Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: 7, chunk_index: 1, chunk_count: 2, added: vec![], changed: vec![node.clone()], removed: vec![], in_flight: vec![], deleted: vec![] };
+        let data = Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: 7, chunk_index: 1, chunk_count: 2, added: vec![], changed: vec![node.clone()], removed: vec![] };
         let frame = data.clone().authored_delta(&forwarder, 8, 5);
         let c = frame.context().expect("authored");
         assert_eq!((&c.source, c.kind.as_str(), c.subject.as_str(), c.sequence.as_deref(), c.id.as_str(), c.time_ms), (&forwarder, "rdm.mesh.members.delta", "mesh/mesh2", Some("00000000000000000008"), "rdm.mesh.members.delta/mesh2/7/8/1", 5));

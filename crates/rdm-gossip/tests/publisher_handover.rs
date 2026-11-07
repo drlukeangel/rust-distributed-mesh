@@ -204,7 +204,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
 
         // The late frames, each published before what the member holds of its source.
         let late_full = Frame::aggregate("mesh1", None, &rdm_gossip::envelope::Birth::publisher(&fabric(), &pub1), v2 + 7, pred_stamp, 0, 1, vec![p1_d.clone(), rpc1.clone()]);
-        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), mesh_id: None, base_version: pred_version, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![rdm_core::framing::Birth { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation.clone() }], in_flight: vec![], deleted: vec![] }
+        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), mesh_id: None, base_version: pred_version, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![rdm_core::framing::Birth { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation.clone() }]}
             .authored_delta(&rdm_gossip::envelope::Birth::publisher(&fabric(), &pub1), pred_version + 1, pred_stamp);
         let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), deleting_version - 1);
         let late_heartbeat = Frame::digest(&with_seq(&rpc2, 3));

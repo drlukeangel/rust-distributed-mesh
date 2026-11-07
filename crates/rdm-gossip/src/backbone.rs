@@ -165,7 +165,7 @@ impl Backbone {
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
                 // since it last published that source into its own Mesh. The forward path decides
                 // nothing unless this node holds the forwarder role, read under its lock.
-                if let Some((source_mesh, publisher, version, full)) = taken.source {
+                if let Some((source_mesh, version, full)) = taken.source {
                     // A deleted mesh's final aggregate: its last node-admin, the only node, deleting. A
                     // node it lists `deleted` is a departure held for the deleted retention (Q390).
                     let nodes: Vec<MeshDigest> = full.digests().into_iter().filter(|d| d.status != rdm_core::model::NodeStatus::Deleted).collect();
@@ -549,17 +549,15 @@ impl Backbone {
     /// mesh both hold, the higher version goes in.
     pub(crate) fn forward_held_now(&self) {
         let me_name = self.current_name();
-        let mut held: std::collections::BTreeMap<String, (PublisherId, u64, Full)> = Default::default();
+        let mut held: std::collections::BTreeMap<String, (u64, Full)> = Default::default();
         let backbone = self.channels.topology_view.view.backbone_rx.lock().unwrap().sources();
         let read = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources();
-        // A source with no author heard (a read installed it) is labelled with this forwarder.
-        let me = self.current_publisher();
-        for (mesh, publisher, version, full) in backbone.into_iter().chain(read).filter(|(m, ..)| m != &self.mesh) {
-            if held.get(&mesh).is_none_or(|(_, v, _)| *v < version) {
-                held.insert(mesh, (publisher.unwrap_or_else(|| me.clone()), version, full));
+        for (mesh, _, version, full) in backbone.into_iter().chain(read).filter(|(m, ..)| m != &self.mesh) {
+            if held.get(&mesh).is_none_or(|(v, _)| *v < version) {
+                held.insert(mesh, (version, full));
             }
         }
-        for (mesh, (publisher, version, full)) in held {
+        for (mesh, (version, full)) in held {
             self.channels.forward_path.source_with_clock(&me_name, &mesh, version, &full, || self.channels.topology_view.clock.now_rafka_ms());
         }
     }
