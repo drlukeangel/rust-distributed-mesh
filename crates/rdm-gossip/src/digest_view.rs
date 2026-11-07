@@ -1072,23 +1072,20 @@ impl DigestView {
 
     /// The mesh-primary's projection of the stopped birth `d`'s mesh moved, in order, from a version
     /// carrying its stop to `version` listing it: its primary took `node.joined`, and the stop ends
-    /// here. An own-mesh birth's liveness, status and primary roles come from its own Digest, so the
-    /// birth is held again, as `node.joined` holds it at the primary, from the latest Digest of it this
-    /// view refused while the stop stood: its status, roles and sequence, and the instant and channel
-    /// it was heard on (the projection refreshes no liveness). Its details (type, path, name,
-    /// endpoints, supersedes) are the projection's: a Digest that carried none was named from the
-    /// details held before the stop, which a rename while stopped moved (gossip.md §3.1 `Digest`).
-    /// With none refused, its next heartbeat holds it.
+    /// here. An own-mesh birth's liveness, status, primary roles and details come from its own Digest
+    /// (gossip.md §3.1 `Digest`: every Digest carries its details), so the birth is held again, as
+    /// `node.joined` holds it at the primary, from the latest Digest of it this view refused while the
+    /// stop stood, with the instant and channel it was heard on (the projection refreshes no
+    /// liveness). With none refused, its next heartbeat holds it.
     pub(crate) fn stop_ended_in_projection(&self, d: &MeshDigest, target: &Target, mark: StopMark) {
         let cleared: Vec<rdm_core::OperationId> = self.in_flight().into_iter().filter(|o| o.is_stop() && o.node_id == d.node.node_id).map(|o| o.operation).collect();
         let carried = mark.carried.as_ref().map(|(_, v)| *v as i64).unwrap_or(-1);
         let latest = mark.latest;
         self.end_stop(d.node.node_id.as_str());
         let held_again = match latest {
-            // Its status is the one its own latest Digest carried; its details are the projection's.
+            // Its status and details are the ones its own latest Digest carried.
             Some((again, at, heard)) if self.own_mesh_member(d) => {
                 let seq = again.digest_seq;
-                let again = MeshDigest { node: d.node.clone(), ..again };
                 self.inner.lock().unwrap().insert(d.node.node_id.to_string(), (again, at, heard));
                 self.heard.send_modify(|v| *v += 1);
                 self.births.send_modify(|v| *v += 1);
