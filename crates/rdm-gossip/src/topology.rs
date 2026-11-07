@@ -1229,32 +1229,36 @@ mod tests {
         assert!(receiver.same_topology(&joined), "the receiver holds what the source holds");
     }
 
-    /// CONTRACT (gossip.md §3.1 `Digest`: inside its mesh, a node's status comes only from its own
-    /// Digest; Q387): at the mesh-primary of mesh1, a node's Digest moves its status, from memory or
-    /// decoded from the wire: ready, then connections-deleting; node.started, the node's own report,
-    /// says the same Ready. Must NOT happen: the primary holding a status its node's later Digest
-    /// does not say.
+    /// CONTRACT (Q387, Q197: the mesh-primary takes a node's status from the op stream the node sends it
+    /// and decides from that, never from gossip): at the mesh-primary of mesh1, a held node's status
+    /// moves by its reports alone; its Digests give liveness and move no status, from memory or decoded
+    /// from the wire, even one that says connections-deleting. Its first Digest holds it with the status
+    /// it carried. Must NOT happen: an older Digest, delivered after node.started, setting the node back
+    /// to Pending at its mesh-primary (fabric_atlas, a pre-check refused no-secondary 9 ms after
+    /// mesh2.node.2's Digest 12 set its Ready back to Pending).
     #[test]
-    fn a_nodes_digest_moves_its_status_at_its_mesh_primary() {
+    fn a_held_nodes_status_moves_by_its_reports_alone_at_its_mesh_primary() {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         digest_view.primary.store(true, Ordering::Relaxed);
         hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let status = |digest_view: &DigestView| digest_view.get(id.as_str()).map(|(d, _)| d.status);
-        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 100)));
-        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "its ready Digest");
-        assert!(digest_view.routable(id.as_str()), "the ready node of a ready mesh is routable");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 100)), "the first Digest holds the node");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Pending), "with the status it carried");
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 101)), "a later Digest is taken as liveness");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Pending), "and moves no status at the mesh-primary");
         node_started(&digest_view, &id, &inc);
-        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "node.started says the same");
-        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 110)));
-        assert_eq!(status(&digest_view), Some(NodeStatus::ConnectionsDeleting), "its later Digest moves it");
-        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, NodeStatus::Ready, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
-        assert_eq!(heard.status, NodeStatus::Ready, "the Digest carries its status on the wire");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "node.started, its report, sets it ready");
+        assert!(digest_view.routable(id.as_str()));
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 102)), "a Digest delivered late");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "sets nothing back");
+        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
+        assert_eq!(heard.status, NodeStatus::ConnectionsDeleting, "the Digest carries its status on the wire");
         assert!(digest_view.record(heard));
-        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "so does one from the wire");
-        assert!(!digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 115)), "an older Digest is not taken");
-        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "and moves nothing");
+        assert_eq!(status(&digest_view), Some(NodeStatus::Ready), "nor does one from the wire");
+        assert!(digest_view.reported(&id, &inc, NodeStatus::ConnectionsDeleting), "its report of connections-deleting");
+        assert_eq!(status(&digest_view), Some(NodeStatus::ConnectionsDeleting), "moves it");
     }
 
     /// CONTRACT (states.md "Who sets each state": node pending is set by "the node's mesh-primary"

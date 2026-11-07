@@ -637,6 +637,12 @@ fn last_admin(node: &PathName, action: &str, t: &Topology, own_mesh: &str) -> Op
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
     // leaves the topology (a removal) or is re-created at the same path and name (node recovery): R5, node-primary-update.md "No-successor cases".
     if !rdm_core::is_node_admin(&target.r#type) {
+        // Another mesh's node type: its mesh-primary, the writer, pre-checks the successor from its own
+        // view (node-primary-update.md step 2) and answers the refusal by name; this admin decides
+        // nothing for it from its projection (D64, Q197).
+        if target.mesh != own_mesh {
+            return None;
+        }
         let holds = t.node_type_primary(&target.mesh, &target.r#type).is_some_and(|p| p.node_id == target.node_id);
         let only_of_node_type = t.nodes_of_type(&target.mesh, &target.r#type).all(|n| n.node_id == target.node_id);
         if !holds || (action == "delete" && only_of_node_type) {
@@ -871,9 +877,10 @@ mod tests {
     /// mesh1.node.1 holds mesh1's rpc role with mesh1.node.2 beside it, and mesh2.node.1 is mesh2's sole
     /// node. The stop of mesh1.node.1 moves its role first (`executor::role_move` names it) and no
     /// admin executes the stop until it has; the stop of mesh1.node.2, which holds no role, moves nothing
-    /// and its mesh's primary executes it. The `BuildService` admits a stop of mesh1.node.1 and refuses a
-    /// stop of mesh2.node.1 by name with Q7's text; its delete, by the node.delete route or a
-    /// re-birth's delete, skips the update as its removal does (R5).
+    /// and its mesh's primary executes it. The `BuildService` admits a stop of mesh1.node.1; a stop of
+    /// mesh2.node.1 is refused by name with Q7's text by mesh2's own pre-check, and mesh1's admin sends it
+    /// down deciding nothing from its projection (node-primary-update.md step 2, D64); its delete, by the
+    /// node.delete route or a re-birth's delete, skips the update as its removal does (R5).
     /// Must NOT happen: a node-type primary stopped with its role unmoved, or the sole node of its type in a
     /// mesh stopped while its mesh has other nodes.
     #[test]
@@ -892,8 +899,9 @@ mod tests {
         let other = stop(PathName::new("mesh1.node", "2").unwrap());
         assert_eq!(crate::executor::node_role_move(&other, false, &t), None, "a node that holds no primary role moves none");
         assert!(last_admin(&PathName::new("mesh1.node", "1").unwrap(), "stop", &t, "mesh1").is_none(), "mesh1's rpc primary has a secondary: admitted");
+        assert!(last_admin(&PathName::new("mesh2.node", "1").unwrap(), "stop", &t, "mesh1").is_none(), "another mesh's node type: sent down, decided by its own mesh-primary");
         for action in ["stop"] {
-            match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t, "mesh1") {
+            match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t, "mesh2") {
                 Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type node in mesh mesh2"), "{action}"),
                 None => panic!("{action} of mesh2's sole node is refused by name"),
             }

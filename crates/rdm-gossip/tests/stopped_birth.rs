@@ -298,10 +298,10 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert!(m.digest_view.record(b(NodeStatus::Ready, 4)), "the birth's heartbeat is taken once the stop is over");
         assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "its status is its own Digest's Ready (Q387)");
 
-        // node.started: the primary takes the birth's report (its DeclareNodeState(Ready)), which its
-        // ready Digest says too. Its next projection says ready.
+        // node.started: the primary takes the birth's report (its DeclareNodeState(Ready)); at the
+        // primary its Digest moves no status, its report does (Q387, Q197). Its next projection says ready.
         assert!(p.digest_view.record(b(NodeStatus::Ready, 4)));
-        assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Ready), "the birth's own Digest moves its status at the primary");
+        assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(NodeStatus::Pending), "the birth's Digest moves no status at the primary");
         assert!(p.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "node.started of the birth");
         publication().await;
         until("the member to take ready from the projection", || m.digest_view.get(id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready)).await;

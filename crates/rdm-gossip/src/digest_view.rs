@@ -948,6 +948,19 @@ impl DigestView {
         prior
     }
 
+    /// At its own mesh's primary, a birth this view holds keeps the status the node's own reports set
+    /// on it ([`Self::author_status`]): the mesh-primary takes the node's status from the op stream
+    /// the node sends it, and decides from that, never from gossip (Q197, Q387); a Digest of the birth
+    /// gives its liveness. Every other node of the mesh takes the status from the Digest.
+    fn keep_reported_status(&self, inner: &HeldMembers, d: &mut MeshDigest) {
+        if !self.primary.load(std::sync::atomic::Ordering::Relaxed) || !self.own_mesh_member(d) {
+            return;
+        }
+        if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation) {
+            d.status = held.status;
+        }
+    }
+
     /// An own-mesh node's status moved here, from its own Digest or a copy of it (gossip.md §3.1
     /// `Digest`): named once per move, with the Digest's sequence and where the copy came from.
     pub(crate) fn note_status(&self, d: &MeshDigest, prior: Option<rdm_core::model::NodeStatus>, channel: &str) {
@@ -1403,6 +1416,8 @@ impl DigestView {
                 return false;
             }
         }
+        let mut d = d;
+        self.keep_reported_status(&inner, &mut d);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.status != d.status || now.saturating_duration_since(*at) > self.staleness_floor);
         let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
@@ -1549,6 +1564,8 @@ impl DigestView {
                 return false;
             }
         }
+        let mut d = d;
+        self.keep_reported_status(&inner, &mut d);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         // A forwarded copy is its forwarder's word that the member is heard (it forwards only what it
         // hears): a birth held silent past the staleness floor is heard again here, as on its own digest.
