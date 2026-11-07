@@ -741,11 +741,7 @@ impl View {
             let taken = match (side, own) {
                 // An own-mesh node's status comes only from its own Digest (gossip.md §3.1 `Digest`): its
                 // primary's projection gives nothing of a node this view hears, and holds one it does not.
-                // A read served from another mesh's node gives no liveness of this node's own mesh
-                // (R-G2) either: it holds each member's details as that projection does, so the
-                // member's own Digest, its status only, is known when it comes (a re-born
-                // mesh-primary whose start read the fabric-primary serves).
-                (Side::Backbone, true) | (Side::MeshChannel, true) | (Side::ReadPeer, true) => {
+                (Side::Backbone, true) | (Side::MeshChannel, true) => {
                     if self.digest_view.own_mesh_member(&d) {
                         self.digest_view.hold_projected_at(&d, std::time::Instant::now());
                     }
@@ -760,6 +756,7 @@ impl View {
                 // Digest already held refuses the primary's older copy, status included.
                 (Side::Read, true) => self.digest_view.record_forwarded(d.clone()),
                 (Side::Read, false) | (Side::ReadPeer, false) => self.digest_view.record_topology(d.clone()),
+                (Side::ReadPeer, true) => false,
             };
             if taken {
                 self.note(&d, side.via());
