@@ -3,7 +3,7 @@
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 
-use rdm_core::{IncarnationId, LifecycleOp, PublisherId, Primary};
+use rdm_core::{IncarnationId, Primary};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
@@ -12,10 +12,6 @@ use rdm_core::topology::{PrimaryKind, SourceVersion, StoredNode, Topology, Topol
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
-}
-
-fn publisher() -> PublisherId {
-    PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("b")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() }
 }
 
 fn digest() -> rdm_core::MeshDigest {
@@ -42,7 +38,7 @@ fn requests_match_the_frozen_wire_schema() {
     let fixtures = [
         (TopologyRequest::GetTopology { mesh: None, since: None }, "00 00 00"),
         (TopologyRequest::GetTopology { mesh: Some("mesh1".into()), since: None }, "00 01 05 6d65736831 00"),
-        (TopologyRequest::GetTopology { mesh: None, since: Some(SourceVersion { publisher: publisher(), topology_version: 7 }) }, "00 00 01 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
+        (TopologyRequest::GetTopology { mesh: None, since: Some(SourceVersion { topology_version: 7 }) }, "00 00 01 07"),
     ];
     for (q, hex) in fixtures {
         assert_eq!(Topology::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
@@ -81,8 +77,8 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
-        (Snapshot { mesh: "m".into(), mesh_id: None, publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, nodes: vec![], in_flight: vec![], deleted: vec![] }, "00 016d 00 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
-        (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
+        (Snapshot { mesh: "m".into(), mesh_id: None, topology_version: 3, chunk_index: 0, chunk_count: 1, nodes: vec![] }, "00 016d 00 03 00 01 00"),
+        (Unchanged { mesh: "m".into(), topology_version: 7 }, "01 016d 07"),
         (End { meshes: 2 }, "0202"),
         (NotReady { reason: "n".into() }, "03016e"),
         (UnknownMesh { mesh: "m".into() }, "04016d"),
@@ -145,41 +141,31 @@ fn a_snapshot_chunk_carries_each_node_as_a_read_serves_it() {
         emitted_at_rafka_ms: 0,
         primary: Vec::new(),
     };
-    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), mesh_id: None, publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, nodes: vec![rdm_core::wire::ReadNode::of(&d, None)], in_flight: vec![], deleted: vec![] };
-    let hex = "00 05 6d65736831 00 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
+    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), mesh_id: None, topology_version: 3, chunk_index: 0, chunk_count: 1, nodes: vec![rdm_core::wire::ReadNode::of(&d, None)] };
+    let hex = "00 05 6d65736831 00 03 00 01 01 \
         0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 00 \
-        02 00 07 00 00 \
-        00 00";
+        02 00 07 00 00";
     assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
     let TopologyReply::Snapshot { mesh, nodes, .. } = Topology::decode_reply(&bytes(hex)).unwrap() else { panic!("not a Snapshot") };
     let back: Vec<MeshDigest> = nodes.iter().map(|n| n.digest(&d.fabric_id, &mesh)).collect();
     assert_eq!(back, vec![d], "the node decodes with its status and its Digest's sequence");
 }
 
+/// CONTRACT (Q390): a read's snapshot is the mesh's one list of nodes, each with its status: a deleted
+/// node is listed `deleted`, with no separate open-operation or departure list beside it.
 #[test]
-fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
+fn a_snapshot_chunk_round_trips_as_one_list_of_nodes_each_with_its_status() {
     let d = digest();
-    let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
-        build_id: "b".into(),
-        operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
-        node_id: rdm_core::NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-        path: "mesh1.node".into(), name: "2".into(),
-        event_at_rafka_ms: 5,
-        traceparent: None,
-        tracestate: None,
-    };
+    let mut deleted = digest();
+    deleted.node.node_id = rdm_core::NodeId::mint();
+    deleted.status = rdm_core::model::NodeStatus::Deleted;
     let r = TopologyReply::Snapshot {
         mesh: "mesh1".into(),
         mesh_id: None,
-        publisher: publisher(),
         topology_version: 3,
-        snapshot_id: 9,
         chunk_index: 0,
         chunk_count: 1,
-        nodes: vec![rdm_core::wire::ReadNode::of(&d, Some(&rdm_core::NodeRuntime { runtime: None, data_dir: Some("/d".into()) }))],
-        in_flight: vec![op.clone()],
-        deleted: vec![op],
+        nodes: vec![rdm_core::wire::ReadNode::of(&d, Some(&rdm_core::NodeRuntime { runtime: None, data_dir: Some("/d".into()) })), rdm_core::wire::ReadNode::of(&deleted, None)],
     };
     let bytes = Topology::encode_reply(&r).unwrap();
     assert_eq!(bytes[0], 0x00, "variant 0");
@@ -193,7 +179,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert!(!Topology::FORWARDABLE);
     assert_eq!(Topology::OP, 0x1E);
     assert_eq!(Topology::frame_kind(&Started), FrameKind::Started);
-    assert_eq!(Topology::frame_kind(&Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 1 }), FrameKind::Data);
+    assert_eq!(Topology::frame_kind(&Unchanged { mesh: "m".into(), topology_version: 1 }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&End { meshes: 0 }), FrameKind::Terminal);
     let primary = Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 1 };
     assert_eq!(Topology::frame_kind(&Primaries { kind: PrimaryKind::FabricPrimary, primary, gone: false }), FrameKind::Data);

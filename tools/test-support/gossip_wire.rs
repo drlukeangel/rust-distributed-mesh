@@ -6,11 +6,15 @@ use rdm_gossip::{envelope::Birth, frame::Frame};
 pub fn author() -> Birth {
     Birth { fabric: FabricId::parse("04raj09p3zp7").unwrap(), node: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh4").unwrap() }
 }
+/// The mesh's version and the time a golden `TopologyFull` is authored at when its test supplied none.
+pub const AGGREGATE_VERSION: u64 = 7;
 pub fn authored(f: &Frame) -> Frame {
     let author = match f.data() {
         // A Digest is authored by its own birth at its sequence (`Frame::digest`), a differential by its
         // forwarding mesh-primary at the peer mesh's version (`Frame::authored_delta`).
         Frame::Digest { .. } | Frame::TopologyDelta { .. } => return f.clone(),
+        // An aggregate is authored by its mesh-primary at the mesh's version (`Frame::authored_aggregate`).
+        Frame::TopologyFull { .. } => return f.clone().authored_aggregate(&author(), AGGREGATE_VERSION, 1),
         Frame::NodeRestarting { publisher, .. } => Birth::publisher(&author().fabric, publisher),
         Frame::FabricStatus { fabric, .. } => Birth { fabric: fabric.clone(), ..author() },
         _ => author(),
@@ -53,9 +57,12 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
             source = format!("rdm://{}/{}/{}", b.fabric, b.node, b.incarnation); ms = c.time_ms; seq = Some(format!("{n:020}"));
             (format!("birth/{}/{}/{}", b.fabric, b.node, b.incarnation), vec![b.fabric.to_string(), b.node.to_string(), b.incarnation.to_string(), n.to_string()])
         }
-        Frame::TopologyFull { mesh, publisher: p, topology_version: v, published_at_rafka_ms: t, snapshot_id: s, chunk_index: c, .. } => {
-            source = format!("rdm://{}/{}/{}", a.fabric, p.node_id, p.incarnation); ms = *t; seq = Some(format!("{v:020}"));
-            (format!("mesh/{}/publisher/{}/{}/{}", esc(mesh), a.fabric, p.node_id, p.incarnation), vec![mesh.clone(), a.fabric.to_string(), p.node_id.to_string(), p.incarnation.to_string(), v.to_string(), a.fabric.to_string(), a.node.to_string(), a.incarnation.to_string(), s.to_string(), c.to_string()])
+        Frame::TopologyFull { mesh, chunk_index: c, .. } => {
+            // The envelope names the author, the mesh's version and the time; the body none of them.
+            let ctx = authored(f); let ctx = ctx.context().expect("an aggregate carries its authored context");
+            let (b, v) = (&ctx.source, ctx.version().expect("an aggregate's sequence"));
+            source = format!("rdm://{}/{}/{}", b.fabric, b.node, b.incarnation); ms = ctx.time_ms; seq = Some(format!("{v:020}"));
+            (format!("mesh/{}", esc(mesh)), vec![mesh.clone(), v.to_string(), c.to_string()])
         }
         Frame::TopologyDelta { mesh, base_version: b, chunk_index: c, .. } => {
             // The envelope names the forwarding mesh-primary, the peer mesh's version and the time; the
@@ -86,16 +93,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
     attrs.push(("time", stamp(ms))); attrs.push(("datacontenttype", "application/octet-stream".into()));
     if let Some(p) = parent { attrs.push(("traceparent", p.into())); }
     if let Some(s) = state { attrs.push(("tracestate", s.into())); }
-    let mut body = old[1..].to_vec();
-    if let Frame::TopologyFull { mesh, mesh_id, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
-        let mut prefix = Vec::new(); text(mesh, &mut prefix);
-        match mesh_id { None => prefix.push(0), Some(id) => { prefix.push(1); text(id.as_str(), &mut prefix); } }
-        text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);
-        if let Frame::TopologyFull { forwarded_by, .. } = f.data() { match forwarded_by { None => prefix.push(0), Some(by) => { prefix.push(1); text(by, &mut prefix); } } }
-        number(*topology_version, &mut prefix); number(*published_at_rafka_ms, &mut prefix);
-        assert!(body.starts_with(&prefix)); let start = prefix.len(); number(*snapshot_id, &mut prefix); let end = prefix.len();
-        let mut expanded = body[..start].to_vec(); text(a.fabric.as_str(), &mut expanded); text(a.node.as_str(), &mut expanded); text(a.incarnation.as_str(), &mut expanded); expanded.extend(&body[start..end]); expanded.extend(&body[end..]); body = expanded;
-    }
+    let body = old[1..].to_vec();
     let mut out = Vec::new(); number(attrs.len() as u64, &mut out); for (name, value) in attrs { text(name, &mut out); text(&value, &mut out); } number(body.len() as u64, &mut out); out.extend(body); out
 }
 

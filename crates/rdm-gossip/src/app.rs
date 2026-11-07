@@ -338,7 +338,6 @@ impl Attributes {
             subject: self.subject.clone(),
             sequence: self.sequence.map(|s| format!("{s:020}")),
             time_ms: self.time,
-            publication: None,
             traceparent: self.trace.traceparent.clone(),
             tracestate: self.trace.tracestate.clone(),
         };

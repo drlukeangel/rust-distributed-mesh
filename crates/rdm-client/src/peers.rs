@@ -151,7 +151,7 @@ impl Peers {
         for _ in 0..300 {
             match NodeRpc::new(&self.rpc).held_view(&target, mesh, &CallOptions::default()).await {
                 Ok(view) if holds(&view) => return,
-                Ok(view) => last = format!("{} members, overlays {:?}", view.members.len(), view.in_flight.iter().map(|o| o.operation.clone()).collect::<Vec<_>>()),
+                Ok(view) => last = format!("{} members, stopped {:?}, deleted {:?}", view.members.len(), view.stopped.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>(), view.deleted.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>()),
                 Err(e) => last = e.to_string(),
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

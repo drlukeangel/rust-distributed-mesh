@@ -166,7 +166,6 @@ fn frames_of(out: Forward) -> Vec<Frame> {
 /// The source a forward frame belongs to: the mesh and the version it moves the mesh to.
 fn identity(frame: &Frame) -> Option<(&str, u64)> {
     match frame.data() {
-        Frame::TopologyFull { mesh, topology_version, .. } => Some((mesh, *topology_version)),
         Frame::TopologyDelta { mesh, .. } => Some((mesh, frame.delta_version().unwrap_or_default())),
         _ => None,
     }
@@ -359,7 +358,6 @@ mod tests {
                     }
                     let key = match f.data() {
                         Frame::TopologyDelta { base_version, .. } => (*base_version, f.delta_version().expect("an authored differential")),
-                        Frame::TopologyFull { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } if me.carried_marker => (1, 1),
                         other => panic!("not a forward: {other:?}"),
                     };
@@ -499,7 +497,6 @@ mod tests {
                     }
                     let key = match f.data() {
                         Frame::TopologyDelta { base_version, .. } => (*base_version, f.delta_version().expect("an authored differential")),
-                        Frame::TopologyFull { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } => (1, 1),
                         other => panic!("not a forward: {other:?}"),
                     };

@@ -573,7 +573,7 @@ impl Estate {
     /// from a reply stream it holds, so the witness reports it and one that never does is named.
     pub async fn holds_departure(&self, witness: &PathName, mesh: &str, node_id: &str) {
         let witness_view = self.node_view(witness).await;
-        self.peers().await.fact(&witness_view, mesh, &format!("{witness:?} retains the departure of {node_id}"), |v| v.deleted.iter().any(|d| d.node_id.as_str() == node_id)).await;
+        self.peers().await.fact(&witness_view, mesh, &format!("{witness:?} retains the departure of {node_id}"), |v| v.deleted.iter().any(|d| d.node.node_id.as_str() == node_id)).await;
     }
 
     /// Wait for the answering admin's node view to hold a state no stream announces: `check` reads the

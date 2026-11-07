@@ -65,7 +65,7 @@ pub struct Backbone {
 /// - `stopping-aggregate`: the mesh topology a node-admin that publishes its mesh's topology sends
 ///   once more before its stop's transport cut, itself stopping (node-stop.md step 4);
 /// - `aggregate-in-flight`: a publication's mesh topology of this admin's own mesh while it
-///   carries a lifecycle operation in flight;
+///   lists a node stopped or deleting;
 /// - `aggregate`: every publication's mesh topology of this admin's own mesh, on the backbone and
 ///   into its own mesh (`mesh`).
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
@@ -166,13 +166,10 @@ impl Backbone {
                 // since it last published that source into its own Mesh. The forward path decides
                 // nothing unless this node holds the forwarder role, read under its lock.
                 if let Some((source_mesh, publisher, version, full)) = taken.source {
+                    // A deleted mesh's final aggregate: its last node-admin, the only node, deleting.
                     let is_final_delete = full.digests().len() == 1
-                        && full.digests()[0].status == rdm_core::model::NodeStatus::Leaving
-                        && rdm_core::is_node_admin(&full.digests()[0].node.r#type)
-                        && full
-                            .in_flight()
-                            .iter()
-                            .any(|op| !op.is_stop() && op.node_id == full.digests()[0].node.node_id);
+                        && full.digests()[0].status == rdm_core::model::NodeStatus::Deleting
+                        && rdm_core::is_node_admin(&full.digests()[0].node.r#type);
                     let _ = m.forward_path.source_with_clock(&me, &source_mesh, version, &full, || m.topology_view.clock.now_rafka_ms());
                     if is_final_delete {
                         m.topology_view.view.forwarder.lock().unwrap().remove(&source_mesh);
@@ -324,8 +321,8 @@ impl Backbone {
         (flag.swap(on, Ordering::Relaxed) != on).then_some(if on { "start" } else { "stop" })
     }
 
-    /// The publisher and version of `mesh`'s complete snapshot this admin holds from the backbone.
-    pub fn held_source(&self, mesh: &str) -> Option<(PublisherId, u64)> {
+    /// The author's label and version of `mesh`'s complete aggregate this admin holds from the backbone.
+    pub fn held_source(&self, mesh: &str) -> Option<(Option<PublisherId>, u64)> {
         self.channels.topology_view.view.backbone_rx.lock().unwrap().held_version(mesh)
     }
 
@@ -401,8 +398,10 @@ impl Backbone {
         }
     }
 
-    /// One publication: this mesh's `members` (while its primary) on the backbone, as one
-    /// chunked snapshot at the Mesh's `topology_version` (gossip.md §3.1). The version bumps when
+    /// One publication: this mesh's `members` (while its primary) on the backbone, as its aggregate, one
+    /// list of nodes in chunks only when it does not fit one message, at the Mesh's version (gossip.md
+    /// §3.1, Q390): the envelope's `sequence`, its author this birth and its time the publication's
+    /// Rafka-time. The version bumps when
     /// the normalized projection changed since the last publication and never otherwise, so a quiet Mesh
     /// republishes the same version as passive anti-entropy. The same projection is this Mesh's
     /// own source: what its members need of it goes into the Mesh as a delta or a full. A status
@@ -415,13 +414,12 @@ impl Backbone {
         }
         let me_name = self.current_name();
         let publisher = self.current_publisher();
-        // The projection is read, versioned, stamped and queued onto this mesh's own channel under
-        // one hold of the version (gossip.md §3.1: "the publisher reads `published_at_rafka_ms` in
-        // the same critical section that assigns `topology_version` and `snapshot_id`, so a
-        // version's stamp is never earlier than the one before it"): a status event stamped in
-        // between ([`Backbone::publish_status_event`]) or a neighbour-up replay on the mesh channel
-        // is either wholly before it or wholly after.
-        let (full, version, snapshot_id, sent, bumped) = {
+        // The list is read, versioned, stamped and queued onto this mesh's own channel under one hold
+        // of the version (gossip.md §3.1: the publisher reads the envelope's `time` in the same
+        // critical section that assigns the version, so a version's stamp is never earlier than the
+        // one before it): a status event stamped in between ([`Backbone::publish_status_event`]) or a
+        // neighbour-up replay on the mesh channel is either wholly before it or wholly after.
+        let (full, version, sent, bumped) = {
             let mut v = self.version.lock().unwrap();
             let before = v.version();
             // A read of this mesh it installed after taking the role, above the version it holds: the
@@ -434,7 +432,6 @@ impl Backbone {
             // What this primary publishes is its floor for its own source (gossip.md receive rules:
             // "against the installed floor, including a topology read"), moved under the same hold.
             self.channels.topology_view.view.order.lock().unwrap().published(&self.mesh, version);
-            let snapshot_id = v.next_snapshot_id();
             *self.own.lock().unwrap() = Some((version, full.clone()));
             // Test seam: the projection withheld from its own mesh's channel ([`Withhold`] `aggregate`,
             // `mesh`): nothing is put into the mesh.
@@ -443,28 +440,23 @@ impl Backbone {
             } else {
                 self.channels.forward_path.source_with_clock(&me_name, &self.mesh, version, &full, || topology_view.clock.now_rafka_ms())
             };
-            (full, version, snapshot_id, sent, version != before)
+            (full, version, sent, version != before)
         };
         if bumped {
             tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, members = full.member_count())
                 .in_scope(|| tracing::info!("the normalized projection of this mesh changed: its topology_version bumped"));
         }
         let mesh = self.mesh.clone();
-        let withheld = (!full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone")) || self.withholds("aggregate", "backbone");
-        for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
+        let open = full.digests().iter().any(|d| matches!(d.status, rdm_core::model::NodeStatus::Stopped | rdm_core::model::NodeStatus::Deleting));
+        let withheld = (open && self.withholds("aggregate-in-flight", "backbone")) || self.withholds("aggregate", "backbone");
+        let author = crate::envelope::Birth::publisher(&self.fabric, &publisher);
+        for frame in crate::snapshot::chunks_of(&full, |nodes, chunk_index, chunk_count| Frame::TopologyFull {
             mesh: mesh.clone(),
             mesh_id: full.mesh_id(),
-            publisher: publisher.clone(),
-            forwarded_by: None,
-            topology_version: version,
-            published_at_rafka_ms: sent,
-            snapshot_id,
             chunk_index,
             chunk_count,
-            digests,
-            in_flight,
-            deleted,
-        }.authored(&crate::envelope::Birth::publisher(&self.fabric, &publisher), 0, sent))
+            nodes: nodes.iter().map(rdm_core::wire::NodeEntry::of).collect(),
+        }.authored_aggregate(&author, version, sent))
         .into_iter()
         .filter(|_| !withheld)
         {
@@ -487,9 +479,10 @@ impl Backbone {
         topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).into_iter().filter(|d| d.node.mesh == self.mesh).collect()
     }
 
-    /// This Mesh's topology as a publication puts it out: `members` with this mesh's own overlays and
-    /// departures, and the deletions this admin executed in a peer mesh ([`DigestView::overlays_of`]);
-    /// a peer mesh's other overlays and departures travel in that mesh's topology.
+    /// This Mesh's aggregate as a publication puts it out: one list of its nodes, `members` with this
+    /// mesh's open operations and departures said by each node's status ([`DigestView::aggregate_nodes`],
+    /// Q390). The mesh's last node-admin is listed deleting only once it is Leaving: that list is the
+    /// deleted mesh's final aggregate (gossip.md "Mesh delete").
     pub(crate) fn own_full(&self, topology_view: &TopologyView, members: Vec<MeshDigest>) -> Full {
         let (mut in_flight, deleted) = topology_view.digest_view.overlays_of(&self.mesh);
         if members.len() == 1
@@ -499,7 +492,8 @@ impl Backbone {
             let last_id = &members[0].node.node_id;
             in_flight.retain(|op| op.is_stop() || &op.node_id != last_id);
         }
-        Full::new(members, in_flight, deleted).of_mesh(Some(topology_view.mesh_id().clone()))
+        let nodes = topology_view.digest_view.aggregate_nodes(&self.mesh, members, &in_flight, &deleted);
+        Full::new(nodes, Vec::new(), Vec::new()).of_mesh(Some(topology_view.mesh_id().clone()))
     }
 
     /// Resolves when the next publication is due: at `deadline`, the anti-entropy timer, or
@@ -528,7 +522,7 @@ impl Backbone {
                     (v.would_bump(&full) || published != v.version(), v.version())
                 };
                 if moved {
-                    tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.current_name(), mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), deleted = full.deleted().len())
+                    tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.current_name(), mesh = %self.mesh, held_topology_version = held, members = full.member_count())
                         .in_scope(|| tracing::info!("this mesh's normalized projection moved since its last publication: it is published at once"));
                     return;
                 }
@@ -556,9 +550,11 @@ impl Backbone {
         let mut held: std::collections::BTreeMap<String, (PublisherId, u64, Full)> = Default::default();
         let backbone = self.channels.topology_view.view.backbone_rx.lock().unwrap().sources();
         let read = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources();
+        // A source with no author heard (a read installed it) is labelled with this forwarder.
+        let me = self.current_publisher();
         for (mesh, publisher, version, full) in backbone.into_iter().chain(read).filter(|(m, ..)| m != &self.mesh) {
             if held.get(&mesh).is_none_or(|(_, v, _)| *v < version) {
-                held.insert(mesh, (publisher, version, full));
+                held.insert(mesh, (publisher.unwrap_or_else(|| me.clone()), version, full));
             }
         }
         for (mesh, (publisher, version, full)) in held {

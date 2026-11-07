@@ -17,7 +17,7 @@ use crate::{frame::*, status::*, primary::*, channel::*, digest_view::*};
 pub(crate) struct SnapshotTaken {
     /// The digests applied to the view, for their addresses.
     pub(crate) carried: Vec<MeshDigest>,
-    /// A complete backbone snapshot of a source Mesh: `(mesh, publisher, version, full)`, for the
+    /// A complete backbone aggregate of a peer Mesh: `(mesh, author, version, full)`, for the
     /// forwarding primary.
     pub(crate) source: Option<(String, PublisherId, u64, Full)>,
     /// A complete snapshot installed from the backbone: who published it, when, and the
@@ -27,7 +27,7 @@ pub(crate) struct SnapshotTaken {
 
 /// What a receiver held of one source before a projection frame of it applied.
 pub(crate) struct Prior {
-    pub(crate) held: Option<(PublisherId, u64)>,
+    pub(crate) held: Option<(Option<PublisherId>, u64)>,
     pub(crate) stops: BTreeSet<(String, String)>,
 }
 
@@ -36,13 +36,13 @@ impl Prior {
         Self { held: rx.held_version(mesh), stops: Target::stops_of(rx.held_full(mesh)) }
     }
 
-    /// The target of a frame sent by `publisher` at `version` arriving on `side`, `after` the projection
-    /// the receiver holds once it applied.
+    /// The target of a frame sent by `publisher` (its author's label, empty when none was heard) at
+    /// `version` arriving on `side`, `after` the projection the receiver holds once it applied.
     pub(crate) fn target(self, publisher: &impl std::fmt::Display, side: Side, version: u64, after: Option<&Full>) -> Target {
         Target {
             publisher: publisher.to_string(),
             channel: side.name(),
-            held: self.held.map(|(p, v)| (p.to_string(), v)),
+            held: self.held.map(|(p, v)| (p.map(|p| p.to_string()).unwrap_or_default(), v)),
             version,
             prior_stops: self.stops,
             post_stops: Target::stops_of(after),
@@ -50,10 +50,10 @@ impl Prior {
     }
 }
 
-/// A backbone snapshot as its publisher stamped it.
+/// A backbone aggregate as its author stamped it.
 pub(crate) struct Publication {
     pub(crate) publisher: PublisherId,
-    /// The publisher's rafka-time when it published (`Frame::TopologyFull::published_at_rafka_ms`).
+    /// The author's rafka-time when it published (the `TopologyFull` envelope's `time`).
     pub(crate) published_at_rafka_ms: u64,
     /// The publisher's own digest in the snapshot, matched by its exact birth.
     pub(crate) publisher_digest: Option<MeshDigest>,
@@ -376,9 +376,10 @@ impl View {
         }
     }
 
-    /// A `TopologyFull` chunk or a `TopologyDelta`, arrived on `side`. A snapshot is applied to the view
-    /// only once complete; a delta only at exactly its base. A frame that does not belong on its
-    /// channel is refused by name. Whoever published it, a frame is taken for what it carries: one
+    /// A `TopologyFull` chunk or a `TopologyDelta`, arrived on `side`. An aggregate is applied to the view
+    /// only once every chunk of its (mesh, version, author) is held; a delta only at exactly its base.
+    /// A frame that does not belong on its channel is refused by name: an aggregate travels on the
+    /// backbone only (Q387). Whoever published it, a frame is taken for what it carries: one
     /// published before the newest the channel holds of its mesh was already ignored by the receive
     /// path (R-RX3, [`crate::receive_order`]), and only the mesh-primary publishes a mesh (R-RX2).
     /// A projection of this node's own mesh on its own mesh channel is refused by name: its mesh-primary
@@ -395,20 +396,19 @@ impl View {
 
     pub(crate) fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side, order: &mut crate::receive_order::ReceiveOrder) -> SnapshotTaken {
         match f.data() {
-            Frame::TopologyFull { mesh, mesh_id, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => {
-                if forwarded_by.is_some() == (side == Side::Backbone) {
+            Frame::TopologyFull { mesh, mesh_id, chunk_index, chunk_count, nodes } => {
+                // The envelope names the aggregate's author, the mesh's version and the time (Q389).
+                let Some((author, version, time_ms)) = f.context().and_then(|c| Some((c.source.clone(), c.version()?, c.time_ms))) else { return SnapshotTaken::default() };
+                if side != Side::Backbone {
                     tracing::info_span!(
                         "rdm.mesh.topology.reject.via-members-on-wrong-channel",
                         node = %self.current_name(),
                         channel = side.name(),
                         mesh = %mesh,
-                        publisher = %publisher,
-                        forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                        publisher = %format!("{}@{}", author.node, author.incarnation),
+                        forwarded_by = "",
                     )
-                    .in_scope(|| tracing::warn!("a TopologyFull frame on a channel it is not published on: refused"));
-                    return SnapshotTaken::default();
-                }
-                if self.own_mesh_on_its_channel(mesh, side, publisher, "mesh-topology") {
+                    .in_scope(|| tracing::warn!("a TopologyFull off the backbone, the one channel an aggregate travels on: refused"));
                     return SnapshotTaken::default();
                 }
                 if self.outside_build(mesh, side) {
@@ -417,23 +417,20 @@ impl View {
                 let chunk = Chunk {
                     mesh: mesh.clone(),
                     mesh_id: mesh_id.clone(),
-                    publisher: publisher.clone(),
-                    forwarded_by: forwarded_by.clone(),
-                    topology_version: *topology_version,
-                    snapshot_id: *snapshot_id,
+                    author: Some(author.clone()),
+                    topology_version: version,
+                    time_ms,
                     chunk_index: *chunk_index,
                     chunk_count: *chunk_count,
-                    digests: digests.clone(),
-                    in_flight: in_flight.clone(),
-                    deleted: deleted.clone(),
+                    digests: nodes.iter().map(|n| n.digest(&author.fabric, mesh)).collect(),
                     runtimes: Vec::new(),
                 };
+                let author_name = chunk.author_name();
                 // The receiver's lock is held until the view holds what the version names: a reader of
                 // the held version never sees a version ahead of the view it describes.
                 let mut rx = self.receiver(side).lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
-                let owner = f.context().and_then(|c| c.publication.as_ref()).map(|(birth, _)| birth.clone());
-                let taken = rx.take_authored_chunk(chunk, owner.clone(), order.installed_for_owner(mesh, owner.as_ref(), *snapshot_id));
+                let taken = rx.take_chunk_against(chunk, false, order.installed_snapshot(mesh));
                 match taken {
                     Taken::Waiting { .. } => SnapshotTaken::default(),
                     Taken::Refused(crate::snapshot::Refusal::Duplicate | crate::snapshot::Refusal::Inconsistent | crate::snapshot::Refusal::OlderThanHeld { .. } | crate::snapshot::Refusal::OlderThanPending { .. }) => SnapshotTaken::default(),
@@ -444,19 +441,18 @@ impl View {
                             node = %self.current_name(),
                             channel = side.name(),
                             mesh = %mesh,
-                            publisher = %publisher,
-                            topology_version = *topology_version,
-                            snapshot_id = *snapshot_id,
+                            publisher = %author_name,
+                            topology_version = version,
+                            time_ms,
                             reason = ?r,
                         )
-                        .in_scope(|| tracing::info!("a snapshot chunk refused: the held projection stands"));
+                        .in_scope(|| tracing::info!("an aggregate chunk refused: the held list stands"));
                         SnapshotTaken::default()
                     }
                     Taken::Installed(i) => {
-                        if let Some(owner) = &owner { order.publication_installed(mesh, publisher, i.topology_version, owner, i.snapshot_id); }
-                        let installed = self.installed(&i, fabric, side, *published_at_rafka_ms, prior);
+                        let installed = self.installed(&i, fabric, side, prior);
                         drop(rx);
-                        order.installed_projection(&i.mesh, &i.publisher, i.topology_version, &i.full, Some(i.snapshot_id));
+                        order.installed_projection(&i.mesh, i.publisher.as_ref(), i.topology_version, &i.full, Some((author, i.time_ms)));
                         installed
                     }
                 }
@@ -501,10 +497,10 @@ impl View {
                         let full = Full::new(moved, delta.in_flight.clone(), delta.deleted.clone());
                         let held_full = rx.held_full(mesh);
                         let target = prior.target(&source, side, *topology_version, held_full);
-                        let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target);
+                        let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
-                        order.installed_projection(mesh, &crate::snapshot::sent_by(&author), *topology_version, &installed_full, None);
+                        order.installed_projection(mesh, Some(&crate::snapshot::sent_by(&author)), *topology_version, &installed_full, None);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
                     Moved::Waiting { .. } | Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
@@ -593,7 +589,7 @@ impl View {
                 subject = %e.source,
                 held_key = %e.held,
                 frame_key = %e.offered,
-                publisher = %chunk.publisher,
+                publisher = %chunk.author_name(),
             )
             .in_scope(|| tracing::info!("a topology read of a version below the one this node installed of its source: ignored"));
             let held_version = order.floor(&chunk.mesh, offered_id.as_ref()).unwrap_or_default();
@@ -609,9 +605,9 @@ impl View {
             if side == Side::ReadPeer {
                 rx.note_peer_read(&i.mesh);
             }
-            self.installed(i, fabric, side, 0, prior);
+            self.installed(i, fabric, side, prior);
             drop(rx);
-            order.installed_projection(&i.mesh, &i.publisher, i.topology_version, &i.full, None);
+            order.installed_projection(&i.mesh, i.publisher.as_ref(), i.topology_version, &i.full, None);
             drop(order);
             // A read of its own mesh at the mesh-primary, after it took the role: the mesh's version
             // continues from it at its next publication (Q391).
@@ -638,65 +634,67 @@ impl View {
         }
     }
 
-    /// A complete snapshot is held: apply it to the view. `prior` is what the receiver held of the
+    /// A complete list of nodes is held: apply it to the view. `prior` is what the receiver held of the
     /// source before it.
-    pub(crate) fn installed(&self, i: &Install, fabric: &FabricId, side: Side, published_at_rafka_ms: u64, prior: Prior) -> SnapshotTaken {
+    pub(crate) fn installed(&self, i: &Install, fabric: &FabricId, side: Side, prior: Prior) -> SnapshotTaken {
+        let count = |status: rdm_core::model::NodeStatus| i.full.digests().iter().filter(|d| d.status == status).count();
         tracing::info_span!(
             "rdm.mesh.topology.update.via-snapshot-installed",
             node = %self.current_name(),
             channel = side.name(),
             mesh = %i.mesh,
-            publisher = %i.publisher,
+            publisher = %i.publisher.as_ref().map(ToString::to_string).unwrap_or_default(),
             topology_version = i.topology_version,
-            snapshot_id = i.snapshot_id,
+            time_ms = i.time_ms,
             members = i.full.member_count(),
-            in_flight = i.full.in_flight().len(),
-            deleted = i.full.deleted().len(),
+            stopped = count(rdm_core::model::NodeStatus::Stopped),
+            deleting = count(rdm_core::model::NodeStatus::Deleting),
+            deleted = count(rdm_core::model::NodeStatus::Deleted),
             first = i.first,
             resumed = i.resumed,
             refreshed = i.refreshed,
         )
-        .in_scope(|| tracing::debug!("a complete snapshot installed"));
-        let target = prior.target(&i.publisher, side, i.topology_version, Some(&i.full));
-        let carried = self.apply_full(&i.mesh, &i.full, Some(&i.full), fabric, side, &target);
-        let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
-        // A mesh topology with no digests (a deleted mesh's, gossip.md "Mesh delete": "`digests`
-        // empty") lists no birth of its publisher: it carries no rafka-time sample.
-        let publication = (side == Side::Backbone && i.full.member_count() > 0).then(|| Publication {
-            publisher: i.publisher.clone(),
-            published_at_rafka_ms,
-            publisher_digest: i.full.digests().into_iter().find(|d| d.node.node_id == i.publisher.node_id && d.node.incarnation == i.publisher.incarnation),
+        .in_scope(|| tracing::debug!("a complete list of nodes installed"));
+        let target = prior.target(&i.publisher.as_ref().map(ToString::to_string).unwrap_or_default(), side, i.topology_version, Some(&i.full));
+        let carried = self.apply_full(&i.mesh, &i.full, Some(&i.full), fabric, side, &target, i.time_ms);
+        let source = i.publisher.clone().filter(|_| side == Side::Backbone && i.mesh != self.mesh).map(|p| (i.mesh.clone(), p, i.topology_version, i.full.clone()));
+        // An aggregate with no nodes lists no birth of its author: it carries no rafka-time sample.
+        let publication = i.publisher.clone().filter(|_| side == Side::Backbone && i.full.member_count() > 0).map(|publisher| Publication {
+            publisher_digest: i.full.digests().into_iter().find(|d| d.node.node_id == publisher.node_id && d.node.incarnation == publisher.incarnation),
+            publisher,
+            published_at_rafka_ms: i.time_ms,
         });
         SnapshotTaken { carried, source, publication }
     }
 
-    /// Apply the members, overlays and departures of a snapshot or a delta to the view. Departures
-    /// first: a digest of a deleted birth in the same snapshot is refused. A listed birth this view
-    /// holds stopped ends its stop only when the source moved, in order, from a version carrying the
-    /// stop to this one (`target`); any other entry of it is refused by name. An own-mesh birth's
-    /// entry gives its status and nothing else (gossip.md §3.1: liveness, endpoints and the runtime
-    /// fact come from its Digest), unless this node is the primary that authors it. A peer mesh's
-    /// primary carries only the members it hears (R-RX4: only a mesh's own primary publishes it).
-    pub(crate) fn apply_full(&self, mesh: &str, full: &Full, complete: Option<&Full>, fabric: &FabricId, side: Side, target: &Target) -> Vec<MeshDigest> {
+    /// Apply the nodes of an aggregate, a read or a delta to the view, each by its status (Q390): a node
+    /// listed `deleted` departs for the retention, one listed `stopped` is stopped, one listed
+    /// `deleting` is held under its removal; a differential's open operations and departures, while it
+    /// carries them, the same. Departures first: a digest of a deleted birth in the same list is
+    /// refused. A listed birth this view holds stopped ends its stop only when the source moved, in
+    /// order, from a version listing it stopped to this one (`target`); any other entry of it is
+    /// refused by name. An own-mesh birth's entry gives its status and nothing else (gossip.md §3.1:
+    /// liveness, endpoints and the runtime fact come from its Digest), unless this node is the primary
+    /// that authors it. A peer mesh's primary carries only the members it hears (R-RX4: only a mesh's
+    /// own primary publishes it). `at_rafka_ms` is when the list was published: what an operation said
+    /// by a status alone is dated.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_full(&self, mesh: &str, full: &Full, complete: Option<&Full>, fabric: &FabricId, side: Side, target: &Target, at_rafka_ms: u64) -> Vec<MeshDigest> {
+        use rdm_core::model::NodeStatus as S;
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
-        let final_delete = if complete_digests.len() == 1
-            && complete_digests[0].status == rdm_core::model::NodeStatus::Leaving
-            && rdm_core::is_node_admin(&complete_digests[0].node.r#type)
-        {
-            let last_id = &complete_digests[0].node.node_id;
-            complete
-                .into_iter()
-                .flat_map(Full::in_flight)
-                .find(|op| !op.is_stop() && &op.node_id == last_id)
-        } else {
-            None
-        };
+        // A deleted mesh's final aggregate: its last node-admin, the only node, deleting (gossip.md "Mesh
+        // delete": "its final mesh topology, the mesh deleted and itself deleting").
+        let final_delete = (complete_digests.len() == 1 && complete_digests[0].status == S::Deleting && rdm_core::is_node_admin(&complete_digests[0].node.r#type))
+            .then(|| DigestView::listed_op(&complete_digests[0], "node.delete", at_rafka_ms));
         if let Some(op) = &final_delete {
             let deleted_mesh_id = complete.and_then(Full::mesh_id);
             if self.digest_view.holds_birth_of_mesh_under_another_id(mesh, &deleted_mesh_id) {
                 return Vec::new();
             }
             if self.digest_view.is_deleted(op.node_id.as_str()) {
+                for d in full.digests().into_iter().filter(|d| d.status == S::Deleted && &d.fabric_id == fabric) {
+                    self.digest_view.depart_listed(&d, at_rafka_ms);
+                }
                 for d in full.deleted() {
                     self.digest_view.depart(d.clone());
                 }
@@ -705,8 +703,21 @@ impl View {
             }
         }
         self.digest_view.hold_mesh_id(mesh, complete.and_then(Full::mesh_id).as_ref());
+        let listed: Vec<MeshDigest> = full.digests().into_iter().filter(|d| &d.fabric_id == fabric).collect();
+        for d in listed.iter().filter(|d| d.status == S::Deleted) {
+            self.digest_view.depart_listed(d, at_rafka_ms);
+        }
         for op in full.deleted() {
             self.digest_view.depart(op);
+        }
+        for d in listed.iter().filter(|d| d.status == S::Stopped) {
+            let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
+            if self.digest_view.stopped_listed(d, at_rafka_ms) {
+                self.note_member_stopped(&DigestView::listed_op(d, "node.stop", at_rafka_ms), prior, side.name());
+            }
+        }
+        for d in listed.iter().filter(|d| d.status == S::Deleting) {
+            self.digest_view.deleting_listed(d, at_rafka_ms);
         }
         for op in full.in_flight() {
             if op.is_stop() {
@@ -722,7 +733,8 @@ impl View {
         let authors = self.primary.load(Ordering::Relaxed);
         let me_name = self.current_name();
         let mut carried = Vec::new();
-        for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
+        // A node listed stopped or deleted is held by its stop or its departure, never as a node heard.
+        for d in listed.into_iter().filter(|d| !matches!(d.status, S::Stopped | S::Deleted)) {
             // The primary records the entry carries, this node's own among them (gossip.md "A primary
             // change on gossip": the mesh-primary's `TopologyFull` projection carries them): held by revision
             // whatever else of the entry is taken, and however old its copy of the digest is.
@@ -771,7 +783,9 @@ impl View {
         }
         if let Some(op) = final_delete {
             let (mesh, build_id, at_rafka_ms) = (op.mesh.clone(), op.build_id.clone(), op.event_at_rafka_ms);
-            self.digest_view.depart(op);
+            if !self.digest_view.is_deleted(op.node_id.as_str()) {
+                self.digest_view.depart(op);
+            }
             self.digest_view.depart_mesh_births(&mesh, &build_id, at_rafka_ms);
         }
         carried
@@ -799,8 +813,8 @@ impl View {
     }
 
     /// A peer mesh's member this node now holds stopped, from its mesh primary's `NodeStopped` overlay
-    /// (gossip.md, node-stopped lifecycle overlay): Leaving and stopped, not routable. `channel` is
-    /// where the overlay arrived: the frame itself, or the mesh topology's `in_flight`.
+    /// (gossip.md, node-stopped lifecycle overlay) or its aggregate listing it stopped: Leaving and
+    /// stopped, not routable. `channel` is where the stop arrived.
     pub(crate) fn note_member_stopped(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::model::NodeStatus>, channel: &str) {
         if op.mesh == self.mesh {
             return;

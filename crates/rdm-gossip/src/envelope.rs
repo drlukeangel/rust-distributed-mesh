@@ -51,8 +51,6 @@ pub struct Context {
     pub sequence: Option<String>,
     /// Authored Rafka-time in milliseconds.
     pub time_ms: u64,
-    /// Birth and existing counter of this publication's owner, for TopologyFull only.
-    pub publication: Option<(Birth, u64)>,
     /// Original author’s W3C parent; preserved through replay and forwarding.
     pub traceparent: Option<String>,
     /// Original author’s vendor trace state, never a receive decision.
@@ -123,26 +121,17 @@ fn date_ms(s: &str) -> Result<u64, WireError> {
 
 impl Context {
     /// Declare context from the owned author, held committed revision and authored time.
-    /// A forwarding publication supplies its own birth as owner while retaining source.
     pub fn authored(frame: &Frame, author: &Birth, primary_revision: u64, now_ms: u64) -> Self {
         let frame = frame.data();
         let index = frame.kind_index();
         let kind = TYPES[index].to_string();
-        let mut source = author.clone();
+        let source = author.clone();
         let mut sequence = None;
         let mut identity: Vec<String> = Vec::new();
-        let mut publication = None;
         let mut time_ms = now_ms;
         let subject = match frame {
             Frame::Digest { .. } => panic!("a Digest is authored by its own birth at its sequence (Frame::digest)"),
-            Frame::TopologyFull { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, .. } => {
-                source = Birth::publisher(&author.fabric, publisher);
-                sequence = Some(p(*topology_version)); time_ms = *published_at_rafka_ms;
-                publication = Some((author.clone(), *snapshot_id));
-                identity.push(mesh.clone()); identity.extend(birth_parts(&source)); identity.push(topology_version.to_string());
-                identity.extend(birth_parts(author)); identity.push(snapshot_id.to_string()); identity.push(chunk_index.to_string());
-                format!("mesh/{}/publisher/{}", escaped(mesh), path(&birth_parts(&source)))
-            }
+            Frame::TopologyFull { .. } => panic!("a TopologyFull is authored at its mesh's version (Frame::authored_aggregate)"),
             Frame::TopologyDelta { .. } => panic!("a differential is authored at its mesh's version (Frame::authored_delta)"),
             Frame::MeshStatus { mesh, changed_at_rafka_ms, .. } => {
                 time_ms = *changed_at_rafka_ms;
@@ -173,7 +162,18 @@ impl Context {
             Frame::Authored { .. } => unreachable!(),
         };
         let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
-        Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent, tracestate: trace.tracestate }
+        Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, traceparent: trace.traceparent, tracestate: trace.tracestate }
+    }
+
+    /// A `TopologyFull` chunk's context (gossip.md §3.1): authored by the mesh-primary `author` at the
+    /// mesh's `version` (its `sequence`, Q389) and the publication's Rafka-time; its `id` is
+    /// `rdm.mesh.members/<mesh>/<version>/<chunk>` and its `subject` `mesh/<mesh>`.
+    pub fn aggregate(frame: &Frame, author: &Birth, version: u64, time_ms: u64) -> Self {
+        let Frame::TopologyFull { mesh, chunk_index, .. } = frame.data() else { panic!("an aggregate context is a TopologyFull's") };
+        let kind = TYPES[1].to_string();
+        let identity = vec![mesh.clone(), version.to_string(), chunk_index.to_string()];
+        let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
+        Self { id: format!("{kind}/{}", path(&identity)), source: author.clone(), kind, subject: format!("mesh/{}", escaped(mesh)), sequence: Some(p(version)), time_ms, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
 
     /// A Digest's context: authored by `source`, the exact birth, at its `digest_seq` and emitted time.
@@ -182,7 +182,7 @@ impl Context {
         let mut identity = birth_parts(source);
         identity.push(digest_seq.to_string());
         let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
-        Self { id: format!("{kind}/{}", path(&identity)), source: source.clone(), kind, subject: format!("birth/{}", path(&birth_parts(source))), sequence: Some(p(digest_seq)), time_ms, publication: None, traceparent: trace.traceparent, tracestate: trace.tracestate }
+        Self { id: format!("{kind}/{}", path(&identity)), source: source.clone(), kind, subject: format!("birth/{}", path(&birth_parts(source))), sequence: Some(p(digest_seq)), time_ms, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
 
     /// A differential's context (`TopologyDelta`): authored by the forwarding mesh-primary `author`, its
@@ -193,10 +193,11 @@ impl Context {
         let kind = TYPES[2].to_string();
         let identity = vec![mesh.clone(), base_version.to_string(), version.to_string(), chunk_index.to_string()];
         let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
-        Self { id: format!("{kind}/{}", path(&identity)), source: author.clone(), kind, subject: format!("mesh/{}", escaped(mesh)), sequence: Some(p(version)), time_ms, publication: None, traceparent: trace.traceparent, tracestate: trace.tracestate }
+        Self { id: format!("{kind}/{}", path(&identity)), source: author.clone(), kind, subject: format!("mesh/{}", escaped(mesh)), sequence: Some(p(version)), time_ms, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
 
-    /// A topology frame's version: its sequence, when it is one number.
+    /// A topology frame's version (a `TopologyFull`'s or `TopologyDelta`'s, Q389): its sequence, when it
+    /// is one number.
     pub fn version(&self) -> Option<u64> { scalar(self.sequence.as_deref()?).ok() }
 
     /// A Digest's `digest_seq`: its sequence, when it is one.
@@ -227,33 +228,9 @@ pub(crate) fn encode_data(context: &Context, data: &[u8], dataschema: Option<&st
     wire::encode(&(context.attributes(dataschema)?, data))
 }
 
-fn body(context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
+fn body(_context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
     let raw = wire::encode(frame.data())?;
-    let mut data = raw[1..].to_vec();
-    if matches!(frame.data(), Frame::TopologyFull { .. }) {
-        // Existing fields retain their order; only the publication id gains its owner's birth.
-        let (prefix, counter_at) = topology_full_prefix(&data)?;
-        let (owner, counter) = context.publication.as_ref().ok_or_else(|| invalid("missing publication owner"))?;
-        let mut out = prefix;
-        out.extend(wire::encode(&(owner.fabric.clone(), owner.node.clone(), owner.incarnation.clone(), *counter))?);
-        data = data[counter_at..].to_vec(); out.extend(data); return Ok(out);
-    }
-    Ok(data)
-}
-
-// Parse only the fixed TopologyFull prefix and existing counter to find its byte boundary. Domain
-// entries remain opaque here; the selected TopologyFull schema reads them after type validation.
-fn topology_full_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), WireError> {
-    let mut cursor = data;
-    let _: String = wire::take(&mut cursor)?;
-    let _: Option<rdm_core::MeshId> = wire::take(&mut cursor)?;
-    let _: PublisherId = wire::take(&mut cursor)?;
-    let _: Option<String> = wire::take(&mut cursor)?;
-    let _: u64 = wire::take(&mut cursor)?;
-    let _: u64 = wire::take(&mut cursor)?;
-    let prefix = data[..data.len() - cursor.len()].to_vec();
-    let _: u64 = wire::take(&mut cursor)?;
-    Ok((prefix, data.len() - cursor.len()))
+    Ok(raw[1..].to_vec())
 }
 
 /// The receive path observes tracing even when the event type is reserved or unknown.
@@ -326,7 +303,7 @@ pub(crate) fn decode_header(bytes: &[u8], trace: &mut rdm_core::context::CallCon
 }
 
 fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, dropped: &mut Vec<rdm_core::context::Dropped>) -> Result<Frame, DecodeError> {
-    let Header { source, id, kind, subject, time_ms, sequence, mut data, .. } = decode_header(bytes, trace, dropped, crate::frame::MAX_FRAME)?;
+    let Header { source, id, kind, subject, time_ms, sequence, data, .. } = decode_header(bytes, trace, dropped, crate::frame::MAX_FRAME)?;
     let index = TYPES.iter().position(|t| *t == kind);
     // Required context is checked before the named type outcome; no domain data is decoded.
     let Some(index) = index else { return Err(DecodeError::Unknown(kind)); };
@@ -348,31 +325,17 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
         _ if sequence.is_some() => return Err(invalid("fact declares sequence").into()),
         _ => (),
     }
-    let mut publication = None;
-    if index == 1 {
-        let mut cursor = data.as_slice();
-        let _: String = wire::take(&mut cursor)?;
-        let _: Option<rdm_core::MeshId> = wire::take(&mut cursor)?;
-        let _: PublisherId = wire::take(&mut cursor)?;
-        let _: Option<String> = wire::take(&mut cursor)?;
-        let _: u64 = wire::take(&mut cursor)?;
-        let _: u64 = wire::take(&mut cursor)?;
-        let start = data.len() - cursor.len();
-        let (fabric, node, incarnation, counter): (FabricId, NodeId, IncarnationId, u64) = wire::take(&mut cursor)?;
-        let mut old = data[..start].to_vec(); old.extend(wire::encode(&counter)?); old.extend(cursor);
-        data = old; publication = Some((Birth { fabric, node, incarnation }, counter));
-    }
     let mut tagged = vec![index as u8]; tagged.extend(data);
     let frame: Frame = wire::decode(&tagged)?;
-    let context = Context { id, source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent.clone(), tracestate: trace.tracestate.clone() };
+    let context = Context { id, source, kind, subject, sequence, time_ms, traceparent: trace.traceparent.clone(), tracestate: trace.tracestate.clone() };
     if let Frame::FabricStatus { fabric, .. } = &frame {
         if fabric != &context.source.fabric { return Err(invalid("fabric and source disagree").into()); }
     }
-    let owner = context.publication.as_ref().map(|(b, _)| b).unwrap_or(&context.source);
     let expected = match &frame {
         Frame::Digest { .. } => Context::digest(&context.source, context.digest_seq().ok_or_else(|| invalid("digest sequence"))?, time_ms),
+        Frame::TopologyFull { .. } => Context::aggregate(&frame, &context.source, context.version().ok_or_else(|| invalid("aggregate sequence"))?, time_ms),
         Frame::TopologyDelta { .. } => Context::delta(&frame, &context.source, context.version().ok_or_else(|| invalid("differential sequence"))?, time_ms),
-        _ => Context::authored(&frame, owner, context.primary_revision().unwrap_or(0), time_ms),
+        _ => Context::authored(&frame, &context.source, context.primary_revision().unwrap_or(0), time_ms),
     };
     if context.id != expected.id || context.source != expected.source || context.subject != expected.subject || context.sequence != expected.sequence || context.time_ms != expected.time_ms {
         return Err(invalid("context and data disagree").into());

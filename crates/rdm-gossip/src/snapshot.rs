@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> TopologyFull on the backbone
-//! RECEIVER         TopologyFull chunks -> SnapshotReceiver -> installed only once EVERY chunk is held
+//! RECEIVER         TopologyFull chunks -> SnapshotReceiver -> installed only once EVERY chunk of one
+//!                  (mesh, version, author) is held
 //! FORWARDER        held source Full, last-published Full -> Forwarder -> TopologyDelta chunks
 //! RECEIVER         TopologyDelta chunks -> applied once EVERY chunk is held, at exactly base_version,
 //!                  else the source desyncs
@@ -29,12 +30,15 @@ type OpKey = (String, rdm_core::OperationId);
 /// The digest as the topology projection sees it: what `topology_version` orders.
 ///
 /// CONTRACT (gossip.md §3.1 "DOES bump / DOES NOT bump"): the view KEEPS the birth (identity,
-/// incarnation and lineage, the one transport address), the status routing reads and the primary
-/// roles. It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp).
+/// incarnation, the one transport address), the status routing reads and the primary roles. It DROPS
+/// `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp) and the lineage, which an
+/// aggregate's node entry does not carry (a read's does): one list of nodes is one topology, whichever
+/// carried it.
 pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = d.clone();
     v.digest_seq = 0;
     v.emitted_at_rafka_ms = 0;
+    v.node.supersedes = None;
     v
 }
 
@@ -376,62 +380,30 @@ impl SourceVersion {
     }
 }
 
-#[derive(Clone)]
-enum Item {
-    Digest(MeshDigest),
-    InFlight(LifecycleOp),
-    Deleted(LifecycleOp),
-}
-
-fn split(run: Vec<Item>) -> (Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>) {
-    let (mut d, mut i, mut x) = (Vec::new(), Vec::new(), Vec::new());
-    for it in run {
-        match it {
-            Item::Digest(v) => d.push(v),
-            Item::InFlight(v) => i.push(v),
-            Item::Deleted(v) => x.push(v),
-        }
-    }
-    (d, i, x)
-}
-
-/// `full` as the chunks of ONE snapshot: `shape(digests, in_flight, deleted, chunk_index,
-/// chunk_count)` builds each frame. Every list rides inside the sizing, each chunk encodes within
-/// one gossip message (sized with the widest index and count, so a filled-in chunk never
-/// overflows), and an empty full is one empty chunk: an empty Mesh is a complete snapshot.
-pub fn chunks_of(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>, u32, u32) -> Frame) -> Vec<Frame> {
+/// `full`'s one list of nodes as the chunks of ONE aggregate: `shape(nodes, chunk_index,
+/// chunk_count)` builds each frame. The list is split only when it does not fit one message (Q390):
+/// each chunk encodes within one gossip message (sized with the widest index and count, so a
+/// filled-in chunk never overflows), and an empty list is one empty chunk: an empty Mesh is a
+/// complete aggregate.
+pub fn chunks_of(full: &Full, shape: impl Fn(Vec<MeshDigest>, u32, u32) -> Frame) -> Vec<Frame> {
     chunks_measured(full, shape, |f| f.encode())
 }
 
-/// Split a complete snapshot using the exact complete-message encoding of its channel.
+/// Split a complete list of nodes using the exact complete-message encoding of its channel.
 /// Gossip uses its envelope; a directed read measures its own reply schema.
-pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>, u32, u32) -> T, encode: impl Fn(&T) -> Vec<u8>) -> Vec<T> {
-    let items: Vec<Item> = full
-        .digests()
-        .into_iter()
-        .map(Item::Digest)
-        .chain(full.in_flight().into_iter().map(Item::InFlight))
-        .chain(full.deleted().into_iter().map(Item::Deleted))
-        .collect();
-    let (sized, refused) = rdm_transport::chunking::pack_in_order(items, |run: &[Item]| {
-        let (d, i, x) = split(run.to_vec());
-        let bytes = encode(&shape(d, i, x, u32::MAX, u32::MAX));
+pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, u32, u32) -> T, encode: impl Fn(&T) -> Vec<u8>) -> Vec<T> {
+    let (sized, refused) = rdm_transport::chunking::pack_in_order(full.digests(), |run: &[MeshDigest]| {
+        let bytes = encode(&shape(run.to_vec(), u32::MAX, u32::MAX));
         if bytes.len() > MAX_FRAME { Err(bytes.len()) } else { Ok(bytes.into()) }
     });
     for len in refused {
         tracing::info_span!("rdm.mesh.topology.reject.via-item-too-large", frame_bytes = len, limit = MAX_FRAME)
-            .in_scope(|| tracing::warn!("a snapshot item fits no complete message"));
+            .in_scope(|| tracing::warn!("a node entry fits no complete message"));
     }
     let sized: Vec<_> = sized.into_iter().map(|(run, _)| run).collect();
     let runs = if sized.is_empty() { vec![Vec::new()] } else { sized };
     let count = runs.len() as u32;
-    runs.into_iter()
-        .enumerate()
-        .map(|(k, run)| {
-            let (d, i, x) = split(run);
-            shape(d, i, x, k as u32, count)
-        })
-        .collect()
+    runs.into_iter().enumerate().map(|(k, run)| shape(run, k as u32, count)).collect()
 }
 
 /// Whether `offered` is another mesh than `held` under the same name: a mesh is created once, so a
@@ -441,73 +413,73 @@ pub fn another_mesh(held: Option<&rdm_core::MeshId>, offered: Option<&rdm_core::
     matches!((held, offered), (Some(h), Some(o)) if h != o)
 }
 
-/// One source Mesh's snapshot as a node holds or serves it: the entry answer's baseline
-/// (gossip.md §3.3 "records the publisher and version baseline").
+/// One source Mesh's one list of nodes as a node holds or serves it: a topology read's answer
+/// (gossip.md §3.3: reads initialise and repair views).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceSnapshot {
     /// The source mesh's name.
     pub mesh: String,
     /// The source mesh's id, as its topology's frame named it.
     pub mesh_id: Option<rdm_core::MeshId>,
-    /// The publisher that put the snapshot on the backbone.
-    pub publisher: PublisherId,
-    /// The snapshot's `topology_version`.
+    /// The mesh's version, whichever mesh-primary sent it (Q389).
     pub topology_version: u64,
-    /// The members.
+    /// The nodes, each with its status: a node under a stop or delete, or deleted, says so by it (Q390).
     pub digests: Vec<MeshDigest>,
-    /// The overlays still open.
-    pub in_flight: Vec<LifecycleOp>,
-    /// The retained departures.
-    pub deleted: Vec<LifecycleOp>,
 }
 
 impl SourceSnapshot {
     /// The snapshot as a [`Full`].
     pub fn full(&self) -> Full {
-        Full::new(self.digests.clone(), self.in_flight.clone(), self.deleted.clone()).of_mesh(self.mesh_id.clone())
+        Full::new(self.digests.clone(), Vec::new(), Vec::new()).of_mesh(self.mesh_id.clone())
     }
 }
 
-/// One chunk of a snapshot, as a receiver reads it from a `TopologyFull` frame.
+/// One chunk of a mesh's list of nodes, as a receiver reads it from a `TopologyFull` frame or a
+/// topology read's reply.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// The source mesh's name.
     pub mesh: String,
     /// The source mesh's id, as its frame names it.
     pub mesh_id: Option<rdm_core::MeshId>,
-    /// The publisher of the snapshot.
-    pub publisher: PublisherId,
-    /// `None` on the backbone; the forwarding primary on a Mesh's own channel.
-    pub forwarded_by: Option<String>,
-    /// The snapshot's `topology_version`.
+    /// The aggregate's author, its envelope's `source`; `None` for a topology read, whose chunks
+    /// belong to that one answer.
+    pub author: Option<crate::envelope::Birth>,
+    /// The mesh's version: the aggregate's envelope `sequence` (Q389), or the read's `topology_version`.
     pub topology_version: u64,
-    /// The publisher's own snapshot counter.
-    pub snapshot_id: u64,
-    /// This chunk's index within the snapshot.
+    /// When it was published, in Rafka-time: the aggregate's envelope `time`, or the rafka-time a
+    /// topology read's answerer served.
+    pub time_ms: u64,
+    /// This chunk's index within the list.
     pub chunk_index: u32,
-    /// The number of chunks in the snapshot.
+    /// The number of chunks in the list.
     pub chunk_count: u32,
-    /// The members this chunk carries.
+    /// The nodes this chunk carries.
     pub digests: Vec<MeshDigest>,
-    /// The overlays this chunk carries.
-    pub in_flight: Vec<LifecycleOp>,
-    /// The departures this chunk carries.
-    pub deleted: Vec<LifecycleOp>,
     /// The runtime and data dir a topology read carried of each birth it serves (hydration); none on gossip.
     pub runtimes: Vec<(rdm_core::NodeId, rdm_core::IncarnationId, rdm_core::NodeRuntime)>,
 }
 
-/// A complete snapshot, installed.
+impl Chunk {
+    /// The author as spans name it: its exact birth, or the read that answered it.
+    pub fn author_name(&self) -> String {
+        self.author.as_ref().map(|b| format!("{}@{}", b.node, b.incarnation)).unwrap_or_else(|| "topology-read".into())
+    }
+}
+
+/// A complete list of nodes, installed.
 #[derive(Debug, Clone)]
 pub struct Install {
     /// The source mesh's name.
     pub mesh: String,
-    /// The publisher of the installed snapshot.
-    pub publisher: PublisherId,
+    /// The mesh-primary that authored the installed aggregate (its envelope's `source`), as spans and
+    /// the forwarder name it; `None` when a topology read installed it and no author of that mesh's
+    /// version was heard.
+    pub publisher: Option<PublisherId>,
     /// The installed `topology_version`.
     pub topology_version: u64,
-    /// The installed snapshot's id.
-    pub snapshot_id: u64,
+    /// When the installed list was published, in Rafka-time.
+    pub time_ms: u64,
     /// The installed topology.
     pub full: Full,
     /// Nothing of this mesh was held before: the first topology of it this node installed.
@@ -537,25 +509,20 @@ pub enum Refusal {
         /// What is wrong with it.
         why: &'static str,
     },
-    /// A topology read chunk below the version this node installed from the same publisher: the
-    /// receive path ignored it (R-RX3, `crate::receive_order`).
+    /// A topology read chunk below the version this node installed of the mesh: the receive path
+    /// ignored it (R-RX3, `crate::receive_order`).
     OlderThanHeld {
         /// The version held.
         held_version: u64,
         /// The version offered.
         offered_version: u64,
     },
-    /// A chunk of a snapshot older than the one being assembled from the same source.
-    /// The chunk belongs to a snapshot older than the one being assembled from the same source.
+    /// The chunk belongs to an older version than the one being assembled from the same author.
     OlderThanPending {
         /// The version being assembled.
         pending_version: u64,
-        /// The snapshot id being assembled.
-        pending_snapshot: u64,
         /// The version the chunk names.
         offered_version: u64,
-        /// The snapshot id the chunk names.
-        offered_snapshot: u64,
     },
 }
 
@@ -719,27 +686,29 @@ pub(crate) fn sent_by(author: &crate::envelope::Birth) -> PublisherId {
     PublisherId { node_id: author.node.clone(), incarnation: author.incarnation.clone() }
 }
 
+/// The chunk set a chunk belongs to: one mesh's list from one author (its version is the set's).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SourceKey {
-    owner: Option<crate::envelope::Birth>,
     mesh: String,
-    publisher: PublisherId,
+    author: Option<crate::envelope::Birth>,
     // Read chunk ordinals belong to that directed answer, not the author's gossip publication.
     from_read: bool,
 }
 
+/// One (mesh, version, author) chunk set: its chunks, and the latest publication time among them.
+/// Every publication of one version by one author lists the same nodes, so its chunks are one set.
 #[derive(Debug, Clone)]
 struct Pending {
-    owner: Option<crate::envelope::Birth>,
+    author: Option<crate::envelope::Birth>,
     version: u64,
-    snapshot_id: u64,
+    time_ms: u64,
     count: u32,
-    chunks: BTreeMap<u32, (Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>)>,
+    chunks: BTreeMap<u32, Vec<MeshDigest>>,
 }
 
 #[derive(Debug)]
 struct Held {
-    publisher: PublisherId,
+    publisher: Option<PublisherId>,
     version: u64,
     full: Full,
     desynced: Option<Gap>,
@@ -750,8 +719,8 @@ struct Held {
     peer_read: bool,
 }
 
-fn same_parts(parts: &(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>), c: &Chunk) -> bool {
-    Full::new(parts.0.clone(), parts.1.clone(), parts.2.clone()).same_topology(&Full::new(c.digests.clone(), c.in_flight.clone(), c.deleted.clone()))
+fn same_parts(parts: &[MeshDigest], c: &Chunk) -> bool {
+    Full::new(parts.to_vec(), Vec::new(), Vec::new()).same_topology(&Full::new(c.digests.clone(), Vec::new(), Vec::new()))
 }
 
 fn same_delta(a: &Delta, b: &Delta) -> bool {
@@ -763,13 +732,14 @@ fn same_delta(a: &Delta, b: &Delta) -> bool {
 }
 
 /// Borrow the complete image under ReceiveOrder's shared installation lock; inspecting a chunk
-/// does not copy the installed publication just to compare its version or completed content.
-pub(crate) type InstalledProjection<'a> = (&'a PublisherId, u64, &'a Full, Option<u64>);
+/// does not copy the installed publication just to compare its version or completed content: the
+/// author's label, the version, the list, and the (author, time) of the last aggregate installed.
+pub(crate) type InstalledProjection<'a> = (Option<&'a PublisherId>, u64, &'a Full, Option<&'a (crate::envelope::Birth, u64)>);
 
 /// A node's held cross-Mesh projection, one source Mesh at a time.
 ///
-/// CONTRACT (gossip.md §3.1, §3.3, proofs 25-27): a snapshot is installed only once EVERY chunk
-/// of it is held; until then the held projection and the held source version stand and no delta
+/// CONTRACT (gossip.md §3.1, §3.3, proofs 25-27): an aggregate is installed only once EVERY chunk
+/// of its (mesh, version, author) is held; until then the held list and the held version stand and no delta
 /// is derived from a partial. A delta applies only when the held version is exactly its
 /// `base_version`; a copy of the delta held (its `topology_version` is the held one) is a no-op;
 /// an ahead-base delta is a gap that desynchronizes that source alone. Classification against the
@@ -792,53 +762,52 @@ pub struct SnapshotReceiver {
 }
 
 impl SnapshotReceiver {
-    /// A gossip chunk. A new complete publication at the held material version carries fresh
-    /// hearing evidence; its exact repeat does nothing, including no repair completion. Repeated
-    /// chunks of an unfinished publication leave its other chunks admissible.
+    /// A gossip chunk. A new complete publication at the held material version (a later `time` of
+    /// the same author) carries fresh hearing evidence; its exact repeat does nothing, including no
+    /// repair completion. Repeated chunks of an unfinished set leave its other chunks admissible.
     pub fn take_chunk(&mut self, c: Chunk) -> Taken {
-        self.chunk(c, false, None, None)
+        self.chunk(c, false, None)
     }
 
     /// The directed topology read is the repair completion: an identical held version may resume
     /// a desynchronized source. It still cannot replace different content at the same revision.
     pub fn take_read_chunk(&mut self, c: Chunk) -> Taken {
-        self.chunk(c, true, None, None)
+        self.chunk(c, true, None)
     }
 
     /// Classify against the node's complete installed image, including an install on another
     /// channel. This receiver's pending chunks still assemble independently of that image.
     pub(crate) fn take_chunk_against(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>) -> Taken {
-        self.chunk(c, from_read, installed, None)
+        self.chunk(c, from_read, installed)
     }
 
-    pub(crate) fn take_authored_chunk(&mut self, c: Chunk, owner: Option<crate::envelope::Birth>, installed: Option<InstalledProjection<'_>>) -> Taken {
-        self.chunk(c, false, installed, owner)
-    }
-
-    fn chunk(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>, owner: Option<crate::envelope::Birth>) -> Taken {
+    fn chunk(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>) -> Taken {
         use crate::receive_order::{publication_duplicate, publication_inconsistent, publication_stale};
         if c.chunk_count == 0 || c.chunk_index >= c.chunk_count {
             return Taken::Refused(Refusal::MalformedChunk { chunk_index: c.chunk_index, chunk_count: c.chunk_count, why: "the index is outside the count" });
         }
-        let identity = format!("{} {} topology_version={} snapshot_id={} chunk_index={}", c.mesh, c.publisher, c.topology_version, c.snapshot_id, c.chunk_index);
+        let author = c.author_name();
+        let identity = format!("{} {} topology_version={} time_ms={} chunk_index={}", c.mesh, author, c.topology_version, c.time_ms, c.chunk_index);
         let conflict = || {
-            publication_inconsistent("mesh-topology", &c.mesh, &c.publisher, c.topology_version);
+            publication_inconsistent("mesh-topology", &c.mesh, &author, c.topology_version);
             Taken::Refused(Refusal::Inconsistent)
         };
         let duplicate = || {
             publication_duplicate("mesh-topology", &identity);
             Taken::Refused(Refusal::Duplicate)
         };
+        // A chunk of a publication this receiver installed: the same author, no later in time.
+        let installed_publication = |p: &Pending| !from_read && p.author == c.author && c.time_ms <= p.time_ms;
         // The mesh's version orders its topology, whichever mesh-primary sent it (Q389); a later mesh of
         // the same name is another mesh, which the held one's version orders nothing of.
         let offered_id = c.mesh_id.clone();
         if let Some(h) = self.held.get(&c.mesh).filter(|h| !another_mesh(h.full.mesh_id().as_ref(), offered_id.as_ref())) {
             if c.topology_version < h.version {
-                publication_stale("mesh-topology", &c.mesh, &c.publisher, h.version, c.topology_version);
+                publication_stale("mesh-topology", &c.mesh, &author, h.version, c.topology_version);
                 return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
             }
             if !from_read && c.topology_version == h.version {
-                if let Some(p) = h.publication.as_ref().filter(|p| p.snapshot_id == c.snapshot_id && p.owner == owner) {
+                if let Some(p) = h.publication.as_ref().filter(|p| installed_publication(p)) {
                     if p.count != c.chunk_count { return conflict(); }
                     if let Some(parts) = p.chunks.get(&c.chunk_index) {
                         return if same_parts(parts, &c) { duplicate() } else { conflict() };
@@ -846,14 +815,13 @@ impl SnapshotReceiver {
                 }
             }
         }
-        let key = SourceKey { owner: owner.clone(), mesh: c.mesh.clone(), publisher: c.publisher.clone(), from_read };
+        let key = SourceKey { mesh: c.mesh.clone(), author: c.author.clone(), from_read };
         if let Some(p) = self.pending.get(&key) {
-            let same = p.version == c.topology_version && p.snapshot_id == c.snapshot_id;
-            if !same && (c.topology_version, c.snapshot_id) < (p.version, p.snapshot_id) {
-                publication_stale("mesh-topology", &c.mesh, &c.publisher, p.version, c.topology_version);
-                return Taken::Refused(Refusal::OlderThanPending { pending_version: p.version, pending_snapshot: p.snapshot_id, offered_version: c.topology_version, offered_snapshot: c.snapshot_id });
+            if c.topology_version < p.version {
+                publication_stale("mesh-topology", &c.mesh, &author, p.version, c.topology_version);
+                return Taken::Refused(Refusal::OlderThanPending { pending_version: p.version, offered_version: c.topology_version });
             }
-            if !same { self.pending.remove(&key); }
+            if c.topology_version > p.version { self.pending.remove(&key); }
             else {
                 if p.count != c.chunk_count { return conflict(); }
                 if let Some(parts) = p.chunks.get(&c.chunk_index) {
@@ -861,26 +829,26 @@ impl SnapshotReceiver {
                 }
             }
         }
-        let p = self.pending.entry(key.clone()).or_insert_with(|| Pending { owner: owner.clone(), version: c.topology_version, snapshot_id: c.snapshot_id, count: c.chunk_count, chunks: BTreeMap::new() });
-        p.chunks.insert(c.chunk_index, (c.digests.clone(), c.in_flight.clone(), c.deleted.clone()));
+        let p = self.pending.entry(key.clone()).or_insert_with(|| Pending { author: c.author.clone(), version: c.topology_version, time_ms: c.time_ms, count: c.chunk_count, chunks: BTreeMap::new() });
+        p.time_ms = p.time_ms.max(c.time_ms);
+        p.chunks.insert(c.chunk_index, c.digests.clone());
         if (p.chunks.len() as u32) < p.count { return Taken::Waiting { held: p.chunks.len() as u32, of: p.count }; }
         let publication = self.pending.remove(&key).expect("just assembled");
-        let mut digests = Vec::new(); let mut in_flight = Vec::new(); let mut deleted = Vec::new();
-        for (d, i, x) in publication.chunks.values() { digests.extend(d.clone()); in_flight.extend(i.clone()); deleted.extend(x.clone()); }
-        let full = Full::new(digests, in_flight, deleted).of_mesh(c.mesh_id.clone());
+        let digests: Vec<MeshDigest> = publication.chunks.values().flatten().cloned().collect();
+        let full = Full::new(digests, Vec::new(), Vec::new()).of_mesh(c.mesh_id.clone());
         let offered_id = full.mesh_id();
         if let Some(h) = self.held.get(&c.mesh).filter(|h| h.version == c.topology_version && !another_mesh(h.full.mesh_id().as_ref(), offered_id.as_ref())) {
             if !h.full.same_topology(&full) { return conflict(); }
         }
-        if let Some((_, _, installed_full, snapshot_id)) = installed.filter(|(_, v, f, _)| *v == c.topology_version && !another_mesh(f.mesh_id().as_ref(), offered_id.as_ref())) {
+        if let Some((_, _, installed_full, last)) = installed.filter(|(_, v, f, _)| *v == c.topology_version && !another_mesh(f.mesh_id().as_ref(), offered_id.as_ref())) {
             if !installed_full.same_topology(&full) { return conflict(); }
-            if !from_read && snapshot_id == Some(c.snapshot_id) { return duplicate(); }
+            if !from_read && last.is_some_and(|(a, t)| Some(a) == publication.author.as_ref() && publication.time_ms <= *t) { return duplicate(); }
         }
-        self.install(c.mesh, c.publisher, publication, full, from_read)
+        self.install(c.mesh, publication, full, from_read)
     }
 
-    fn install(&mut self, mesh: String, publisher: PublisherId, publication: Pending, full: Full, from_read: bool) -> Taken {
-        let version = publication.version; let snapshot_id = publication.snapshot_id;
+    fn install(&mut self, mesh: String, publication: Pending, full: Full, from_read: bool) -> Taken {
+        let (version, time_ms) = (publication.version, publication.time_ms);
         // A later mesh of the same name is another mesh: what was held of the earlier one is dropped.
         if self.held.get(&mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), full.mesh_id().as_ref())) {
             self.held.remove(&mesh);
@@ -893,10 +861,12 @@ impl SnapshotReceiver {
         };
         let same = self.held.get(&mesh).filter(|h| h.version == version);
         let last_delta = same.and_then(|h| h.last_delta.clone());
-        let owner = publication.owner.clone();
+        let author = publication.author.clone();
+        // The author's label: the aggregate's author, else (a read) the one held of the mesh.
+        let publisher = author.as_ref().map(|b| PublisherId { node_id: b.node.clone(), incarnation: b.incarnation.clone() }).or_else(|| self.held.get(&mesh).and_then(|h| h.publisher.clone()));
         let retained = if from_read { same.and_then(|h| h.publication.clone()) } else { Some(publication) };
         self.unbased.remove(&mesh);
-        self.pending.retain(|k, p| !(k.mesh == mesh && (p.version < version || (k.owner == owner && k.publisher == publisher && p.version == version))));
+        self.pending.retain(|k, p| !(k.mesh == mesh && (p.version < version || (k.author == author && p.version == version))));
         // A copy older than a delta dropped while the source was desynchronized is still behind it:
         // the source stays desynchronized, and its holder pulls again (Q130).
         let behind = self.dropped.get(&mesh).copied().filter(|d| *d > version);
@@ -904,7 +874,7 @@ impl SnapshotReceiver {
             self.dropped.remove(&mesh);
         }
         self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: behind.map(|d| Gap::Version { held: version, base: d }), publication: retained, last_delta, peer_read: false });
-        Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, first, resumed, refreshed }))
+        Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, time_ms, full, first, resumed, refreshed }))
     }
 
     /// Use the actual installed source image as the delta base. A channel-local assembly cannot
@@ -912,7 +882,7 @@ impl SnapshotReceiver {
     pub(crate) fn take_delta_chunk_against(&mut self, c: DeltaChunk, installed: Option<InstalledProjection<'_>>) -> Moved {
         if let Some((publisher, installed_version, full, _)) = installed {
             if self.held.get(&c.mesh).is_none_or(|local| local.version < installed_version) {
-                self.held.insert(c.mesh.clone(), Held { publisher: publisher.clone(), version: installed_version, full: full.clone(), desynced: None, publication: None, last_delta: None, peer_read: false });
+                self.held.insert(c.mesh.clone(), Held { publisher: publisher.cloned(), version: installed_version, full: full.clone(), desynced: None, publication: None, last_delta: None, peer_read: false });
             }
         }
         self.take_delta_chunk(c)
@@ -982,7 +952,7 @@ impl SnapshotReceiver {
         if base_version == 0 && (another || !self.held.contains_key(mesh)) {
             self.unbased.remove(mesh);
             self.dropped.remove(mesh);
-            self.held.insert(mesh.to_string(), Held { publisher: sent_by(author), version: 0, full: Full::default(), desynced: None, publication: None, last_delta: None, peer_read: false });
+            self.held.insert(mesh.to_string(), Held { publisher: Some(sent_by(author)), version: 0, full: Full::default(), desynced: None, publication: None, last_delta: None, peer_read: false });
         }
         let Some(h) = self.held.get_mut(mesh) else {
             let already = self.unbased.contains_key(mesh);
@@ -1018,7 +988,7 @@ impl SnapshotReceiver {
             Err(gap) => return Self::desync(mesh, h, gap),
         };
         h.version = topology_version;
-        h.publisher = sent_by(author);
+        h.publisher = Some(sent_by(author));
         h.publication = None;
         h.peer_read = false;
         h.last_delta = Some((base_version, delta.clone()));
@@ -1075,8 +1045,8 @@ impl SnapshotReceiver {
         self.dropped.remove(mesh);
     }
 
-    /// The version held of `mesh` and its publisher.
-    pub fn held_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
+    /// The version held of `mesh`, with its author's label when one was heard.
+    pub fn held_version(&self, mesh: &str) -> Option<(Option<PublisherId>, u64)> {
         self.held.get(mesh).map(|h| (h.publisher.clone(), h.version))
     }
 
@@ -1103,7 +1073,7 @@ impl SnapshotReceiver {
             .held
             .iter()
             .filter(|(m, h)| h.desynced.is_none() && mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), mesh_id: h.full.mesh_id(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), deleted: h.full.deleted() })
+            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), mesh_id: h.full.mesh_id(), topology_version: h.version, digests: h.full.digests() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -1124,16 +1094,16 @@ impl SnapshotReceiver {
     }
 
     /// What this node holds of each mesh from its own mesh channel, or a read of its own Mesh: the
-    /// versions its Mesh was given by its forwarder, as `(mesh, publisher, version, full)`. A source
+    /// versions its Mesh was given by its forwarder, as `(mesh, author label, version, full)`. A source
     /// installed by a read of another mesh's node is left out.
-    pub fn sources_in_mesh(&self) -> Vec<(String, PublisherId, u64, Full)> {
+    pub fn sources_in_mesh(&self) -> Vec<(String, Option<PublisherId>, u64, Full)> {
         let mut v: Vec<_> = self.held.iter().filter(|(_, h)| !h.peer_read).map(|(m, h)| (m.clone(), h.publisher.clone(), h.version, h.full.clone())).collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
 
-    /// Every complete source held, as `(mesh, publisher, version, full)`.
-    pub fn sources(&self) -> Vec<(String, PublisherId, u64, Full)> {
+    /// Every complete source held, as `(mesh, author label, version, full)`.
+    pub fn sources(&self) -> Vec<(String, Option<PublisherId>, u64, Full)> {
         let mut v: Vec<_> = self.held.iter().map(|(m, h)| (m.clone(), h.publisher.clone(), h.version, h.full.clone())).collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
@@ -1324,7 +1294,7 @@ impl Forwarder {
             .published
             .iter()
             .filter(|(m, _)| mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), mesh_id: p.full.mesh_id(), publisher: sent_by(self.author()), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
+            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), mesh_id: p.full.mesh_id(), topology_version: p.version, digests: p.full.digests() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -1548,7 +1518,8 @@ mod tests {
     }
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
-        Chunk { mesh: "mesh1".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), }
+        let author = crate::envelope::Birth::publisher(&rdm_core::FabricId::parse("fab000000001").unwrap(), publisher);
+        Chunk { mesh: "mesh1".into(), mesh_id: None, author: Some(author), topology_version, time_ms: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], runtimes: Vec::new() }
     }
 
     /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An
@@ -1564,14 +1535,14 @@ mod tests {
         assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }));
         assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 6, 7, &Delta::default()), Moved::Stale));
         assert!(matches!(rx.take_chunk(chunk(&p, 6)), Taken::Refused(Refusal::OlderThanHeld { held_version: 8, offered_version: 6 })));
-        assert_eq!(rx.held_version("mesh1"), Some((p.clone(), 8)));
+        assert_eq!(rx.held_version("mesh1"), Some((Some(p.clone()), 8)));
         assert!(rx.desynced().is_empty());
         assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Installed(i) if i.refreshed), "a new publication at the held material version is heard");
         assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 8, base: 9 }, .. }));
         assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Refused(Refusal::Duplicate)));
         assert!(!rx.desynced().is_empty(), "gossip repeats do not complete repair");
         assert!(matches!(rx.take_read_chunk(chunk(&p, 8)), Taken::Installed(i) if i.resumed));
-        assert_eq!(rx.held_version("mesh1"), Some((p, 8)));
+        assert_eq!(rx.held_version("mesh1"), Some((Some(p), 8)));
         assert!(rx.desynced().is_empty());
     }
 }

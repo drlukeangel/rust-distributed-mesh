@@ -102,14 +102,11 @@ mod tests {
             let snap = SourceSnapshot {
                 mesh: "mesh1".to_string(),
                 mesh_id: None,
-                publisher: pub_id.clone(),
                 topology_version: 3,
                 digests: vec![own_digest.clone()],
-                in_flight: Vec::new(),
-                deleted: Vec::new(),
             };
-            for r in snapshot_replies(&snap, 1, &|_| None) {
-                let chunk = crate::topology_read::chunk_of(r, &fabric_id).expect("a snapshot reply");
+            for r in snapshot_replies(&snap, &|_| None) {
+                let chunk = crate::topology_read::chunk_of(r, &fabric_id, 0).expect("a snapshot reply");
                 let taken = server_view_channels.take_read_chunk(chunk, "peer");
                 assert!(!matches!(taken, Taken::Refused(_)), "{taken:?}");
             }
@@ -224,7 +221,6 @@ mod tests {
                 &caller_view_channels,
                 Some("mesh1"),
                 Some(SourceVersion {
-                    publisher: pub_id,
                     topology_version: 3,
                 }),
             )

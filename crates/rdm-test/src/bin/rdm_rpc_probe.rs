@@ -6,7 +6,7 @@
 //! rdm-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
 //! rdm-rpc-probe --admin-birth <birth> delete --target ... --key <k>
 //! rdm-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
-//! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node_id>|<incarnation>|<version>]
+//! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <version>]
 //! rdm-rpc-probe --admin-birth <birth> fabric-delete --target path:<the entry admin>
 //! rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<JSON object with path and name>
 //! ```
@@ -589,7 +589,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     })
 }
 
-/// `topology --target <node> [--mesh <name>] [--since <node_id>|<incarnation>|<version>]`: one
+/// `topology --target <node> [--mesh <name>] [--since <version>]`: one
 /// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
 /// nothing: it has no topology view.
 /// `fabric-delete`: fabric.delete at the entry admin, its stream read to the terminal (`Complete`,
@@ -673,14 +673,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
     let since = match &a.since {
         None => None,
-        Some(s) => {
-            let parts: Vec<&str> = s.split('|').collect();
-            let [node_id, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node_id>|<incarnation>|<version>")) };
-            Some(SourceVersion {
-                publisher: rdm_core::PublisherId { incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))?, node_id: rdm_core::NodeId::parse(node_id).map_err(|e| format!("--since node_id: {e}"))? },
-                topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
-            })
-        }
+        Some(version) => Some(SourceVersion { topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))? }),
     };
     let (client, _) = enter(&a.admin_birth).await?;
     let req = TopologyRequest::GetTopology { mesh: a.mesh.clone(), since };
@@ -693,13 +686,13 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             while let Some(item) = stream.next().await {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
-                        TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, nodes, in_flight, deleted, .. } => json!({
-                            "frame": "snapshot", "mesh": mesh, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
-                            "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
+                        TopologyReply::Snapshot { mesh, topology_version, chunk_index, chunk_count, nodes, .. } => json!({
+                            "frame": "snapshot", "mesh": mesh, "topology_version": topology_version,
+                            "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": nodes.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(),
-                            "in_flight": in_flight.len(), "deleted": deleted.len(),
+                            "statuses": nodes.iter().map(|n| n.status).collect::<Vec<_>>(),
                         }),
-                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
+                        TopologyReply::Unchanged { mesh, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "topology_version": topology_version}),
                         TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),
                         other => json!({"frame": other.name(), "detail": format!("{other:?}")}),
                     }),

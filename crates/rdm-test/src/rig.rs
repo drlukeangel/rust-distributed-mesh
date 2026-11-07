@@ -540,19 +540,15 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let own_digest_slot: Arc<std::sync::OnceLock<rdm_core::digest::MeshDigest>> = Arc::new(std::sync::OnceLock::new());
     // The admin side holds its own mesh at a version its primary put into the mesh, as a running
     // admin does; it serves the topology it holds like every node.
-    let admin_publisher = rdm_core::PublisherId { incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() };
     let held = rdm_gossip::snapshot::Chunk {
         mesh: "mesh1".into(),
         mesh_id: None,
-        publisher: admin_publisher,
-        forwarded_by: Some("topology-read".into()),
+        author: None,
         topology_version: 1,
-        snapshot_id: 1,
+        time_ms: 1,
         chunk_index: 0,
         chunk_count: 1,
         digests: vec![],
-        in_flight: vec![],
-        deleted: vec![],
         runtimes: Vec::new(),
     };
     // A silent admin side holds only what its primary publishes into the mesh.

@@ -512,17 +512,11 @@ mod tests {
             let snap = rdm_gossip::snapshot::SourceSnapshot {
                 mesh: "mesh1".into(),
                 mesh_id: None,
-                publisher: rdm_core::PublisherId {
-                    incarnation: IncarnationId::mint(),
-                    node_id: NodeId::mint(),
-                },
                 topology_version: 1,
                 digests: vec![local_digest.clone(), dead_digest],
-                in_flight: vec![],
-                deleted: vec![],
             };
-            for r in crate::topology_read::snapshot_replies(&snap, 1, &|_| None) {
-                if let Some(chunk) = crate::topology_read::chunk_of(r, &local_digest.fabric_id) {
+            for r in crate::topology_read::snapshot_replies(&snap, &|_| None) {
+                if let Some(chunk) = crate::topology_read::chunk_of(r, &local_digest.fabric_id, 0) {
                     let _ = local_view_channels.take_read_chunk(chunk, "mesh1");
                 }
             }

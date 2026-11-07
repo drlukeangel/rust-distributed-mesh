@@ -262,12 +262,12 @@ pub struct HeldBirth {
 /// and the open overlays and retained departures it knows. What a peer reports of another node.
 #[derive(Debug, Clone, Default)]
 pub struct HeldView {
-    /// The births the node holds.
+    /// The births the node holds: every node its read lists but the stopped and the deleted.
     pub members: Vec<HeldBirth>,
-    /// The open lifecycle overlays (stop, delete) the node holds.
-    pub in_flight: Vec<rdm_core::LifecycleOp>,
-    /// The departures the node retains.
-    pub deleted: Vec<rdm_core::LifecycleOp>,
+    /// The births its read lists stopped (Q390): dropped from its view and held by their stop.
+    pub stopped: Vec<HeldBirth>,
+    /// The births its read lists deleted: the departures it retains for the deleted retention.
+    pub deleted: Vec<HeldBirth>,
 }
 
 impl HeldView {
@@ -276,10 +276,14 @@ impl HeldView {
         self.members.iter().find(|d| &d.node.node_id == node_id)
     }
 
-    /// The overlay the node holds for `node_id` whose operation's action is `action` (`node.stop`,
-    /// `node.delete`), if it holds one.
-    pub fn overlay(&self, node_id: &NodeId, action: &str) -> Option<&rdm_core::LifecycleOp> {
-        self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.action == action)
+    /// The birth of `node_id` the node holds under the open operation `action` (`node.stop`: listed
+    /// stopped; `node.delete`: listed deleting), as its read says by the birth's status (Q390).
+    pub fn overlay(&self, node_id: &NodeId, action: &str) -> Option<&HeldBirth> {
+        match action {
+            "node.stop" => self.stopped.iter().find(|d| &d.node.node_id == node_id),
+            "node.delete" => self.members.iter().find(|d| &d.node.node_id == node_id && d.status == rdm_core::model::NodeStatus::Deleting),
+            _ => None,
+        }
     }
 }
 
@@ -484,11 +488,16 @@ impl<'a> NodeRpc<'a> {
         let mut view = HeldView::default();
         for f in frames {
             match f {
-                TopologyReply::Snapshot { mesh, nodes, in_flight, deleted, .. } => {
-                    // The read names the mesh its births are of.
-                    view.members.extend(nodes.iter().map(|n| HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() }));
-                    view.in_flight.extend(in_flight);
-                    view.deleted.extend(deleted);
+                TopologyReply::Snapshot { mesh, nodes, .. } => {
+                    // The read names the mesh its births are of, each with its status.
+                    for n in nodes {
+                        let birth = HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() };
+                        match n.status {
+                            rdm_core::model::NodeStatus::Stopped => view.stopped.push(birth),
+                            rdm_core::model::NodeStatus::Deleted => view.deleted.push(birth),
+                            _ => view.members.push(birth),
+                        }
+                    }
                 }
                 TopologyReply::Started | TopologyReply::End { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } => {}
                 other => return Err(CallEnd::Indeterminate { code: <Topology as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code(), reason: format!("{} answered {other:?} to the topology read", target_name(target)) }),

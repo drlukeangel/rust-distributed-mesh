@@ -20,7 +20,8 @@
 //!   read, and a node's own publications are its floor for its own mesh ([`ReceiveOrder::published`]).
 //!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
 //!   content under its installation lock: duplicates install nothing; conflicts are inconsistent.
-//!   Publication identity includes its owner birth and counter; equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
+//!   An aggregate's chunk set is its (mesh, version, author) from the envelope, and a publication is
+//!   that set at one envelope `time`; equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
 //!   the exact repeated publication never completes repair. A new publication at the same material
 //!   version carries fresh hearing evidence. A directed topology read can resume the held version.
 //! - NodeDeleting and NodeStopped: operation identity is recorded before the
@@ -270,23 +271,6 @@ pub(crate) fn reject_lifecycle_version(frame: &str, subject: &str, held: u64, of
     ).in_scope(|| tracing::info!("the lifecycle frame's carried projection revision is below the held one: refused"));
 }
 
-/// Exact applied counters as inclusive runs: quiet anti-entropy does not allocate a scoped
-/// identity record per publication, and an unheard counter in a gap remains admissible.
-#[derive(Debug, Default)]
-struct PublicationCounters(BTreeMap<u64, u64>);
-impl PublicationCounters {
-    fn contains(&self, counter: u64) -> bool { self.0.range(..=counter).next_back().is_some_and(|(_, end)| *end >= counter) }
-    fn insert(&mut self, counter: u64) {
-        let previous = self.0.range(..=counter).next_back().map(|(&start, &end)| (start, end));
-        if previous.is_some_and(|(_, end)| end >= counter) { return; }
-        let (mut start, mut end) = (counter, counter);
-        if let Some((a, _)) = previous.filter(|(_, b)| b.checked_add(1) == Some(counter)) { self.0.remove(&a); start = a; }
-        let next = self.0.range(counter..).next().map(|(&a, &b)| (a, b));
-        if let Some((a, b)) = next.filter(|(a, _)| counter.checked_add(1) == Some(*a)) { self.0.remove(&a); end = b; }
-        self.0.insert(start, end);
-    }
-}
-
 /// The source a frame's order key orders within.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Source {
@@ -330,7 +314,7 @@ fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
 /// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
     match f.data() {
-        Frame::TopologyFull { mesh, topology_version, .. } => Some(("mesh-topology", Source::Mesh(mesh.clone()), Key::TopologyVersion(*topology_version))),
+        Frame::TopologyFull { mesh, .. } => Some(("mesh-topology", Source::Mesh(mesh.clone()), Key::TopologyVersion(f.aggregate_version()?))),
         Frame::TopologyDelta { mesh, .. } => Some(("mesh-topology-delta", Source::Mesh(mesh.clone()), Key::TopologyVersion(f.delta_version().unwrap_or_default()))),
         Frame::NodeDeleting { op, topology_version, .. } => Some(("node-deleting", Source::Lifecycle(op.mesh.clone()), Key::TopologyVersion(*topology_version))),
         Frame::NodeStopped { op, topology_version, .. } => Some(("node-stopped", Source::Lifecycle(op.mesh.clone()), Key::TopologyVersion(*topology_version))),
@@ -355,13 +339,12 @@ pub(crate) struct Earlier {
 /// each mesh: one for the node, shared by every channel it hears and by its topology-read install.
 #[derive(Debug, Default)]
 pub(crate) struct ReceiveOrder {
-    publications: HashMap<(String, PublisherId, u64, crate::envelope::Birth), PublicationCounters>,
     newest: HashMap<Source, Key>,
     /// Operation receipt is independent of projection admission: even a version-refused frame is
     /// seen, so another publisher or a higher carried version cannot replay its operation effect.
     lifecycle_seen: HashSet<LifecycleIdentity>,
-    /// Each mesh's installed publisher, version, complete image and last gossip publication.
-    /// Read-answer snapshot ordinals never replace an author's retained publication identity.
+    /// Each mesh's installed author label, version, complete image and last aggregate installed.
+    /// A read never replaces an author's retained publication identity.
     installed: HashMap<String, InstalledSource>,
     /// The version this node published last of each mesh it publishes, under its exact birth: its
     /// own publications are its floor for its own source, a read included. Never an installed image.
@@ -370,17 +353,18 @@ pub(crate) struct ReceiveOrder {
 
 #[derive(Debug)]
 struct InstalledSource {
-    publisher: PublisherId,
+    publisher: Option<PublisherId>,
     version: u64,
     full: Option<crate::snapshot::Full>,
-    snapshot_id: Option<u64>,
+    /// The (author, envelope time) of the last aggregate installed at `version`.
+    publication: Option<(crate::envelope::Birth, u64)>,
 }
 
-/// The mesh a `TopologyFull` or `TopologyDelta` is of, its version (a differential's is its
-/// envelope's `sequence`), and the mesh's id as the frame names it beside the mesh's name.
+/// The mesh a `TopologyFull` or `TopologyDelta` is of, its version (an aggregate's or a differential's
+/// is its envelope's `sequence`, Q389), and the mesh's id as the frame names it beside the mesh's name.
 fn publication_of(f: &Frame) -> Option<(&str, u64, Option<rdm_core::MeshId>)> {
     match f.data() {
-        Frame::TopologyFull { mesh, mesh_id, topology_version, .. } => Some((mesh, *topology_version, mesh_id.clone())),
+        Frame::TopologyFull { mesh, mesh_id, .. } => Some((mesh, f.aggregate_version()?, mesh_id.clone())),
         Frame::TopologyDelta { mesh, mesh_id, .. } => Some((mesh, f.delta_version().unwrap_or_default(), mesh_id.clone())),
         _ => None,
     }
@@ -459,34 +443,26 @@ impl ReceiveOrder {
     /// `mesh`'s snapshot state moved to `publisher`'s `topology_version`: a snapshot installed, a delta
     /// applied or a topology read installed. `publisher` names the sender for spans and served copies;
     /// it orders nothing.
-    pub(crate) fn installed(&mut self, mesh: &str, publisher: &PublisherId, topology_version: u64) {
-        self.installed.insert(mesh.to_string(), InstalledSource { publisher: publisher.clone(), version: topology_version, full: None, snapshot_id: None });
+    pub(crate) fn installed(&mut self, mesh: &str, publisher: Option<&PublisherId>, topology_version: u64) {
+        self.installed.insert(mesh.to_string(), InstalledSource { publisher: publisher.cloned(), version: topology_version, full: None, publication: None });
     }
     /// The actual installed source image, shared by the backbone, mesh channel and read path.
     pub(crate) fn installed_snapshot(&self, mesh: &str) -> Option<crate::snapshot::InstalledProjection<'_>> {
         let h = self.installed.get(mesh)?;
-        Some((&h.publisher, h.version, h.full.as_ref()?, h.snapshot_id))
-    }
-
-    pub(crate) fn installed_for_owner(&self, mesh: &str, owner: Option<&crate::envelope::Birth>, offered_counter: u64) -> Option<crate::snapshot::InstalledProjection<'_>> {
-        let (publisher, version, full, counter) = self.installed_snapshot(mesh)?;
-        let counter = match owner { Some(owner) => self.publications.get(&(mesh.to_string(), publisher.clone(), version, owner.clone())).is_some_and(|c| c.contains(offered_counter)).then_some(offered_counter), None => counter };
-        Some((publisher, version, full, counter))
-    }
-
-    pub(crate) fn publication_installed(&mut self, mesh: &str, publisher: &PublisherId, version: u64, owner: &crate::envelope::Birth, counter: u64) {
-        self.publications.retain(|(m, p, v, _), _| m != mesh || (p == publisher && *v == version));
-        self.publications.entry((mesh.to_string(), publisher.clone(), version, owner.clone())).or_default().insert(counter);
+        Some((h.publisher.as_ref(), h.version, h.full.as_ref()?, h.publication.as_ref()))
     }
 
     /// The image and its floor move only after the complete projection was installed. Keeping
     /// them in one record prevents another channel from classifying against an older local image.
-    pub(crate) fn installed_projection(&mut self, mesh: &str, publisher: &PublisherId, version: u64, full: &crate::snapshot::Full, snapshot_id: Option<u64>) {
-        let retained = self.installed.get(mesh).filter(|h| &h.publisher == publisher && h.version == version).and_then(|h| h.snapshot_id);
-        self.installed(mesh, publisher, version);
+    /// `publication` is the (author, envelope time) of an aggregate installed; a delta or a read at the
+    /// same version keeps the one held.
+    pub(crate) fn installed_projection(&mut self, mesh: &str, publisher: Option<&PublisherId>, version: u64, full: &crate::snapshot::Full, publication: Option<(crate::envelope::Birth, u64)>) {
+        let retained = self.installed.get(mesh).filter(|h| h.version == version).and_then(|h| h.publication.clone());
+        let publisher = publisher.cloned().or_else(|| self.installed.get(mesh).filter(|h| h.version == version).and_then(|h| h.publisher.clone()));
+        self.installed(mesh, publisher.as_ref(), version);
         let h = self.installed.get_mut(mesh).expect("just installed");
         h.full = Some(full.clone());
-        h.snapshot_id = snapshot_id.or(retained);
+        h.publication = publication.or(retained);
     }
 
 }
@@ -494,27 +470,14 @@ impl ReceiveOrder {
 #[cfg(test)]
 mod tests {
 
-    #[test]
-    fn publication_receipts_compact_runs_without_treating_unheard_gaps_as_duplicates() {
-        let mut ids = PublicationCounters::default();
-        ids.insert(1); ids.insert(3);
-        assert!(ids.contains(1) && ids.contains(3)); assert!(!ids.contains(2));
-        ids.insert(2); assert_eq!(ids.0.len(), 1);
-        for counter in (4..=10_000).rev() { ids.insert(counter); }
-        assert_eq!(ids.0.len(), 1, "a quiet source keeps one run rather than one record per heartbeat publication");
-        assert!(ids.contains(1) && ids.contains(10_000)); assert!(!ids.contains(10_001));
-        ids.insert(0); ids.insert(u64::MAX);
-        assert!(ids.contains(0) && ids.contains(u64::MAX)); assert!(!ids.contains(u64::MAX - 1));
-    }
-
     /// The source's descriptive row name cannot reset the exact birth's installed floor.
     #[test]
     fn a_renamed_publisher_keeps_its_installed_version_floor() {
         let publisher = PublisherId { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let mut order = ReceiveOrder::default();
-        order.installed_projection("mesh1", &publisher, 10, &crate::snapshot::Full::default(), None);
+        order.installed_projection("mesh1", Some(&publisher), 10, &crate::snapshot::Full::default(), None);
         let renamed = PublisherId { ..publisher };
-        let old = Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
+        let old = aggregate("mesh1", None, &renamed, 999, 9, 0, 1, vec![]);
         assert!(order.admit(&old).is_err());
         let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), 20)).is_ok());
@@ -565,8 +528,15 @@ mod tests {
         }
     }
 
+    /// One chunk of `mesh`'s aggregate, authored by `author` at the mesh's `version` and `time_ms`.
+    #[allow(clippy::too_many_arguments)]
+    fn aggregate(mesh: &str, mesh_id: Option<rdm_core::MeshId>, author: &PublisherId, time_ms: u64, version: u64, chunk_index: u32, chunk_count: u32, nodes: Vec<MeshDigest>) -> Frame {
+        let birth = crate::envelope::Birth::publisher(&FabricId::parse("fab000000001").unwrap(), author);
+        Frame::TopologyFull { mesh: mesh.into(), mesh_id, chunk_index, chunk_count, nodes: nodes.iter().map(rdm_core::wire::NodeEntry::of).collect() }.authored_aggregate(&birth, version, time_ms)
+    }
+
     fn mesh_topology(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, topology_version: u64, chunk_index: u32) -> Frame {
-        Frame::TopologyFull { mesh: mesh.into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
+        aggregate(mesh, None, publisher, published_at_rafka_ms, topology_version, chunk_index, 2, vec![])
     }
 
     /// The birth `p` names, of the test fabric.
@@ -608,12 +578,12 @@ mod tests {
         let (p1, p2) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"));
         assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 0)), Ok(()));
         assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 1)), Ok(()), "the second chunk of the same publication is taken");
-        order.installed("mesh1", &p1, 7);
+        order.installed("mesh1", Some(&p1), 7);
         assert_eq!(order.admit(&mesh_topology("mesh1", &p1, 100, 7, 0)), Ok(()), "a chunk of the installed publication is taken: the handler absorbs it");
         assert_eq!(order.admit(&mesh_topology("mesh1", &p2, 50, 8, 0)), Ok(()), "the successor's next version is taken, whatever its stamp");
-        order.installed("mesh1", &p2, 8);
+        order.installed("mesh1", Some(&p2), 8);
         assert_eq!(order.admit(&delta("mesh1", &p2, 60, 8, 9)), Ok(()));
-        order.installed("mesh1", &p2, 9);
+        order.installed("mesh1", Some(&p2), 9);
         let ignored_full = order.admit(&mesh_topology("mesh1", &p1, 500, 8, 0)).unwrap_err();
         assert_eq!(ignored_full, Earlier { frame: "mesh-topology", source: "mesh1".into(), held: "topology_version=9".into(), offered: "topology_version=8".into() }, "the previous mesh-primary's lower version is older, however late its stamp");
         let ignored_delta = order.admit(&delta("mesh1", &p1, 510, 7, 8)).unwrap_err();
@@ -636,8 +606,8 @@ mod tests {
         let (p, other) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"));
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 200, 8, 0)), Ok(()), "chunk 0 of v8: its snapshot never completes");
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 150, 7, 1)), Ok(()), "v7's chunk is taken: nothing installed is newer");
-        order.installed("mesh1", &p, 7);
-        order.installed("mesh1", &p, 9);
+        order.installed("mesh1", Some(&p), 7);
+        order.installed("mesh1", Some(&p), 9);
         let held = "topology_version=9".to_string();
         assert_eq!(order.admit(&mesh_topology("mesh1", &p, 240, 8, 0)), Err(Earlier { frame: "mesh-topology", source: "mesh1".into(), held: held.clone(), offered: "topology_version=8".into() }));
         assert_eq!(order.admit(&delta("mesh1", &p, 245, 7, 8)).map_err(|e| (e.frame, e.held)), Err(("mesh-topology-delta", held.clone())));
@@ -666,7 +636,7 @@ mod tests {
         assert_eq!(order.admit(&mesh_topology("mesh2", &me, 1_000, 25, 0)).map_err(|e| e.held), Err(held), "a full below what it published is refused too");
         assert_eq!(order.admit_read("mesh2", 28, None), Ok(()), "a read of the version it published is not refused for its order");
         assert_eq!(order.admit_read("mesh1", 1, None), Ok(()), "another mesh is another source");
-        order.installed("mesh2", &me, 30);
+        order.installed("mesh2", Some(&me), 30);
         assert_eq!(order.floor("mesh2", None), Some(30), "the installed floor orders when it is the higher");
         assert!(order.admit_read("mesh2", 29, None).is_err());
     }
@@ -686,11 +656,11 @@ mod tests {
         // The mesh's id rides each topology frame beside its name: old_id on the deleted mesh's
         // publications, new_id on the recreated one's.
         let id_of = |p: &PublisherId| if p == &old { old_id.clone() } else { new_id.clone() };
-        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| Frame::TopologyFull { mesh: "mesh2".into(), mesh_id: Some(id_of(p)), publisher: p.clone(), forwarded_by: None, topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
+        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| aggregate("mesh2", Some(id_of(p)), p, version, version, 0, 1, vec![d.clone()]);
 
         // The receive path.
         let mut order = ReceiveOrder::default();
-        order.installed_projection("mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin.clone()], vec![], vec![]).of_mesh(Some(old_id.clone())), None);
+        order.installed_projection("mesh2", Some(&old), 33, &crate::snapshot::Full::new(vec![old_admin.clone()], vec![], vec![]).of_mesh(Some(old_id.clone())), None);
         assert!(order.admit(&full_of(&old, 32, &old_admin)).is_err(), "the deleted mesh's own lower version is still older");
         assert_eq!(order.admit(&full_of(&new, 1, &new_admin)), Ok(()), "the recreated mesh2's aggregate is another mesh's");
         assert_eq!(order.admit_read("mesh2", 1, Some(&new_id)), Ok(()));
@@ -698,7 +668,7 @@ mod tests {
 
         // The receiver.
         let mut rx = crate::snapshot::SnapshotReceiver::default();
-        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: Some(id_of(p)), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
+        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: Some(id_of(p)), author: Some(crate::envelope::Birth::publisher(&FabricId::parse("fab000000001").unwrap(), p)), topology_version: version, time_ms: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], runtimes: Vec::new() };
         assert!(matches!(rx.take_chunk(chunk_of(&old, 33, &old_admin)), crate::snapshot::Taken::Installed(_)));
         let taken = rx.take_chunk(chunk_of(&new, 1, &new_admin));
         assert!(matches!(&taken, crate::snapshot::Taken::Installed(i) if i.first && i.topology_version == 1), "the recreated mesh installs as a first topology: {taken:?}");

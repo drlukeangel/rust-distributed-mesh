@@ -50,6 +50,11 @@ fn pending(ordinal: u32, full: bool) -> MeshDigest {
     MeshDigest { status: NodeStatus::Pending, ..digest(ordinal, full) }
 }
 
+/// `d` listed at `status`.
+fn with_status(d: MeshDigest, status: NodeStatus) -> MeshDigest {
+    MeshDigest { status, ..d }
+}
+
 /// A node-type primary that is also the fabric-primary, each role at its revision (Q392).
 fn primary(ordinal: u32) -> MeshDigest {
     let mut d = digest(ordinal, false);
@@ -80,33 +85,20 @@ fn frames() -> Vec<Frame> {
         Frame::digest(&pending(1, false)),
         Frame::digest(&pending(2, true)),
         Frame::digest(&primary(3)),
+        // One list of nodes, each with its status: a node under a delete and a deleted node say so (Q390).
         Frame::TopologyFull {
             mesh: "mesh2".into(),
             mesh_id: Some(MeshId::mint()),
-            publisher: p.clone(),
-            forwarded_by: Some(executor().node_id.to_string()),
-            topology_version: 9,
-            published_at_rafka_ms: 11,
-            snapshot_id: 5,
             chunk_index: 1,
             chunk_count: 3,
-            digests: vec![digest(1, false), digest(2, true), primary(5)],
-            in_flight: vec![op("node.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node")],
-            deleted: vec![op("node.delete", PathName::new("mesh2.node", "3").unwrap(), "mesh2", "node")],
-        },
+            nodes: [digest(1, false), with_status(digest(2, true), NodeStatus::Deleting), with_status(digest(3, true), NodeStatus::Deleted), primary(5)].iter().map(rdm_core::wire::NodeEntry::of).collect(),
+        }.authored_aggregate(&crate::gossip_wire::author(), 9, 11),
         Frame::TopologyFull {
             mesh: "mesh2".into(),
             mesh_id: None,
-            publisher: p.clone(),
-            forwarded_by: None,
-            topology_version: 1,
-            published_at_rafka_ms: 1,
-            snapshot_id: 1,
             chunk_index: 0,
             chunk_count: 1,
-            digests: vec![],
-            in_flight: vec![],
-            deleted: vec![],
+            nodes: vec![],
         },
         Frame::TopologyDelta {
             mesh: "mesh2".into(),
@@ -151,30 +143,21 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     result.insert("frame_variants_round_tripped".into(), json!(all_frames.len()));
 
     let members: Vec<MeshDigest> = (1..=150).map(|k| if k % 2 == 0 { primary(k) } else { digest(k, k % 3 == 0) }).collect();
-    let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete", PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node")).collect();
-    let full = Full::new(members.clone(), overlays.clone(), overlays.iter().take(5).cloned().collect());
-    let p = publisher();
-    let chunks = chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
+    let full = Full::new(members.clone(), Vec::new(), Vec::new());
+    let chunks = chunks_of(&full, |nodes, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: "mesh1".into(),
         mesh_id: None,
-        publisher: p.clone(),
-        forwarded_by: None,
-        topology_version: 5,
-        published_at_rafka_ms: 1,
-        snapshot_id: 9,
         chunk_index,
         chunk_count,
-        digests,
-        in_flight,
-        deleted,
-    }.authored(&crate::gossip_wire::author(), 0, 1));
+        nodes: nodes.iter().map(rdm_core::wire::NodeEntry::of).collect(),
+    }.authored_aggregate(&crate::gossip_wire::author(), 5, 1));
     assert!(chunks.len() > 2);
     let mut heard = 0;
     for c in &chunks {
         let bytes = c.encode();
         assert!(bytes.len() <= MAX_MESSAGE_BYTES, "a TopologyFull chunk of {} bytes fits the ceiling", bytes.len());
         match Frame::decode(&bytes).unwrap().into_data() {
-            Frame::TopologyFull { digests, .. } => heard += digests.len(),
+            Frame::TopologyFull { nodes, .. } => heard += nodes.len(),
             other => panic!("{other:?}"),
         }
     }

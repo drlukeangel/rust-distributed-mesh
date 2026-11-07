@@ -75,9 +75,13 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    /// The stop births a source projection carries.
+    /// The stopped births a source projection carries: each node it lists `stopped` (Q390), and each
+    /// open stop of a differential that still carries one.
     pub(crate) fn stops_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, String)> {
-        full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.to_string())).collect()).unwrap_or_default()
+        let Some(f) = full else { return BTreeSet::new() };
+        let listed = f.digests().into_iter().filter(|d| d.status == rdm_core::model::NodeStatus::Stopped).map(|d| (d.node.node_id.to_string(), d.node.incarnation.to_string()));
+        let open = f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.to_string()));
+        listed.chain(open).collect()
     }
 
     /// The version held before the frame, for spans: -1 when none was held.
@@ -198,9 +202,10 @@ pub struct DigestView {
     /// staleness floor: held directly or on the backbone and unheard since, or held only from the
     /// mesh-primary's projection since it was first held.
     pub(crate) silent: Arc<Mutex<BTreeSet<(String, String)>>>,
-    /// Proven departures by NodeId, with when this view accepted each: held
-    /// for `retention` of local age, then forgotten.
-    pub(crate) deleted: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
+    /// Proven departures by NodeId, with when this view accepted each and the digest it held of the
+    /// birth then (what a mesh-primary's aggregate lists the deleted node with, Q390): held for
+    /// `retention` of local age, then forgotten.
+    pub(crate) deleted: Arc<Mutex<HashMap<String, (LifecycleOp, Instant, Option<MeshDigest>)>>>,
     /// The exact births this admin's node recovery holds deleted from its verdict until their
     /// `NodeDeleted` is applied here, by NodeId (node-recovery.md step 3: "A birth that comes back once
     /// its verdict is not `reached`, during its replacement's birth or after it, is a deleted birth").
@@ -452,7 +457,7 @@ impl DigestView {
         let expired = {
             let mut deleted = self.deleted.lock().unwrap();
             let before = deleted.len();
-            deleted.retain(|_, (_, at)| now.duration_since(*at) < self.retention);
+            deleted.retain(|_, (_, at, _)| now.duration_since(*at) < self.retention);
             self.refused_departures.lock().unwrap().retain(|id, _| deleted.contains_key(id));
             deleted.len() < before
         };
@@ -513,9 +518,10 @@ impl DigestView {
     pub fn depart_at(&self, op: LifecycleOp, now: Instant) -> bool {
         self.expire_deleted_at(now);
         let id = op.node_id.to_string();
+        let held = self.held_digest_of(&op);
         {
             let mut deleted = self.deleted.lock().unwrap();
-            match crate::receive_order::node_deleted_receipt(deleted.get(&id).map(|(held, _)| held), &op) {
+            match crate::receive_order::node_deleted_receipt(deleted.get(&id).map(|(held, _, _)| held), &op) {
                 crate::receive_order::NodeDeletedReceipt::Apply => {}
                 crate::receive_order::NodeDeletedReceipt::Duplicate => return false,
                 crate::receive_order::NodeDeletedReceipt::AlreadyDeleted => {
@@ -527,7 +533,7 @@ impl DigestView {
                     return false;
                 }
             }
-            deleted.insert(id.clone(), (op.clone(), now));
+            deleted.insert(id.clone(), (op.clone(), now, held));
         }
         self.recovering.lock().unwrap().remove(&id);
         delete_incarnation(&op.node_id, &op.incarnation);
@@ -1344,7 +1350,7 @@ impl DigestView {
     /// The departures this view holds within the retention.
     pub fn deleted(&self) -> Vec<LifecycleOp> {
         self.expire_deleted();
-        let mut v: Vec<LifecycleOp> = self.deleted.lock().unwrap().values().map(|(op, _)| op.clone()).collect();
+        let mut v: Vec<LifecycleOp> = self.deleted.lock().unwrap().values().map(|(op, _, _)| op.clone()).collect();
         v.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         v
     }
@@ -1363,6 +1369,84 @@ impl DigestView {
         let in_flight = self.in_flight().into_iter().filter(|op| op.mesh == mesh).collect();
         let deleted = deleted.into_iter().filter(|op| op.mesh == mesh || executed.contains(op.node_id.as_str())).collect();
         (in_flight, deleted)
+    }
+
+    /// The digest this view holds of `op`'s exact birth: heard, from its mesh-primary's projection, or
+    /// kept with its stop. `None` when it holds none.
+    pub(crate) fn held_digest_of(&self, op: &LifecycleOp) -> Option<MeshDigest> {
+        let exact = |d: &MeshDigest| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation;
+        let held = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| d.clone()).filter(exact);
+        held.or_else(|| self.projected.lock().unwrap().get(op.node_id.as_str()).map(|(d, _)| d.clone()).filter(exact))
+            .or_else(|| self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).and_then(|m| m.latest.as_ref().map(|(d, _, _)| d.clone()).or(m.held.clone())).filter(exact))
+    }
+
+    /// `members`, the nodes of `mesh` this view holds, as its mesh-primary's aggregate lists them
+    /// (gossip.md §3.1 `TopologyFull`, Q390): one list of nodes, each with its status. `in_flight` and
+    /// `deleted` are the mesh's open operations and retained departures ([`Self::overlays_of`]), said
+    /// by the status of the node each names: a node an open removal names is `deleting`, a stopped
+    /// node `stopped`, a deleted node `deleted` for the deleted retention, then dropped. A stopped or
+    /// deleted node this view holds no digest of, or a node of another mesh, is not listed: its entry
+    /// is its identity and endpoints.
+    pub fn aggregate_nodes(&self, mesh: &str, members: Vec<MeshDigest>, in_flight: &[LifecycleOp], deleted: &[LifecycleOp]) -> Vec<MeshDigest> {
+        use rdm_core::model::NodeStatus as S;
+        let mut nodes: BTreeMap<String, MeshDigest> = members.into_iter().filter(|d| d.node.mesh == mesh).map(|d| (d.node.node_id.to_string(), d)).collect();
+        let exact = |d: &MeshDigest, op: &LifecycleOp| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation;
+        for op in in_flight.iter().filter(|op| op.mesh == mesh) {
+            if op.is_stop() {
+                let held = self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).and_then(|m| m.latest.as_ref().map(|(d, _, _)| d.clone()).or(m.held.clone()));
+                if let Some(mut d) = held.filter(|d| exact(d, op)) {
+                    d.status = S::Stopped;
+                    nodes.insert(d.node.node_id.to_string(), d);
+                }
+            } else if let Some(d) = nodes.get_mut(op.node_id.as_str()).filter(|d| exact(d, op)) {
+                d.status = S::Deleting;
+            }
+        }
+        for op in deleted.iter().filter(|op| op.mesh == mesh) {
+            let held = self.deleted.lock().unwrap().get(op.node_id.as_str()).and_then(|(_, _, d)| d.clone());
+            if let Some(mut d) = held.filter(|d| exact(d, op)) {
+                d.status = S::Deleted;
+                nodes.insert(d.node.node_id.to_string(), d);
+            }
+        }
+        nodes.into_values().collect()
+    }
+
+    /// The operation an aggregate or a read says of the node `d` by its status alone (Q390): its stop
+    /// (`node.stop`) or its removal (`node.delete`), heard at `at_rafka_ms`. The receiver knows no Build
+    /// of it ([`LifecycleOp::NO_BUILD`]), as [`Self::depart_mesh_births`] names a deleted mesh's births.
+    pub(crate) fn listed_op(d: &MeshDigest, action: &str, at_rafka_ms: u64) -> LifecycleOp {
+        let n = &d.node;
+        LifecycleOp { r#type: n.r#type.clone(), mesh: n.mesh.clone(), build_id: LifecycleOp::NO_BUILD.to_string(), operation: rdm_core::OperationId::node(action, &n.node_id), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), path: n.path.clone(), name: n.name.clone(), event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None }
+    }
+
+    /// A node an aggregate or a read lists `deleted` (Q390): its departure, held for the retention, unless
+    /// this view holds the node deleted already.
+    pub(crate) fn depart_listed(&self, d: &MeshDigest, at_rafka_ms: u64) -> bool {
+        !self.is_deleted(d.node.node_id.as_str()) && self.depart(Self::listed_op(d, "node.delete", at_rafka_ms))
+    }
+
+    /// A node an aggregate or a read lists `stopped` (Q390): its stop ([`Self::stopped`]), unless this view
+    /// holds that exact birth stopped already. The listed entry is what the stop keeps of the birth
+    /// when this view held no digest of it.
+    pub(crate) fn stopped_listed(&self, d: &MeshDigest, at_rafka_ms: u64) -> bool {
+        if self.holds_stopped(d.node.node_id.as_str(), &d.node.incarnation) {
+            return false;
+        }
+        let taken = self.stopped(Self::listed_op(d, "node.stop", at_rafka_ms));
+        if taken {
+            if let Some(m) = self.stopped_marks.lock().unwrap().get_mut(d.node.node_id.as_str()).filter(|m| m.held.is_none()) {
+                m.held = Some(d.clone());
+            }
+        }
+        taken
+    }
+
+    /// A node an aggregate or a read lists `deleting` (Q390): its removal overlay ([`Self::deleting`]),
+    /// unless this view holds an open removal of that exact birth already.
+    pub(crate) fn deleting_listed(&self, d: &MeshDigest, at_rafka_ms: u64) -> bool {
+        let held = self.in_flight.lock().unwrap().values().any(|o| !o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation);
+        !held && self.deleting(Self::listed_op(d, "node.delete", at_rafka_ms))
     }
 
     /// Hold `op` as a deletion this process executed: its `NodeDeleted` is this process's to carry in
@@ -1419,7 +1503,7 @@ impl DigestView {
             // Its own word on its mesh's channel, emitted after its NodeDeleted: the deleted birth runs (a
             // digest it sent before it exited, delivered late, is not). The node that refused it reports it
             // to the fabric-primary, which terminates its runtime (node-investigation.md, Q110, Q128).
-            let after_deletion = self.deleted.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(op, _)| op.incarnation == d.node.incarnation && d.emitted_at_rafka_ms > op.event_at_rafka_ms);
+            let after_deletion = self.deleted.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(op, _, _)| op.incarnation == d.node.incarnation && d.emitted_at_rafka_ms > op.event_at_rafka_ms);
             if after_deletion {
                 self.returned.lock().unwrap().entry((d.node.node_id.to_string(), d.node.incarnation.to_string())).or_insert_with(|| d.clone());
             }
@@ -2056,12 +2140,13 @@ impl DigestView {
 
     pub(crate) fn depart_quiet(&self, op: LifecycleOp) -> bool {
         let id = op.node_id.to_string();
+        let held = self.held_digest_of(&op);
         {
             let mut deleted = self.deleted.lock().unwrap();
             if deleted.contains_key(&id) {
                 return false;
             }
-            deleted.insert(id.clone(), (op.clone(), Instant::now()));
+            deleted.insert(id.clone(), (op.clone(), Instant::now(), held));
         }
         delete_incarnation(&op.node_id, &op.incarnation);
         self.end_stop(op.node_id.as_str());

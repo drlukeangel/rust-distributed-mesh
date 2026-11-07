@@ -295,13 +295,13 @@ impl TopologyView {
             let mut own = own.clone();
             self.digest_view.recorded_primaries(&mut own);
             digests.push(own.clone());
-            digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
             let (in_flight, deleted) = self.digest_view.overlays_of(mesh);
-            held.push(SourceSnapshot { mesh: mesh.clone(), mesh_id: Some(self.mesh_id().clone()), publisher: PublisherId::from(&own.node), topology_version: 0, digests, in_flight, deleted });
+            let digests = self.digest_view.aggregate_nodes(mesh, digests, &in_flight, &deleted);
+            held.push(SourceSnapshot { mesh: mesh.clone(), mesh_id: Some(self.mesh_id().clone()), topology_version: 0, digests });
         } else if !self.view.primary.load(Ordering::Relaxed) && of.is_none_or(|want| want == mesh.as_str()) && held.iter().any(|s| &s.mesh == mesh) {
             // An ordinary node's own mesh is what it holds of it: each node from its own Digest, and the
-            // overlays and departures it took (gossip.md §3.3, Q387: nothing of its own mesh reaches it on
-            // its mesh channel), served under the publisher and version of the read it installed.
+            // stops and departures it took said by each node's status (gossip.md §3.3, Q387, Q390: nothing
+            // of its own mesh reaches it on its mesh channel), served at the version of the read it installed.
             let read = held.iter().position(|s| &s.mesh == mesh).map(|i| held.remove(i));
             let mut digests: Vec<MeshDigest> = self
                 .digest_view
@@ -312,10 +312,10 @@ impl TopologyView {
             let mut own = own.clone();
             self.digest_view.recorded_primaries(&mut own);
             digests.push(own.clone());
-            digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
             let (in_flight, deleted) = self.digest_view.overlays_of(mesh);
-            let (publisher, topology_version) = read.map(|s| (s.publisher, s.topology_version)).expect("the read of its own mesh is held");
-            held.push(SourceSnapshot { mesh: mesh.clone(), mesh_id: Some(self.mesh_id().clone()), publisher, topology_version, digests, in_flight, deleted });
+            let digests = self.digest_view.aggregate_nodes(mesh, digests, &in_flight, &deleted);
+            let topology_version = read.map(|s| s.topology_version).expect("the read of its own mesh is held");
+            held.push(SourceSnapshot { mesh: mesh.clone(), mesh_id: Some(self.mesh_id().clone()), topology_version, digests });
         }
         held
     }
@@ -335,15 +335,16 @@ impl TopologyView {
 
     /// The complete snapshot of `mesh` this node holds installed, from whichever channel installed it
     /// (its Mesh channel, the backbone or a topology read): its publisher, its `topology_version` and
-    /// its members. `None` when it holds no complete snapshot of `mesh`.
-    pub fn installed_snapshot(&self, mesh: &str) -> Option<(PublisherId, u64, Vec<MeshDigest>)> {
+    /// its nodes. `None` when it holds no complete snapshot of `mesh`.
+    pub fn installed_snapshot(&self, mesh: &str) -> Option<(u64, Vec<MeshDigest>)> {
         let order = self.view.order.lock().unwrap();
-        let (publisher, version, full, _) = order.installed_snapshot(mesh)?;
-        Some((publisher.clone(), version, full.digests()))
+        let (_, version, full, _) = order.installed_snapshot(mesh)?;
+        Some((version, full.digests()))
     }
 
-    /// The version this node holds of `mesh` from its Mesh channel and the publisher it is of.
-    pub fn held_source_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
+    /// The version this node holds of `mesh` from its Mesh channel, with the label of its author when
+    /// one was heard.
+    pub fn held_source_version(&self, mesh: &str) -> Option<(Option<PublisherId>, u64)> {
         self.view.mesh_rx.lock().unwrap().held_version(mesh)
     }
 

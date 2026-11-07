@@ -24,9 +24,9 @@ pub const MAX_FRAME: usize = rdm_transport::chunking::MAX_MESSAGE_BYTES;
 /// `datacontenttype`; `source` names the original author birth. A variant describes domain data, its
 /// fields in declaration order (their postcard position), without an outer kind discriminant on the
 /// wire: a variant's schema index is internal, never a wire kind. The in-process carrier
-/// [`Frame::Authored`] is never serialized. TopologyFull publication identity in data is
-/// `(fabric_id, node_id, incarnation, counter)`; the frame retains the counter alongside its authored
-/// context. A field with a serde `with` module travels in that module's wire shape.
+/// [`Frame::Authored`] is never serialized. A `TopologyFull`'s author, version and time are its
+/// envelope's alone (`source`, `sequence`, `time`; [`Frame::authored_aggregate`]). A field with a serde
+/// `with` module travels in that module's wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Frame {
     /// A node's own Digest (its mesh channel only; gossip.md §3.1 `Digest`): its status and the
@@ -44,50 +44,29 @@ pub enum Frame {
         /// The node's details: type, path, name, endpoint id, transport address and the birth it supersedes.
         details: NodeDetails,
     },
-    /// One chunk of a snapshot of `mesh`'s topology (gossip.md §3.1). On the backbone it is the
-    /// complete Mesh with its loads, published by that Mesh's current primary (`publisher`, the
-    /// exact birth that is its primary, whose identity is the revision of `topology_version`); on a peer
-    /// Mesh's own channel it is the forwarded full without loads, `publisher` still the SOURCE
-    /// primary and `forwarded_by` the local primary that sends it (the backbone frame carries
-    /// `None`). `topology_version` bumps on a material change of the normalized projection and
-    /// never on a heartbeat, a stamp, a load or an unchanged republish. All chunks of one
-    /// snapshot share `snapshot_id` (the sender's own counter, never a clock reading) and carry
-    /// the open lifecycle overlays (`in_flight`) and retained deletions (`deleted`)
-    /// split across them; a receiver installs the snapshot only once it holds every chunk.
-    /// `published_at_rafka_ms` makes each publication distinct.
+    /// One chunk of `mesh`'s aggregate (gossip.md §3.1): the mesh-primary's one list of its mesh's
+    /// nodes, each with its identity, endpoints, status and primary roles, on the backbone only (Q387,
+    /// Q390). A node under a stop or delete, or deleted, says so by its status; a deleted node is
+    /// listed for the deleted retention, then dropped. The envelope's `source` is the mesh-primary that
+    /// authored it, its `sequence` the mesh's version (Q389) and its `time` the publication's
+    /// Rafka-time; its `id` is `rdm.mesh.members/<mesh>/<version>/<chunk>`. The version bumps on a
+    /// material change of the list and never on a heartbeat, a stamp or an unchanged republish. The
+    /// list is split into chunks only when it does not fit one message (Q390); a receiver installs it
+    /// only once it holds every chunk of that (mesh, version, author).
     ///
     /// Schema index 1, never a wire kind.
     TopologyFull {
-        /// The source mesh's name.
+        /// The mesh's name.
         mesh: String,
-        /// The source mesh's id: a later mesh of the same name has another id, and the held mesh's
-        /// version orders nothing of it (gossip.md "Mesh delete").
+        /// The mesh's id: a later mesh of the same name has another id, and the held mesh's version
+        /// orders nothing of it (gossip.md "Mesh delete").
         mesh_id: Option<MeshId>,
-        /// The source mesh's primary birth that published the snapshot, the revision of
-        /// `topology_version`.
-        publisher: PublisherId,
-        /// The local primary that forwards the snapshot onto its own channel; `None` on the
-        /// backbone.
-        forwarded_by: Option<String>,
-        /// The topology version the snapshot carries.
-        topology_version: u64,
-        /// The Rafka-time of the publication, making each publication distinct.
-        published_at_rafka_ms: u64,
-        /// The publication owner's counter, shared by every chunk. The wire data pairs it with that
-        /// owner's exact fabric/node/incarnation birth from the authored context.
-        snapshot_id: u64,
-        /// This chunk's index within the snapshot.
+        /// This chunk's index within the aggregate.
         chunk_index: u32,
-        /// The number of chunks in the snapshot.
+        /// The number of chunks in the aggregate.
         chunk_count: u32,
-        /// The members this chunk carries, each a member projection entry: its digest, then the
-        /// status its mesh-primary holds (gossip.md §3.1).
-        #[serde(with = "rdm_transport::wire::entries")]
-        digests: Vec<MeshDigest>,
-        /// The open lifecycle overlays this chunk carries.
-        in_flight: Vec<LifecycleOp>,
-        /// The retained deletions this chunk carries.
-        deleted: Vec<LifecycleOp>,
+        /// The nodes this chunk carries.
+        nodes: Vec<NodeEntry>,
     },
     /// One chunk of a peer mesh's differential, published by the forwarding mesh-primary on its own
     /// mesh channel only (gossip.md §3.1, §3.3): what moved the peer mesh from `base_version`, the
@@ -125,8 +104,8 @@ pub enum Frame {
     },
     /// The mesh executor holding `op` has started removing its exact birth:
     /// the node is still found, and application routing stops selecting it.
-    /// Published on the executor's own mesh channel only; the backbone carries it as an open
-    /// overlay of its mesh's topology (`TopologyFull.in_flight`).
+    /// Published on the executor's own mesh channel only; the backbone carries the node's deleting
+    /// status in its mesh's aggregate (`TopologyFull`).
     ///
     /// Schema index 3, never a wire kind.
     NodeDeleting {
@@ -140,7 +119,8 @@ pub enum Frame {
         topology_version: u64,
     },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
-    /// channel as `NodeDeleting`; retained afterwards in `TopologyFull.deleted`.
+    /// channel as `NodeDeleting`; the backbone carries the node listed deleted in its mesh's aggregate
+    /// for the deleted retention (`TopologyFull`).
     ///
     /// Schema index 4, never a wire kind.
     NodeDeleted {
@@ -301,7 +281,8 @@ pub enum Frame {
     /// The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the
     /// stop call's own reply: the birth is stopped (its process alive, its endpoint bound) and
     /// gossips nothing. Every node drops it from its view until the birth itself rejoins. Same
-    /// channel as `NodeDeleting`; carried in `TopologyFull.in_flight` while open.
+    /// channel as `NodeDeleting`; the backbone carries the node's stopped status in its mesh's
+    /// aggregate (`TopologyFull`).
     ///
     /// Schema index 18, never a wire kind.
     NodeStopped {
@@ -362,6 +343,19 @@ impl Frame {
         matches!(self.data(), Self::TopologyDelta { .. }).then(|| self.context().and_then(|c| c.version())).flatten()
     }
 
+    /// A `TopologyFull` chunk, authored by its mesh-primary `author` at the mesh's `version` and the
+    /// publication's Rafka-time `time_ms` (gossip.md §3.1: the envelope names the author, the version and
+    /// the time; the body repeats none of them).
+    pub fn authored_aggregate(self, author: &crate::envelope::Birth, version: u64, time_ms: u64) -> Self {
+        if self.context().is_some() { return self; }
+        let context = crate::envelope::Context::aggregate(&self, author, version, time_ms);
+        Self::Authored { context, frame: Box::new(self) }
+    }
+    /// The mesh's version a `TopologyFull` carries: its envelope's `sequence` (Q389). `None` for
+    /// another frame or one with no authored context.
+    pub fn aggregate_version(&self) -> Option<u64> {
+        match self.data() { Self::TopologyFull { .. } => self.context()?.version(), _ => None }
+    }
     /// Bind locally produced data to its explicitly supplied author's birth and held revision.
     pub fn authored(self, author: &crate::envelope::Birth, primary_revision: u64, time_ms: u64) -> Self {
         if self.context().is_some() { return self; }

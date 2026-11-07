@@ -14,14 +14,16 @@
 //! mesh's current topology: a caller installs none of it.
 //!
 //! A mesh is named by its NAME on the wire, as the gossip `TopologyFull` frame names it. A caller
-//! installs a mesh atomically, and only once every chunk of one `(snapshot_id, publisher,
-//! topology_version)` is present. The family is not forwardable: it is a stream.
+//! installs a mesh atomically, and only once every chunk of one `(mesh, topology_version)` of the
+//! stream is present. Each snapshot is the mesh's one list of nodes, as its mesh-primary's aggregate
+//! lists them: a node under a stop or delete, or deleted, says so by its status (Q390). The family is
+//! not forwardable: it is a stream.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::wire::ReadNode;
-use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Primary};
+use crate::{EndpointId, IncarnationId, MeshId, NodeId, Primary};
 use serde::{Deserialize, Serialize};
 
 /// A primary as the topology answers it (node-rpc-envelope.md `PrimaryKind`): the election's result
@@ -80,12 +82,10 @@ impl StoredNode {
     }
 }
 
-/// The source version a caller already holds for a mesh: the publisher is the revision, so
-/// `topology_version` is compared only inside one publisher.
+/// The version a caller already holds of a mesh: the mesh's version, whichever mesh-primary sent it
+/// (Q389).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceVersion {
-    /// The source mesh's primary birth that published the version, the revision of `topology_version`.
-    pub publisher: PublisherId,
     /// The version held.
     pub topology_version: u64,
 }
@@ -125,12 +125,8 @@ pub enum TopologyReply {
         mesh: String,
         /// The source mesh's id, as its topology's frame named it.
         mesh_id: Option<MeshId>,
-        /// The publisher of the snapshot.
-        publisher: PublisherId,
-        /// The snapshot's `topology_version`.
+        /// The snapshot's `topology_version`: the mesh's version, whichever mesh-primary sent it (Q389).
         topology_version: u64,
-        /// The publisher's own snapshot counter, shared by every chunk of the snapshot.
-        snapshot_id: u64,
         /// This chunk's index within the snapshot.
         chunk_index: u32,
         /// The number of chunks in the snapshot.
@@ -138,10 +134,6 @@ pub enum TopologyReply {
         /// The nodes this chunk carries, each as a read serves it: its identity, status and primary
         /// roles, the sequence of its Digest held, and its runtime and data dir (hydration).
         nodes: Vec<ReadNode>,
-        /// The open lifecycle overlays this chunk carries.
-        in_flight: Vec<LifecycleOp>,
-        /// The retained proven departures this chunk carries.
-        deleted: Vec<LifecycleOp>,
     },
     /// The caller's `since` is the target's held source version for `mesh`.
     ///
@@ -149,8 +141,6 @@ pub enum TopologyReply {
     Unchanged {
         /// The source mesh's name.
         mesh: String,
-        /// The publisher of the version held.
-        publisher: PublisherId,
         /// The version held.
         topology_version: u64,
     },

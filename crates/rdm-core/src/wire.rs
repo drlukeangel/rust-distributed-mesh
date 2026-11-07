@@ -170,8 +170,10 @@ impl NodeDetails {
 }
 
 /// One node as a mesh topology lists it (gossip.md §3.1): its identity, details, status and the
-/// primary roles it holds. A differential's `added` lists a node this way: a node new to the mesh, or
-/// a held birth whose details changed. Its fabric is the envelope's and its mesh the frame's.
+/// primary roles it holds. The aggregate lists every node of its mesh this way; a node under a stop or
+/// delete, or deleted, says so by its status (Q390). A differential's `added` lists a node this way: a
+/// node new to the mesh, or a held birth whose details changed. Its fabric is the envelope's and its
+/// mesh the frame's.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NodeEntry {
     /// The node's minted id.
