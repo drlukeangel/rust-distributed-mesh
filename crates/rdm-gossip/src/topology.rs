@@ -296,6 +296,24 @@ impl TopologyView {
             digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
             let (in_flight, deleted) = self.digest_view.overlays_of(mesh);
             held.push(SourceSnapshot { mesh: mesh.clone(), publisher: PublisherId::from(&own.node), topology_version: 0, digests, in_flight, deleted });
+        } else if !self.view.primary.load(Ordering::Relaxed) && of.is_none_or(|want| want == mesh.as_str()) {
+            // An ordinary node's own mesh is what it holds of it: each node from its own Digest, and the
+            // overlays and departures it took (gossip.md §3.3, Q387: nothing of its own mesh reaches it on
+            // its mesh channel), served under the publisher and version of the read it installed.
+            let read = held.iter().position(|s| &s.mesh == mesh).map(|i| held.remove(i));
+            let mut digests: Vec<MeshDigest> = self
+                .digest_view
+                .current(self.digest_view.staleness_floor())
+                .into_iter()
+                .filter(|d| &d.node.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
+                .collect();
+            let mut own = own.clone();
+            self.digest_view.recorded_primaries(&mut own);
+            digests.push(own.clone());
+            digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
+            let (in_flight, deleted) = self.digest_view.overlays_of(mesh);
+            let (publisher, topology_version) = read.map(|s| (s.publisher, s.topology_version)).unwrap_or_else(|| (PublisherId::from(&own.node), 0));
+            held.push(SourceSnapshot { mesh: mesh.clone(), publisher, topology_version, digests, in_flight, deleted });
         }
         held
     }
