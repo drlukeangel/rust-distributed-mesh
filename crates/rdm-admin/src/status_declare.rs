@@ -165,6 +165,8 @@ pub(crate) struct Declarer {
     own_operations: Mutex<BTreeMap<NodeState, DeclaredOperation>>,
     /// The Owed call in flight for each key sent and not yet answered.
     inflight: Mutex<BTreeMap<Key, Inflight>>,
+    /// Wakes every waiter each time an Owed call's end is recorded ([`Declarer::held_behind`]).
+    pub(crate) call_ended: tokio::sync::Notify,
     /// Fabric recovery in a view (Q122): the node it re-creates at the target's path and name reports to its
     /// executor while its mesh has no mesh-primary (build.md §5.3).
     pub(crate) fabric_recovery: crate::fabric_recovery::ReaderSlot,
@@ -230,6 +232,19 @@ impl Declarer {
         }
         tracing::info_span!("rdm.node_admin.status.remove.via-cycle-begun", node_path = %me.path, node_name = %me.name, incarnation_id = incarnation, operation = %start.operation.action, operation_subject = ?start.operation.subject, forgotten = ?forgotten)
             .in_scope(|| tracing::info!("a start begins this birth's next cycle: its own state is owed afresh at node.started"));
+    }
+
+    /// Whether this admin's own declaration `key` is owed, not yet sent, and held behind an earlier
+    /// own declaration whose call is in flight (Q210: one in flight, in the order owed): it goes out
+    /// once that call's end is recorded ([`Declarer::call_ended`]).
+    pub(crate) fn held_behind(&self, key: &Key) -> bool {
+        let Some(at) = self.pending.lock().unwrap().get(key).map(|p| p.at) else { return false };
+        let inflight = self.inflight.lock().unwrap();
+        if inflight.contains_key(key) {
+            return false;
+        }
+        let pending = self.pending.lock().unwrap();
+        inflight.keys().any(|k| matches!(k, Key::OwnState(..)) && pending.get(k).is_some_and(|p| p.at < at))
     }
 
     /// The operation that produced this birth's own `state` in its current cycle, if one did.
@@ -415,6 +430,7 @@ impl Declarer {
                         inflight.remove(&p.key);
                     }
                 }
+                this.call_ended.notify_waiters();
                 wake.poke();
             });
             inflight.insert(key, Inflight { to, task });
@@ -1133,6 +1149,34 @@ mod tests {
         d.owe(mesh_key(), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
         d.withdraw_unowned(&me, "mesh1", &re_born.node_id, &v);
         assert_eq!(d.owed(), 0, "the mesh-primary role is the deleted birth's, not this admin's: the Mesh key is withdrawn");
+    }
+
+    /// CONTRACT (Q210, node-stop.md step 4): a stop's Stopped owed while the admin's own
+    /// connections-deleting call is still in flight is held behind it, and is no longer held once that
+    /// call's end is recorded: the stop's own sweep, waiting on [`Declarer::call_ended`], sends it then.
+    /// Must NOT happen: a stopped admin's Stopped owed and never sent, its declarer's loop held by the
+    /// stop (node_stop, the proof gate of a0ccb4882: connections-deleting's call ran 2.8 to 10.6 ms,
+    /// Stopped was owed at 8.1 ms and never went out).
+    #[tokio::test]
+    async fn an_own_declaration_owed_behind_one_in_flight_is_held_until_that_call_ends() {
+        let d = Declarer::new();
+        let (me_id, inc) = (NodeId::mint(), IncarnationId::parse(INC).unwrap());
+        d.owe_own("mesh1", &me_id, &inc, NodeState::ConnectionsDeleting, None);
+        d.owe_own("mesh1", &me_id, &inc, NodeState::Stopped, None);
+        let (deleting, stopped) = (Key::OwnState(INC.to_string(), NodeState::ConnectionsDeleting), Key::OwnState(INC.to_string(), NodeState::Stopped));
+        assert!(!d.held_behind(&stopped), "nothing in flight: not held");
+        let to = Destination::of(&node(PathName::new("mesh1.node-admin", "2").unwrap(), NodeId::mint(), "mesh1", true, false));
+        d.inflight.lock().unwrap().insert(deleting.clone(), Inflight { to, task: tokio::spawn(async {}) });
+        assert!(d.held_behind(&stopped), "held behind the connections-deleting call in flight");
+        assert!(!d.held_behind(&deleting), "the one in flight is not held");
+        let ended = d.call_ended.notified();
+        tokio::pin!(ended);
+        ended.as_mut().enable();
+        d.inflight.lock().unwrap().remove(&deleting);
+        d.pending.lock().unwrap().remove(&deleting);
+        d.call_ended.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(1), ended).await.expect("the call's end wakes the held sweep");
+        assert!(!d.held_behind(&stopped), "no longer held: the next sweep sends it");
     }
 
     /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a sweep is kept as the

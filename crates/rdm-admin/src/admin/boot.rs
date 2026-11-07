@@ -2384,7 +2384,22 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         return;
                                                     }
                                                     declarer.owe_own(&mesh, &me_id, &incarnation, state, operation);
-                                                    declarer.sweep(&me, &mesh, &me_id, &view, &client, status_service.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
+                                                    // Sent here, not by the declarer's loop, which a stopped admin holds: while it
+                                                    // waits behind an earlier declaration in flight, each end of that call sweeps
+                                                    // again (Q210), so a stop's Stopped goes out after its connections-deleting.
+                                                    let key = crate::status_declare::Key::OwnState(incarnation.to_string(), state);
+                                                    let mut view = view;
+                                                    loop {
+                                                        let ended = declarer.call_ended.notified();
+                                                        tokio::pin!(ended);
+                                                        ended.as_mut().enable();
+                                                        declarer.sweep(&me, &mesh, &me_id, &view, &client, status_service.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
+                                                        if !declarer.held_behind(&key) {
+                                                            break;
+                                                        }
+                                                        ended.await;
+                                                        view = topology.read().await.clone();
+                                                    }
                                                 })
                                             })
                                         };
