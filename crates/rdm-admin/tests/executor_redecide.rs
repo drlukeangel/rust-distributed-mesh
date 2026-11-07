@@ -224,7 +224,10 @@ impl DeploymentProvider for Fleet {
         Ok(handle)
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
-        self.terminated.lock().unwrap().push(h.pid.unwrap());
+        // A launch nothing located (the pipeline's lost birth with no runtime known) has no pid to end.
+        if let Some(pid) = h.pid {
+            self.terminated.lock().unwrap().push(pid);
+        }
         Ok(())
     }
     async fn inspect(&self, h: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
@@ -233,7 +236,9 @@ impl DeploymentProvider for Fleet {
             self.reached.notify_one();
             std::future::pending::<()>().await;
         }
-        if self.running(h.pid.unwrap()) {
+        // As the process provider answers a handle naming no pid: it cannot tell (`process.rs` `inspect_within`).
+        let Some(pid) = h.pid else { return DeploymentStatus::Unknown };
+        if self.running(pid) {
             DeploymentStatus::Running
         } else {
             DeploymentStatus::Exited { code: Some(143) }
