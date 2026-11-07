@@ -154,7 +154,7 @@ fn a_snapshot_chunk_carries_each_node_as_a_read_serves_it() {
 /// CONTRACT (Q390): a read's snapshot is the mesh's one list of nodes, each with its status: a deleted
 /// node is listed `deleted`, with no separate open-operation or departure list beside it.
 #[test]
-fn a_snapshot_chunk_round_trips_as_one_list_of_nodes_each_with_its_status() {
+fn a_snapshot_chunk_encodes_and_decodes_as_one_list_of_nodes_each_with_its_status() {
     let d = digest();
     let mut deleted = digest();
     deleted.node.node_id = rdm_core::NodeId::mint();

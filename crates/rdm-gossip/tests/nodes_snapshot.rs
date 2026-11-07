@@ -206,9 +206,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let mut deleting = re_born.clone();
         deleting[1].status = NodeStatus::Deleting;
         bumps.push(("a node listed deleting", v.observe(&Full::new(deleting.clone(), vec![], vec![]))));
-        let mut departed = deleting.clone();
-        departed[1].status = NodeStatus::Deleted;
-        bumps.push(("the node listed deleted", v.observe(&Full::new(departed, vec![], vec![]))));
+        let mut listed_deleted = deleting.clone();
+        listed_deleted[1].status = NodeStatus::Deleted;
+        bumps.push(("the node listed deleted", v.observe(&Full::new(listed_deleted, vec![], vec![]))));
         bumps.push(("the deleted node dropped after the retention", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![]))));
         bumps.push(("a birth added", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)], vec![], vec![]))));
         let versions: Vec<u64> = bumps.iter().map(|(_, n)| *n).collect();
