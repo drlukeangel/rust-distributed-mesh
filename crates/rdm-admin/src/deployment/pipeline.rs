@@ -1994,7 +1994,7 @@ impl DeploymentPipeline<'_> {
             let mut admitted = admitted.ok_or_else(|| format!("path {:?}, name {:?}: the handle names no exact runtime to verify a join against", &req.path, &req.name))?;
             let until = Instant::now() + self.timeouts.join;
             loop {
-                let held = admitted.borrow().clone().map(|r| r.digest).filter(|d| d.node.node_id == id.node_id && d.node.incarnation == id.incarnation).map(|d| Publication { runtime: d.node.runtime.clone(), data_dir: d.data_dir.clone() });
+                let held = admitted.borrow().clone().filter(|r| r.digest.node.node_id == id.node_id && r.digest.node.incarnation == id.incarnation).map(|r| Publication { runtime: r.runtime, data_dir: r.data_dir });
                 // Held by no process any more (this admin restarted after the join was admitted): the
                 // record the birth wrote itself at its start (Q356; `Joins::durable_report`).
                 let reported = match held {
@@ -3318,10 +3318,12 @@ mod tests {
                 primary: Vec::new(),
             };
             let joins = self.joins.clone();
+            // The report the launched birth makes: its digest, its runtime and its data dir.
+            let report = crate::join::JoinReport { digest, runtime: handle.fact(), data_dir: Some(spec.data_dir.display().to_string()), listeners: Vec::new() };
             tokio::spawn(async move {
                 loop {
-                    if matches!(joins.standing(&digest, &[]), crate::join::Standing::Deployed { .. }) {
-                        joins.report(&crate::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
+                    if matches!(joins.standing(&report), crate::join::Standing::Deployed { .. }) {
+                        joins.report(&report);
                         return;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;

@@ -95,12 +95,13 @@ fn read_of(view: &TopologyView, me: &MeshDigest, mesh: &str) -> Vec<rdm_gossip::
     let served = view.held_topology(me);
     let s = served.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
     rdm_gossip::snapshot::chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
-        mesh: s.mesh.clone(), publisher: s.publisher.clone(), forwarded_by: None, topology_version: s.topology_version,
+        mesh: s.mesh.clone(),
+        mesh_id: None, publisher: s.publisher.clone(), forwarded_by: None, topology_version: s.topology_version,
         published_at_rafka_ms: 1, snapshot_id: 900, chunk_index, chunk_count, digests, in_flight, deleted,
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => rdm_gossip::snapshot::Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted },
+        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => rdm_gossip::snapshot::Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), },
         _ => unreachable!("chunks_of shapes TopologyFull"),
     })
     .collect()
@@ -203,12 +204,13 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let (_, deleting_version) = bb2.publish_status_event(StatusEvent::Deleting, &deleting).await;
         until("the member to hold mesh1.node.3's NodeDeleting", || m.digest_view.in_flight().contains(&deleting)).await;
         // mesh1.node.2's heartbeat at digest_seq 7.
-        m2_channels.forward(&Frame::Digest { digest: with_seq(&rpc2, 7) }).await.unwrap();
+        m2_channels.forward(&Frame::digest(&with_seq(&rpc2, 7), true)).await.unwrap();
         until("the member to hold mesh1.node.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
 
         // The late frames, each published before what the member holds of its source.
         let late_full = Frame::TopologyFull {
             mesh: "mesh1".into(),
+            mesh_id: None,
             publisher: pub1.clone(),
             forwarded_by: Some("mesh1.node-admin.1".into()),
             topology_version: v2 + 7,
@@ -220,9 +222,9 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             in_flight: vec![],
             deleted: vec![],
         };
-        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), mesh_id: None, source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), pub2.clone(), deleting_version - 1);
-        let late_heartbeat = Frame::Digest { digest: with_seq(&rpc2, 3) };
+        let late_heartbeat = Frame::digest(&with_seq(&rpc2, 3), true);
         // The cell's story starts here: an ignore before this instant is gossip's own reordering during setup
         // (a resend of a version the member already holds under a later stamp), not one of the late frames.
         let late_from = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
@@ -232,8 +234,8 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         m2_channels.forward(&late_heartbeat).await.unwrap();
         // A newer heartbeat from each sender, after its late frames: once the member holds it, the late
         // frames ahead of it on the same channel were received.
-        m1_channels.forward(&Frame::Digest { digest: with_seq(&p1_d, 5) }).await.unwrap();
-        m2_channels.forward(&Frame::Digest { digest: with_seq(&rpc2, 9) }).await.unwrap();
+        m1_channels.forward(&Frame::digest(&with_seq(&p1_d, 5), true)).await.unwrap();
+        m2_channels.forward(&Frame::digest(&with_seq(&rpc2, 9), true)).await.unwrap();
         until("the member to hold each sender's newer heartbeat", || seq_at_member(&p1_d) == Some(5) && seq_at_member(&rpc2) == Some(9)).await;
 
         assert_eq!(held_at_member(), Some((pub2.clone(), v2)), "the member keeps the successor's projection at its version");
@@ -334,7 +336,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let read = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let read_channels = rdm_gossip::channel::Channels::new(&reader.gossip, &reader.ep, &read).unwrap();
         read_channels.join(rdm_gossip::channel::ChannelId::mesh(read.fabric_id(), read.mesh_id()), vec![]).await.unwrap();
-        let chunk = rdm_gossip::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted };
+        let chunk = rdm_gossip::snapshot::Chunk { mesh: served.mesh, mesh_id: None, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted, runtimes: Vec::new(), };
         assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
 

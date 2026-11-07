@@ -312,6 +312,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     forged.status = NodeStatus::ConnectionsDeleting;
     let gap_frame = Frame::TopologyDelta {
         mesh: "mesh2".into(),
+        mesh_id: None,
         source_publisher: publisher.clone(),
         base_version: latest + 1,
         topology_version: latest + 2,

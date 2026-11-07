@@ -203,7 +203,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     forged.emitted_at_rafka_ms = os_now_ms() + 365 * 24 * 3600 * 1000;
     assert!(forged.digest_seq < last.digest_seq && forged.emitted_at_rafka_ms > last.emitted_at_rafka_ms);
     let forged_at_ms = os_now_ms();
-    observer.broadcast(&Frame::Digest { digest: forged.clone() }).await;
+    observer.broadcast(&Frame::digest(&forged.clone(), true)).await;
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
     let held_after = estate.node_view(&target.location()).await;

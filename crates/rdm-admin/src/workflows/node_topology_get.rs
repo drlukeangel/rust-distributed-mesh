@@ -101,42 +101,16 @@ mod tests {
 
             let snap = SourceSnapshot {
                 mesh: "mesh1".to_string(),
+                mesh_id: None,
                 publisher: pub_id.clone(),
                 topology_version: 3,
                 digests: vec![own_digest.clone()],
                 in_flight: Vec::new(),
                 deleted: Vec::new(),
             };
-            for r in snapshot_replies(&snap, 1) {
-                let TopologyReply::Snapshot {
-                    mesh,
-                    publisher,
-                    topology_version,
-                    snapshot_id,
-                    chunk_index,
-                    chunk_count,
-                    digests,
-                    in_flight,
-                    deleted,
-                } = r
-                else {
-                    unreachable!()
-                };
-                let taken = server_view_channels.take_read_chunk(
-                    Chunk {
-                        mesh,
-                        publisher,
-                        forwarded_by: Some("topology-read".to_string()),
-                        topology_version,
-                        snapshot_id,
-                        chunk_index,
-                        chunk_count,
-                        digests: digests.into_iter().map(MeshDigest::from).collect(),
-                        in_flight,
-                        deleted,
-                    },
-                    "peer",
-                );
+            for r in snapshot_replies(&snap, 1, &|_| None) {
+                let chunk = crate::topology_read::chunk_of(r, &fabric_id).expect("a snapshot reply");
+                let taken = server_view_channels.take_read_chunk(chunk, "peer");
                 assert!(!matches!(taken, Taken::Refused(_)), "{taken:?}");
             }
 

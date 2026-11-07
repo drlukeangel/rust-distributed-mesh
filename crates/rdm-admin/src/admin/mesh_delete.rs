@@ -42,9 +42,9 @@ impl MeshDeleter for MeshDeleteService {
 }
 
 impl AdminRunner {
-    /// The runtime fact the view holds for `node` (its digest).
+    /// The runtime fact the view holds for `node`'s exact birth (its join report or a topology read).
     fn held_runtime(&self, node: &Node) -> Option<rdm_core::RuntimeFact> {
-        self.digest_view.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
+        self.digest_view.runtime_of(&node.node_id, node.incarnation_id.as_ref()?)?.runtime
     }
 
     /// The record this admin's topology view holds of the exact roster birth `b`: its digest, live or
@@ -58,10 +58,11 @@ impl AdminRunner {
         n.provider = Some(self.provider.kind());
         n.status = d.status;
         n.routable = false;
-        n.admin_api_base = d.admin_api_base.clone();
+        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
-        n.data_dir = d.data_dir.clone();
-        n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
+        let held = self.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).unwrap_or_default();
+        n.data_dir = held.data_dir;
+        n.deployment_id = held.runtime.as_ref().and_then(|f| f.deployment().ok());
         Some(n)
     }
 

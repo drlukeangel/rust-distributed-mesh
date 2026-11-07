@@ -78,11 +78,12 @@ fn executor() -> rdm_core::framing::Birth {
 fn frames() -> Vec<Frame> {
     let p = publisher();
     vec![
-        Frame::Digest { digest: heartbeat(1, None, false) },
-        Frame::Digest { digest: heartbeat(2, Some(process_runtime()), true) },
-        Frame::Digest { digest: heartbeat(3, Some(container_runtime()), true) },
+        Frame::digest(&heartbeat(1, None, false), true),
+        Frame::digest(&heartbeat(2, Some(process_runtime()), true), true),
+        Frame::digest(&heartbeat(3, Some(container_runtime()), true), true),
         Frame::TopologyFull {
             mesh: "mesh2".into(),
+            mesh_id: None,
             publisher: p.clone(),
             forwarded_by: Some(executor().node_id.to_string()),
             topology_version: 9,
@@ -96,6 +97,7 @@ fn frames() -> Vec<Frame> {
         },
         Frame::TopologyFull {
             mesh: "mesh2".into(),
+            mesh_id: None,
             publisher: p.clone(),
             forwarded_by: None,
             topology_version: 1,
@@ -109,6 +111,7 @@ fn frames() -> Vec<Frame> {
         },
         Frame::TopologyDelta {
             mesh: "mesh2".into(),
+            mesh_id: None,
             source_publisher: p.clone(),
             base_version: 8,
             topology_version: 9,
@@ -153,6 +156,7 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     let p = publisher();
     let chunks = chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: "mesh1".into(),
+        mesh_id: None,
         publisher: p.clone(),
         forwarded_by: None,
         topology_version: 5,
@@ -179,7 +183,7 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
 
     // ---- sizes: one digest, postcard against the JSON-shaped MeshDigest ----
     let one = digest(1, Some(process_runtime()), true);
-    let wire_bytes = crate::gossip_wire::authored(&Frame::Digest { digest: one.clone() }).encode().len();
+    let wire_bytes = crate::gossip_wire::authored(&Frame::digest(&one.clone(), true)).encode().len();
     let json_bytes = serde_json::to_vec(&one).unwrap().len();
     assert!(wire_bytes < json_bytes, "postcard {wire_bytes} B against JSON {json_bytes} B");
     result.insert("digest_bytes".into(), json!({ "postcard_frame": wire_bytes, "json_digest": json_bytes }));

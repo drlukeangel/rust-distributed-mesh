@@ -244,12 +244,26 @@ pub struct ExactBirth {
     pub incarnation: IncarnationId,
 }
 
+/// One birth a node holds, as its topology read serves it: the birth, its status and primary roles,
+/// and the runtime and data dir the node holds of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldBirth {
+    /// The birth.
+    pub node: rdm_core::MeshNode,
+    /// Its status.
+    pub status: rdm_core::model::NodeStatus,
+    /// The primary roles it holds.
+    pub primary: Vec<rdm_core::RoleRevision>,
+    /// Its runtime and data dir, as the node holds them.
+    pub runtime: rdm_core::NodeRuntime,
+}
+
 /// The topology view one node holds of a mesh, read through `node.topology.get`: the births it holds
 /// and the open overlays and retained departures it knows. What a peer reports of another node.
 #[derive(Debug, Clone, Default)]
 pub struct HeldView {
     /// The births the node holds.
-    pub members: Vec<rdm_core::MeshDigest>,
+    pub members: Vec<HeldBirth>,
     /// The open lifecycle overlays (stop, delete) the node holds.
     pub in_flight: Vec<rdm_core::LifecycleOp>,
     /// The departures the node retains.
@@ -258,7 +272,7 @@ pub struct HeldView {
 
 impl HeldView {
     /// The birth the node holds of `node_id`, if it holds one.
-    pub fn birth(&self, node_id: &NodeId) -> Option<&rdm_core::MeshDigest> {
+    pub fn birth(&self, node_id: &NodeId) -> Option<&HeldBirth> {
         self.members.iter().find(|d| &d.node.node_id == node_id)
     }
 
@@ -470,8 +484,9 @@ impl<'a> NodeRpc<'a> {
         let mut view = HeldView::default();
         for f in frames {
             match f {
-                TopologyReply::Snapshot { digests, in_flight, deleted, .. } => {
-                    view.members.extend(digests.into_iter().map(rdm_core::MeshDigest::from));
+                TopologyReply::Snapshot { mesh, nodes, in_flight, deleted, .. } => {
+                    // The read names the mesh its births are of.
+                    view.members.extend(nodes.iter().map(|n| HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() }));
                     view.in_flight.extend(in_flight);
                     view.deleted.extend(deleted);
                 }

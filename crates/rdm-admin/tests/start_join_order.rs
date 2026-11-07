@@ -95,7 +95,7 @@ impl TopologySink for Discard {
 struct StartsWhole<'a> {
     joins: &'a rdm_admin::join::Joins,
     events: &'a Events,
-    digest: rdm_core::MeshDigest,
+    report: rdm_admin::join::JoinReport,
 }
 
 #[async_trait::async_trait]
@@ -105,7 +105,7 @@ impl NodeObserver for StartsWhole<'_> {
             NodeCommand::Start => {
                 // This observer models the command-stream owner: NodeJoined is recorded
                 // after the admitted join, before NodeStarted. The pipeline records neither.
-                self.joins.report(&rdm_admin::join::JoinReport { digest: self.digest.clone(), listeners: Vec::new() });
+                self.joins.report(&self.report);
                 self.events.published.lock().unwrap().push(("joined", ctx.operation.clone()));
                 tokio::task::yield_now().await;
                 self.events.published.lock().unwrap().push(("node.started", ctx.operation.clone()));
@@ -189,7 +189,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         primary: Vec::new(),
     };
     let (provider, events, joins) = (Running::default(), Events::default(), rdm_admin::join::Joins::default());
-    let observer = StartsWhole { joins: &joins, events: &events, digest };
+    let observer = StartsWhole { joins: &joins, events: &events, report: rdm_admin::join::JoinReport { digest, runtime: Some(runtime.clone()), data_dir: node.data_dir.clone(), listeners: Vec::new() } };
     let pipeline = DeploymentPipeline {
         provider: &provider,
         joins: &joins,

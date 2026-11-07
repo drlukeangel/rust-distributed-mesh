@@ -410,26 +410,20 @@ impl AdminRunner {
     /// Build history is read: whoever launched it, and however long ago, the
     /// birth itself says where its runtime is. A fact from another provider
     /// or control domain is refused by name, never acted on.
-    /// The runtime fact `node`'s exact birth published, the data dir it named, and whether it was read
-    /// from its digest (`true`) or from the durable runtime row its maker handed over: the birth says
-    /// where its runtime is. A birth in neither is refused by name.
+    /// The runtime fact of `node`'s exact birth, the data dir it named, and whether this admin held it
+    /// (`true`: its join report or a topology read) or read it from the node record (`false`): the birth
+    /// says where its runtime is, never gossip (Q387). A birth in neither is refused by name.
     async fn published_runtime(&self, node: &Node, incarnation: &IncarnationId) -> Result<(Option<rdm_core::runtime::RuntimeFact>, Option<String>, bool), String> {
         let me = self.held_name();
-        let held = self
-            .digest_view
-            .get(node.node_id.as_str())
-            .or_else(|| self.digest_view.projected_at(node.node_id.as_str(), std::time::Instant::now()))
-            .map(|(d, _)| d)
-            .or_else(|| self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id == node.node_id))
-            .filter(|d| d.node.incarnation == *incarnation);
+        let held = self.digest_view.runtime_of(&node.node_id, incarnation).filter(|r| r.runtime.is_some());
         let row = match (&held, self.records.contacts.get()) {
             (None, Some(store)) => birth_runtime_row(&**store, &me, &node.node_id, incarnation).await?,
             _ => None,
         };
-        match (&held, &row) {
-            (Some(d), _) => Ok((d.node.runtime.clone(), d.data_dir.clone(), true)),
+        match (held, &row) {
+            (Some(r), _) => Ok((r.runtime, r.data_dir, true)),
             (None, Some(r)) => Ok((Some(r.runtime.clone()), r.storage.data_dir.clone(), false)),
-            (None, None) => Err(format!("{} (birth {}) is not held in this admin's topology view or the node records; its runtime is unknown", node.node_id, incarnation.as_str())),
+            (None, None) => Err(format!("{} (birth {}) has no runtime held by this admin or on the node records; its runtime is unknown", node.node_id, incarnation.as_str())),
         }
     }
 
@@ -1120,7 +1114,7 @@ impl AdminRunner {
         birth.node_id = d.node.node_id.clone();
         birth.endpoint_id = Some(d.node.endpoint_id.clone());
         birth.transport_addr = Some(d.node.transport_addr);
-        birth.data_dir = d.data_dir.clone();
+        birth.data_dir = self.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).and_then(|r| r.data_dir);
         Some(birth)
     }
 
@@ -1225,6 +1219,8 @@ impl AdminRunner {
     pub(crate) fn deployed_for_live(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.node_id))?;
         let admitted = self.digest_view.get(record.node_id.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
+        // The data dir its record names, else the one its join report or a topology read carried.
+        let data_dir = record.data_dir.clone().or_else(|| self.digest_view.runtime_of(&record.node_id, &incarnation).and_then(|r| r.data_dir)).ok_or_else(|| format!("{} has no known data dir", record.node_id))?;
         Ok(crate::join::Deployed { mesh: record.mesh.clone(), r#type: record.r#type.clone(),
             path: record.path.clone(), name: record.name.clone(),
             node_id: record.node_id.clone(),
@@ -1232,7 +1228,7 @@ impl AdminRunner {
             supersedes: admitted.as_ref().and_then(|d| d.node.supersedes.clone()),
             endpoint_id: record.endpoint_id.clone().ok_or_else(|| format!("{} has no known endpoint id", record.node_id))?,
             runtime: handle.fact().ok_or_else(|| format!("{}: the handle names no exact runtime to verify its rejoin against", record.node_id))?,
-            data_dir: record.data_dir.clone().or_else(|| admitted.as_ref().and_then(|d| d.data_dir.clone())).ok_or_else(|| format!("{} has no known data dir", record.node_id))?,
+            data_dir,
             last_accepted_name: admitted.as_ref().map(|d| d.node.location()),
             held: true,
             listeners: self.assigned_listeners(record)?,

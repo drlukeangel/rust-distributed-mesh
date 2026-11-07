@@ -49,6 +49,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
     let mut rx = SnapshotReceiver::default();
     let chunk = rdm_gossip::snapshot::Chunk {
         mesh: "mesh3".into(),
+        mesh_id: None,
         publisher: pub_id.clone(),
         forwarded_by: None,
         topology_version: 7,
@@ -58,11 +59,13 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
         digests: vec![m3_a1.clone()],
         in_flight: vec![final_del.clone()],
         deleted: vec![],
+        runtimes: Vec::new(),
     };
     let taken = rx.take_chunk(chunk);
     assert!(matches!(taken, rdm_gossip::snapshot::Taken::Installed(_)));
     let _ = Frame::TopologyFull {
         mesh: "mesh3".into(),
+        mesh_id: None,
         publisher: pub_id,
         forwarded_by: None,
         topology_version: 7,

@@ -273,11 +273,12 @@ pub struct BirthRuntime {
     pub incarnation: crate::model::IncarnationId,
 }
 
-/// The runtime fact of a birth, one way for every inspect: the one a digest of it carries, else the
-/// one its node record holds (the node wrote it at its start). `None` when neither holds one.
-pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&crate::storage::NodeRecord>) -> Option<BirthRuntime> {
-    match (digest, row) {
-        (Some(d), _) if d.node.runtime.is_some() => Some(BirthRuntime { fact: d.node.runtime.clone().expect("checked"), data_dir: d.data_dir.clone(), incarnation: d.node.incarnation.clone() }),
+/// The runtime fact of a birth, one way for every inspect: the one this admin holds of its exact birth
+/// `incarnation` (its join report or a topology read: `held`), else the one its node record holds (the
+/// node wrote it at its start). `None` when neither holds one. Gossip never carries it (Q387).
+pub fn runtime_of(incarnation: &crate::model::IncarnationId, held: Option<&rdm_core::NodeRuntime>, row: Option<&crate::storage::NodeRecord>) -> Option<BirthRuntime> {
+    match (held, row) {
+        (Some(h), _) if h.runtime.is_some() => Some(BirthRuntime { fact: h.runtime.clone().expect("checked"), data_dir: h.data_dir.clone(), incarnation: incarnation.clone() }),
         (_, Some(r)) => Some(BirthRuntime { fact: r.runtime.clone(), data_dir: r.storage.data_dir.clone(), incarnation: r.incarnation.clone() }),
         _ => None,
     }
@@ -291,22 +292,15 @@ pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&cr
 /// the runtime the node wrote at its start. `Err` names what was missing.
 pub async fn birth_runtime(digest_view: &rdm_gossip::digest_view::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Result<BirthRuntime, String> {
     let Some(incarnation) = n.incarnation_id.clone() else { return Err(format!("{} holds no recorded birth: there is no exact runtime to inspect", n.node_id)) };
-    let id = n.node_id.as_str();
-    let exact = |d: &rdm_core::digest::MeshDigest| d.node.incarnation == incarnation;
-    let digest = digest_view
-        .get(id)
-        .map(|(d, _)| d)
-        .filter(exact)
-        .or_else(|| digest_view.projected_at(id, std::time::Instant::now()).map(|(d, _)| d).filter(exact))
-        .or_else(|| digest_view.stopped_digests().into_iter().find(|d| d.node.node_id == n.node_id && exact(d)));
-    let row = match (digest.as_ref().is_some_and(|d| d.node.runtime.is_some()), nodes) {
+    // The runtime this admin holds of the exact birth (its join report or a topology read), else the
+    // node record's, read at this moment (a runtime read: Q203, Q227 bar only create, start and join
+    // reads): what the fabric-primary inspects another mesh's birth with.
+    let held = digest_view.runtime_of(&n.node_id, &incarnation);
+    let row = match (held.as_ref().is_some_and(|r| r.runtime.is_some()), nodes) {
         (false, Some(nodes)) => crate::node_rows::birth_record(nodes, &n.node_id, &incarnation).await.map_err(|e| format!("the node record of {} at {} could not be read: {e}", n.node_id, incarnation.as_str()))?,
         _ => None,
     };
-    runtime_of(digest.as_ref(), row.as_ref()).ok_or_else(|| {
-        let held = if digest.is_some() { "a digest of this exact birth that carries no runtime fact" } else { "no digest of this exact birth" };
-        format!("this admin holds {held} and no node record of it, so no runtime fact")
-    })
+    runtime_of(&incarnation, held.as_ref(), row.as_ref()).ok_or_else(|| "this admin holds no runtime fact of this exact birth and no node record of it, so no runtime fact".to_string())
 }
 
 /// node.runtime.inspect of `n`'s exact birth: [`birth_runtime`], then the one inspect

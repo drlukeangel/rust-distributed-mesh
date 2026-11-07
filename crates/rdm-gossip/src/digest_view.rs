@@ -261,6 +261,13 @@ pub struct DigestView {
     /// Ticks when the mesh names the accepted Build holds change ([`Self::set_accepted_meshes`]): the
     /// view's rebuild reads them ([`RoutingWatch`]). A local observation; nothing is sent.
     pub(crate) accepted: Arc<tokio::sync::watch::Sender<u64>>,
+    /// The id of each mesh whose births this view holds from a topology of it, by the mesh's name: the
+    /// id that topology's frame named beside the mesh's name. A later mesh of the same name has another.
+    pub(crate) mesh_ids: Arc<Mutex<HashMap<String, rdm_core::MeshId>>>,
+    /// Each birth's runtime and data dir, by NodeId, with the incarnation they are of: taken from its
+    /// join report, a topology read or this node's own launch, never from gossip (Q387). What a
+    /// node-admin manages a birth with (node-identity-and-state.md: records and hydration).
+    pub(crate) runtimes: Arc<Mutex<HashMap<String, (IncarnationId, rdm_core::NodeRuntime)>>>,
     pub(crate) retention: Duration,
     /// The staleness floor.
     pub(crate) staleness_floor: Duration,
@@ -419,6 +426,8 @@ impl DigestView {
             held_name: Arc::default(),
             accepted_meshes: Arc::default(),
             accepted: Arc::new(tokio::sync::watch::Sender::new(0)),
+            mesh_ids: Arc::default(),
+            runtimes: Arc::default(),
             retention,
             staleness_floor,
             primaries: PrimaryView::default(),
@@ -1861,10 +1870,42 @@ impl DigestView {
         self.inner.lock().unwrap().values().filter(|(d, _, _)| d.node.mesh == mesh).map(|(d, _, _)| d.node.node_id.as_str().to_string()).collect()
     }
 
-    /// Whether a birth of `mesh` is held whose mesh id is set and is not `mesh_id`, read under the lock
-    /// (Q268): nothing is copied.
+    /// Whether a birth of `mesh` is held from a topology of the mesh of that name whose id is not
+    /// `mesh_id`, read under the lock (Q268): nothing is copied.
     pub fn holds_birth_of_mesh_under_another_id(&self, mesh: &str, mesh_id: &Option<rdm_core::MeshId>) -> bool {
-        self.inner.lock().unwrap().values().any(|(d, _, _)| d.node.mesh == mesh && d.mesh_id.is_some() && d.mesh_id != *mesh_id)
+        let Some(offered) = mesh_id else { return false };
+        if self.mesh_ids.lock().unwrap().get(mesh).is_none_or(|held| held == offered) {
+            return false;
+        }
+        self.inner.lock().unwrap().values().any(|(d, _, _)| d.node.mesh == mesh)
+    }
+
+    /// Hold `r` as the runtime and data dir of the exact birth `node_id`, `incarnation` (its join report,
+    /// a topology read or this node's own launch): a later incarnation replaces an earlier one's, and
+    /// a report that names neither holds nothing.
+    pub fn hold_runtime(&self, node_id: &NodeId, incarnation: &IncarnationId, r: rdm_core::NodeRuntime) {
+        if r.runtime.is_none() && r.data_dir.is_none() {
+            return;
+        }
+        self.runtimes.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), r));
+    }
+
+    /// The runtime and data dir this view holds of the exact birth `node_id`, `incarnation`.
+    pub fn runtime_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::NodeRuntime> {
+        self.runtimes.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, r)| r.clone())
+    }
+
+    /// The id of the mesh `mesh` whose births this view holds: its own mesh's, or the one the topology
+    /// it took of the mesh named.
+    pub fn mesh_id_of(&self, mesh: &str) -> Option<rdm_core::MeshId> {
+        self.mesh_ids.lock().unwrap().get(mesh).cloned()
+    }
+
+    /// Hold `mesh_id` as the id of the mesh `mesh` whose births this view takes from a topology of it.
+    pub fn hold_mesh_id(&self, mesh: &str, mesh_id: Option<&rdm_core::MeshId>) {
+        if let Some(id) = mesh_id {
+            self.mesh_ids.lock().unwrap().insert(mesh.to_string(), id.clone());
+        }
     }
 
     /// The births each held digest names as replaced (`supersedes`), read under the view's lock with

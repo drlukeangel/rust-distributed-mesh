@@ -139,7 +139,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                     })
                 })
             }),
-            install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
+            install: Arc::new(move |d, _| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
@@ -152,7 +152,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         };
         let dep = deployed();
         let reported = joins.expect(dep.clone());
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into(), listeners: Vec::new() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() };
         let peer = dep.endpoint_id.clone();
 
         let mut wrong_incarnation = digest_of(&dep, "127.0.0.1:34567");
@@ -225,7 +225,7 @@ fn service_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, r
                 })
             })
         }),
-        install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
+        install: Arc::new(move |d, _| log.lock().unwrap().push(d.node.transport_addr)),
         known: Arc::new(|| Box::pin(async {})),
         pending: Arc::new(|_, _| Box::pin(async {})),
         primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
@@ -257,7 +257,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name() {
         let service = service_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
-        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), listeners: Vec::new() }).await;
+        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.name.as_ref(), Some(&dep.location()), "its row's name: the answer carries no config, the node's properties are its own record");
@@ -294,7 +294,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
         { let at = rdm_core::PathName::new("mesh1.node", "7").unwrap(); third.node.path = at.path; third.node.name = at.name; }
-        let refused = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&third).into(), listeners: Vec::new() }).await;
+        let refused = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&third).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         match &refused {
             JoinReply::JoinMismatch { field, deployed, reported } => {
                 assert_eq!(field, "name", "{refused:?}");
@@ -306,7 +306,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
         assert!(reported.borrow().is_none(), "a refused join completes no report");
         let mut held = digest_of(&dep, "127.0.0.1:34570");
         { let at = rdm_core::PathName::new("mesh1.node", "1").unwrap(); held.node.path = at.path; held.node.name = at.name; }
-        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&held).into(), listeners: Vec::new() }).await;
+        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&held).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("the last accepted name is admitted: {joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.name.as_ref(), Some(&dep.location()), "the answer hands the row's name");
@@ -355,7 +355,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
                     })
                 })
             }),
-            install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
+            install: Arc::new(move |d, _| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
@@ -368,7 +368,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         };
         let reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34568");
-        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), listeners: Vec::new() }).await;
+        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("a first start is admitted under its create spec's name over its predecessor's row: {joined:?}") };
         rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(*installed.lock().unwrap(), vec![good.node.transport_addr], "the reported address is installed for the key");
@@ -405,7 +405,7 @@ fn a_first_start_whose_row_its_own_create_wrote_is_installed_once() {
         service.install = Arc::new(move |d| log.lock().unwrap().push(d.node.node_id.to_string()));
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34570");
-        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), listeners: Vec::new() }).await;
+        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(*installed.lock().unwrap(), vec![dep.node_id.to_string()], "the birth is installed once");
@@ -454,13 +454,13 @@ fn the_join_service_records_every_accepted_join_reports_pending_before_it_answer
         let _reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34571");
         { let at = rdm_core::PathName::new("mesh1.node", "7").unwrap(); third.node.path = at.path; third.node.name = at.name; }
-        let refused = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&third).into(), listeners: Vec::new() }).await;
+        let refused = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&third).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         assert!(matches!(refused, JoinReply::JoinMismatch { .. }), "{refused:?}");
         assert!(order.lock().unwrap().is_empty(), "a refused report records no Pending: {:?}", order.lock().unwrap());
         let mut report = digest_of(&dep, "127.0.0.1:34571");
         { let at = rdm_core::PathName::new("mesh1.node", "1").unwrap(); report.node.path = at.path; report.node.name = at.name; }
         for _ in 0..2 {
-            let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&report).into(), listeners: Vec::new() }).await;
+            let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&report).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
             assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
         }
         let pending = format!("pending {} {}", dep.node_id, dep.incarnation.as_str());
@@ -503,7 +503,7 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
             ("unspecified address", vec![l("kafka", "127.0.0.1:41001"), l("rest", "0.0.0.0:41002"), l("proxy", "127.0.0.1:41003")]),
             ("port 0", vec![l("kafka", "127.0.0.1:41001"), l("rest", "127.0.0.1:0"), l("proxy", "127.0.0.1:41003")]),
         ] {
-            let refused = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&digest).into(), listeners }).await;
+            let refused = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&digest).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners }).await;
             match &refused {
                 JoinReply::JoinMismatch { field, deployed, reported } => {
                     assert_eq!(field, "listeners", "{case}: the refusal names the listeners: {refused:?}");
@@ -515,7 +515,7 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
             assert!(installed.lock().unwrap().is_empty(), "{case}: nothing is installed");
             assert!(reported.borrow().is_none(), "{case}: no WaitForBind is completed");
         }
-        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&digest).into(), listeners: good.clone() }).await;
+        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&digest).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: good.clone() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "the report carrying exactly the assigned listeners is admitted: {joined:?}");
         assert_eq!(reported.borrow().as_ref().map(|r| r.listeners.clone()), Some(good), "WaitForBind receives every reported listener with its port: nothing is dropped");
         json!({ "cell": cell, "refusals": refusals })
@@ -559,7 +559,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         service.nodes = Some(storage.clone());
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34571");
-        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), listeners: Vec::new() }).await;
+        let joined = service.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("the join was refused with the store unreadable: {joined:?}") };
         rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         let _ = std::fs::remove_dir_all(&store);

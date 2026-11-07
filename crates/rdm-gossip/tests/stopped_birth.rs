@@ -165,6 +165,7 @@ fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) ->
     let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
     chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: s.mesh.clone(),
+        mesh_id: None,
         publisher: s.publisher.clone(),
         forwarded_by: None,
         topology_version: s.topology_version,
@@ -178,7 +179,7 @@ fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) ->
     }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
     .map(|f| match f.into_data() {
-        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted },
+        Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), },
         _ => unreachable!("chunks_of shapes TopologyFull"),
     })
     .collect()

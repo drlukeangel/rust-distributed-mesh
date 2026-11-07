@@ -214,7 +214,7 @@ impl View {
             if &source.fabric == fabric {
                 // The birth's details come with its first Digest into the mesh; a later Digest carries
                 // its status only, and the view supplies the details it retained (gossip.md §3.1).
-                let Some(digest) = f.digest_of(|b| self.digest_view.node_of(&b.node, &b.incarnation)) else {
+                let Some(digest) = f.digest_of(&self.mesh, |b| self.digest_view.node_of(&b.node, &b.incarnation)) else {
                     // A Digest of a birth whose details this node does not hold: a sync issue, topped up
                     // by a read of its own mesh (gossip.md §3.3).
                     if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::UnknownBirth) {
@@ -374,7 +374,7 @@ impl View {
 
     pub(crate) fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side, order: &mut crate::receive_order::ReceiveOrder) -> SnapshotTaken {
         match f.data() {
-            Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => {
+            Frame::TopologyFull { mesh, mesh_id, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => {
                 if forwarded_by.is_some() == (side == Side::Backbone) {
                     tracing::info_span!(
                         "rdm.mesh.topology.reject.via-members-on-wrong-channel",
@@ -395,6 +395,7 @@ impl View {
                 }
                 let chunk = Chunk {
                     mesh: mesh.clone(),
+                    mesh_id: mesh_id.clone(),
                     publisher: publisher.clone(),
                     forwarded_by: forwarded_by.clone(),
                     topology_version: *topology_version,
@@ -404,6 +405,7 @@ impl View {
                     digests: digests.clone(),
                     in_flight: in_flight.clone(),
                     deleted: deleted.clone(),
+                    runtimes: Vec::new(),
                 };
                 // The receiver's lock is held until the view holds what the version names: a reader of
                 // the held version never sees a version ahead of the view it describes.
@@ -438,7 +440,7 @@ impl View {
                     }
                 }
             }
-            Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms: _, changed, removed, in_flight, deleted } => {
+            Frame::TopologyDelta { mesh, mesh_id, source_publisher, base_version, topology_version, published_at_rafka_ms: _, changed, removed, in_flight, deleted } => {
                 if side == Side::Backbone {
                     tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
                         .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete snapshots travel: refused"));
@@ -450,7 +452,7 @@ impl View {
                 if self.outside_build(mesh, side) {
                     return SnapshotTaken::default();
                 }
-                let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), deleted: deleted.clone() };
+                let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), deleted: deleted.clone(), mesh_id: mesh_id.clone() };
                 let mut rx = self.mesh_rx.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
                 let moved = rx.take_delta_against(mesh, source_publisher, *base_version, *topology_version, &delta, order.installed_snapshot(mesh));
@@ -529,6 +531,11 @@ impl View {
     /// reads it; a snapshot that completes installs through the Mesh channel's receiver and moves the
     /// held source version (gossip.md §3.1).
     pub(crate) fn take_read_chunk(&self, chunk: Chunk, side: Side, fabric: &FabricId) -> Taken {
+        // The runtime and data dir of each exact birth the read serves: what a node-admin manages the
+        // birth with (hydration), whichever version the read is of.
+        for (node_id, incarnation, runtime) in &chunk.runtimes {
+            self.digest_view.hold_runtime(node_id, incarnation, runtime.clone());
+        }
         let own_digests = (side == Side::Read && chunk.mesh == self.mesh).then(|| chunk.digests.clone());
         let record_own = |digests: Option<Vec<MeshDigest>>| {
             if let Some(digests) = digests {
@@ -543,7 +550,7 @@ impl View {
             }
         };
         let mut order = self.order.lock().unwrap();
-        let offered_id = crate::snapshot::mesh_id_of(&chunk.digests);
+        let offered_id = chunk.mesh_id.clone();
         if let Err(e) = order.admit_read(&chunk.mesh, chunk.topology_version, offered_id.as_ref()) {
             tracing::info_span!(
                 "rdm.mesh.topology.reject.via-stale",
@@ -643,10 +650,8 @@ impl View {
             None
         };
         if let Some(op) = &final_delete {
-            let deleted_mesh_id = complete_digests[0].mesh_id.clone();
-            if deleted_mesh_id.is_some()
-                && self.digest_view.holds_birth_of_mesh_under_another_id(&mesh, &deleted_mesh_id)
-            {
+            let deleted_mesh_id = complete.and_then(Full::mesh_id);
+            if self.digest_view.holds_birth_of_mesh_under_another_id(mesh, &deleted_mesh_id) {
                 return Vec::new();
             }
             if self.digest_view.is_deleted(op.node_id.as_str()) {
@@ -657,6 +662,7 @@ impl View {
                 return Vec::new();
             }
         }
+        self.digest_view.hold_mesh_id(mesh, complete.and_then(Full::mesh_id).as_ref());
         for op in full.deleted() {
             self.digest_view.depart(op);
         }

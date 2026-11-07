@@ -66,6 +66,8 @@ pub struct Starting {
     pub birth_name: String,
     /// The birth's node id.
     pub node_id: NodeId,
+    /// The birth's mesh id, as its launch names it: the join's spans name it.
+    pub mesh_id: Option<rdm_core::MeshId>,
     /// The process's one Node RPC client: the join and the topology read go
     /// through it.
     pub client: Arc<NodeRpcClient>,
@@ -302,7 +304,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
 /// `node.start`: the join, the mesh channel, the hook, the topology, the Build floor, the rafka-time
 /// refresh and the report, in that order, for `node` as it plugs into each step.
 pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(), N::Error> {
-    let Starting { root, mut name, birth_path, birth_name, node_id, client, rafka_time } = node.starting();
+    let Starting { root, mut name, birth_path, birth_name, node_id, mesh_id: birth_mesh_id, client, rafka_time } = node.starting();
     let path = rdm_core::PathName { path: birth_path, name: birth_name };
     // 1. and 2. node.mesh.join (node-mesh-join.md), the one primitive: the report, the answer's
     //    rafka-time, cert and name taken before the node says anything, then the mesh channel holding
@@ -315,7 +317,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_join_to().await?;
             let digest = node.join_digest();
-            let (mesh, mesh_id) = (digest.node.mesh, digest.mesh_id.as_ref().map(ToString::to_string).unwrap_or_default());
+            let (mesh, mesh_id) = (digest.node.mesh, birth_mesh_id.as_ref().map(ToString::to_string).unwrap_or_default());
             let operation = node.operation().unwrap_or_else(|| match kind {
                 StartKind::FirstStart => rdm_core::OperationId::node("node.create", &node_id),
                 StartKind::AfterStop => rdm_core::OperationId::node("node.start", &node_id),
@@ -553,6 +555,8 @@ pub struct FirstStart<E> {
     pub resolve: Option<Box<dyn FnOnce() -> Result<JoinTo, StartFailed> + Send>>,
     /// The digest the join presents.
     pub digest: Option<MeshDigest>,
+    /// The runtime and data dir the join reports beside the digest.
+    pub runtime: rdm_core::NodeRuntime,
     /// The channel step.
     pub enter: Option<EnterSeam<E>>,
     /// The node.joined step, once the channel step answered it.
@@ -571,6 +575,10 @@ impl<E: From<StartFailed> + Send + 'static> super::node_mesh_join::MeshJoin for 
         self.digest.clone().expect("a first start that joins presents a digest")
     }
 
+    fn join_runtime(&self) -> rdm_core::NodeRuntime {
+        self.runtime.clone()
+    }
+
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Channels, E> {
         let (channels, next) = (self.enter.take().expect("the channel is entered once"))(step, joined.cloned()).await?;
         self.joined = Some(next);
@@ -583,7 +591,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
 
     fn starting(&self) -> Starting {
         let s = self.starting.as_ref().expect("a first start is begun once");
-        Starting { root: s.root.clone(), name: s.name.clone(), birth_path: s.birth_path.clone(), birth_name: s.birth_name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+        Starting { root: s.root.clone(), name: s.name.clone(), birth_path: s.birth_path.clone(), birth_name: s.birth_name.clone(), node_id: s.node_id.clone(), mesh_id: s.mesh_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
     }
 
     fn joining(&self) -> Joining {
@@ -679,6 +687,10 @@ mod tests {
     impl super::super::node_mesh_join::MeshJoin for TestStartPlug {
         type Error = StartFailed;
 
+        fn join_runtime(&self) -> rdm_core::NodeRuntime {
+            rdm_core::NodeRuntime::default()
+        }
+
         fn join_digest(&self) -> MeshDigest {
             MeshDigest {
                 fabric_id: FabricId::mint(),
@@ -724,6 +736,7 @@ mod tests {
                 name: self.starting.name.clone(),
                 birth_path: self.starting.birth_path.clone(), birth_name: self.starting.birth_name.clone(),
                 node_id: self.starting.node_id.clone(),
+                mesh_id: self.starting.mesh_id.clone(),
                 client: self.starting.client.clone(),
                 rafka_time: self.starting.rafka_time.clone(),
             }
@@ -834,6 +847,7 @@ mod tests {
                     name: "1".into(),
                     birth_path: "mesh1.node".into(), birth_name: "1".into(),
                     node_id: NodeId::mint(),
+                    mesh_id: None,
                     client: client.clone(),
                     rafka_time: rafka_time.clone(),
                 },
@@ -856,6 +870,7 @@ mod tests {
                     name: "1".into(),
                     birth_path: "mesh1.node".into(), birth_name: "1".into(),
                     node_id: NodeId::mint(),
+                    mesh_id: None,
                     client,
                     rafka_time,
                 },

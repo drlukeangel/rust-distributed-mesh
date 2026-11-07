@@ -60,6 +60,7 @@ fn of(served: Vec<SourceSnapshot>, mesh: &str) -> SourceSnapshot {
 fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
     chunks_of(&s.full(), |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: s.mesh.clone(),
+        mesh_id: None,
         publisher: s.publisher.clone(),
         forwarded_by: None,
         topology_version: s.topology_version,
@@ -74,7 +75,7 @@ fn read_chunks(s: &SourceSnapshot, snapshot_id: u64) -> Vec<Chunk> {
     .into_iter()
     .map(|f| match f.into_data() {
         Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
-            Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }
+            Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), }
         }
         other => panic!("not a TopologyFull chunk: {other:?}"),
     })

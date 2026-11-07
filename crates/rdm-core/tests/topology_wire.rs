@@ -2,7 +2,7 @@
 //! fields independently of codec round trips; enums are append-only.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rdm_core::wire::WireDigest;
+
 use rdm_core::{IncarnationId, LifecycleOp, PublisherId, Primary};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
@@ -81,7 +81,7 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
-        (Snapshot { mesh: "m".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }, "00 016d 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
+        (Snapshot { mesh: "m".into(), mesh_id: None, publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, nodes: vec![], in_flight: vec![], deleted: vec![] }, "00 016d 00 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
         (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
         (End { meshes: 2 }, "0202"),
         (NotReady { reason: "n".into() }, "03016e"),
@@ -119,12 +119,15 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     crate::outcome_codes::check_malformed::<Topology>();
 }
 
-/// CONTRACT (gossip.md §3.1, Q387: the topology read serves each node as its Digest, status included):
-/// a `Snapshot` chunk (variant 0) carries each node as its digest, position 2 its status
-/// (`ConnectionsDeleting` = 2). What must NOT happen: a digest without its status, or a second status
+/// CONTRACT (gossip.md §3.3, Q387: reads initialise and repair views; management metadata comes from
+/// records and reads, never gossip): a `Snapshot` chunk (variant 0) carries each node as a read serves
+/// it: its id, incarnation, type, path, name, endpoint, address and lineage, its status
+/// (`ConnectionsDeleting` = 2), its primary roles, the sequence of its Digest the answerer holds, then
+/// its runtime and data dir (each absent here, `00`). Its fabric is the reader's and its mesh the
+/// read's. What must NOT happen: a node without its status or its Digest's sequence, or a second status
 /// beside it.
 #[test]
-fn a_snapshot_chunk_carries_each_node_as_its_digest() {
+fn a_snapshot_chunk_carries_each_node_as_a_read_serves_it() {
     use rdm_core::*;
     let d = MeshDigest { 
         fabric_id: FabricId::parse("1123456789ab").unwrap(),
@@ -138,19 +141,19 @@ fn a_snapshot_chunk_carries_each_node_as_its_digest() {
         },
         status: rdm_core::model::NodeStatus::ConnectionsDeleting,
         digest_seq: 7,
-        emitted_at_rafka_ms: 9,
+        // The Digest's emitted time is its evidence: a read does not carry it.
+        emitted_at_rafka_ms: 0,
         primary: Vec::new(),
     };
-    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![WireDigest::from(&d)], in_flight: vec![], deleted: vec![] };
-    let hex = "00 05 6d65736831 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
-        0c 313132333435363738396162 05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
-        02 00 07 09 00 00 00 00 00 00 \
-        00 \
+    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), mesh_id: None, publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, nodes: vec![rdm_core::wire::ReadNode::of(&d, None)], in_flight: vec![], deleted: vec![] };
+    let hex = "00 05 6d65736831 00 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
+        0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 00 \
+        02 00 07 00 00 \
         00 00";
     assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
-    let TopologyReply::Snapshot { digests, .. } = Topology::decode_reply(&bytes(hex)).unwrap() else { panic!("not a Snapshot") };
-    let back: Vec<MeshDigest> = digests.into_iter().map(MeshDigest::from).collect();
-    assert_eq!(back, vec![d], "the member decodes with its liveness and its status");
+    let TopologyReply::Snapshot { mesh, nodes, .. } = Topology::decode_reply(&bytes(hex)).unwrap() else { panic!("not a Snapshot") };
+    let back: Vec<MeshDigest> = nodes.iter().map(|n| n.digest(&d.fabric_id, &mesh)).collect();
+    assert_eq!(back, vec![d], "the node decodes with its status and its Digest's sequence");
 }
 
 #[test]
@@ -168,12 +171,13 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
     };
     let r = TopologyReply::Snapshot {
         mesh: "mesh1".into(),
+        mesh_id: None,
         publisher: publisher(),
         topology_version: 3,
         snapshot_id: 9,
         chunk_index: 0,
         chunk_count: 1,
-        digests: vec![WireDigest::from(&d)],
+        nodes: vec![rdm_core::wire::ReadNode::of(&d, Some(&rdm_core::NodeRuntime { runtime: None, data_dir: Some("/d".into()) }))],
         in_flight: vec![op.clone()],
         deleted: vec![op],
     };

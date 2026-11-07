@@ -129,8 +129,8 @@ impl From<WireDigest> for MeshDigest {
 
 /// A birth's node details as its first Digest into its mesh carries them (gossip.md §3.1 `Digest`,
 /// node-mesh-join.md step 10): its type, path, name, endpoint and lineage. The envelope's `source`
-/// names its fabric, node id and incarnation; its mesh is its path's. Peers retain them; later
-/// Digests carry status only.
+/// names its fabric, node id and incarnation; its mesh is the mesh channel's it is heard on. Peers
+/// retain them; later Digests carry status only.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NodeDetails {
     /// The node's type.
@@ -153,10 +153,11 @@ impl NodeDetails {
         Self { r#type: node.r#type.clone(), path: node.path.clone(), name: node.name.clone(), endpoint_id: node.endpoint_id.clone(), transport_addr: node.transport_addr, supersedes: node.supersedes.clone() }
     }
 
-    /// The birth `node_id`, `incarnation` these details describe: its mesh is its path's.
-    pub fn node(&self, node_id: NodeId, incarnation: IncarnationId) -> MeshNode {
+    /// The birth `node_id`, `incarnation` of `mesh` (the mesh channel it is heard on) these details
+    /// describe.
+    pub fn node(&self, node_id: NodeId, incarnation: IncarnationId, mesh: &str) -> MeshNode {
         MeshNode {
-            mesh: crate::path::mesh_of(&self.path),
+            mesh: mesh.to_string(),
             r#type: self.r#type.clone(),
             node_id,
             path: self.path.clone(),
@@ -166,6 +167,81 @@ impl NodeDetails {
             incarnation,
             supersedes: self.supersedes.clone(),
         }
+    }
+}
+
+/// One node as a topology read serves it (gossip.md §3.3: reads initialise and repair views): its
+/// identity, endpoint and lineage, its status and primary roles, the sequence of its Digest the
+/// answerer holds (an older read never replaces a newer self-authored status), and the runtime and
+/// data dir a node-admin manages it with (hydration; gossip never carries them). Its fabric is the
+/// reader's and its mesh its path's.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ReadNode {
+    /// The node's minted id.
+    pub node_id: NodeId,
+    /// The id of this birth.
+    pub incarnation: IncarnationId,
+    /// The node's type.
+    pub r#type: String,
+    /// The node's path.
+    pub path: String,
+    /// The node's name, beside its path.
+    pub name: String,
+    /// The birth's fabric endpoint id.
+    pub endpoint_id: EndpointId,
+    /// The one address of the birth's Iroh endpoint.
+    pub transport_addr: std::net::SocketAddr,
+    /// The incarnation this birth replaces; `None` for the first birth.
+    pub supersedes: Option<IncarnationId>,
+    /// The node's status.
+    pub status: NodeStatus,
+    /// The primary roles the node holds, each with its revision.
+    pub primary: Vec<RoleRevision>,
+    /// The sequence of the node's Digest the answerer holds.
+    pub digest_seq: u64,
+    /// The birth's exact runtime, when the answerer holds it.
+    runtime: Option<WireRuntime>,
+    /// Where the birth keeps its data, when the answerer holds it.
+    pub data_dir: Option<String>,
+}
+
+impl ReadNode {
+    /// `d` as a read serves it, with the runtime and data dir `r` the answerer holds of it.
+    pub fn of(d: &MeshDigest, r: Option<&crate::NodeRuntime>) -> Self {
+        let n = &d.node;
+        Self {
+            node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), r#type: n.r#type.clone(),
+            path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone(), transport_addr: n.transport_addr,
+            supersedes: n.supersedes.clone(), status: d.status, primary: d.primary.clone(), digest_seq: d.digest_seq,
+            runtime: r.and_then(|r| r.runtime.as_ref()).map(WireRuntime::from),
+            data_dir: r.and_then(|r| r.data_dir.clone()),
+        }
+    }
+
+    /// The birth, of `mesh` (the read names it).
+    pub fn node(&self, mesh: &str) -> MeshNode {
+        MeshNode {
+            mesh: mesh.to_string(), r#type: self.r#type.clone(), node_id: self.node_id.clone(),
+            path: self.path.clone(), name: self.name.clone(), endpoint_id: self.endpoint_id.clone(),
+            transport_addr: self.transport_addr, incarnation: self.incarnation.clone(), supersedes: self.supersedes.clone(),
+        }
+    }
+
+    /// The node of `mesh` (the read names it) as the reader of fabric `fabric` holds it.
+    pub fn digest(&self, fabric: &FabricId, mesh: &str) -> MeshDigest {
+        MeshDigest {
+            fabric_id: fabric.clone(),
+            node: self.node(mesh),
+            status: self.status,
+            primary: self.primary.clone(),
+            digest_seq: self.digest_seq,
+            emitted_at_rafka_ms: 0,
+        }
+    }
+
+    /// The runtime and data dir the read carried of the node.
+    pub fn runtime(&self) -> crate::NodeRuntime {
+        crate::NodeRuntime { runtime: self.runtime.clone().map(Into::into), data_dir: self.data_dir.clone() }
     }
 }
 

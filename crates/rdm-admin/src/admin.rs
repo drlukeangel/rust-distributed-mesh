@@ -219,18 +219,20 @@ mod tests {
     /// `deleted` ... deleted is final"; mesh-delete.md step 7: the fabric-primary stops the deleted
     /// mesh's last admin, "from that admin's stop on it publishes the deleted mesh's topology"): the
     /// fabric-primary accepted mesh.deleted for mesh1 and holds mesh1's last admin, mesh1.node-admin.1, from
-    /// that admin's own digest. The admin is stopped: the digest view holds it stopped. The view still states
-    /// mesh1 deleted, under its id, with the stopped admin its one node. Must NOT happen: the stopped
-    /// birth carrying no mesh id into the view, so mesh1 loses its id and is projected
-    /// ready again (handover stem: the fabric-primary re-sent mesh1 the down op for the id
-    /// its view lost, 410 ms after the stop, and its view named mesh1 live).
+    /// that admin's own digest, and mesh1's id from the topology of mesh1 it took (the frame names it
+    /// beside the mesh's name). The admin is stopped: the digest view holds it stopped. The view still
+    /// states mesh1 deleted, under its id, with the stopped admin its one node. Must NOT happen: the
+    /// stop losing mesh1's id, so mesh1 is projected ready again (handover stem: the fabric-primary
+    /// re-sent mesh1 the down op for the id its view lost, 410 ms after the stop, and its view named
+    /// mesh1 live).
     #[test]
     fn a_deleted_mesh_whose_last_admin_is_stopped_stays_deleted_under_its_id() {
         let digest_view = DigestView::default();
         let records = Records::default();
         let last = digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(last.clone()));
-        let id = last.mesh_id.clone().expect("a node-admin's digest states its mesh id");
+        let id = rdm_core::MeshId::mint();
+        digest_view.hold_mesh_id("mesh1", Some(&id));
         records.hold_mesh_deleted(&id);
         let mesh1 = |t: &Topology| t.meshes.iter().find(|m| m.name == "mesh1").map(|m| (m.id.clone(), m.status));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
@@ -322,8 +324,8 @@ mod tests {
 
     /// `d` with the primaries its view holds for it: `is_primary`, `is_fabric_primary`.
     fn primaries(mut d: MeshDigest, is_primary: Option<u64>, is_fabric_primary: Option<u64>) -> MeshDigest {
-        d.is_primary = is_primary;
-        d.is_fabric_primary = is_fabric_primary;
+        d.set_primary(is_primary);
+        d.set_fabric_primary(is_fabric_primary);
         d
     }
 
@@ -505,8 +507,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_admin_with_no_admin_api_base_is_ready_once_its_view_holds_it_ready() {
         let digest_view = DigestView::default();
-        let mut d = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
-        d.admin_api_base = None;
+        let d = digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready);
         assert!(digest_view.record(d.clone()), "the view takes the node-admin's digest");
         assert_eq!(digest_view.get(d.node.node_id.as_str()).map(|(held, _)| held.status), Some(rdm_core::model::NodeStatus::Ready), "the view holds the birth ready");
         let mut node = Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
@@ -544,8 +545,8 @@ mod tests {
         let mut r = rdm_node::nodes_storage::fixture_record(&d.node.location(), &d.node.r#type, d.node.node_id.clone(), d.node.incarnation.clone(), NodeStatus::Ready);
         r.endpoint_id = d.node.endpoint_id.clone();
         r.transport_addr = d.node.transport_addr;
-        r.is_primary = d.is_primary;
-        r.is_fabric_primary = d.is_fabric_primary;
+        r.is_primary = d.is_primary();
+        r.is_fabric_primary = d.is_fabric_primary();
         r
     }
 
@@ -1118,8 +1119,9 @@ mod tests {
         for (status, verdict) in [(DeploymentStatus::Running, "running"), (DeploymentStatus::OsStopped, "os-stopped"), (DeploymentStatus::Exited { code: Some(137) }, "exited"), (DeploymentStatus::Unknown, "unavailable")] {
             let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60(&format!("dep-{verdict}"))).unwrap();
             let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-            member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
+            // The runtime its join report carried, held apart from its digest.
+            digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
@@ -1152,8 +1154,9 @@ mod tests {
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-no-record")).unwrap();
         let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-        member.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
+        // The runtime its join report carried, held apart from its digest.
+        digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
         for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
@@ -1187,8 +1190,9 @@ mod tests {
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-run-again")).unwrap();
         let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-        member.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
+        // The runtime its join report carried, held apart from its digest.
+        digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
         for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
@@ -1307,8 +1311,9 @@ mod tests {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-removal-announced")).unwrap();
         for (case, announced, workflow) in [("delete-deleting", "node-deleting", "node.delete"), ("delete-deleted", "node-deleted", "node.delete")] {
             let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-            member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
+            // The runtime its join report carried, held apart from its digest.
+            digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
@@ -1364,8 +1369,9 @@ mod tests {
     async fn a_repairs_announcement_left_by_a_former_primary_holds_no_recovery() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-repair-announced")).unwrap();
         let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-        member.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
+        // The runtime its join report carried, held apart from its digest.
+        digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
         for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
             digest_view.record(d);
         }
@@ -1413,8 +1419,9 @@ mod tests {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-mesh-deleting")).unwrap();
         for (status, announced) in [("leaving", "mesh-deleting"), ("dead", "mesh-deleted")] {
             let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-            member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
+            // The runtime its join report carried, held apart from its digest.
+            digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
@@ -1463,8 +1470,9 @@ mod tests {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-on-investigated")).unwrap();
         for (status, verdict) in [(DeploymentStatus::Running, NodeInvestigatedVerdict::Running), (DeploymentStatus::Exited { code: Some(137) }, NodeInvestigatedVerdict::Exited)] {
             let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-            member.node.runtime = Some(fact.clone());
             let digest_view = DigestView::default();
+            // The runtime its join report carried, held apart from its digest.
+            digest_view.hold_runtime(&member.node.node_id, &member.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
             for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), member.clone()] {
                 digest_view.record(d);
             }
@@ -2588,22 +2596,27 @@ mod tests {
         use crate::deployment::provider::DeploymentProvider;
         use rdm_core::{RuntimeLocator, RuntimeProvider};
         let p = ProcessDeploymentProvider::new();
+        // The runtime each birth's join report or a topology read carried, held apart from its digest.
+        let held: std::sync::Mutex<std::collections::HashMap<NodeId, rdm_core::RuntimeFact>> = Default::default();
         let with = |name: PathName, mesh: &str, r#type: &str, domain: Option<String>| {
-            let mut d = digest(name, mesh, r#type, rdm_core::model::NodeStatus::Ready);
-            d.node.runtime = domain.map(|control_domain| rdm_core::RuntimeFact {
-                deployment_id: rdm_core::fixture_crockford60("dep"),
-                provider: RuntimeProvider::Process,
-                control_domain,
-                locator: RuntimeLocator::Process { pid: 4242, start: 17 },
-            });
+            let d = digest(name, mesh, r#type, rdm_core::model::NodeStatus::Ready);
+            if let Some(control_domain) = domain {
+                held.lock().unwrap().insert(d.node.node_id.clone(), rdm_core::RuntimeFact {
+                    deployment_id: rdm_core::fixture_crockford60("dep"),
+                    provider: RuntimeProvider::Process,
+                    control_domain,
+                    locator: RuntimeLocator::Process { pid: 4242, start: 17 },
+                });
+            }
             d
         };
+        let runtime_of = |d: &MeshDigest| held.lock().unwrap().get(&d.node.node_id).cloned();
         let here = p.control_domain();
-        assert!(take_over_blockers(&[with(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(here.clone())), with(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Some(here.clone()))], &p).is_empty());
+        assert!(take_over_blockers(&[with(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(here.clone())), with(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Some(here.clone()))], runtime_of, &p).is_empty());
         let (unpublished, elsewhere) = (with(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", None), with(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", Some("process:another-host:1".into())));
-        let blocked = take_over_blockers(&[with(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(here.clone())), unpublished.clone(), elsewhere.clone()], &p);
+        let blocked = take_over_blockers(&[with(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Some(here.clone())), unpublished.clone(), elsewhere.clone()], runtime_of, &p);
         assert_eq!(blocked.len(), 2, "{blocked:?}");
-        assert!(blocked[0].starts_with(&format!("{}: publishes no runtime fact", unpublished.node.node_id)), "{blocked:?}");
+        assert!(blocked[0].starts_with(&format!("{}: no runtime fact is held of it", unpublished.node.node_id)), "{blocked:?}");
         assert!(blocked[1].starts_with(&format!("{}:", elsewhere.node.node_id)) && blocked[1].contains("control domain"), "{blocked:?}");
     }
 
@@ -2729,8 +2742,8 @@ mod tests {
         // The birth this admin deployed, and the digest it reports on its first call.
         let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-admitted")).unwrap();
         let mut reported = with_id(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Pending), "200000000000");
-        reported.node.runtime = Some(runtime.clone());
-        reported.data_dir = Some("/data/mesh1.node-admin.2".into());
+        let report_runtime = Some(runtime.clone());
+        let report_data_dir = Some("/data/mesh1.node-admin.2".to_string());
         let deployed = Deployed { mesh: reported.node.mesh.clone(), r#type: reported.node.r#type.clone(),
             path: reported.node.path.clone(), name: reported.node.name.clone(),
             node_id: reported.node.node_id.clone(),
@@ -2759,7 +2772,7 @@ mod tests {
                     })
                 })
             }),
-            install: Arc::new(move |d: &MeshDigest| {
+            install: Arc::new(move |d: &MeshDigest, _: &rdm_core::NodeRuntime| {
                 installed.record(d.clone());
             }),
             known: view_projector(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone()),
@@ -2776,7 +2789,7 @@ mod tests {
         assert!(status_service.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
         let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::Ready, operation: None };
         assert_eq!(status_service.apply(None, &declare).await, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "before the join the subject is not held");
-        let joined = join_service.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into(), listeners: Vec::new() }).await;
+        let joined = join_service.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into(), runtime: report_runtime, data_dir: report_data_dir, listeners: Vec::new() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
 
         // Acceptance made the birth known; no projection tick ran since.

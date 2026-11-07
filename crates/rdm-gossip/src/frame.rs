@@ -4,7 +4,7 @@
 
 use crate::snapshot::PublisherId;
 use anyhow::Result;
-use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, NodeId, Primary, PrimaryRole, RoleRevision, StateHook};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Primary, PrimaryRole, RoleRevision, StateHook};
 use rdm_core::model::NodeStatus;
 use rdm_core::wire::NodeDetails;
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,9 @@ pub enum Frame {
     TopologyFull {
         /// The source mesh's name.
         mesh: String,
+        /// The source mesh's id: a later mesh of the same name has another id, and the held mesh's
+        /// version orders nothing of it (gossip.md "Mesh delete").
+        mesh_id: Option<MeshId>,
         /// The source mesh's primary birth that published the snapshot, the revision of
         /// `topology_version`.
         publisher: PublisherId,
@@ -96,6 +99,8 @@ pub enum Frame {
     TopologyDelta {
         /// The source mesh's name.
         mesh: String,
+        /// The source mesh's id, as [`Frame::TopologyFull`] carries it.
+        mesh_id: Option<MeshId>,
         /// The source mesh's primary birth the delta is derived from.
         source_publisher: PublisherId,
         /// The version a receiver must hold for the delta to apply.
@@ -332,13 +337,13 @@ impl Frame {
         Self::Authored { context, frame: Box::new(frame) }
     }
 
-    /// The node a Digest names, with the details it carries or `held` (what the receiver holds of the
-    /// exact birth its envelope names): `None` for another frame, a frame with no authored context, or
-    /// a Digest of a birth whose details neither carry.
-    pub fn digest_of(&self, held: impl FnOnce(&crate::envelope::Birth) -> Option<rdm_core::MeshNode>) -> Option<MeshDigest> {
+    /// The node a Digest heard on `mesh`'s channel names, with the details it carries or `held` (what
+    /// the receiver holds of the exact birth its envelope names): `None` for another frame, a frame with
+    /// no authored context, or a Digest of a birth whose details neither carry.
+    pub fn digest_of(&self, mesh: &str, held: impl FnOnce(&crate::envelope::Birth) -> Option<rdm_core::MeshNode>) -> Option<MeshDigest> {
         let (Self::Digest { status, primary, details }, Some(c)) = (self.data(), self.context()) else { return None };
         let node = match details {
-            Some(d) => d.node(c.source.node.clone(), c.source.incarnation.clone()),
+            Some(d) => d.node(c.source.node.clone(), c.source.incarnation.clone(), mesh),
             None => held(&c.source)?,
         };
         Some(MeshDigest { fabric_id: c.source.fabric.clone(), node, status: *status, primary: primary.clone(), digest_seq: c.digest_seq()?, emitted_at_rafka_ms: c.time_ms })

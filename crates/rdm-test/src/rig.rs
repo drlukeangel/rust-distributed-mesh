@@ -68,7 +68,7 @@ impl NodeObserver for LiveMesh {
             .digest_view
             .get(node_id.as_str())
             .filter(|(d, _)| &d.node.incarnation == incarnation)
-            .map(|(d, _)| rdm_admin::deployment::pipeline::Publication { runtime: d.node.runtime, data_dir: d.data_dir })
+            .map(|_| { let r = self.topology_view.digest_view.runtime_of(node_id, incarnation).unwrap_or_default(); rdm_admin::deployment::pipeline::Publication { runtime: r.runtime, data_dir: r.data_dir } })
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
@@ -510,7 +510,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
                     })
                 })
             }}),
-            install: Arc::new(move |d| learner.learn(d.clone(), "join")),
+            install: Arc::new(move |d, runtime| { learner.topology_view().digest_view.hold_runtime(&d.node.node_id, &d.node.incarnation, runtime.clone()); learner.learn(d.clone(), "join") }),
             known: Arc::new(|| Box::pin(async {})),
             // The admin side records the accepted join report's Pending as a node-admin's status
             // authority does, before the join is answered (node-mesh-join.md step 10).
@@ -543,6 +543,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let admin_publisher = rdm_core::PublisherId { incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() };
     let held = rdm_gossip::snapshot::Chunk {
         mesh: "mesh1".into(),
+        mesh_id: None,
         publisher: admin_publisher,
         forwarded_by: Some("topology-read".into()),
         topology_version: 1,
@@ -552,6 +553,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         digests: vec![],
         in_flight: vec![],
         deleted: vec![],
+        runtimes: Vec::new(),
     };
     // A silent admin side holds only what its primary publishes into the mesh.
     if matches!(role, SideRole::Primary) {

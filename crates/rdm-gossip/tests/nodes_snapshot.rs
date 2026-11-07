@@ -96,6 +96,7 @@ fn publisher(node: &str) -> PublisherId {
 fn topology_full_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id: u64, forwarded_by: Option<&str>) -> Vec<Frame> {
     chunks_of(full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: "mesh2".into(),
+        mesh_id: None,
         publisher: p.clone(),
         forwarded_by: forwarded_by.map(String::from),
         topology_version: version,
@@ -112,7 +113,7 @@ fn topology_full_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id:
 fn chunk_of(f: &Frame) -> Chunk {
     match f.clone().into_data() {
         Frame::TopologyFull { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, .. } => {
-            Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }
+            Chunk { mesh, mesh_id: None, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted, runtimes: Vec::new(), }
         }
         other => panic!("not a TopologyFull chunk: {other:?}"),
     }
@@ -327,7 +328,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let p3 = publisher("mesh3.node-admin.1");
         assert!(matches!(rx.take_delta("mesh3", &p3, 1, 2, &d78), Moved::Desynced { gap: Gap::NoBaseline, .. }));
         // The top-up: the primary's baseline is what it last PUBLISHED, which may lag what it holds.
-        let published_baseline = SourceSnapshot { mesh: "mesh2".into(), publisher: p.clone(), topology_version: 9, digests: f8.digests(), in_flight: vec![], deleted: vec![] };
+        let published_baseline = SourceSnapshot { mesh: "mesh2".into(), mesh_id: None, publisher: p.clone(), topology_version: 9, digests: f8.digests(), in_flight: vec![], deleted: vec![] };
         let r = installed(read_baseline(&mut rx, &published_baseline));
         assert!(r.resumed);
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 9)));
@@ -358,7 +359,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             }
         }
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 12)), "the held version stands while a chunk is missing");
-        let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 18, digests: big.digests(8), in_flight: vec![], deleted: vec![] };
+        let top_up = SourceSnapshot { mesh: "mesh2".into(), mesh_id: None, publisher: successor.clone(), topology_version: 18, digests: big.digests(8), in_flight: vec![], deleted: vec![] };
         let r = installed(read_baseline(&mut rx, &top_up));
         assert_eq!(r.topology_version, 18);
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 18)), "the top-up completed what the lost chunk left incomplete");

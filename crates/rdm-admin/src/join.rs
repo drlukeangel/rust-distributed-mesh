@@ -82,8 +82,19 @@ impl Deployed {
 pub struct JoinReport {
     /// The birth's digest, canonicalized to the name it is admitted under.
     pub digest: MeshDigest,
+    /// The birth's exact runtime, as its join reported it (gossip never carries it).
+    pub runtime: Option<rdm_core::RuntimeFact>,
+    /// Where the birth keeps its data, as its join reported it.
+    pub data_dir: Option<String>,
     /// The listeners the birth bound, by name, each with its selected port.
     pub listeners: Vec<(String, SocketAddr)>,
+}
+
+impl JoinReport {
+    /// `digest`'s report with no runtime, data dir or listener reported.
+    pub fn of(digest: MeshDigest) -> Self {
+        Self { digest, runtime: None, data_dir: None, listeners: Vec::new() }
+    }
 }
 
 /// The first field of a digest that disagrees with what was deployed.
@@ -98,8 +109,9 @@ pub struct Mismatch {
 }
 
 impl Deployed {
-    /// `Ok` when `d`, reporting `listeners`, is the birth this admin deployed.
-    pub fn verify(&self, d: &MeshDigest, listeners: &[(String, SocketAddr)]) -> Result<(), Mismatch> {
+    /// `Ok` when the report `r` is of the birth this admin deployed.
+    pub fn verify(&self, r: &JoinReport) -> Result<(), Mismatch> {
+        let (d, listeners) = (&r.digest, &r.listeners);
         fn same<T: PartialEq + std::fmt::Debug>(field: &'static str, deployed: &T, reported: &T) -> Result<(), Mismatch> {
             if deployed == reported {
                 Ok(())
@@ -124,8 +136,8 @@ impl Deployed {
         same("incarnation", &self.incarnation, &d.node.incarnation)?;
         same("supersedes", &self.supersedes, &d.node.supersedes)?;
         same("endpoint_id", &self.endpoint_id, &d.node.endpoint_id)?;
-        same("runtime", &Some(self.runtime.clone()), &d.node.runtime)?;
-        same("data_dir", &Some(self.data_dir.clone()), &d.data_dir)?;
+        same("runtime", &Some(self.runtime.clone()), &r.runtime)?;
+        same("data_dir", &Some(self.data_dir.clone()), &r.data_dir)?;
         self.verify_listeners(listeners)
     }
 
@@ -297,16 +309,17 @@ impl Joins {
     }
 
     /// How the deploying admin stands toward the birth `d` reports, with the `listeners` it bound.
-    pub fn standing(&self, d: &MeshDigest, listeners: &[(String, SocketAddr)]) -> Standing {
+    pub fn standing(&self, r: &JoinReport) -> Standing {
+        let d = &r.digest;
         if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
-            return match s.deployed.verify(d, listeners) {
+            return match s.deployed.verify(r) {
                 Ok(()) => Standing::Deployed { path: s.deployed.path.clone(), name: s.deployed.name.clone(), held: s.deployed.held },
                 Err(m) => Standing::Mismatch(m),
             };
         }
         match self.abandoned.lock().unwrap().iter().find(|a| a.deployed.node_id == d.node.node_id) {
             None => Standing::Unknown,
-            Some(a) => match a.deployed.verify(d, listeners) {
+            Some(a) => match a.deployed.verify(r) {
                 Ok(()) => Standing::Abandoned(a.clone()),
                 Err(m) => Standing::Mismatch(m),
             },
@@ -340,7 +353,7 @@ pub struct JoinService {
     pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<JoinAnswer, String>> + Send>> + Send + Sync>,
     /// Install the reported address for the key: the topology view's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
-    pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
+    pub install: Arc<dyn Fn(&MeshDigest, &rdm_core::NodeRuntime) + Send + Sync>,
     /// Project the installed birth into the view this admin's status authority decides from, so the
     /// admitted birth is in that view when the join is answered: its first declaration finds its
     /// subject held.
@@ -378,7 +391,7 @@ impl JoinService {
     /// Answer a `JoinNode` from `peer`: verify the digest against what was deployed, install its
     /// address and answer with the admin's entry answer.
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
-        let JoinRequest::JoinNode { digest, listeners } = req;
+        let JoinRequest::JoinNode { digest, runtime, data_dir, listeners } = req;
         let d = MeshDigest::from(digest);
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-join",
@@ -394,16 +407,18 @@ impl JoinService {
             build_id = tracing::field::Empty,
             cert_len = tracing::field::Empty,
         );
-        self.decide(peer, d, listeners, span.clone()).instrument(span).await
+        self.decide(peer, JoinReport { digest: d, runtime, data_dir, listeners }, span.clone()).instrument(span).await
     }
 
     /// Decide a join on its digest against what was deployed. Nothing checks who is calling
     /// (node-rpc.md §14): the caller's endpoint names the call in its span, and the digest's
     /// endpoint is what the deployment verifies.
-    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, listeners: Vec<(String, SocketAddr)>, span: tracing::Span) -> JoinReply {
+    async fn decide(&self, peer: EndpointId, report: JoinReport, span: tracing::Span) -> JoinReply {
         span.record("caller", peer.0.as_str());
-        span.record("listeners", rdm_core::launch::encode_listeners(&listeners).as_str());
-        match self.joins.standing(&d, &listeners) {
+        span.record("listeners", rdm_core::launch::encode_listeners(&report.listeners).as_str());
+        let standing = self.joins.standing(&report);
+        let JoinReport { digest: mut d, runtime, data_dir, listeners } = report;
+        match standing {
             Standing::Mismatch(m) => {
                 span.record("outcome", "mismatch");
                 tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node_path = %d.node.path, node_name = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
@@ -497,13 +512,13 @@ impl JoinService {
                 let signing = (!issue.bytes.is_empty() && rdm_core::is_node_admin(&d.node.r#type)).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
                 let cert = issue.bytes;
                 span.record("cert_len", cert.len() as u64);
-                (self.install)(&d);
+                (self.install)(&d, &rdm_core::NodeRuntime { runtime: runtime.clone(), data_dir: data_dir.clone() });
                 (self.known)().await;
                 // A report its registration already heard is a retry of that join; any other accepted
                 // report is a new join, whose Pending is its own (Q99).
                 let new_join = !self.joins.heard(&d);
                 (self.pending)(d.clone(), new_join).await;
-                self.joins.report(&JoinReport { digest: d.clone(), listeners });
+                self.joins.report(&JoinReport { digest: d.clone(), runtime, data_dir, listeners });
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
                 self.joined(&d.node.location(), cert, dates, signing).await
@@ -583,6 +598,12 @@ mod tests {
         }
     }
 
+    /// The report the birth `dep` deployed makes with digest `d`: the runtime and data dir it was
+    /// deployed with, no listener.
+    fn reported(d: &MeshDigest, dep: &Deployed) -> JoinReport {
+        JoinReport { digest: d.clone(), runtime: Some(dep.runtime.clone()), data_dir: Some(dep.data_dir.clone()), listeners: Vec::new() }
+    }
+
     fn digest_of(d: &Deployed) -> MeshDigest {
         MeshDigest { 
             fabric_id: rdm_core::FabricId::mint(),
@@ -613,17 +634,17 @@ mod tests {
         };
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
-        assert_eq!(joins.standing(&d, &[]), Standing::Deployed { path: dep.path.clone(), name: dep.name.clone(), held: false });
-        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
+        assert_eq!(joins.standing(&reported(&d, &dep)), Standing::Deployed { path: dep.path.clone(), name: dep.name.clone(), held: false });
+        joins.report(&reported(&d.clone(), &dep));
         assert_eq!(rx.borrow().as_ref().map(|r| r.digest.node.transport_addr), Some(d.node.transport_addr), "the address the node reported is the one the admin publishes");
         let mut wrong_mesh = d.clone();
         wrong_mesh.node.mesh = "elsewhere".into();
-        let mismatch = dep.verify(&wrong_mesh, &[]).unwrap_err();
+        let mismatch = dep.verify(&reported(&wrong_mesh, &dep)).unwrap_err();
         assert_eq!(mismatch.field, "mesh");
         assert!(mismatch.deployed.contains("mesh2") && mismatch.reported.contains("elsewhere"));
         let mut wrong_kind = d;
         wrong_kind.node.r#type = "gateway".to_string();
-        assert_eq!(dep.verify(&wrong_kind, &[]).unwrap_err().field, "kind");
+        assert_eq!(dep.verify(&reported(&wrong_kind, &dep)).unwrap_err().field, "kind");
     }
 
     // @feature: node-lifecycle
@@ -634,7 +655,7 @@ mod tests {
         joins.expect(dep.clone());
         let mut d = digest_of(&dep);
         d.node.incarnation = IncarnationId::mint();
-        match joins.standing(&d, &[]) {
+        match joins.standing(&reported(&d, &dep)) {
             Standing::Mismatch(m) => {
                 assert_eq!(m.field, "incarnation");
                 assert!(m.deployed.contains(&dep.incarnation.as_str()) && m.reported.contains(&d.node.incarnation.as_str()));
@@ -651,7 +672,7 @@ mod tests {
         joins.expect(dep.clone());
         let mut d = digest_of(&dep);
         d.node.node_id = NodeId::mint();
-        assert_eq!(joins.standing(&d, &[]), Standing::Unknown);
+        assert_eq!(joins.standing(&reported(&d, &dep)), Standing::Unknown);
     }
 
     /// The deployment of a birth this authority holds, stopped as `mesh1.node.1` and renamed in its
@@ -669,20 +690,20 @@ mod tests {
         let dep = renamed_while_stopped();
         let mut held = digest_of(&dep);
         { let at = rdm_core::PathName::new("mesh1.node", "1").unwrap(); held.node.path = at.path; held.node.name = at.name; }
-        assert_eq!(dep.verify(&held, &[]), Ok(()), "the name last accepted for this exact birth is admitted");
-        assert_eq!(dep.verify(&digest_of(&dep), &[]), Ok(()), "the row's name is admitted");
+        assert_eq!(dep.verify(&reported(&held, &dep)), Ok(()), "the name last accepted for this exact birth is admitted");
+        assert_eq!(dep.verify(&reported(&digest_of(&dep), &dep)), Ok(()), "the row's name is admitted");
         let mut other = digest_of(&dep);
         { let at = rdm_core::PathName::new("mesh1.node", "7").unwrap(); other.node.path = at.path; other.node.name = at.name; }
-        let m = dep.verify(&other, &[]).unwrap_err();
+        let m = dep.verify(&reported(&other, &dep)).unwrap_err();
         assert_eq!(m.field, "name");
         assert!(m.reported.contains("\"7\"") && m.deployed.contains("\"1-old\"") && m.deployed.contains("last accepted") && m.deployed.contains("\"1\""), "the refusal names all three: {m:?}");
         let first = deployed();
         let mut off_spec = digest_of(&first);
         { let at = rdm_core::PathName::new("mesh1.node", "1-old").unwrap(); off_spec.node.path = at.path; off_spec.node.name = at.name; }
-        assert_eq!(first.verify(&off_spec, &[]).unwrap_err().field, "name", "a first start off its create spec is still refused");
+        assert_eq!(first.verify(&reported(&off_spec, &first)).unwrap_err().field, "name", "a first start off its create spec is still refused");
         let mut moved_path = digest_of(&dep);
         { let at = PathName::new("another.path", dep.name.clone()).unwrap(); moved_path.node.path = at.path; moved_path.node.name = at.name; }
-        assert_eq!(dep.verify(&moved_path, &[]).unwrap_err().field, "path", "a held birth cannot change path even when its name matches");
+        assert_eq!(dep.verify(&reported(&moved_path, &dep)).unwrap_err().field, "path", "a held birth cannot change path even when its name matches");
     }
 
     // @feature: node-lifecycle
@@ -698,8 +719,8 @@ mod tests {
         let replacement_rx = joins.expect(replacement.clone());
         let mut d = digest_of(&stopped);
         { let at = rdm_core::PathName::new("mesh1.node", "1").unwrap(); d.node.path = at.path; d.node.name = at.name; }
-        assert!(matches!(joins.standing(&d, &[]), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
-        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
+        assert!(matches!(joins.standing(&reported(&d, &stopped)), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
+        joins.report(&reported(&d, &stopped));
         assert!(replacement_rx.borrow().is_none(), "the replacement's deployment heard nothing of the stopped node's join");
     }
 
@@ -707,15 +728,15 @@ mod tests {
     #[test]
     fn a_join_digest_with_another_runtime_or_data_dir_or_key_is_refused_by_its_field() {
         let dep = deployed();
-        let mut other_fact = digest_of(&dep);
-        other_fact.node.runtime = Some(RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-2")).unwrap());
-        assert_eq!(dep.verify(&other_fact, &[]).unwrap_err().field, "runtime");
-        let mut dir = digest_of(&dep);
+        let mut other_fact = reported(&digest_of(&dep), &dep);
+        other_fact.runtime = Some(RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-2")).unwrap());
+        assert_eq!(dep.verify(&other_fact).unwrap_err().field, "runtime");
+        let mut dir = reported(&digest_of(&dep), &dep);
         dir.data_dir = Some("/elsewhere".into());
-        assert_eq!(dep.verify(&dir, &[]).unwrap_err().field, "data_dir");
+        assert_eq!(dep.verify(&dir).unwrap_err().field, "data_dir");
         let mut key = digest_of(&dep);
         key.node.endpoint_id = EndpointId("other".into());
-        assert_eq!(dep.verify(&key, &[]).unwrap_err().field, "endpoint_id");
+        assert_eq!(dep.verify(&reported(&key, &dep)).unwrap_err().field, "endpoint_id");
     }
 
     /// CONTRACT (node-create.md step 5: the accepting authority "completes WaitForBind /
@@ -739,7 +760,7 @@ mod tests {
         assert!(!joins.creating(&dep.node_id), "no deployment registered: no create under way");
         let _rx = joins.expect(dep.clone());
         assert!(joins.creating(&dep.node_id), "the create registered its deployment: creating");
-        joins.report(&JoinReport { digest: digest_of(&dep), listeners: Vec::new() });
+        joins.report(&reported(&digest_of(&dep), &dep));
         assert!(joins.creating(&dep.node_id), "its report heard, the create still runs: creating");
         joins.end(&dep.node_id, "3qcfk1kq47m9");
         assert!(!joins.creating(&dep.node_id), "the create ended: not creating");
@@ -754,17 +775,17 @@ mod tests {
         let dep = deployed();
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
-        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
+        joins.report(&reported(&d.clone(), &dep));
         drop(rx);
         joins.end(&dep.node_id, "3qcfk1kq47m9");
-        assert_eq!(joins.standing(&d, &[]), Standing::Unknown, "an ended create holds the deployment no more");
+        assert_eq!(joins.standing(&reported(&d, &dep)), Standing::Unknown, "an ended create holds the deployment no more");
         let again = joins.expect(dep.clone());
         assert_eq!(again.borrow().as_ref().map(|r| r.digest.node.transport_addr), Some(d.node.transport_addr), "the same deployment's next registration is handed the admitted report");
         let restart = Deployed { held: true, last_accepted_name: Some(dep.location()), ..dep.clone() };
         assert!(joins.expect(restart.clone()).borrow().is_none(), "another deployment of the node is handed no report");
         // A held deployment's report ends with its registration: a later registration of the same
         // held deployment (a heard-again of the live birth) waits for its own commanded join.
-        joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
+        joins.report(&reported(&d.clone(), &dep));
         joins.end(&dep.node_id, "3qcfk1kq47m9");
         assert!(joins.expect(restart).borrow().is_none(), "a held deployment's report is not kept for its next registration");
     }
@@ -817,7 +838,7 @@ mod tests {
                         })
                     })
                 }),
-                install: Arc::new(move |d| {
+                install: Arc::new(move |d, _| {
                     installed_clone.lock().unwrap().push(d.node.transport_addr);
                 }),
                 known: Arc::new(|| Box::pin(async {})),
@@ -837,6 +858,8 @@ mod tests {
             // 1. Unknown birth -> `NotPrimary { primary }`.
             let unknown_req = JoinRequest::JoinNode {
                 digest: (&digest_of(&dep)).into(),
+                runtime: Some(dep.runtime.clone()),
+                data_dir: Some(dep.data_dir.clone()),
                 listeners: Vec::new(),
             };
             assert_eq!(
@@ -851,6 +874,8 @@ mod tests {
             joins.end(&dep.node_id, "3qcfk1kq47m9");
             let ab_req = JoinRequest::JoinNode {
                 digest: (&digest_of(&dep)).into(),
+                runtime: Some(dep.runtime.clone()),
+                data_dir: Some(dep.data_dir.clone()),
                 listeners: Vec::new(),
             };
             assert_eq!(
@@ -869,6 +894,8 @@ mod tests {
             bad_digest.node.incarnation = IncarnationId::mint();
             let bad_req = JoinRequest::JoinNode {
                 digest: (&bad_digest).into(),
+                runtime: Some(dep.runtime.clone()),
+                data_dir: Some(dep.data_dir.clone()),
                 listeners: Vec::new(),
             };
             assert!(matches!(
@@ -882,6 +909,8 @@ mod tests {
             let good_digest = digest_of(&dep);
             let good_req = JoinRequest::JoinNode {
                 digest: (&good_digest).into(),
+                runtime: Some(dep.runtime.clone()),
+                data_dir: Some(dep.data_dir.clone()),
                 listeners: Vec::new(),
             };
             assert!(matches!(

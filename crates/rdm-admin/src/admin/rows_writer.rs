@@ -407,16 +407,16 @@ impl FabricRowsWriter {
     }
 }
 
-/// The provider's inspection of the exact birth a digest or a durable row names
-/// (node-runtime-inspect.md): the runtime fact is the digest's (when it is of this birth) or the
-/// row's, adopted in this provider's control domain and inspected; its answer is node investigation's
-/// provider step.
+/// The provider's inspection of the exact birth a held runtime or a durable row names
+/// (node-runtime-inspect.md): the runtime fact is the one this admin holds of the birth (`held`: its
+/// incarnation and what its join report or a topology read carried) or the row's, adopted in this
+/// provider's control domain and inspected; its answer is node investigation's provider step.
 pub async fn inspection_of(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
-    held_row: &Option<(MeshDigest, Duration)>,
+    held: Option<(&crate::model::IncarnationId, &rdm_core::NodeRuntime)>,
     row: Option<&crate::storage::NodeRecord>,
 ) -> Inspected {
-    inspection_with_handle(provider, held_row, row).await.0
+    inspection_with_handle(provider, held, row).await.0
 }
 
 /// [`inspection_of`], with the exact runtime handle the provider was asked about beside the answer
@@ -424,12 +424,16 @@ pub async fn inspection_of(
 /// so nothing was asked.
 pub async fn inspection_with_handle(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
-    held_row: &Option<(MeshDigest, Duration)>,
+    held: Option<(&crate::model::IncarnationId, &rdm_core::NodeRuntime)>,
     row: Option<&crate::storage::NodeRecord>,
 ) -> (Inspected, Option<DeploymentHandle>) {
     // The runtime fact one way for every inspect (`node_investigation::runtime_of`).
-    let Some(crate::node_investigation::BirthRuntime { fact, data_dir, incarnation: birth }) = crate::node_investigation::runtime_of(held_row.as_ref().map(|(dg, _)| dg), row) else {
-        return (Inspected::Unavailable(format!("no runtime fact: the view holds {} for it and no node record names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })), None);
+    let found = match held {
+        Some((incarnation, r)) => crate::node_investigation::runtime_of(incarnation, Some(r), row),
+        None => row.and_then(|r| crate::node_investigation::runtime_of(&r.incarnation, None, Some(r))),
+    };
+    let Some(crate::node_investigation::BirthRuntime { fact, data_dir, incarnation: birth }) = found else {
+        return (Inspected::Unavailable(format!("no runtime fact: this admin holds {} of it and no node record names it", if held.is_some() { "a runtime without a fact" } else { "no runtime" })), None);
     };
     // The exact runtime handle the inspect asks about: none when the provider refuses to adopt the
     // fact, which the inspect names as its `unavailable`.

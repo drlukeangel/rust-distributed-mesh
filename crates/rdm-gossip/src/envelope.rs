@@ -237,6 +237,7 @@ fn body(context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
 fn topology_full_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), WireError> {
     let mut cursor = data;
     let _: String = wire::take(&mut cursor)?;
+    let _: Option<rdm_core::MeshId> = wire::take(&mut cursor)?;
     let _: PublisherId = wire::take(&mut cursor)?;
     let _: Option<String> = wire::take(&mut cursor)?;
     let _: u64 = wire::take(&mut cursor)?;
@@ -342,6 +343,7 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     if index == 1 {
         let mut cursor = data.as_slice();
         let _: String = wire::take(&mut cursor)?;
+        let _: Option<rdm_core::MeshId> = wire::take(&mut cursor)?;
         let _: PublisherId = wire::take(&mut cursor)?;
         let _: Option<String> = wire::take(&mut cursor)?;
         let _: u64 = wire::take(&mut cursor)?;

@@ -446,6 +446,7 @@ impl Backbone {
         let withheld = (!full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone")) || self.withholds("aggregate", "backbone");
         for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::TopologyFull {
             mesh: mesh.clone(),
+            mesh_id: full.mesh_id(),
             publisher: publisher.clone(),
             forwarded_by: None,
             topology_version: version,
@@ -491,7 +492,7 @@ impl Backbone {
             let last_id = &members[0].node.node_id;
             in_flight.retain(|op| op.is_stop() || &op.node_id != last_id);
         }
-        Full::new(members, in_flight, deleted)
+        Full::new(members, in_flight, deleted).of_mesh(Some(topology_view.mesh_id().clone()))
     }
 
     /// Resolves when the next publication is due: at `deadline`, the anti-entropy timer, or

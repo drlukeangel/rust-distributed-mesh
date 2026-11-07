@@ -179,7 +179,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
             me_path: "mesh1.node-admin".into(), me_name: "1".into(),
             joins: joins.clone(),
             answer: Arc::new(|| Box::pin(async { Err("a refused join is never answered".to_string()) })),
-            install: Arc::new(move |_| {
+            install: Arc::new(move |_, _| {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
             known: Arc::new(|| Box::pin(async {})),
@@ -192,7 +192,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
                 t
             })),
         };
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into(), listeners: Vec::new() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into(), runtime: Some(runtime.clone()), data_dir: Some(data_dir.display().to_string()), listeners: Vec::new() };
 
         let late = service.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(

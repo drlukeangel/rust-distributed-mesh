@@ -92,14 +92,15 @@ pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applie
     }
 }
 
-/// Why this admin cannot yet take authority over `held` (every live birth it
-/// hears but itself): each birth that publishes no runtime fact, or one this
-/// admin's provider cannot adopt in its own control domain. Empty: it is
-/// authority-capable, and may commit Ready.
-pub fn take_over_blockers(held: &[MeshDigest], provider: &dyn crate::deployment::provider::DeploymentProvider) -> Vec<String> {
+/// Why this admin cannot yet take authority over `held` (every live birth of its own mesh it hears
+/// but itself: the births it may manage, writer map): each birth whose runtime fact `runtime_of` does
+/// not hold (taken from its join report or a topology read, never gossip), or one this admin's
+/// provider cannot adopt in its own control domain. Empty: it is authority-capable, and may commit
+/// Ready.
+pub fn take_over_blockers(held: &[MeshDigest], runtime_of: impl Fn(&MeshDigest) -> Option<rdm_core::RuntimeFact>, provider: &dyn crate::deployment::provider::DeploymentProvider) -> Vec<String> {
     held.iter()
-        .filter_map(|d| match &d.node.runtime {
-            None => Some(format!("{}: publishes no runtime fact", d.node.node_id)),
+        .filter_map(|d| match &runtime_of(d) {
+            None => Some(format!("{}: no runtime fact is held of it", d.node.node_id)),
             Some(f) => crate::deployment::provider::adopt(provider, f).err().map(|r| format!("{}: {r}", d.node.node_id)),
         })
         .collect()
@@ -192,10 +193,14 @@ pub async fn probed_hook_answer(client: &rdm_transport::NodeRpcClient, digest_vi
 #[async_trait::async_trait]
 impl NodeObserver for TopologyObserver {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
+        // The runtime and data dir its join report carried (gossip never carries them).
         self.digest_view
             .get(node_id.as_str())
             .filter(|(d, _)| &d.node.incarnation == incarnation)
-            .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
+            .map(|_| {
+                let r = self.digest_view.runtime_of(node_id, incarnation).unwrap_or_default();
+                Publication { runtime: r.runtime, data_dir: r.data_dir }
+            })
     }
 
     /// Ready once this admin took the birth's node.started report (its `StatusService`), or, when
@@ -300,6 +305,8 @@ pub(crate) struct AdminSession {
     pub(crate) client: Arc<rdm_transport::NodeRpcClient>,
     pub(crate) server: rdm_transport::NodeRpcServer,
     pub(crate) digest: Arc<Mutex<MeshDigest>>,
+    /// The runtime and data dir every join of this admin reports beside its digest.
+    pub(crate) join_runtime: rdm_core::NodeRuntime,
     pub(crate) rafka_time: rdm_transport::clock::RafkaTime,
     pub(crate) accepted: Arc<AcceptedStore>,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
@@ -461,6 +468,10 @@ impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
         self.session.digest.lock().unwrap().clone()
     }
 
+    fn join_runtime(&self) -> rdm_core::NodeRuntime {
+        self.session.join_runtime.clone()
+    }
+
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         let commander = *self.commander.borrow();
         Ok(self.session.enter_mesh(step, joined, &mut self.rows, commander).await)
@@ -473,7 +484,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
     fn starting(&self) -> crate::workflows::node_start::Starting {
         let s = self.session;
         let held = s.digest.lock().unwrap().node.location();
-        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.name.clone(), birth_path: held.path.clone(), birth_name: held.name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.name.clone(), birth_path: held.path.clone(), birth_name: held.name.clone(), node_id: s.node_id.clone(), mesh_id: Some(s.mesh_id.clone()), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
@@ -801,11 +812,11 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
                 self.records.meshes.lock().unwrap().entry(m.mesh.clone()).or_insert_with(|| id.clone());
             }
         }
-        // So are the ids the snapshots it installed carry on their members: a launched admin holds its
-        // meshes' ids from this hydration sync, never from the Build records (Q227).
-        for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id) {
-            if let Some(id) = &d.mesh_id {
-                self.records.meshes.lock().unwrap().entry(d.node.mesh.clone()).or_insert_with(|| id.clone());
+        // So are the ids the mesh topologies it installed name beside each mesh's name: a launched admin
+        // holds its meshes' ids from this hydration sync, never from the Build records (Q227).
+        for m in &read.installed {
+            if let Some(id) = &m.mesh_id {
+                self.records.meshes.lock().unwrap().entry(m.mesh.clone()).or_insert_with(|| id.clone());
             }
         }
         // The mesh exists when the maker names another birth its primary, though its answer lists none

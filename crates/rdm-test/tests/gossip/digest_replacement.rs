@@ -50,9 +50,11 @@ fn story(story: Story) {
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, }, status: NodeStatus::Ready, digest_seq: 100, emitted_at_rafka_ms: 1, primary: Vec::new(), };
         if matches!(story, Story::ReadFloor) {
             let read = rdm_gossip::snapshot::Chunk {
-                mesh: "mesh1".into(), publisher: rdm_gossip::snapshot::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
+                mesh: "mesh1".into(),
+                mesh_id: None, publisher: rdm_gossip::snapshot::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
                 forwarded_by: None, topology_version: 5, snapshot_id: 1, chunk_index: 0, chunk_count: 1,
                 digests: vec![digest.clone()], in_flight: vec![], deleted: vec![],
+ runtimes: Vec::new(),
             };
             assert!(matches!(receiver_channels.take_read_chunk(read, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
         } else {
@@ -69,7 +71,7 @@ fn story(story: Story) {
             Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; offered.data_dir = Some("obsolete=yes".into()); }
             Story::Duplicate => {
                 // The same Digest again, its status included (Q387: the status is on the wire).
-                assert_eq!(Frame::Digest { digest: offered.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::Digest { digest: digest.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
+                assert_eq!(Frame::digest(&offered.clone(), true).authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::digest(&digest.clone(), true).authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
                 receiver_channels.location_view().forget(key);
             }
             Story::Inconsistent => { offered.node.endpoint_id = EndpointId(other_key.to_string()); }

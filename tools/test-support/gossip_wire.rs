@@ -8,7 +8,8 @@ pub fn author() -> Birth {
 }
 pub fn authored(f: &Frame) -> Frame {
     let author = match f.data() {
-        Frame::Digest { digest } => Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() },
+        // A Digest is authored by its own birth at its sequence (`Frame::digest`).
+        Frame::Digest { .. } => return f.clone(),
         Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. } => Birth::publisher(&author().fabric, publisher),
         Frame::FabricStatus { fabric, .. } => Birth { fabric: fabric.clone(), ..author() },
         _ => author(),
@@ -44,9 +45,12 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
     let a = author(); let mut source = format!("rdm://{}/{}/{}", a.fabric, a.node, a.incarnation);
     let mut seq = None; let mut ms = 1;
     let (subject, identity) = match f.data() {
-        Frame::Digest { digest: d } => {
-            source = format!("rdm://{}/{}/{}", d.fabric_id, d.node.node_id, d.node.incarnation); ms = d.emitted_at_rafka_ms; seq = Some(format!("{:020}", d.digest_seq));
-            (format!("birth/{}/{}/{}", d.fabric_id, d.node.node_id, d.node.incarnation), vec![d.fabric_id.to_string(), d.node.node_id.to_string(), d.node.incarnation.to_string(), d.digest_seq.to_string()])
+        Frame::Digest { .. } => {
+            // The envelope names the birth, its sequence and its time; the body repeats none of them.
+            let c = f.context().expect("a Digest carries its authored context");
+            let (b, n) = (&c.source, c.digest_seq().expect("a Digest's sequence"));
+            source = format!("rdm://{}/{}/{}", b.fabric, b.node, b.incarnation); ms = c.time_ms; seq = Some(format!("{n:020}"));
+            (format!("birth/{}/{}/{}", b.fabric, b.node, b.incarnation), vec![b.fabric.to_string(), b.node.to_string(), b.incarnation.to_string(), n.to_string()])
         }
         Frame::TopologyFull { mesh, publisher: p, topology_version: v, published_at_rafka_ms: t, snapshot_id: s, chunk_index: c, .. } => {
             source = format!("rdm://{}/{}/{}", a.fabric, p.node_id, p.incarnation); ms = *t; seq = Some(format!("{v:020}"));
@@ -78,8 +82,10 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
     if let Some(p) = parent { attrs.push(("traceparent", p.into())); }
     if let Some(s) = state { attrs.push(("tracestate", s.into())); }
     let mut body = old[1..].to_vec();
-    if let Frame::TopologyFull { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
-        let mut prefix = Vec::new(); text(mesh, &mut prefix); text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);
+    if let Frame::TopologyFull { mesh, mesh_id, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
+        let mut prefix = Vec::new(); text(mesh, &mut prefix);
+        match mesh_id { None => prefix.push(0), Some(id) => { prefix.push(1); text(id.as_str(), &mut prefix); } }
+        text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);
         if let Frame::TopologyFull { forwarded_by, .. } = f.data() { match forwarded_by { None => prefix.push(0), Some(by) => { prefix.push(1); text(by, &mut prefix); } } }
         number(*topology_version, &mut prefix); number(*published_at_rafka_ms, &mut prefix);
         assert!(body.starts_with(&prefix)); let start = prefix.len(); number(*snapshot_id, &mut prefix); let end = prefix.len();
@@ -91,10 +97,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
 /// Active kinds round trip; reserved types are refused before decoding their literal data.
 pub fn assert_roundtrip(f: &Frame, golden: &[u8]) {
     match rdm_gossip::envelope::decode(golden) {
-        Ok(back) => { assert_eq!(back.encode(), golden); match (back.data(), f.data()) {
-            (Frame::Digest { digest: a }, Frame::Digest { digest: b }) => assert_eq!(rdm_core::wire::WireDigest::from(a), rdm_core::wire::WireDigest::from(b)),
-            _ => assert_eq!(format!("{:?}", back.data()), format!("{:?}", f.data())),
-        } }
+        Ok(back) => { assert_eq!(back.encode(), golden); assert_eq!(format!("{:?}", back.data()), format!("{:?}", f.data())); }
         Err(rdm_gossip::envelope::DecodeError::Reserved(_, _)) => assert!(matches!(f.data(), Frame::NodeRestarting { .. } | Frame::Concern { .. } | Frame::NodeConnectionsDeleting { .. } | Frame::NodeConnectionsDeleted { .. } | Frame::NodeLeaving { .. } | Frame::NodeLeft { .. } | Frame::NewFabricPrimary { .. })),
         other => panic!("{other:?}"),
     }

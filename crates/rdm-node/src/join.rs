@@ -34,20 +34,20 @@ impl std::fmt::Display for JoinFailure {
 /// that ended unanswered when `next` now names another anchor (a later command's commander). A call
 /// that ended unanswered to the same anchor, or a `next` that names no target, ends it unreached,
 /// its reason named. The answer, and the target that gave it.
-pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, next: F, digest: &MeshDigest, turns: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, next: F, digest: &MeshDigest, runtime: &rdm_core::NodeRuntime, turns: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    call_join_to_with_listeners(client, next, digest, turns, &[]).await
+    call_join_to_with_listeners(client, next, digest, runtime, turns, &[]).await
 }
 
 /// Join reporting the listeners this birth bound (Q151: each with the port the operating system
 /// selected), retained across all calls.
-pub async fn call_join_to_with_listeners<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, turns: u32, listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+pub async fn call_join_to_with_listeners<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, runtime: &rdm_core::NodeRuntime, turns: u32, listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    let req = JoinRequest::JoinNode { digest: WireDigest::from(digest), listeners: listeners.to_vec() };
+    let req = JoinRequest::JoinNode { digest: WireDigest::from(digest), runtime: runtime.runtime.clone(), data_dir: runtime.data_dir.clone(), listeners: listeners.to_vec() };
     let node = digest.node.node_id.to_string();
     let mut last = String::new();
     let opts = rdm_transport::CallOptions::default();

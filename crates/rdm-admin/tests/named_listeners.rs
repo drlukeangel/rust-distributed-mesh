@@ -152,7 +152,7 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                     })
                 })
             }) },
-            install: Arc::new(move |d| {
+            install: Arc::new(move |d, _| {
                 installed_for_service
                     .lock()
                     .unwrap()
@@ -219,6 +219,8 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                     dep.endpoint_id.clone(),
                     JoinRequest::JoinNode {
                         digest: (&digest).into(),
+                        runtime: Some(dep.runtime.clone()),
+                        data_dir: Some(dep.data_dir.clone()),
                         listeners,
                     },
                 )
@@ -259,6 +261,8 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                 dep.endpoint_id.clone(),
                 JoinRequest::JoinNode {
                     digest: (&digest).into(),
+                    runtime: Some(dep.runtime.clone()),
+                    data_dir: Some(dep.data_dir.clone()),
                     listeners: good_listeners.clone(),
                 },
             )

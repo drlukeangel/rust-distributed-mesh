@@ -635,6 +635,8 @@ async fn start_booted(
         digest_seq: 0,
         primary: Vec::new(),
     };
+    // What the join reports beside the digest: this birth's exact runtime and its data dir.
+    let join_runtime = rdm_core::NodeRuntime { runtime: Some(runtime.clone()), data_dir: Some(launch.data_dir.display().to_string()) };
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
     // admin that deployed it; the admin verifies it against the deployment and answers what it
     // holds. A node whose join is not accepted ends by name, whether the admin refused the digest
@@ -658,7 +660,7 @@ async fn start_booted(
     };
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
     let out: Arc<Mutex<Option<RunningNode>>> = Arc::default();
-    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), birth_path: launch.path.clone(), birth_name: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
+    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), birth_path: launch.path.clone(), birth_name: launch.name.clone(), node_id: launch.node_id.clone(), mesh_id: launch.mesh_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
     let joining = crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.node_id.to_string() };
     let join_digest = digest.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
@@ -794,6 +796,7 @@ async fn start_booted(
                                 fabric_id: launch.fabric_id.clone(),
                                 mesh_id: mesh_id.clone(),
                                 runtime: runtime.clone(),
+                                join_runtime: rdm_core::NodeRuntime { runtime: Some(runtime.clone()), data_dir: Some(launch.data_dir.display().to_string()) },
                                 topology_view: topology_view.clone(),
                                 client: client.clone(),
                                 server: server.clone(),
@@ -821,7 +824,7 @@ async fn start_booted(
                             write_own_state(&property_writer, rdm_core::status::NodeState::Pending).await;
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), held_name: held_name.clone(), channels: channels.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
-                            *publisher.lock().unwrap() = Some(spawn_publisher(&channels, &digest, &status, &server));
+                            *publisher.lock().unwrap() = Some(spawn_publisher(&channels, &digest, &status));
                             // The owed declarations' one sender (Q210): whatever this birth owes its mesh-primary is
                             // sent in the order it was owed, one Owed call in flight (i146 Q52), the next sent on the
                             // previous one's answer by name, a refusal included (node-rpc.md §43). A call ends on the
@@ -943,6 +946,7 @@ async fn start_booted(
         joining: Some(joining),
         resolve: Some(resolve),
         digest: Some(join_digest),
+        runtime: join_runtime,
         enter: Some(enter),
         joined: None,
         hook_started: None,
@@ -967,13 +971,13 @@ fn set_own_status(status: &Mutex<rdm_core::model::NodeStatus>, digest: &MeshDige
     d
 }
 
-/// The digest cadence of a node: its digest as it stands, its status and its in-flight count.
-fn spawn_publisher(channels: &rdm_gossip::channel::Channels, digest: &MeshDigest, status: &Arc<Mutex<rdm_core::model::NodeStatus>>, server: &NodeRpcServer) -> tokio::task::JoinHandle<()> {
-    let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
+/// The digest cadence of a node: its digest as it stands, with its status (the work in flight is not
+/// gossiped: the minimum payload, Q387).
+fn spawn_publisher(channels: &rdm_gossip::channel::Channels, digest: &MeshDigest, status: &Arc<Mutex<rdm_core::model::NodeStatus>>) -> tokio::task::JoinHandle<()> {
+    let (d, st) = (digest.clone(), status.clone());
     channels.publish_every(rdm_core::cadence::gossip_interval(), move || {
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
-        d.in_flight = Some(rdm_transport::ServerStats::get(&stats.in_flight));
         d
     })
 }
@@ -992,6 +996,8 @@ struct NodeSession {
     fabric_id: rdm_core::FabricId,
     mesh_id: rdm_core::MeshId,
     runtime: rdm_core::runtime::RuntimeFact,
+    /// The runtime and data dir every join of this birth reports beside its digest.
+    join_runtime: rdm_core::NodeRuntime,
     topology_view: TopologyView,
     channels: rdm_gossip::channel::Channels,
     client: Arc<rdm_transport::NodeRpcClient>,
@@ -1145,6 +1151,10 @@ impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
         self.held.clone()
     }
 
+    fn join_runtime(&self) -> rdm_core::NodeRuntime {
+        self.session.join_runtime.clone()
+    }
+
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         let commander = *self.commander.borrow();
         Ok(self.session.enter_mesh(step, joined, self.rows.take(), commander).await)
@@ -1156,7 +1166,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
 
     fn starting(&self) -> crate::workflows::node_start::Starting {
         let s = self.session;
-        crate::workflows::node_start::Starting { root: self.root.clone(), name: self.name.clone(), birth_path: s.path.clone(), birth_name: s.name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: self.name.clone(), birth_path: s.path.clone(), birth_name: s.name.clone(), node_id: s.node_id.clone(), mesh_id: Some(s.mesh_id.clone()), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
@@ -1189,7 +1199,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         if let Some(held) = self.held_again.take() {
             let _ = held.send(());
         }
-        *s.publisher.lock().unwrap() = Some(spawn_publisher(channels, &s.digest, &s.status, &s.server));
+        *s.publisher.lock().unwrap() = Some(spawn_publisher(channels, &s.digest, &s.status));
         let becoming = Becoming {
             channels: channels.clone(),
             boot: self.root.clone(),

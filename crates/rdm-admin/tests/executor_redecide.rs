@@ -139,7 +139,7 @@ impl Fleet {
 const DOMAIN: &str = "i143-2892";
 
 /// The digest a launched node reports at its join, from the launch it was handed.
-fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::RuntimeFact>) -> rdm_core::MeshDigest {
+fn fake_node_digest(spec: &ResolvedNodeLaunch) -> rdm_core::MeshDigest {
     let env = |k: &str| spec.env.get(k).cloned().unwrap_or_else(|| panic!("the launch names {k}"));
     let key_hex = std::fs::read_to_string(spec.data_dir.join("node-key")).expect("PrepareStorage wrote the node key");
     let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
@@ -183,7 +183,9 @@ impl DeploymentProvider for Fleet {
         // the executor is to die before the join, the report does not come; the birth keeps offering it
         // and is heard by whichever registration of its deployment stands once the executor is gone.
         if let Some(joins) = spec.env.get("RDM_SEEDS").and_then(|s| s.split('@').next()).and_then(|k| self.executors.lock().unwrap().get(k).cloned()) {
-            let digest = fake_node_digest(spec, handle.fact());
+            let digest = fake_node_digest(spec);
+            // The report the launched birth makes: its digest, its runtime and its data dir.
+            let report = rdm_admin::join::JoinReport { digest: digest.clone(), runtime: handle.fact(), data_dir: Some(spec.data_dir.display().to_string()), listeners: Vec::new() };
             let dies = self.dies.clone();
             let store = self.store.clone();
             let terminated = self.terminated.clone();
@@ -193,12 +195,12 @@ impl DeploymentProvider for Fleet {
                         return;
                     }
                     let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
-                    if !withheld && matches!(joins.standing(&digest, &[]), rdm_admin::join::Standing::Deployed { .. }) {
-                        joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
+                    if !withheld && matches!(joins.standing(&report), rdm_admin::join::Standing::Deployed { .. }) {
+                        joins.report(&report);
                         // The node's own record, its first line at its start (Q356).
                         let mut bound = rdm_node::nodes_storage::fixture_record(&digest.node.location(), &digest.node.r#type, digest.node.node_id.clone(), digest.node.incarnation.clone(), rdm_admin::model::NodeStatus::Pending);
                         (bound.endpoint_id, bound.transport_addr) = (digest.node.endpoint_id.clone(), digest.node.transport_addr);
-                        if let Some(runtime) = digest.node.runtime.clone() {
+                        if let Some(runtime) = report.runtime.clone() {
                             bound.runtime = runtime;
                         }
                         rdm_admin::storage::NodesStorage::put_node(&*store, &bound).await.unwrap();

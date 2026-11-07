@@ -148,6 +148,7 @@ impl Full {
             in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             deleted: new.deleted.iter().filter(|(k, _)| !self.deleted.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             changed,
+            mesh_id: new.mesh_id.clone(),
         }
     }
 
@@ -157,6 +158,9 @@ impl Full {
     /// `node.joined` ended the stop. A departure ends every overlay of its exact birth, its stop
     /// included: node.delete replaces NodeStopped with the deleted retention (gossip.md §3.1).
     pub fn apply(&mut self, delta: &Delta) {
+        if delta.mesh_id.is_some() {
+            self.mesh_id = delta.mesh_id.clone();
+        }
         for d in &delta.changed {
             self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
             self.put(d.clone());
@@ -186,6 +190,8 @@ pub struct Delta {
     pub in_flight: Vec<LifecycleOp>,
     /// The departures recorded.
     pub deleted: Vec<LifecycleOp>,
+    /// The id of the mesh the delta moves, as its frame names it.
+    pub mesh_id: Option<rdm_core::MeshId>,
 }
 
 impl Delta {
@@ -305,12 +311,6 @@ pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<Lifec
         .collect()
 }
 
-/// The id of the mesh `digests` belong to, as its node-admins' entries carry it (a node-admin's own
-/// digest carries its mesh's id); `None` when none carries one.
-pub fn mesh_id_of(digests: &[MeshDigest]) -> Option<rdm_core::MeshId> {
-    digests.iter().find_map(|d| d.mesh_id.clone())
-}
-
 /// Whether `offered` is another mesh than `held` under the same name: a mesh is created once, so a
 /// later mesh of that name has another id, and the held mesh's version orders nothing of it (gossip.md
 /// "Mesh delete"). An id unknown on either side is the same mesh.
@@ -324,6 +324,8 @@ pub fn another_mesh(held: Option<&rdm_core::MeshId>, offered: Option<&rdm_core::
 pub struct SourceSnapshot {
     /// The source mesh's name.
     pub mesh: String,
+    /// The source mesh's id, as its topology's frame named it.
+    pub mesh_id: Option<rdm_core::MeshId>,
     /// The publisher that put the snapshot on the backbone.
     pub publisher: PublisherId,
     /// The snapshot's `topology_version`.
@@ -339,7 +341,7 @@ pub struct SourceSnapshot {
 impl SourceSnapshot {
     /// The snapshot as a [`Full`].
     pub fn full(&self) -> Full {
-        Full::new(self.digests.clone(), self.in_flight.clone(), self.deleted.clone())
+        Full::new(self.digests.clone(), self.in_flight.clone(), self.deleted.clone()).of_mesh(self.mesh_id.clone())
     }
 }
 
@@ -348,6 +350,8 @@ impl SourceSnapshot {
 pub struct Chunk {
     /// The source mesh's name.
     pub mesh: String,
+    /// The source mesh's id, as its frame names it.
+    pub mesh_id: Option<rdm_core::MeshId>,
     /// The publisher of the snapshot.
     pub publisher: PublisherId,
     /// `None` on the backbone; the forwarding primary on a Mesh's own channel.
@@ -366,6 +370,8 @@ pub struct Chunk {
     pub in_flight: Vec<LifecycleOp>,
     /// The departures this chunk carries.
     pub deleted: Vec<LifecycleOp>,
+    /// The runtime and data dir a topology read carried of each birth it serves (hydration); none on gossip.
+    pub runtimes: Vec<(rdm_core::NodeId, rdm_core::IncarnationId, rdm_core::NodeRuntime)>,
 }
 
 /// A complete snapshot, installed.
@@ -625,7 +631,7 @@ impl SnapshotReceiver {
         };
         // The mesh's version orders its topology, whichever mesh-primary sent it (Q389); a later mesh of
         // the same name is another mesh, which the held one's version orders nothing of.
-        let offered_id = mesh_id_of(&c.digests);
+        let offered_id = c.mesh_id.clone();
         if let Some(h) = self.held.get(&c.mesh).filter(|h| !another_mesh(h.full.mesh_id().as_ref(), offered_id.as_ref())) {
             if c.topology_version < h.version {
                 publication_stale("mesh-topology", &c.mesh, &c.publisher, h.version, c.topology_version);
@@ -661,7 +667,7 @@ impl SnapshotReceiver {
         let publication = self.pending.remove(&key).expect("just assembled");
         let mut digests = Vec::new(); let mut in_flight = Vec::new(); let mut deleted = Vec::new();
         for (d, i, x) in publication.chunks.values() { digests.extend(d.clone()); in_flight.extend(i.clone()); deleted.extend(x.clone()); }
-        let full = Full::new(digests, in_flight, deleted);
+        let full = Full::new(digests, in_flight, deleted).of_mesh(c.mesh_id.clone());
         let offered_id = full.mesh_id();
         if let Some(h) = self.held.get(&c.mesh).filter(|h| h.version == c.topology_version && !another_mesh(h.full.mesh_id().as_ref(), offered_id.as_ref())) {
             if !h.full.same_topology(&full) { return conflict(); }
@@ -726,7 +732,7 @@ impl SnapshotReceiver {
     fn take_delta_at_base(&mut self, mesh: &str, source: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
         // A differential from version 0 is a mesh's first into this mesh channel: its forwarder held
         // nothing of it before, and a node that holds nothing of it starts from nothing.
-        let another = self.held.get(mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), mesh_id_of(&delta.changed).as_ref()));
+        let another = self.held.get(mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), delta.mesh_id.as_ref()));
         if base_version == 0 && (another || !self.held.contains_key(mesh)) {
             self.unbased.remove(mesh);
             self.dropped.remove(mesh);
@@ -831,7 +837,7 @@ impl SnapshotReceiver {
             .held
             .iter()
             .filter(|(m, h)| h.desynced.is_none() && mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), deleted: h.full.deleted() })
+            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), mesh_id: h.full.mesh_id(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), deleted: h.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -964,6 +970,7 @@ impl Forwarder {
     fn delta_frame(&self, mesh: &str, publisher: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta, now_ms: u64) -> Frame {
         Frame::TopologyDelta {
             mesh: mesh.to_string(),
+            mesh_id: delta.mesh_id.clone(),
             source_publisher: publisher.clone(),
             base_version,
             topology_version,
@@ -1049,7 +1056,7 @@ impl Forwarder {
             .published
             .iter()
             .filter(|(m, _)| mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
+            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), mesh_id: p.full.mesh_id(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -1128,7 +1135,7 @@ mod tests {
     }
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
-        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }
+        Chunk { mesh: "mesh1".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: Some("mesh1.node-admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), }
     }
 
     /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An

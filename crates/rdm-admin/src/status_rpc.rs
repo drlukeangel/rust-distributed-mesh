@@ -2983,7 +2983,7 @@ mod tests {
                     })
                 })
             }),
-            install: Arc::new(|_| {}),
+            install: Arc::new(|_, _| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new({
                 let (status_service, replies) = (status_service.clone(), replies.clone());
@@ -3034,10 +3034,12 @@ mod tests {
         let cut = || { status_service.declared.lock().unwrap().connections_deleted.insert((rpc.node_id.clone(), birth.clone()), ConnectionsDeletedReceipt { all: true, held: Vec::new(), status_at_cut: crate::model::NodeStatus::ConnectionsDeleted }); };
         let cut_held = || status_service.declared.lock().unwrap().connections_deleted.contains_key(&(rpc.node_id.clone(), birth.clone()));
         let join_service = &join_service;
+        // The runtime and data dir the birth was deployed with: its report carries them.
+        let (deployed_runtime, deployed_dir) = (first.runtime.clone(), first.data_dir.clone());
         let serve = move |what: &'static str| {
-            let (report, replies) = (report.clone(), replies.clone());
+            let (report, replies, runtime, data_dir) = (report.clone(), replies.clone(), deployed_runtime.clone(), deployed_dir.clone());
             async move {
-                let answered = join_service.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { digest: (&report).into(), listeners: Vec::new() }).await;
+                let answered = join_service.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { digest: (&report).into(), runtime: Some(runtime), data_dir: Some(data_dir), listeners: Vec::new() }).await;
                 assert!(matches!(answered, JoinReply::Joined { .. }), "{what}: {answered:?}");
                 replies.lock().unwrap().pop().unwrap_or_else(|| panic!("{what}: the accepted report recorded no Pending"))
             }

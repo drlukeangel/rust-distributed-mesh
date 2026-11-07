@@ -108,7 +108,7 @@ async fn pull_from_fabric_primary(
             }
             primary = current;
         }
-        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &me_id.to_string(), Some(&primary.mesh), None).await;
+        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), topology_view.fabric_id(), &me_id.to_string(), Some(&primary.mesh), None).await;
         match read {
             Ok(read) => {
                 let served_by = primary.node_id.to_string();
@@ -187,7 +187,7 @@ pub(crate) async fn adopt_from_reachable(
             .iter()
             .map(|c| {
                 let me_s = me_s.clone();
-                async move { (c, crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me_s, Some(&c.mesh), None).await) }
+                async move { (c, crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), topology_view.fabric_id(), &me_s, Some(&c.mesh), None).await) }
             })
             .collect();
         while let Some((c, read)) = futures_util::StreamExt::next(&mut reads).await {

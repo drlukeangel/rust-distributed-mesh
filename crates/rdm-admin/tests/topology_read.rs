@@ -96,6 +96,7 @@ fn hold(m: &rdm_gossip::channel::Channels, s: &SourceSnapshot) {
         let TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted: deleted } = r else { unreachable!() };
         let t = m.take_read_chunk(Chunk {
             mesh,
+            mesh_id: None,
             publisher,
             forwarded_by: Some("topology-read".into()),
             topology_version,
@@ -105,13 +106,14 @@ fn hold(m: &rdm_gossip::channel::Channels, s: &SourceSnapshot) {
             digests: digests.into_iter().map(MeshDigest::from).collect(),
             in_flight,
             deleted,
+            runtimes: Vec::new(),
         }, "peer");
         assert!(!matches!(t, Taken::Refused(_)), "{t:?}");
     }
 }
 
 fn snap(mesh: &str, p: &PublisherId, version: u64, digests: Vec<MeshDigest>) -> SourceSnapshot {
-    SourceSnapshot { mesh: mesh.into(), publisher: p.clone(), topology_version: version, digests, in_flight: vec![], deleted: vec![] }
+    SourceSnapshot { mesh: mesh.into(), mesh_id: None, publisher: p.clone(), topology_version: version, digests, in_flight: vec![], deleted: vec![] }
 }
 
 fn target_of(from: &Node, to: &Node) -> NodeTarget {

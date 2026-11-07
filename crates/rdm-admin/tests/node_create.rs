@@ -145,6 +145,8 @@ impl DeploymentProvider for ImmediateReportProvider {
         };
         *self.pending_report.lock().unwrap() = Some(JoinReport {
             digest,
+            runtime: handle.fact(),
+            data_dir: Some(spec.data_dir.display().to_string()),
             listeners: Vec::new(),
         });
         Ok(handle)
@@ -162,7 +164,7 @@ impl DeploymentProvider for ImmediateReportProvider {
             let d = &report.digest;
             let mut bound = rdm_node::nodes_storage::fixture_record(&d.node.location(), &d.node.r#type, d.node.node_id.clone(), d.node.incarnation.clone(), NodeStatus::Pending);
             (bound.endpoint_id, bound.transport_addr, bound.listeners) = (d.node.endpoint_id.clone(), d.node.transport_addr, report.listeners.clone());
-            if let Some(runtime) = d.node.runtime.clone() {
+            if let Some(runtime) = report.runtime.clone() {
                 bound.runtime = runtime;
             }
             rdm_admin::storage::NodesStorage::put_node(&*self.store, &bound).await.unwrap();
@@ -524,7 +526,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             primary: Vec::new(),
         };
         assert!(matches!(
-            joins.standing(&wrong_name_digest, &[]),
+            joins.standing(&rdm_admin::join::JoinReport { digest: wrong_name_digest.clone(), runtime: Some(exp_fact.clone()), data_dir: Some(key_dir.display().to_string()), listeners: Vec::new() }),
             rdm_admin::join::Standing::Mismatch(_)
         ));
         assert!(
@@ -535,7 +537,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         joins.end(&exp_id, &build_id.to_string());
         assert!(
             matches!(
-                joins.standing(&wrong_name_digest, &[]),
+                joins.standing(&rdm_admin::join::JoinReport { digest: wrong_name_digest.clone(), runtime: Some(exp_fact.clone()), data_dir: Some(key_dir.display().to_string()), listeners: Vec::new() }),
                 rdm_admin::join::Standing::Abandoned(_)
             ),
             "JoinNode after deployment abandonment is refused by name"
@@ -642,6 +644,8 @@ impl DeploymentProvider for StepFaultProvider {
         };
         *self.pending_report.lock().unwrap() = Some(JoinReport {
             digest,
+            runtime: handle.fact(),
+            data_dir: Some(spec.data_dir.display().to_string()),
             listeners: Vec::new(),
         });
         Ok(handle)
@@ -667,7 +671,7 @@ impl DeploymentProvider for StepFaultProvider {
                 // The node's own record, its first line at its start (Q356).
                 let mut bound = rdm_node::nodes_storage::fixture_record(&d.node.location(), &d.node.r#type, d.node.node_id.clone(), d.node.incarnation.clone(), NodeStatus::Pending);
                 (bound.endpoint_id, bound.transport_addr, bound.listeners) = (d.node.endpoint_id.clone(), d.node.transport_addr, report.listeners.clone());
-                if let Some(runtime) = d.node.runtime.clone() {
+                if let Some(runtime) = report.runtime.clone() {
                     bound.runtime = runtime;
                 }
                 rdm_admin::storage::NodesStorage::put_node(&*self.store, &bound).await.unwrap();

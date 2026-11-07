@@ -87,6 +87,17 @@ pub struct MeshDigest {
     pub emitted_at_rafka_ms: u64,
 }
 
+/// A birth's exact runtime and its data dir: what its join report carries and a topology read serves
+/// to a node-admin that may manage it (hydration); its node record holds them too. Gossip never
+/// carries them (Q387).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRuntime {
+    /// The birth's exact runtime, as its launch recorded it.
+    pub runtime: Option<crate::runtime::RuntimeFact>,
+    /// Where the birth keeps its data.
+    pub data_dir: Option<String>,
+}
+
 /// One birth's view of its own mesh channel, sampled in memory: a diagnostic `node.get` serves for
 /// the node itself (node-identity-and-state.md §2.5). Never gossiped and never written to a record,
 /// storage or durable history (Q394).

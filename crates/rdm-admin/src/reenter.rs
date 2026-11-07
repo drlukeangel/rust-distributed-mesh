@@ -110,9 +110,11 @@ impl MapNode {
 pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rdm_core::FabricId) -> Vec<MapNode> {
     read.installed
         .iter()
-        .flat_map(|m| m.members.iter())
-        .filter(|d| &d.fabric_id == fabric)
-        .map(|d| {
+        .flat_map(|m| m.members.iter().map(move |d| (m, d)))
+        .filter(|(_, d)| &d.fabric_id == fabric)
+        .map(|(m, d)| {
+            // The data dir the read carried of the birth (hydration; gossip never carries it).
+            let data_dir = m.runtimes.iter().find(|(id, inc, _)| id == &d.node.node_id && inc == &d.node.incarnation).and_then(|(_, _, r)| r.data_dir.clone());
             // A digest says what the node last reported, not that it is alive: whoever answered
             // heard it at an age the digest does not carry. Every birth is therefore not yet
             // reached (the sweep's ping, or its own digest, says more), never ready.
@@ -120,8 +122,8 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rd
             MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(),
                 transition,
                 ready: false,
-                data_dir: d.data_dir.clone(),
-                admin_api_base: d.admin_api_base.clone(),
+                data_dir,
+                admin_api_base: rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id),
                 node_id: d.node.node_id.clone(),
                 path: d.node.path.clone(), name: d.node.name.clone(),
                 endpoint_id: d.node.endpoint_id.clone(),
@@ -175,7 +177,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
         TopologySource::LocalNode { node, client, channels, me, me_id, time, adopt_time } => {
             let topology_view = channels.topology_view();
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.node_id, node.endpoint_id.0))?;
-            let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), topology_view.node(), None, None)
+            let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), topology_view.fabric_id(), topology_view.node(), None, None)
                 .await
                 .map_err(|e| format!("reading the topology of {}: {e}", node.node_id))?;
             if adopt_time {
@@ -515,6 +517,7 @@ mod tests {
             };
             let snap = rdm_gossip::snapshot::SourceSnapshot {
                 mesh: "mesh1".into(),
+                mesh_id: None,
                 publisher: rdm_core::PublisherId {
                     incarnation: IncarnationId::mint(),
                     node_id: NodeId::mint(),
@@ -524,23 +527,9 @@ mod tests {
                 in_flight: vec![],
                 deleted: vec![],
             };
-            for r in crate::topology_read::snapshot_replies(&snap, 1) {
-                if let rdm_core::topology::TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } = r {
-                    let _ = local_view_channels.take_read_chunk(
-                        rdm_gossip::snapshot::Chunk {
-                            mesh,
-                            publisher,
-                            forwarded_by: Some("topology-read".into()),
-                            topology_version,
-                            snapshot_id,
-                            chunk_index,
-                            chunk_count,
-                            digests: digests.into_iter().map(rdm_core::MeshDigest::from).collect(),
-                            in_flight,
-                            deleted,
-                        },
-                        "mesh1",
-                    );
+            for r in crate::topology_read::snapshot_replies(&snap, 1, &|_| None) {
+                if let Some(chunk) = crate::topology_read::chunk_of(r, &local_digest.fabric_id) {
+                    let _ = local_view_channels.take_read_chunk(chunk, "mesh1");
                 }
             }
 

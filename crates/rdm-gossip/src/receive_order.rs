@@ -377,11 +377,10 @@ struct InstalledSource {
 }
 
 /// The mesh a `TopologyFull` or `TopologyDelta` is of, its `topology_version`, and the mesh's id as
-/// its node-admins' entries carry it.
+/// the frame names it beside the mesh's name.
 fn publication_of(f: &Frame) -> Option<(&str, u64, Option<rdm_core::MeshId>)> {
     match f.data() {
-        Frame::TopologyFull { mesh, topology_version, digests, .. } => Some((mesh, *topology_version, crate::snapshot::mesh_id_of(digests))),
-        Frame::TopologyDelta { mesh, topology_version, changed, .. } => Some((mesh, *topology_version, crate::snapshot::mesh_id_of(changed))),
+        Frame::TopologyFull { mesh, mesh_id, topology_version, .. } | Frame::TopologyDelta { mesh, mesh_id, topology_version, .. } => Some((mesh, *topology_version, mesh_id.clone())),
         _ => None,
     }
 }
@@ -514,7 +513,7 @@ mod tests {
         let mut order = ReceiveOrder::default();
         order.installed_projection("mesh1", &publisher, 10, &crate::snapshot::Full::default(), None);
         let renamed = PublisherId { ..publisher };
-        let old = Frame::TopologyFull { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
+        let old = Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
         let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
@@ -567,11 +566,11 @@ mod tests {
     }
 
     fn mesh_topology(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, topology_version: u64, chunk_index: u32) -> Frame {
-        Frame::TopologyFull { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
+        Frame::TopologyFull { mesh: mesh.into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     fn delta(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, base_version: u64, topology_version: u64) -> Frame {
-        Frame::TopologyDelta { mesh: mesh.into(), source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
+        Frame::TopologyDelta { mesh: mesh.into(), mesh_id: None, source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
     }
 
     fn publisher(path: &str) -> PublisherId {
@@ -676,7 +675,7 @@ mod tests {
         let (old_id, new_id) = (rdm_core::MeshId::mint(), rdm_core::MeshId::mint());
         let (old_admin, new_admin) = (admin_of(&old_id), admin_of(&new_id));
         let (old, new) = (publisher("mesh2.node-admin.1"), publisher("mesh2.node-admin.1"));
-        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| Frame::TopologyFull { mesh: "mesh2".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
+        let full_of = |p: &PublisherId, version: u64, d: &MeshDigest| Frame::TopologyFull { mesh: "mesh2".into(), mesh_id: None, publisher: p.clone(), forwarded_by: None, topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
 
         // The receive path.
         let mut order = ReceiveOrder::default();
@@ -688,7 +687,7 @@ mod tests {
 
         // The receiver.
         let mut rx = crate::snapshot::SnapshotReceiver::default();
-        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![] };
+        let chunk_of = |p: &PublisherId, version: u64, d: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: None, publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
         assert!(matches!(rx.take_chunk(chunk_of(&old, 33, &old_admin)), crate::snapshot::Taken::Installed(_)));
         let taken = rx.take_chunk(chunk_of(&new, 1, &new_admin));
         assert!(matches!(&taken, crate::snapshot::Taken::Installed(i) if i.first && i.topology_version == 1), "the recreated mesh installs as a first topology: {taken:?}");

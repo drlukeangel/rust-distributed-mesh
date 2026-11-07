@@ -455,7 +455,7 @@ impl Rig {
                     emitted_at_rafka_ms: 0,
                     primary: Vec::new(),
                 };
-                self.joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
+                self.joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), runtime: Some(runtime.clone()), data_dir: Some(data_dir.display().to_string()), listeners: Vec::new() });
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

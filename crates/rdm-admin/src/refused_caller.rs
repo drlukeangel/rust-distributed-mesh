@@ -485,7 +485,7 @@ mod tests {
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
-            install: Arc::new(|_| {}),
+            install: Arc::new(|_, _| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| None),
@@ -511,7 +511,7 @@ mod tests {
             emitted_at_rafka_ms: 0,
             primary: Vec::new(),
         };
-        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), listeners: Vec::new() };
+        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), runtime: Some(deployed.runtime.clone()), data_dir: Some(deployed.data_dir.clone()), listeners: Vec::new() };
         let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
         assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "status" && deployed.contains(caller.node_id.as_str()) && deployed.contains("deleted")), "the deleted birth's join is refused at once by its own Deleted record: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.
@@ -581,7 +581,7 @@ mod tests {
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
-            install: Arc::new(|_| {}),
+            install: Arc::new(|_, _| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| None),
@@ -607,7 +607,7 @@ mod tests {
             emitted_at_rafka_ms: 0,
             primary: Vec::new(),
         };
-        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), listeners: Vec::new() };
+        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), runtime: Some(deployed.runtime.clone()), data_dir: Some(deployed.data_dir.clone()), listeners: Vec::new() };
         let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
         assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "status" && deployed.contains("is deleted")), "the deleted birth's join is refused at once by name, naming its deleted row: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.

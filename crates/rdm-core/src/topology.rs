@@ -20,7 +20,7 @@
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::wire::WireDigest;
+use crate::wire::ReadNode;
 use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Primary};
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +123,8 @@ pub enum TopologyReply {
     Snapshot {
         /// The source mesh's name.
         mesh: String,
+        /// The source mesh's id, as its topology's frame named it.
+        mesh_id: Option<MeshId>,
         /// The publisher of the snapshot.
         publisher: PublisherId,
         /// The snapshot's `topology_version`.
@@ -133,9 +135,9 @@ pub enum TopologyReply {
         chunk_index: u32,
         /// The number of chunks in the snapshot.
         chunk_count: u32,
-        /// The members this chunk carries, each a member projection entry: its digest, then the
-        /// status held for it (gossip.md §3.1).
-        digests: Vec<WireDigest>,
+        /// The nodes this chunk carries, each as a read serves it: its identity, status and primary
+        /// roles, the sequence of its Digest held, and its runtime and data dir (hydration).
+        nodes: Vec<ReadNode>,
         /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
         /// The retained proven departures this chunk carries.

@@ -178,6 +178,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // Nothing rides inside TopologyFull: its fields are digests and overlays only.
         let members = Frame::TopologyFull {
             mesh: "mesh1".into(),
+            mesh_id: None,
             publisher: PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
             forwarded_by: None,
             topology_version: 1,
@@ -191,7 +192,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         };
         // The frame is positional postcard: this pattern names every field the frame carries, and
         // none of them is a status.
-        let Ok(Frame::TopologyFull { mesh: _, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, deleted: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
+        let Ok(Frame::TopologyFull { mesh: _, mesh_id: None, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, deleted: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
             panic!("TopologyFull round-trips as TopologyFull, carrying no status field");
         };
 

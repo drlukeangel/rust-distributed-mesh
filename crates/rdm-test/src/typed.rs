@@ -184,13 +184,13 @@ impl Estate {
         held.members.iter().map(|d| serde_json::json!({"path": d.node.path, "name": d.node.name, "type": d.node.r#type, "node_id": d.node.node_id.to_string(), "incarnation": d.node.incarnation, "state": serde_json::to_value(d.status).unwrap_or_default()})).collect()
     }
 
-    /// The `admin_api_base` each node-admin's digest carries, by node id, as the node `node` holds the
-    /// digests ([`Self::held_topology_at`]): the contact a node-admin advertises on gossip, which
-    /// `fabric.get` and `MeshView` answer for a primary. `node.get` carries none (the node record does not
-    /// hold it, Q366). Empty when the node does not answer within 2 s.
+    /// The `admin_api_base` of each node-admin the node `node` holds ([`Self::held_topology_at`]), by node
+    /// id: its application contact, named by its node id (`rdm://<node id>`), which `fabric.get` and
+    /// `MeshView` answer for a primary. Gossip carries none (Q387), and `node.get` carries none (the node
+    /// record does not hold it, Q366). Empty when the node does not answer within 2 s.
     pub async fn admin_api_bases_at(&self, node: &PathName) -> std::collections::BTreeMap<String, String> {
         let Some(held) = self.held_topology_at(node).await else { return Default::default() };
-        held.members.iter().filter_map(|d| Some((d.node.node_id.to_string(), d.admin_api_base.clone()?))).collect()
+        held.members.iter().filter_map(|d| Some((d.node.node_id.to_string(), rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id)?))).collect()
     }
 
     /// What the node `node` holds itself, never a primary's atlas (query.md §2: a node queries its own
@@ -206,7 +206,7 @@ impl Estate {
         let mut held = HeldTopology::default();
         for frame in frames {
             match frame {
-                rdm_core::topology::TopologyReply::Snapshot { digests, .. } => held.members.extend(digests.into_iter().map(rdm_core::MeshDigest::from)),
+                rdm_core::topology::TopologyReply::Snapshot { mesh, nodes, .. } => held.members.extend(nodes.iter().map(|n| rdm_client::HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() })),
                 rdm_core::topology::TopologyReply::Primaries { kind, primary, gone } => held.primaries.push((kind, primary, gone)),
                 _ => {}
             }
@@ -1059,7 +1059,7 @@ pub fn not_yet(end: &CallEnd) -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct HeldTopology {
     /// Every birth the node holds, of every mesh, with the status it holds for each.
-    pub members: Vec<rdm_core::MeshDigest>,
+    pub members: Vec<rdm_client::HeldBirth>,
     /// Every primary the node records: which primary, the record, and whether it holds that exact birth
     /// as gone.
     pub primaries: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary, bool)>,

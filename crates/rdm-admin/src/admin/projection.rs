@@ -407,7 +407,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             continue;
         }
         let silent = age > digest_view.staleness_floor();
-        if let Some(id) = d.mesh_id.clone() {
+        if let Some(id) = digest_view.mesh_id_of(&d.node.mesh) {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
@@ -428,13 +428,10 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // holds it and its mesh ready. Anything else is a routing stop.
         n.routable = n.status == NodeStatus::Ready && digest_view.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        n.admin_api_base = d.admin_api_base.clone();
+        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
-        n.data_dir = d.data_dir.clone();
-        // The birth's own published runtime fact names its deployment, whichever admin launched it.
-        n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
-            n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
+            n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
@@ -464,7 +461,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         }
         // Its held digest states its mesh's id as a heard one does: a mesh whose births are all
         // stopped keeps its id, and with it its state (states.md: a mesh's deleted is final).
-        if let Some(id) = d.mesh_id.clone() {
+        if let Some(id) = digest_view.mesh_id_of(&d.node.mesh) {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
@@ -476,12 +473,10 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         n.stopped = true;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        n.admin_api_base = d.admin_api_base.clone();
+        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
-        n.data_dir = d.data_dir.clone();
-        n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
-            n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
+            n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
@@ -529,7 +524,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
-        if let Some(id) = d.mesh_id.clone() {
+        if let Some(id) = digest_view.mesh_id_of(&d.node.mesh) {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
@@ -546,12 +541,10 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         };
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        n.admin_api_base = d.admin_api_base.clone();
+        n.admin_api_base = rdm_core::meta::admin_api_base(&d.node.r#type, &d.node.node_id);
         n.transport_addr = Some(d.node.transport_addr);
-        n.data_dir = d.data_dir.clone();
-        n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
         if let Some(r) = launched(&recorded, &n.incarnation_id) {
-            n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
+            n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
             n.listeners = r.listeners.clone();
         }
@@ -691,15 +684,14 @@ mod tests {
         { let at = rdm_core::PathName::new("elsewhere.node", "administrator").unwrap(); admin.node.path = at.path; admin.node.name = at.name; }
         admin.node.mesh = "mesh2".into();
         admin.node.r#type = "node-admin".to_string();
-        admin.mesh_id = Some(mesh_id.clone());
-        admin.is_primary = Some(7);
-        admin.is_fabric_primary = Some(7);
+        view.hold_mesh_id("mesh2", Some(&mesh_id));
+        admin.set_primary(Some(7));
+        admin.set_fabric_primary(Some(7));
         let mut member = super::super::tests::digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
         { let at = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap(); member.node.path = at.path; member.node.name = at.name; }
         member.node.mesh = "mesh2".into();
         member.node.r#type = "compute".to_string();
-        member.mesh_id = Some(mesh_id.clone());
-        member.is_primary = Some(7);
+        member.set_primary(Some(7));
         let now = std::time::Instant::now();
         for digest in [&admin, &member] {
             let bytes = rdm_transport::wire::encode(&rdm_core::wire::WireDigest::from(digest)).unwrap();
@@ -712,9 +704,9 @@ mod tests {
             assert_eq!(primary.revision, 7);
         }
         assert!(view.primaries.node_type_primary("elsewhere", "gateway").is_none());
-        member.is_primary = None;
+        member.set_primary(None);
         view.recorded_primaries(&mut member);
-        assert_eq!(member.is_primary, Some(7));
+        assert_eq!(member.is_primary(), Some(7));
         let topology = project_at("fabric1", &fabric, ProviderKind::Process, &view, &records, now);
         let found = topology.node(&member.node.location()).expect("the member is projected");
         assert_eq!((&found.mesh, found.r#type.as_str()), (&"mesh2".to_string(), "compute"));

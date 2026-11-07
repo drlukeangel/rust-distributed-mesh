@@ -89,7 +89,7 @@ pub use connections::{
     CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld,
     EffectiveRoute, NodeConnection, RouteResolution,
 };
-pub use digest::{GossipStats, MeshDigest, MeshNode, NodeLoad, RoleRevision};
+pub use digest::{GossipStats, MeshDigest, MeshNode, NodeLoad, NodeRuntime, RoleRevision};
 pub use dto::{Accepted, BuildState, BuildView, ClientError, FabricDesired, MeshDesired, StepView};
 #[doc(hidden)]
 pub use ids::{fixture_crockford60, fixture_node_id};

@@ -925,7 +925,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     }
     // No crate of RDM serves a route or opens an HTTP listener (rdm-crate-and-test-layout.md §2): the
     // admin's application contact (`admin_api_base`, config, never checked) names this admin's node id.
-    let api_base = format!("rdm://{node_id}");
+    let api_base = rdm_core::meta::admin_api_base(rdm_core::meta::NODE_ADMIN, &node_id).expect("a node-admin names its application contact");
     // A launched admin takes the runtime record its launcher's pipeline made available; it is
     // part of the digest it reports at its join.
     let launched_runtime = match &cfg.launch {
@@ -958,7 +958,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
     // addresses it really bound, to the admin that deployed it.
-    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest {
+    // Its runtime and data dir ride the report beside the digest (gossip never carries them).
+    let join_runtime = rdm_core::NodeRuntime { runtime: joins_through.as_ref().map(|(_, _, runtime)| runtime.clone()), data_dir: Some(cfg.data_dir.display().to_string()) };
+    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|_| MeshDigest {
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode { mesh: cfg.mesh.clone(), r#type: "node-admin".into(),
             node_id: node_id.clone(),
@@ -998,7 +1000,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     // What the start brought up, once it did: handed to the caller.
     let out: Arc<Mutex<Option<Running>>> = Arc::default();
-    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.name.clone(), birth_path: name.path.clone(), birth_name: name.name.clone(), node_id: node_id.clone(), client: node_rpc.client.clone(), rafka_time: rafka_time.clone() };
+    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.name.clone(), birth_path: name.path.clone(), birth_name: name.name.clone(), node_id: node_id.clone(), mesh_id: cfg.mesh_id.clone(), client: node_rpc.client.clone(), rafka_time: rafka_time.clone() };
     // The admin plugs into `node.start` by continuations: each step runs in the scope the previous
     // one left. Its channel step also fills its stores; its installed-topology step takes its
     // entry and builds what it serves and elects with; after its hook its Ready check reports.
@@ -1430,15 +1432,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 }
                                 let _ = control.connections.set(connections.held());
                                 {
-                                    let digest_view = digest_view.clone();
+                                    // This admin's own sample alone, in memory (Q394): another node's load and
+                                    // gossip counters are that node's, never gossiped or stored.
+                                    let (channels, own_id) = (channels.clone(), node_id.to_string());
                                     let _ = control.loads.set(Arc::new(move || {
-                                        digest_view.current(digest_view.staleness_floor())
-                                            .into_iter()
-                                            .filter(|d| d.load.is_some() || d.gossip.is_some())
-                                            .map(|d| {
-                                                (d.node.node_id.to_string(), (d.load, d.gossip))
-                                            })
-                                            .collect()
+                                        let (load, gossip) = channels.own_sample();
+                                        std::iter::once((own_id.clone(), (Some(load), Some(gossip)))).collect()
                                     }));
                                 }
                                 // Where this admin's own `pre_node_ready` stands: written by its start (and a rejoin's),
@@ -1842,6 +1841,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 digest_seq: 0,
                                 primary: Vec::new(),
                             }));
+                            // Its own runtime and data dir, which its reads serve (hydration) and every join
+                            // of it reports; gossip never carries them.
+                            let own_runtime = rdm_core::NodeRuntime { runtime: Some(runtime.clone()), data_dir: Some(cfg.data_dir.display().to_string()) };
+                            digest_view.hold_runtime(&node_id, &incarnation, own_runtime.clone());
                             // This admin owns its properties just as an ordinary node does. Bind
                             // actual metadata before any readiness hook or role can publish Ready.
                             {
@@ -1908,11 +1911,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 tokio::spawn(super::rows_writer::keep_mesh_rows(writer, writes, stop, commands.clone()))
                             };
                             if let Some(a) = adoption {
-                                let digest = digest.clone();
+                                let (digest_view, id, inc) = (digest_view.clone(), node_id.clone(), incarnation.clone());
                                 a.publish(move |f, dir| {
-                                    let mut d = digest.lock().unwrap();
-                                    d.node.runtime = Some(f.clone());
-                                    d.data_dir = Some(dir);
+                                    digest_view.hold_runtime(&id, &inc, rdm_core::NodeRuntime { runtime: Some(f.clone()), data_dir: Some(dir) });
                                 })
                                 .await
                                 .map_err(|e| e.to_string())?;
@@ -1943,9 +1944,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         })
                                     }),
-                                    install: Arc::new(move |d: &MeshDigest| {
+                                    install: Arc::new(move |d: &MeshDigest, runtime: &rdm_core::NodeRuntime| {
                                         // The same effect hearing the digest on gossip has: where the key is, and the
                                         // live resolver's birth (which cancels every dial aimed at the key's old address).
+                                        // The runtime and data dir its join reported are what this admin manages it with.
+                                        m.topology_view().digest_view.hold_runtime(&d.node.node_id, &d.node.incarnation, runtime.clone());
                                         m.learn(d.clone(), "join");
                                         if let Ok(endpoint_id) = d.node.endpoint_id.0.parse::<iroh::PublicKey>() {
                                             let applied = resolver.apply(
@@ -2178,12 +2181,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let turn = stop.turn("ready").await;
                                                 let me = digest.lock().unwrap().node.location();
                                                 let me_id = &node_id;
+                                                // The live births of its own mesh: the ones it may manage.
                                                 let held: Vec<MeshDigest> = digest_view
                                                     .current(digest_view.staleness_floor())
                                                     .into_iter()
-                                                    .filter(|d| d.node.node_id != node_id && d.status != rdm_core::model::NodeStatus::Leaving)
+                                                    .filter(|d| d.node.node_id != node_id && d.node.mesh == mesh_name && d.status != rdm_core::model::NodeStatus::Leaving)
                                                     .collect();
-                                                let mut blocked = take_over_blockers(&held, &*provider);
+                                                let mut blocked = take_over_blockers(&held, |d| digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).and_then(|r| r.runtime), &*provider);
                                                 if let Some(dir) = &day0 {
                                                     match adoption_missing(dir).await {
                                                         Ok(missing) => blocked.extend(missing.into_iter().map(|s| format!("{me_id}: no Complete receipt for its own {s}"))),
@@ -2428,6 +2432,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             client: node_rpc.client.clone(),
                                             server: rpc_server.clone(),
                                             digest: digest.clone(),
+                                            join_runtime: own_runtime.clone(),
                                             rafka_time: rafka_time.clone(),
                                             accepted: accepted.clone(),
                                             builds: builds_dyn.clone(),
@@ -3080,7 +3085,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 );
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
-                                                    topology_view.digest_view.all().into_iter().find(|d| d.node.mesh == mesh && d.node.node_id.as_str() == publisher).and_then(|d| d.mesh_id)
+                                                    topology_view.digest_view.all().into_iter().find(|d| d.node.mesh == mesh && d.node.node_id.as_str() == publisher).and_then(|d| topology_view.digest_view.mesh_id_of(&d.node.mesh))
                                                 });
                                                 // Decide on the view as it is now: a cached view can predate the primary record this admin holds
                                                 // (a hand-over just taken), and a role is announced from the decision, never from a stale one.
@@ -3406,6 +3411,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         joining: Some(joining),
         resolve: Some(resolve),
         digest: join_digest,
+        runtime: join_runtime,
         enter: Some(enter),
         joined: None,
         hook_started: None,
