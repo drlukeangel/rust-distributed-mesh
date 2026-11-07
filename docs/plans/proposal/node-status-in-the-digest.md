@@ -190,6 +190,72 @@ Exact old and new text. Nothing is applied before Luke's yes.
     top-up below); a Digest from a birth it does not hold is a sync issue. Nothing of its own mesh
     reaches it from its mesh-primary over gossip."
 
+31. **TopologyFull row, use, first sentence**
+    Old: "the complete Mesh with loads: what every node-admin holds of every Mesh for routing and control decisions."
+    New: "the complete Mesh: what every node-admin holds of every Mesh for routing and control decisions."
+    (if open item 4 is yes)
+32. **§2 overview, the forwarding line**
+    Old: "       as deltas backed by periodic full snapshots, loads omitted"
+    New: "       as the differential of each peer Mesh from the last delta; no full on the mesh channel"
+33. **§3.3, the paragraph before the table**
+    Old: "The backbone stays the rich source: every node-admin holds every Mesh complete, loads included,
+    because routing and control decisions are an admin's. Inside a Mesh, ordinary nodes need a remote
+    Mesh's identity, endpoints with freshness, status, overlays and deletions, and not its loads; one"
+    New: "The backbone stays the rich source: every node-admin holds every Mesh complete, because
+    routing and control decisions are an admin's. Inside a Mesh, ordinary nodes need a remote Mesh's
+    identity, endpoints, status, overlays and deletions; one"
+    (the loads words if open item 4 is yes; the "with freshness" words in any case)
+34. **§3.3 table, two rows**
+    Old: "MESH PRIMARY -> BACKBONE    TopologyFull, the complete Mesh with loads, versioned, anti-entropy + change"
+    New: "MESH PRIMARY -> BACKBONE    TopologyFull, the complete Mesh, versioned, anti-entropy + change"
+    Old: "PEER PRIMARY -> OWN MESH    TopologyDelta, base_version -> topology_version, no loads, on change"
+    New: "PEER PRIMARY -> OWN MESH    TopologyDelta, the differential from the last delta, base_version -> topology_version, on change"
+35. **§3.1 frame examples, the `TopologyFull` example's one `digests` entry**
+    Old:
+    ```json
+    {
+      "fabric_id": "fabric1",
+      "node": {
+        "node_id": "k8pag1qx95gw",
+        "mesh": "mesh1",
+        "type": "node",
+        "path": "mesh1.node",
+        "name": "1",
+        "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+        "transport_addr": "127.0.0.1:54473",
+        "incarnation": "0000000000000008",
+        "supersedes": null,
+        "runtime": null
+      },
+      "status": "ready",
+      "admin_api_base": null,
+      "digest_seq": 42,
+      "emitted_at_rafka_ms": 1718290000050,
+      "data_dir": null,
+      "mesh_id": "mesh1",
+      "in_flight": null,
+      "load": null,
+      "gossip": null
+    }
+    ```
+    New:
+    ```json
+    {
+      "node": {
+        "node_id": "k8pag1qx95gw",
+        "mesh": "mesh1",
+        "type": "node",
+        "path": "mesh1.node",
+        "name": "1",
+        "endpoint_id": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a",
+        "transport_addr": "127.0.0.1:54473",
+        "incarnation": "0000000000000008"
+      },
+      "status": "ready"
+    }
+    ```
+    (the entry's `node` fields are the record's identity and endpoints as the page's example names them today, checked against the page before landing; the example's `Digest` frame becomes `{ "status": "ready" }` under its envelope)
+
 ### lifecycles/node-mesh-join.md
 
 17. **Completion row**
@@ -257,6 +323,10 @@ Exact old and new text. Nothing is applied before Luke's yes.
     third, the application's."
     New: "A node's status is its one state family; an application's own entity lifecycle is the
     second, the application's."
+
+36. **§2.5 table, the gossip row** (if open item 4 is yes)
+    Old: "| per-heartbeat liveness — `cpu_used`, `ram_used`, reachability | gossip, in memory only | every node, about itself |"
+    New: "| per-heartbeat liveness: the node's Digest arriving, carrying its status | gossip, in memory only | every node, about itself |"
 
 ### lifecycles/states.md
 
