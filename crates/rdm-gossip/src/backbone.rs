@@ -423,8 +423,13 @@ impl Backbone {
         // is either wholly before it or wholly after.
         let (full, version, snapshot_id, sent, bumped) = {
             let mut v = self.version.lock().unwrap();
-            let full = self.own_full(topology_view, members);
             let before = v.version();
+            // A read of this mesh it installed after taking the role, above the version it holds: the
+            // mesh's version continues from that read's (Q391), so the mesh's sequence never goes back.
+            if let Some((read, read_full)) = self.channels.topology_view.view.read_version.lock().unwrap().take() {
+                v.continue_from(read, read_full);
+            }
+            let full = self.own_full(topology_view, members);
             let version = v.observe(&full);
             // What this primary publishes is its floor for its own source (gossip.md receive rules:
             // "against the installed floor, including a topology read"), moved under the same hold.

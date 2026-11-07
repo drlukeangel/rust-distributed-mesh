@@ -86,6 +86,10 @@ pub(crate) struct View {
     /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
     /// the topology view; `None` while the birth holds its launch name (`node`).
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
+    /// The highest version of this node's own mesh a topology read installed while this node was its
+    /// mesh's primary, with that topology: its next publication continues the mesh's version from it
+    /// (Q391: the mesh's sequence never goes back, whichever mesh-primary sends it).
+    pub(crate) read_version: Arc<Mutex<Option<(u64, Full)>>>,
 }
 
 impl View {
@@ -593,6 +597,15 @@ impl View {
             self.installed(i, fabric, side, 0, prior);
             drop(rx);
             order.installed_projection(&i.mesh, &i.publisher, i.topology_version, &i.full, None);
+            drop(order);
+            // A read of its own mesh at the mesh-primary, after it took the role: the mesh's version
+            // continues from it at its next publication (Q391).
+            if i.mesh == self.mesh && self.primary.load(Ordering::Relaxed) {
+                let mut read = self.read_version.lock().unwrap();
+                if read.as_ref().is_none_or(|(held, _)| *held < i.topology_version) {
+                    *read = Some((i.topology_version, i.full.clone()));
+                }
+            }
         } else {
             drop(rx);
             drop(order);

@@ -200,3 +200,55 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
         p_node.ep.close().await;
     });
 }
+
+/// CONTRACT (Q391: a node-admin taking the mesh-primary role continues the mesh's version, so the
+/// mesh's sequence never goes back; Q389: the mesh's version orders a read, whichever mesh-primary
+/// served it): a mesh-primary that took the role holding no version of its mesh publishes it at
+/// version 1; a topology read of its own mesh it then installs, at the version its predecessor left
+/// the mesh's nodes holding (11), continues the mesh's version: its next publication publishes the
+/// mesh at 12 and a read of it is served there. A read below the version it published is refused
+/// and moves nothing. Must NOT happen: the mesh-primary publishing and serving its mesh below the
+/// version its nodes hold, so their reads of it are refused as stale (node_records
+/// `current_node_reads_survive_fabric_primary_restart`, seat 11: mesh2.node.1's top-up from the new
+/// mesh-primary `via-stale frame_key=topology_version=1 held_key=topology_version=11`).
+#[test]
+fn a_mesh_primary_that_reads_a_higher_version_of_its_own_mesh_continues_the_mesh_version_from_it() {
+    let dir = crate::evidence_dir();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-served-topology-read-version").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let p_node = node().await;
+        let mesh_id = MeshId::mint();
+        let p = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &mesh_id, "mesh1.node-admin.2", rdm_transport::clock::os_clock(), Default::default());
+        let p_channels = rdm_gossip::channel::Channels::new(&p_node.gossip, &p_node.ep, &p).unwrap();
+        p_channels.join(rdm_gossip::channel::ChannelId::mesh(p.fabric_id(), p.mesh_id()), vec![]).await.unwrap();
+        let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
+        p_channels.set_publisher(&rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() });
+        p_channels.join(rdm_gossip::channel::ChannelId::backbone(p.fabric_id()), vec![]).await.unwrap();
+        let bb = p_channels.backbone().expect("the backbone is joined");
+        bb.set_mesh_primary(true);
+        p_channels.publish(&digest(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", &p_node_id, &p_birth, NodeStatus::Ready, 0, 41_301)).await.unwrap();
+        let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
+        let one_at = |seq| digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &one, &one_birth, NodeStatus::Ready, seq, 41_311);
+        assert!(p.digest_view.record(one_at(4)));
+        let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
+        let served = || of(p.held_topology(&own()), "mesh1").topology_version;
+
+        // It took the role holding no version of its mesh: its first publication is version 1.
+        assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
+        assert_eq!(served(), 1, "the first publication of a mesh-primary that held no version of its mesh");
+
+        // A read of its own mesh, served by a node of its mesh, at the version the mesh's nodes hold.
+        let predecessor = PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
+        let held_by_the_mesh = SourceSnapshot { mesh: "mesh1".into(), mesh_id: None, publisher: predecessor, topology_version: 11, digests: vec![one_at(3)], in_flight: vec![], deleted: vec![] };
+        assert!(matches!(take_read(&p_channels, &held_by_the_mesh, 7), Taken::Installed(_)), "the read of version 11 installs");
+        assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
+        assert_eq!(served(), 12, "the next publication continues the mesh's version from the read's (its topology is another)");
+
+        // A read below the version it published is refused and moves nothing.
+        let behind = SourceSnapshot { topology_version: 5, ..held_by_the_mesh.clone() };
+        assert!(matches!(take_read(&p_channels, &behind, 8), Taken::Refused(_)), "a read of version 5 is below the published 12");
+        assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
+        assert_eq!(served(), 12, "an unchanged mesh republishes the version it holds");
+        p_node.ep.close().await;
+    });
+}
