@@ -770,7 +770,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
-            require(root, TOPOLOGY_SOURCE, &["chunks_measured", "take_read_chunk", "WireDigest::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
+            require(root, TOPOLOGY_SOURCE, &["chunks_measured", "take_read_chunk", "ReadNode::of", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_fifteen_variant_wire_schema"], ratchet, &mut out);
             // A starting or role-taking admin reads the Build's committed records from storage and
             // absorbs them whole (Q292; op 0x1F reserved): `committed_facts`, `absorb_build`.
