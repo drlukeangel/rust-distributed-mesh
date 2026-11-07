@@ -62,8 +62,10 @@ fn story(kind: StatusEvent, scenario: Story) {
             }
             assert!(receiver.digest_view.routable(op.node_id.as_str()));
         }
-        let frame = |op: LifecycleOp, version| kind.frame(op, publisher.clone(), version);
-        let successor_frame = |op: LifecycleOp, version| kind.frame(op, successor.clone(), version);
+        // The publisher is the envelope's source: the sender channel's author, set to the successor before
+        // its frames.
+        let frame = |op: LifecycleOp, version| kind.frame(op, version);
+        let successor_frame = |op: LifecycleOp, version| kind.frame(op, version);
         if matches!(scenario, Story::Stale) {
             let mut other = op.clone(); other.node_id = NodeId::mint(); other.incarnation = IncarnationId::mint(); other.path = "mesh1.node".into(); other.name = "3".into(); other.operation = rdm_core::OperationId::node(format!("node.{command}"), &other.node_id);
             let other_id = other.node_id.to_string();
@@ -101,8 +103,8 @@ fn story(kind: StatusEvent, scenario: Story) {
             assert!(!receiver.digest_view.in_flight().iter().any(|o| o.node_id == third.node_id), "a repeat's newer carried revision still orders later projection frames");
         }
         if matches!(scenario, Story::Successor) {
-            // The successor's re-entry ran no effect, and its carried revision still advanced its own
-            // floor: its later frame below that revision is refused as stale and never applied.
+            // The successor's re-entry ran no effect, and its carried revision is the mesh's floor (Q389,
+            // Q391): its later frame below that revision is refused as stale and never applied.
             let mut below = op.clone(); below.node_id = NodeId::mint(); below.path = "mesh1.node".into(); below.name = "5".into(); below.operation = rdm_core::OperationId::node(format!("node.{command}"), &below.node_id);
             crate::forward_gossip_probe(&sender_channels, &successor_frame(below.clone(), 9)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -133,10 +135,10 @@ fn story(kind: StatusEvent, scenario: Story) {
     }
     if matches!(scenario, Story::Stale) {
         assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["held_key"] == "topology_version=21" && s["attributes"]["frame_key"] == "topology_version=20"));
-        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["subject"] == format!("{publisher} mesh1") && s["attributes"]["held_key"] == "topology_version=20" && s["attributes"]["frame_key"] == "topology_version=10"));
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["subject"] == "mesh1" && s["attributes"]["held_key"] == "topology_version=20" && s["attributes"]["frame_key"] == "topology_version=10"));
     }
     if matches!(scenario, Story::Successor) {
-        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["subject"] == format!("{successor} mesh1") && s["attributes"]["held_key"] == "topology_version=10" && s["attributes"]["frame_key"] == "topology_version=9"), "the successor's duplicate recorded its carried revision as its own floor");
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["subject"] == "mesh1" && s["attributes"]["held_key"] == "topology_version=10" && s["attributes"]["frame_key"] == "topology_version=9"), "the mesh's floor orders the successor's frame below it");
     }
 }
 macro_rules! cells {

@@ -77,9 +77,11 @@ async fn node() -> Node {
 /// While the publication waits, it executes the stop of mesh2.node.1 (NodeStopped) and the delete of
 /// mesh2.node-admin.1 (the departure its view takes). Neither is a change of mesh1's own projection, so
 /// the publication returns at its deadline and no earlier; the NodeStopped is stamped by the executor
-/// role with the version the fabric-primary holds, never an acting counter of mesh2; and no span
-/// names the fabric-primary an acting primary. Must NOT happen: the executed stop or delete waking
-/// the publication to publish a mesh topology of mesh2, whose primary is gone.
+/// role with the version the fabric-primary holds of mesh2 (v7, from a read), as gossip.md's
+/// `NodeStopped` row states ("`topology_version` the version of the subject's mesh at which the subject
+/// changed"), never its own mesh's counter nor an acting counter of mesh2; and no span names the
+/// fabric-primary an acting primary. Must NOT happen: the executed stop or delete waking the
+/// publication to publish a mesh topology of mesh2, whose primary is gone.
 #[test]
 fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh() {
     let dir = crate::evidence_dir();
@@ -105,6 +107,9 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         for d in [&admin2, &rpc] {
             assert!(fp_m.digest_view.record(d.clone()));
         }
+        // The fabric-primary holds mesh2 at v7, read from mesh2's last primary.
+        let read = rdm_gossip::snapshot::Chunk { mesh: "mesh2".into(), mesh_id: None, publisher: rdm_core::PublisherId { incarnation: admin2.node.incarnation.clone(), node_id: admin2.node.node_id.clone() }, forwarded_by: None, topology_version: 7, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![admin2.clone(), rpc.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new() };
+        assert!(matches!(fp_m_channels.take_read_chunk(read, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)), "the fabric-primary holds mesh2 at v7");
         // The first publication has published; the next waits.
         fp_bb.publish(&fp_m, fp_bb.own_members(&fp_m)).await;
 
@@ -136,12 +141,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
             .unwrap_or_else(|| panic!("the stop mesh1.node-admin.1 executed is spanned: {spans:#?}"));
         println!("{CELL}: status event trace {} role {} topology_version {}", event["trace_id"], event["attributes"]["role"], event["attributes"]["topology_version"]);
         assert_eq!(event["attributes"]["role"], "executor", "a stop of a peer mesh's node is stamped by the executor, not as that mesh's publisher: {event}");
-        let published = spans
-            .iter()
-            .find(|s| s["name"] == "rdm.mesh.backbone.update.via-topology-version" && s["attributes"]["mesh"] == "mesh1")
-            .and_then(|s| s["attributes"]["topology_version"].as_u64().or_else(|| s["attributes"]["topology_version"].as_str().and_then(|v| v.parse().ok())))
-            .expect("the fabric-primary's own mesh was published at a version");
-        assert_eq!(stamped, published, "stamped with the version the fabric-primary holds of its own mesh, no counter of mesh2");
+        assert_eq!(stamped, 7, "stamped with the version the fabric-primary holds of mesh2, neither its own mesh's counter nor an acting counter of mesh2");
         assert_eq!(publisher.node_id, fp_own.node.node_id, "the executor stamps the event under its own node id");
         for name in ["rdm.mesh.backbone.update.via-acting-primary", "rdm.mesh.backbone.reject.via-mesh-has-primary"] {
             let found: Vec<&Value> = spans.iter().filter(|s| s["name"] == name).collect();

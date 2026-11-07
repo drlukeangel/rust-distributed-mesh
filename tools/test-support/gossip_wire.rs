@@ -8,9 +8,10 @@ pub fn author() -> Birth {
 }
 pub fn authored(f: &Frame) -> Frame {
     let author = match f.data() {
-        // A Digest is authored by its own birth at its sequence (`Frame::digest`).
-        Frame::Digest { .. } => return f.clone(),
-        Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. } => Birth::publisher(&author().fabric, publisher),
+        // A Digest is authored by its own birth at its sequence (`Frame::digest`), a differential by its
+        // forwarding mesh-primary at the peer mesh's version (`Frame::authored_delta`).
+        Frame::Digest { .. } | Frame::TopologyDelta { .. } => return f.clone(),
+        Frame::NodeRestarting { publisher, .. } => Birth::publisher(&author().fabric, publisher),
         Frame::FabricStatus { fabric, .. } => Birth { fabric: fabric.clone(), ..author() },
         _ => author(),
     };
@@ -56,9 +57,13 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
             source = format!("rdm://{}/{}/{}", a.fabric, p.node_id, p.incarnation); ms = *t; seq = Some(format!("{v:020}"));
             (format!("mesh/{}/publisher/{}/{}/{}", esc(mesh), a.fabric, p.node_id, p.incarnation), vec![mesh.clone(), a.fabric.to_string(), p.node_id.to_string(), p.incarnation.to_string(), v.to_string(), a.fabric.to_string(), a.node.to_string(), a.incarnation.to_string(), s.to_string(), c.to_string()])
         }
-        Frame::TopologyDelta { mesh, source_publisher: p, base_version: b, topology_version: v, published_at_rafka_ms: t, .. } => {
-            source = format!("rdm://{}/{}/{}", a.fabric, p.node_id, p.incarnation); ms = *t; seq = Some(format!("{v:020}"));
-            (format!("mesh/{}/publisher/{}/{}/{}", esc(mesh), a.fabric, p.node_id, p.incarnation), vec![mesh.clone(), a.fabric.to_string(), p.node_id.to_string(), p.incarnation.to_string(), b.to_string(), v.to_string()])
+        Frame::TopologyDelta { mesh, base_version: b, chunk_index: c, .. } => {
+            // The envelope names the forwarding mesh-primary, the peer mesh's version and the time; the
+            // body repeats none of them.
+            let ctx = f.context().expect("a differential carries its authored context");
+            let (by, v) = (&ctx.source, ctx.version().expect("a differential's sequence"));
+            source = format!("rdm://{}/{}/{}", by.fabric, by.node, by.incarnation); ms = ctx.time_ms; seq = Some(format!("{v:020}"));
+            (format!("mesh/{}", esc(mesh)), vec![mesh.clone(), b.to_string(), v.to_string(), c.to_string()])
         }
         Frame::MeshStatus { mesh, changed_at_rafka_ms: t, .. } => {
             ms = *t; seq = Some(format!("00000000000000000002.{t:020}")); (format!("mesh/{}/status", esc(mesh)), vec![mesh.clone(), "2".into(), t.to_string()])
@@ -69,7 +74,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
         }
         Frame::NodeDeleting { op: o, .. } | Frame::NodeDeleted { op: o, .. } | Frame::NodeRestarting { op: o, .. } | Frame::NodeStopped { op: o, .. } | Frame::NodeConnectionsDeleting { op: o, .. } | Frame::NodeConnectionsDeleted { op: o, .. } | Frame::NodeLeaving { op: o, .. } | Frame::NodeLeft { op: o, .. } => {
             ms = o.event_at_rafka_ms;
-            if let Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. } = f.data() { source = format!("rdm://{}/{}/{}", a.fabric, publisher.node_id, publisher.incarnation); }
+            if let Frame::NodeRestarting { publisher, .. } = f.data() { source = format!("rdm://{}/{}/{}", a.fabric, publisher.node_id, publisher.incarnation); }
             (format!("birth/{}/{}/{}", a.fabric, o.node_id, o.incarnation), vec![o.build_id.clone(), o.operation.action.clone(), o.operation.step.map(|step| step.to_string()).unwrap_or_default(), o.operation.occurrence.as_ref().map(ToString::to_string).unwrap_or_default(), o.mesh.clone(), o.node_id.to_string(), o.incarnation.to_string()])
         }
         Frame::Concern { node_id, incarnation, observer, .. } => (format!("birth/{}/{node_id}/{incarnation}", a.fabric), vec![node_id.to_string(), incarnation.to_string(), observer.clone()]),

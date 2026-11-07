@@ -173,7 +173,7 @@ impl Backbone {
                             .in_flight()
                             .iter()
                             .any(|op| !op.is_stop() && op.node_id == full.digests()[0].node.node_id);
-                    let _ = m.forward_path.source_with_clock(&me, &source_mesh, &publisher, version, &full, || m.topology_view.clock.now_rafka_ms());
+                    let _ = m.forward_path.source_with_clock(&me, &source_mesh, version, &full, || m.topology_view.clock.now_rafka_ms());
                     if is_final_delete {
                         m.topology_view.view.forwarder.lock().unwrap().remove(&source_mesh);
                     }
@@ -349,7 +349,7 @@ impl Backbone {
         // holds of it from its own mesh channel, or a read of its own Mesh (gossip.md §3.3). The role,
         // its baseline and its term switch together under the forwarder's lock; then each peer mesh this
         // node holds goes in as the differential from there.
-        let held_in_mesh: Vec<(String, PublisherId, u64, Full)> = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources_in_mesh().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
+        let held_in_mesh: Vec<(String, u64, Full)> = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources_in_mesh().into_iter().filter(|(m, ..)| m != &self.mesh).map(|(m, _, v, f)| (m, v, f)).collect();
         let forwarder_changed = self.channels.forward_path.set_role(primary, &held_in_mesh);
         // The role's span opens as the role switches, before the forward path sends anything under it:
         // the held peer meshes go in after it, on the forward path's own task.
@@ -441,7 +441,7 @@ impl Backbone {
             let sent = if self.withholds("aggregate", "mesh") {
                 topology_view.clock.now_rafka_ms()
             } else {
-                self.channels.forward_path.source_with_clock(&me_name, &self.mesh, &publisher, version, &full, || topology_view.clock.now_rafka_ms())
+                self.channels.forward_path.source_with_clock(&me_name, &self.mesh, version, &full, || topology_view.clock.now_rafka_ms())
             };
             (full, version, snapshot_id, sent, version != before)
         };
@@ -562,7 +562,7 @@ impl Backbone {
             }
         }
         for (mesh, (publisher, version, full)) in held {
-            self.channels.forward_path.source_with_clock(&me_name, &mesh, &publisher, version, &full, || self.channels.topology_view.clock.now_rafka_ms());
+            self.channels.forward_path.source_with_clock(&me_name, &mesh, version, &full, || self.channels.topology_view.clock.now_rafka_ms());
         }
     }
 
@@ -583,8 +583,10 @@ impl Backbone {
     ///   in_flight"), never waiting for the publication, which a delete applied right behind it would
     ///   find already deleted;
     /// - otherwise (the executor of a peer mesh's node, the fabric-primary among them; nobody
-    ///   publishes a live mesh on its behalf, R-RX4): this admin's own publisher at the version it
-    ///   holds, and the span names the role.
+    ///   publishes a live mesh on its behalf, R-RX4): this admin's own birth, at the version it holds
+    ///   of the subject's mesh (gossip.md `NodeStopped`, `NodeDeleting`: "`topology_version` the
+    ///   version of the subject's mesh at which the subject changed"; Q389: a mesh's version is not
+    ///   keyed on who published it), and the span names the role.
     ///
     /// Returns the publisher and version stamped.
     pub async fn publish_status_event(&self, kind: StatusEvent, op: &LifecycleOp) -> (PublisherId, u64) {
@@ -600,7 +602,7 @@ impl Backbone {
             ("mesh-primary", version)
         } else {
             self.channels.topology_view.view.apply_status_event(kind, op, None, "executed");
-            ("executor", self.version.lock().unwrap().version())
+            ("executor", self.channels.topology_view.view.order.lock().unwrap().floor(&op.mesh, None).unwrap_or(0))
         };
         tracing::info_span!(
             "rdm.mesh.topology.update.via-status-event",
@@ -616,7 +618,7 @@ impl Backbone {
             role,
         )
         .in_scope(|| tracing::info!("a status event this admin executed: applied to its own view, stamped with the version at which its subject changed, broadcast on its mesh channel"));
-        if let Err(e) = self.channels.mesh().broadcast(&kind.frame(op.clone(), publisher.clone(), version)).await {
+        if let Err(e) = self.channels.mesh().broadcast(&kind.frame(op.clone(), version)).await {
             tracing::info!(error = %e, frame = kind.name(), "the status event was not sent on the mesh channel");
         }
         (publisher, version)

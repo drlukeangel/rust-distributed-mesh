@@ -49,8 +49,8 @@ pub(crate) struct StopMark {
     /// how: what the mesh-primary holds the birth from again at `node.joined`, and what a member
     /// holds an own-mesh birth from again when its projection ends the stop.
     pub(crate) latest: Option<(MeshDigest, Instant, Heard)>,
-    /// The highest version, and its publisher, at which a projection of the birth's mesh this view
-    /// applied carried the stop. A later projection of that source listing the birth moved past it.
+    /// The highest version of the birth's mesh, and who sent it, at which a projection of that mesh this
+    /// view applied carried the stop. A later projection of the mesh listing the birth moved past it.
     pub(crate) carried: Option<(String, u64)>,
 }
 
@@ -60,7 +60,7 @@ pub(crate) struct StopMark {
 /// that never carried it here.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Target {
-    /// The source's publisher (its exact birth): the version's revision.
+    /// The birth that sent the frame, for spans: the version is the mesh's, whoever sent it (Q389).
     pub(crate) publisher: String,
     /// Where the frame arrived.
     pub(crate) channel: &'static str,
@@ -640,10 +640,10 @@ impl DigestView {
         self.stopped_carried(op, None)
     }
 
-    /// [`Self::stopped`], from a `NodeStopped` whose primary publisher changed the subject at
-    /// `carried`'s version (`(publisher, topology_version)`): the stop is held as carried there, so a
-    /// later projection of that publisher listing the birth moves past it even when no projection
-    /// carrying the stop reached this view.
+    /// [`Self::stopped`], from a `NodeStopped` whose mesh-primary changed the subject at `carried`'s
+    /// version (`(publisher, topology_version)`, the publisher for spans): the stop is held as carried
+    /// there, so a later projection of the mesh listing the birth moves past it even when no
+    /// projection carrying the stop reached this view.
     pub(crate) fn stopped_carried(&self, op: LifecycleOp, carried: Option<(String, u64)>) -> bool {
         if self.is_deleted(op.node_id.as_str()) {
             reject_deleted_overlay(&self.observer_name.lock().unwrap(), &op, "node-stopped");
@@ -1018,12 +1018,12 @@ impl DigestView {
 
     /// A projection frame applied: every stopped birth whose stop the source carried, before the
     /// frame at the version held or after it at the frame's version, is marked carried at the highest
-    /// such version of that publisher.
+    /// such version of the mesh, whichever of its mesh-primaries sent it (Q389, Q391).
     pub(crate) fn note_stops_carried(&self, target: &Target) {
         let mut marks = self.stopped_marks.lock().unwrap();
         let mut note = |key: &(String, String), publisher: &str, version: u64| {
             if let Some(m) = marks.get_mut(&key.0).filter(|m| m.incarnation.as_str() == key.1) {
-                if m.carried.as_ref().is_none_or(|(p, v)| p != publisher || version > *v) {
+                if m.carried.as_ref().is_none_or(|(_, v)| version > *v) {
                     m.carried = Some((publisher.to_string(), version));
                 }
             }
@@ -1048,9 +1048,9 @@ impl DigestView {
     /// when a projection of the source this view applied carried the stop at some version, this frame
     /// is newer than that version, and the projection after it no longer carries the stop; then the
     /// stop ends here (`Some(true)`, [`Self::stop_ended_in_projection`]). A refresh at the version that
-    /// carried it, or a projection that never carried it here, is refused by name (`Some(false)`). A
-    /// new publisher's projection is the next revision of the source (receivers install its full first):
-    /// the receive path took it as newer than every publication of the mesh it held (R-RX3).
+    /// carried it, or a projection that never carried it here, is refused by name (`Some(false)`). The
+    /// mesh's version orders them, whichever of its mesh-primaries sent either: a mesh-primary taking
+    /// the role continues the mesh's version (Q389, Q391).
     /// Decided and taken under one hold of the stop marks: a node's backbone and mesh channel each
     /// apply their projections under their own receiver, and the stop ends on one of them, once.
     pub(crate) fn stopped_entry(&self, d: &MeshDigest, target: &Target) -> Option<bool> {
@@ -1058,7 +1058,7 @@ impl DigestView {
         let mark = {
             let mut marks = self.stopped_marks.lock().unwrap();
             let held = marks.get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation)?;
-            let moved = held.carried.as_ref().is_some_and(|(publisher, version)| *publisher != target.publisher || target.version > *version) && !target.post_stops.contains(&key);
+            let moved = held.carried.as_ref().is_some_and(|(_, version)| target.version > *version) && !target.post_stops.contains(&key);
             if !moved {
                 drop(marks);
                 self.refuse_in_projection(d, target);

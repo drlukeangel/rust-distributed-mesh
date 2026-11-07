@@ -156,7 +156,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let (_, held) = admin.topology_view.held_source_version("mesh1").expect("mesh1.node-admin.2 holds mesh1 from its read");
         let (stopped_id, stopped_inc) = (NodeId::mint(), IncarnationId::mint());
         let stop = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "81ey2zm6h456".into(), operation: rdm_core::OperationId::new("node.stop", rdm_core::OperationSubject::Birth { node_id: stopped_id.clone(), incarnation: stopped_inc.clone() }), node_id: stopped_id.clone(), incarnation: stopped_inc.clone(), path: "mesh1.node".into(), name: "9".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        let stopped = rdm_gossip::status::StatusEvent::Stopped.frame(stop, root_publisher.clone(), held + 1).authored(&rdm_gossip::envelope::Birth::publisher(&root_digest.fabric_id, &root_publisher), 0, 1);
+        let stopped = rdm_gossip::status::StatusEvent::Stopped.frame(stop, held + 1).authored(&rdm_gossip::envelope::Birth::publisher(&root_digest.fabric_id, &root_publisher), 0, 1);
         channels.wait_for_neighbour().await;
         let mut heard_again = root_digest.clone();
         heard_again.node.node_id = stopped_id.clone();

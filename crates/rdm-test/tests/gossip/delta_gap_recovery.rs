@@ -141,13 +141,14 @@ impl Observer {
         self.seen.lock().unwrap().clone()
     }
 
-    /// The deltas for `mesh` heard on mesh1's channel, in arrival order: (heard, base, to, changed, removed).
+    /// The deltas for `mesh` heard on mesh1's channel, in arrival order: (heard, base, to, added and
+    /// changed, removed). The version a delta moves to is its envelope's `sequence`.
     fn deltas_of(&self, mesh: &str) -> Vec<(u64, u64, u64, usize, usize)> {
         self.all()
             .into_iter()
             .filter(|x| x.channel == "mesh1")
             .filter_map(|x| match x.frame.data() {
-                Frame::TopologyDelta { mesh: m, base_version, topology_version, changed, removed, .. } if m == mesh => Some((x.heard_at_ns, *base_version, *topology_version, changed.len(), removed.len())),
+                Frame::TopologyDelta { mesh: m, base_version, added, changed, removed, .. } if m == mesh => Some((x.heard_at_ns, *base_version, x.frame.delta_version().unwrap_or_default(), added.len() + changed.len(), removed.len())),
                 _ => None,
             })
             .collect()
@@ -310,15 +311,16 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let gap_frame = Frame::TopologyDelta {
         mesh: "mesh2".into(),
         mesh_id: None,
-        source_publisher: publisher.clone(),
         base_version: latest + 1,
-        topology_version: latest + 2,
-        published_at_rafka_ms: os_now_ms(),
-        changed: vec![forged],
+        chunk_index: 0,
+        chunk_count: 1,
+        added: vec![],
+        changed: vec![rdm_core::wire::NodeStatusEntry::of(&forged)],
         removed: vec![],
         in_flight: vec![],
         deleted: vec![],
-    };
+    }
+    .authored_delta(&rdm_gossip::envelope::Birth::publisher(&forged.fabric_id, &publisher), latest + 2, os_now_ms());
     let t_gap = now_ns();
     observer.broadcast(&gap_frame).await;
     let gap = wait_for("the member names the version gap", Duration::from_secs(30), || async {
@@ -465,7 +467,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         "healthy_control": { "delta": { "base": delta_a.1, "to": delta_a.2, "changed": delta_a.3, "removed": delta_a.4 }, "deltas_heard_in_window": after_a.len() - deltas_before, "member_applied_span": { "trace_id": applied_a["trace_id"], "span_id": applied_a["span_id"] } },
         "cut": { "changed_during_cut": { "base": delta_e.1, "to": delta_e.2 }, "cut_ms": (healed_at - cut_at) / 1_000_000, "replays": replays.iter().map(|sp| json!({ "frames": attr(sp, "frames"), "deltas": attr(sp, "deltas"), "bytes": attr(sp, "bytes") })).collect::<Vec<_>>(), "member_delta_span": { "trace_id": delta_after_heal["trace_id"], "span_id": delta_after_heal["span_id"], "topology_version": version_now } },
         "gap": {
-            "injected": { "base": latest + 1, "to": latest + 2, "source_publisher": publisher.to_string() },
+            "injected": { "base": latest + 1, "to": latest + 2, "author": publisher.to_string() },
             "member_gap_span": { "trace_id": gap["trace_id"], "span_id": gap["span_id"], "held_version": num(&gap, "held_version") },
             "top_up_span": { "trace_id": topped["trace_id"], "span_id": topped["span_id"], "served_by": attr(&topped, "served_by"), "installed": attr(&topped, "installed") },
             "resumed_delta": { "base": delta_c.1, "to": delta_c.2, "member_applied_span": { "trace_id": applied_c["trace_id"], "span_id": applied_c["span_id"] } },

@@ -112,24 +112,32 @@ fn a_projection_entry_carries_the_nodes_status_and_its_frame_the_meshs_id() {
     assert_eq!(carried, Some(mesh_id.clone()), "the frame names the mesh's id");
     assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is its node's");
 
+    // The differential (Q387, Q389): the mesh, its id, the base version, the chunk's index and count,
+    // then `added` (each node entry: node id, incarnation, type, path, name, endpoint id, transport
+    // address, status, primary roles), `changed`, `removed`, `in_flight` and `deleted`. The forwarder
+    // is the envelope's `source` and the peer mesh's version its `sequence`; the body repeats neither.
+    let _ = publisher;
     let delta = Frame::TopologyDelta {
         mesh: "mesh1".into(),
         mesh_id: Some(mesh_id.clone()),
-        source_publisher: publisher,
         base_version: 2,
-        topology_version: 3,
-        published_at_rafka_ms: 5,
-        changed: vec![digest("ready")],
+        chunk_index: 0,
+        chunk_count: 1,
+        added: vec![rdm_core::wire::NodeEntry::of(&digest("ready"))],
+        changed: vec![],
         removed: vec![],
         in_flight: vec![],
         deleted: vec![],
-    };
-    let delta_hex = format!("02 05 6d65736831 {WIRE_MESH_ID} 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {} 00 00 00", wire_entry("01"));
+    }
+    .authored_delta(&crate::gossip_wire::author(), 3, 5);
+    let delta_hex = format!("02 05 6d65736831 {WIRE_MESH_ID} 02 00 01 01 0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 01 00 00 00 00 00");
     let delta_golden = golden(&delta, &bytes(&delta_hex));
-    assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: the mesh's id, one changed projection entry");
-    let Frame::TopologyDelta { mesh_id: carried, changed, .. } = Frame::decode(&delta_golden).expect("the TopologyDelta frame decodes").into_data() else { panic!("not TopologyDelta") };
+    assert_eq!(delta.golden_encode(), delta_golden, "TopologyDelta: the mesh's id, the base, one chunk of one, one added node entry");
+    let back = Frame::decode(&delta_golden).expect("the TopologyDelta frame decodes");
+    assert_eq!((back.delta_version(), back.context().map(|c| c.source.clone())), (Some(3), Some(crate::gossip_wire::author())), "the version and the forwarder are the envelope's");
+    let Frame::TopologyDelta { mesh_id: carried, added, .. } = back.into_data() else { panic!("not TopologyDelta") };
     assert_eq!(carried, Some(mesh_id), "the frame names the mesh's id");
-    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is its node's");
+    assert_eq!(added.iter().map(|e| e.status).collect::<Vec<_>>(), vec![NodeStatus::Ready], "the entry's status is its node's");
 }
 
 /// The complete gossip message is the standard context list followed by opaque postcard data.

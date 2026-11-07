@@ -143,12 +143,7 @@ impl Context {
                 identity.extend(birth_parts(author)); identity.push(snapshot_id.to_string()); identity.push(chunk_index.to_string());
                 format!("mesh/{}/publisher/{}", escaped(mesh), path(&birth_parts(&source)))
             }
-            Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, .. } => {
-                source = Birth::publisher(&author.fabric, source_publisher);
-                sequence = Some(p(*topology_version)); time_ms = *published_at_rafka_ms;
-                identity.push(mesh.clone()); identity.extend(birth_parts(&source)); identity.push(base_version.to_string()); identity.push(topology_version.to_string());
-                format!("mesh/{}/publisher/{}", escaped(mesh), path(&birth_parts(&source)))
-            }
+            Frame::TopologyDelta { .. } => panic!("a differential is authored at its mesh's version (Frame::authored_delta)"),
             Frame::MeshStatus { mesh, changed_at_rafka_ms, .. } => {
                 time_ms = *changed_at_rafka_ms;
                 sequence = Some(format!("{}.{}", p(primary_revision), p(time_ms)));
@@ -189,6 +184,20 @@ impl Context {
         let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
         Self { id: format!("{kind}/{}", path(&identity)), source: source.clone(), kind, subject: format!("birth/{}", path(&birth_parts(source))), sequence: Some(p(digest_seq)), time_ms, publication: None, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
+
+    /// A differential's context (`TopologyDelta`): authored by the forwarding mesh-primary `author`, its
+    /// `sequence` the peer mesh's `version` (Q389), its subject the mesh, and its identity the mesh, the
+    /// base version, the version and the chunk: unique within its source, the same on a replay.
+    pub fn delta(frame: &Frame, author: &Birth, version: u64, time_ms: u64) -> Self {
+        let Frame::TopologyDelta { mesh, base_version, chunk_index, .. } = frame.data() else { panic!("Context::delta is a TopologyDelta's") };
+        let kind = TYPES[2].to_string();
+        let identity = vec![mesh.clone(), base_version.to_string(), version.to_string(), chunk_index.to_string()];
+        let (trace, _) = sanitized_trace(rdm_transport::current_traceparent(), rdm_transport::current_tracestate());
+        Self { id: format!("{kind}/{}", path(&identity)), source: author.clone(), kind, subject: format!("mesh/{}", escaped(mesh)), sequence: Some(p(version)), time_ms, publication: None, traceparent: trace.traceparent, tracestate: trace.tracestate }
+    }
+
+    /// A topology frame's version: its sequence, when it is one number.
+    pub fn version(&self) -> Option<u64> { scalar(self.sequence.as_deref()?).ok() }
 
     /// A Digest's `digest_seq`: its sequence, when it is one.
     pub fn digest_seq(&self) -> Option<u64> { scalar(self.sequence.as_deref()?).ok() }
@@ -356,15 +365,13 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     let mut tagged = vec![index as u8]; tagged.extend(data);
     let frame: Frame = wire::decode(&tagged)?;
     let context = Context { id, source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent.clone(), tracestate: trace.tracestate.clone() };
-    match &frame {
-        Frame::NodeDeleting { publisher, .. } | Frame::NodeStopped { publisher, .. }
-            if Birth::publisher(&context.source.fabric, publisher) != context.source => return Err(invalid("publisher and source disagree").into()),
-        Frame::FabricStatus { fabric, .. } if fabric != &context.source.fabric => return Err(invalid("fabric and source disagree").into()),
-        _ => (),
+    if let Frame::FabricStatus { fabric, .. } = &frame {
+        if fabric != &context.source.fabric { return Err(invalid("fabric and source disagree").into()); }
     }
     let owner = context.publication.as_ref().map(|(b, _)| b).unwrap_or(&context.source);
     let expected = match &frame {
         Frame::Digest { .. } => Context::digest(&context.source, context.digest_seq().ok_or_else(|| invalid("digest sequence"))?, time_ms),
+        Frame::TopologyDelta { .. } => Context::delta(&frame, &context.source, context.version().ok_or_else(|| invalid("differential sequence"))?, time_ms),
         _ => Context::authored(&frame, owner, context.primary_revision().unwrap_or(0), time_ms),
     };
     if context.id != expected.id || context.source != expected.source || context.subject != expected.subject || context.sequence != expected.sequence || context.time_ms != expected.time_ms {
@@ -505,6 +512,52 @@ mod tests {
         let (mut attrs, data): (Vec<(String, String)>, Vec<u8>) = wire::decode(&forwarded.encode()).unwrap();
         attrs.push(("sequence".into(), p(1))); malformed(attrs, data);
     }
+    /// CONTRACT (gossip.md §3.1 `TopologyDelta`, Q389): a differential's chunk is authored by the
+    /// forwarding mesh-primary: its envelope's `source` is that birth, its `sequence` the peer mesh's
+    /// version, its `subject` the mesh and its `id` the mesh, base version, version and chunk; the body
+    /// is the mesh, its id, the base version, the chunk's index and count, then `added`, `changed`,
+    /// `removed`, `in_flight` and `deleted`, and repeats none of the envelope's fields. It decodes to the
+    /// same message, and a sequence other than the one its id names is refused. Must NOT happen: a
+    /// differential naming the peer mesh's mesh-primary as its source, or carrying its version, author
+    /// or time in its body.
+    #[test]
+    fn a_differential_is_authored_by_its_forwarder_at_the_peer_mesh_version() {
+        let forwarder = author();
+        let node = rdm_core::wire::NodeStatusEntry { node_id: NodeId::parse("2123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh5").unwrap(), status: rdm_core::model::NodeStatus::Ready, primary: vec![] };
+        let data = Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: 7, chunk_index: 1, chunk_count: 2, added: vec![], changed: vec![node.clone()], removed: vec![], in_flight: vec![], deleted: vec![] };
+        let frame = data.clone().authored_delta(&forwarder, 8, 5);
+        let c = frame.context().expect("authored");
+        assert_eq!((&c.source, c.kind.as_str(), c.subject.as_str(), c.sequence.as_deref(), c.id.as_str(), c.time_ms), (&forwarder, "rdm.mesh.members.delta", "mesh/mesh2", Some("00000000000000000008"), "rdm.mesh.members.delta/mesh2/7/8/1", 5));
+        let (_, body): (Vec<(String, String)>, Vec<u8>) = wire::decode(&frame.encode()).unwrap();
+        let expected = wire::encode(&("mesh2", None::<rdm_core::MeshId>, 7u64, 1u32, 2u32, Vec::<rdm_core::wire::NodeEntry>::new(), vec![node], Vec::<rdm_core::framing::Birth>::new(), Vec::<rdm_core::LifecycleOp>::new(), Vec::<rdm_core::LifecycleOp>::new())).unwrap();
+        assert_eq!(body, expected, "the body is the mesh, its id, the base, the chunk and the lists: nothing of the envelope");
+        let back = decode(&frame.encode()).unwrap();
+        assert_eq!(back.encode(), frame.encode(), "it decodes to the same message");
+        assert_eq!((back.delta_version(), back.context().map(|c| c.source.clone())), (Some(8), Some(forwarder)));
+        let (mut attrs, data) = wire::decode::<(Vec<(String, String)>, Vec<u8>)>(&frame.encode()).unwrap();
+        attrs.iter_mut().find(|(n, _)| n == "sequence").unwrap().1 = p(9);
+        malformed(attrs, data);
+    }
+
+    /// CONTRACT (gossip.md §3.4: the envelope's `source` names the original author; lead note 0001):
+    /// a NodeStopped published by mesh2's mesh-primary carries no publisher in its body (its operation,
+    /// `forwarded_by` and the mesh's `topology_version`), and forwarded onto mesh1's channel by mesh1's
+    /// mesh-primary it keeps mesh2's mesh-primary as its envelope's source, through encode and decode.
+    /// Must NOT happen: a forwarded stop naming its forwarder as its author, or a body repeating the
+    /// author.
+    #[test]
+    fn a_forwarded_node_stopped_keeps_the_peer_mesh_primary_as_its_source() {
+        let mesh2_primary = Birth { fabric: author().fabric, node: NodeId::parse("3123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh6").unwrap() };
+        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh2".into(), build_id: "b".into(), operation: rdm_core::OperationId::unscoped("node.stop"), node_id: author().node, incarnation: author().incarnation, path: "mesh2.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let published = crate::status::StatusEvent::Stopped.frame(op.clone(), 9).authored(&mesh2_primary, 0, 1);
+        let (_, body): (Vec<(String, String)>, Vec<u8>) = wire::decode(&published.encode()).unwrap();
+        assert_eq!(body, wire::encode(&(op, None::<String>, 9u64)).unwrap(), "the body is the operation, forwarded_by and the version: no publisher");
+        let forwarded = crate::frame::forward_of(decode(&published.encode()).unwrap(), "mesh1.node-admin.1", "mesh1").expect("a peer mesh's stop is forwarded");
+        let heard = decode(&forwarded.encode()).unwrap();
+        assert_eq!(heard.context().map(|c| c.source.clone()), Some(mesh2_primary), "the forwarded stop's source is mesh2's mesh-primary");
+        assert!(matches!(heard.data(), Frame::NodeStopped { forwarded_by: Some(by), topology_version: 9, .. } if by == "mesh1.node-admin.1"));
+    }
+
     /// CONTRACT: repeated standalone cycles have distinct event IDs; a resend retains its ID.
     #[test]
     fn operation_occurrence_distinguishes_lifecycle_events_and_preserves_resends() {

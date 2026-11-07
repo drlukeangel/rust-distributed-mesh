@@ -6,7 +6,8 @@ use crate::snapshot::PublisherId;
 use anyhow::Result;
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Primary, PrimaryRole, RoleRevision, StateHook};
 use rdm_core::model::NodeStatus;
-use rdm_core::wire::NodeDetails;
+use rdm_core::framing::Birth;
+use rdm_core::wire::{NodeDetails, NodeEntry, NodeStatusEntry};
 use serde::{Deserialize, Serialize};
 
 
@@ -88,32 +89,35 @@ pub enum Frame {
         /// The retained deletions this chunk carries.
         deleted: Vec<LifecycleOp>,
     },
-    /// What moved a source Mesh's held projection from `base_version` to `topology_version`,
-    /// published on the forwarding primary's own mesh channel (gossip.md §3.1, §3.3). `base_version`
-    /// is the version that primary last published into its Mesh; a receiver applies the delta only
-    /// when it holds exactly that version of `source_publisher`'s Mesh. Loads are omitted.
-    /// `in_flight` and `deleted` are the overlays and deletions added since `base_version`.
+    /// One chunk of a peer mesh's differential, published by the forwarding mesh-primary on its own
+    /// mesh channel only (gossip.md §3.1, §3.3): what moved the peer mesh from `base_version`, the
+    /// version that mesh-primary last published into its mesh, to the envelope's `sequence`, the peer
+    /// mesh's version, whichever of its mesh-primaries sent it (Q389). The envelope's `source` is the
+    /// forwarding mesh-primary; the body repeats neither. `added` are the nodes added with their
+    /// details (and a held birth whose details changed), `changed` the held nodes whose status or
+    /// primary roles changed, `removed` the births no longer listed, and `in_flight` and `deleted` the
+    /// overlays and deletions added since `base_version`. A differential that does not fit one message
+    /// is sent as `chunk_count` chunks; a receiver applies it once it holds every chunk of that (mesh,
+    /// `base_version`, version, author), and only when it holds exactly `base_version` of the mesh.
     ///
     /// Schema index 2, never a wire kind.
     TopologyDelta {
-        /// The source mesh's name.
+        /// The peer mesh's name.
         mesh: String,
-        /// The source mesh's id, as [`Frame::TopologyFull`] carries it.
+        /// The peer mesh's id, as [`Frame::TopologyFull`] carries it.
         mesh_id: Option<MeshId>,
-        /// The source mesh's primary birth the delta is derived from.
-        source_publisher: PublisherId,
-        /// The version a receiver must hold for the delta to apply.
+        /// The version a receiver must hold for the differential to apply.
         base_version: u64,
-        /// The version the delta moves to.
-        topology_version: u64,
-        /// The Rafka-time of the publication.
-        published_at_rafka_ms: u64,
-        /// The births added or changed, each a member projection entry: its digest, then the status
-        /// its mesh-primary holds (gossip.md §3.1).
-        #[serde(with = "rdm_transport::wire::entries")]
-        changed: Vec<MeshDigest>,
-        /// The node ids no longer listed.
-        removed: Vec<String>,
+        /// This chunk's index within the differential.
+        chunk_index: u32,
+        /// The number of chunks in the differential.
+        chunk_count: u32,
+        /// The nodes added, each with its details, status and primary roles.
+        added: Vec<NodeEntry>,
+        /// The held nodes whose status or primary roles changed.
+        changed: Vec<NodeStatusEntry>,
+        /// The births no longer listed.
+        removed: Vec<Birth>,
         /// The overlays added since the base version.
         in_flight: Vec<LifecycleOp>,
         /// The deletions added since the base version.
@@ -130,10 +134,9 @@ pub enum Frame {
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
-        /// The exact birth that published the fact: the revision of `topology_version`. A receiver
-        /// orders the facts of one publisher and mesh by that version (R-RX3), whoever published them.
-        publisher: PublisherId,
-        /// The publisher's `topology_version` of the subject's mesh at which the subject changed.
+        /// The `topology_version` of the subject's mesh at which the subject changed. A receiver orders
+        /// the facts of one mesh by that version (R-RX3), whichever of its mesh-primaries published
+        /// them (Q389, Q391); the envelope's `source` names the one that did.
         topology_version: u64,
     },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
@@ -306,11 +309,9 @@ pub enum Frame {
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
-        /// The exact birth that published the fact: the revision of `topology_version`, as on
-        /// [`Frame::NodeDeleting`].
-        publisher: PublisherId,
-        /// The publisher's `topology_version` of the subject's mesh at which the subject changed: a
-        /// projection of that publisher newer than it, listing the birth, moved past the stop.
+        /// The `topology_version` of the subject's mesh at which the subject changed, ordered as on
+        /// [`Frame::NodeDeleting`]: a projection of the mesh newer than it, listing the birth, moved
+        /// past the stop.
         topology_version: u64,
     },
     /// Authored CloudEvents context retained alongside the selected domain data.
@@ -348,6 +349,19 @@ impl Frame {
     pub fn into_data(self) -> Self { match self { Self::Authored { frame, .. } => frame.into_data(), _ => self } }
     /// The original authored context, when this frame is ready for the wire.
     pub fn context(&self) -> Option<&crate::envelope::Context> { match self { Self::Authored { context, .. } => Some(context), _ => None } }
+    /// A differential's chunk (`TopologyDelta` data), authored by the forwarding mesh-primary `author`
+    /// at the peer mesh's `version` (the envelope's `sequence`) and `time_ms`.
+    pub fn authored_delta(self, author: &crate::envelope::Birth, version: u64, time_ms: u64) -> Self {
+        let context = crate::envelope::Context::delta(&self, author, version, time_ms);
+        Self::Authored { context, frame: Box::new(self.into_data()) }
+    }
+
+    /// The version a `TopologyDelta` moves its mesh to: its envelope's `sequence`. `None` for another
+    /// frame or one with no authored context.
+    pub fn delta_version(&self) -> Option<u64> {
+        matches!(self.data(), Self::TopologyDelta { .. }).then(|| self.context().and_then(|c| c.version())).flatten()
+    }
+
     /// Bind locally produced data to its explicitly supplied author's birth and held revision.
     pub fn authored(self, author: &crate::envelope::Birth, primary_revision: u64, time_ms: u64) -> Self {
         if self.context().is_some() { return self; }
@@ -390,9 +404,9 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         return forward_of(*frame, me, own_mesh).map(|frame| Frame::Authored { context, frame: Box::new(frame) });
     }
     match frame {
-        Frame::NodeDeleting { op, publisher, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
+        Frame::NodeDeleting { op, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), topology_version }),
         Frame::NodeDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeStopped { op, publisher, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
+        Frame::NodeStopped { op, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), topology_version }),
         Frame::NodeConnectionsDeleting { op, .. } if op.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeConnectionsDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {

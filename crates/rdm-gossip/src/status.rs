@@ -2,7 +2,6 @@
 //! status facts, the status publisher and its reinforcement, and the held statuses.
 
 
-use crate::snapshot::PublisherId;
 use rdm_core::{FabricId, LifecycleOp};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,8 +12,8 @@ use crate::frame::*;
 
 /// The status events (node-status-heartbeat-connections.md R-HB1, "Events vs statuses": "NodeStopped,
 /// NodeDeleting and NodeRestarting stay immediate events"; NodeRestarting is reserved since Q183):
-/// each carries its publisher and the
-/// `topology_version` at which its subject changed.
+/// each carries the `topology_version` at which its subject changed; its envelope's `source` names
+/// the mesh-primary that published it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusEvent {
     /// `NodeDeleting`: the executor started removing the exact birth.
@@ -32,11 +31,11 @@ impl StatusEvent {
         }
     }
 
-    /// The frame of this event for `op`, published by `publisher` at `topology_version`.
-    pub fn frame(self, op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Frame {
+    /// The frame of this event for `op`, at `topology_version`.
+    pub fn frame(self, op: LifecycleOp, topology_version: u64) -> Frame {
         match self {
-            Self::Deleting => Status::node_deleting(op, publisher, topology_version),
-            Self::Stopped => Status::node_stopped(op, publisher, topology_version),
+            Self::Deleting => Status::node_deleting(op, topology_version),
+            Self::Stopped => Status::node_stopped(op, topology_version),
         }
         .frame()
     }
@@ -69,10 +68,8 @@ pub enum StatusSubject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusOrder {
     /// A node's `stopped` and `deleting`: the `topology_version` at which its subject changed, per
-    /// publisher and subject mesh.
+    /// subject mesh, whichever of its mesh-primaries published it (Q389, Q391).
     TopologyVersion {
-        /// The exact birth that published it.
-        publisher: PublisherId,
         /// The subject mesh's topology version at the change.
         topology_version: u64,
     },
@@ -100,14 +97,14 @@ pub struct Status {
 }
 
 impl Status {
-    /// A node's `stopped` (`NodeStopped`), published by `publisher` at `topology_version`.
-    pub fn node_stopped(op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Self {
-        Self { subject: StatusSubject::Node(op), status: "stopped".into(), order: StatusOrder::TopologyVersion { publisher, topology_version }, forwarded_by: None }
+    /// A node's `stopped` (`NodeStopped`), at `topology_version`.
+    pub fn node_stopped(op: LifecycleOp, topology_version: u64) -> Self {
+        Self { subject: StatusSubject::Node(op), status: "stopped".into(), order: StatusOrder::TopologyVersion { topology_version }, forwarded_by: None }
     }
 
-    /// A node's `deleting` (`NodeDeleting`), published by `publisher` at `topology_version`.
-    pub fn node_deleting(op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Self {
-        Self { subject: StatusSubject::Node(op), status: "deleting".into(), order: StatusOrder::TopologyVersion { publisher, topology_version }, forwarded_by: None }
+    /// A node's `deleting` (`NodeDeleting`), at `topology_version`.
+    pub fn node_deleting(op: LifecycleOp, topology_version: u64) -> Self {
+        Self { subject: StatusSubject::Node(op), status: "deleting".into(), order: StatusOrder::TopologyVersion { topology_version }, forwarded_by: None }
     }
 
     /// A node's `deleted` (`NodeDeleted`).
@@ -164,8 +161,8 @@ impl Status {
     pub fn frame(&self) -> Frame {
         let forwarded_by = self.forwarded_by.clone();
         match (&self.subject, &self.order) {
-            (StatusSubject::Node(op), StatusOrder::TopologyVersion { publisher, topology_version }) if self.status == "stopped" => Frame::NodeStopped { op: op.clone(), forwarded_by, publisher: publisher.clone(), topology_version: *topology_version },
-            (StatusSubject::Node(op), StatusOrder::TopologyVersion { publisher, topology_version }) => Frame::NodeDeleting { op: op.clone(), forwarded_by, publisher: publisher.clone(), topology_version: *topology_version },
+            (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) if self.status == "stopped" => Frame::NodeStopped { op: op.clone(), forwarded_by, topology_version: *topology_version },
+            (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) => Frame::NodeDeleting { op: op.clone(), forwarded_by, topology_version: *topology_version },
             (StatusSubject::Node(op), _) => Frame::NodeDeleted { op: op.clone(), forwarded_by },
             (StatusSubject::Mesh(mesh), StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::MeshStatus { mesh: mesh.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
             (StatusSubject::Fabric(fabric), StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::FabricStatus { fabric: fabric.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
@@ -176,8 +173,8 @@ impl Status {
     /// The status `f` carries, when it is one of the five status frames.
     pub fn of(f: &Frame) -> Option<Self> {
         match f.data() {
-            Frame::NodeStopped { op, forwarded_by, publisher, topology_version } => Some(Self::node_stopped(op.clone(), publisher.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
-            Frame::NodeDeleting { op, forwarded_by, publisher, topology_version } => Some(Self::node_deleting(op.clone(), publisher.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
+            Frame::NodeStopped { op, forwarded_by, topology_version } => Some(Self::node_stopped(op.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
+            Frame::NodeDeleting { op, forwarded_by, topology_version } => Some(Self::node_deleting(op.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
             Frame::NodeDeleted { op, forwarded_by } => Some(Self::node_deleted(op.clone()).forwarded_by(forwarded_by.clone())),
             Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::mesh(mesh, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),
             Frame::FabricStatus { fabric, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::fabric(fabric, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),

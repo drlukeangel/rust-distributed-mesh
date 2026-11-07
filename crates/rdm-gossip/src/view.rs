@@ -2,7 +2,7 @@
 //! a full topology, a delta and a status into the digest view (gossip.md §3.1, §3.3).
 
 
-use crate::snapshot::{Chunk, Delta, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, Taken};
+use crate::snapshot::{Chunk, DeltaChunk, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, Taken};
 use rdm_core::{FabricId, LifecycleOp, MeshDigest, Primary, PrimaryRole};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,9 +36,9 @@ impl Prior {
         Self { held: rx.held_version(mesh), stops: Target::stops_of(rx.held_full(mesh)) }
     }
 
-    /// The target of a frame of `publisher` at `version` arriving on `side`, `after` the projection the
-    /// receiver holds once it applied.
-    pub(crate) fn target(self, publisher: &PublisherId, side: Side, version: u64, after: Option<&Full>) -> Target {
+    /// The target of a frame sent by `publisher` at `version` arriving on `side`, `after` the projection
+    /// the receiver holds once it applied.
+    pub(crate) fn target(self, publisher: &impl std::fmt::Display, side: Side, version: u64, after: Option<&Full>) -> Target {
         Target {
             publisher: publisher.to_string(),
             channel: side.name(),
@@ -277,11 +277,13 @@ impl View {
         // A status frame is read as its one Rust type (gossip-by-kind.md §5.3); each type keeps its rule.
         let Some(status) = Status::of(f) else { return Vec::new() };
         match (status.subject(), status.order()) {
-            (StatusSubject::Node(op), StatusOrder::TopologyVersion { publisher, topology_version }) => {
+            (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) => {
                 let kind = if status.status() == "deleting" { StatusEvent::Deleting } else { StatusEvent::Stopped };
                 let op = &traced_by_envelope(f, op);
-                if !self.refuses_status_event(kind, op, publisher, *topology_version, via) {
-                    self.apply_status_event(kind, op, Some((publisher.to_string(), *topology_version)), via);
+                // The mesh-primary that published it, for spans: its envelope's source.
+                let publisher = f.context().map(|c| format!("{}@{}", c.source.node, c.source.incarnation)).unwrap_or_default();
+                if !self.refuses_status_event(kind, op, &publisher, *topology_version, via) {
+                    self.apply_status_event(kind, op, Some((publisher, *topology_version)), via);
                 }
                 Vec::new()
             }
@@ -313,13 +315,16 @@ impl View {
 
     /// Whether the status event `kind` of `op`'s birth, published by `publisher` at
     /// `topology_version` and heard through `via`, is refused. Whoever published it, the event is
-    /// taken for what it carries (R-RX1): an event published before the newest of its publisher and
-    /// mesh was already ignored by the receive path (R-RX3, [`crate::receive_order`]). A `NodeStopped`
-    /// older than a held projection of the same publisher that lists the exact birth without the stop
-    /// is refused (node-status-heartbeat-connections.md §C "late stopped after starting"): the
-    /// projection is the publisher's later word on the birth, and the version orders them only within
-    /// that publisher's counter.
-    pub(crate) fn refuses_status_event(&self, kind: StatusEvent, op: &LifecycleOp, publisher: &PublisherId, topology_version: u64, via: &'static str) -> bool {
+    /// taken for what it carries (R-RX1): an event published before the newest of its mesh was
+    /// already ignored by the receive path (R-RX3, [`crate::receive_order`]). A `NodeStopped` older
+    /// than a held projection of its mesh that lists the exact birth without the stop is refused
+    /// (node-status-heartbeat-connections.md §C "late stopped after starting"): the projection is the
+    /// mesh's later word on the birth, and the mesh's version orders them, whichever of its
+    /// mesh-primaries or executors published either (Q389, Q391). Only a projection strictly newer than
+    /// the stop's version refuses it: an executor that is not the mesh's primary stamps the version it
+    /// holds of the mesh, which the projection at that version predates, and a mesh-primary's
+    /// projection at its stop's version already carries the stop.
+    pub(crate) fn refuses_status_event(&self, kind: StatusEvent, op: &LifecycleOp, publisher: &str, topology_version: u64, via: &'static str) -> bool {
         let mesh = op.mesh.as_str();
         if kind != StatusEvent::Stopped {
             return false;
@@ -327,8 +332,8 @@ impl View {
         let key = (op.node_id.to_string(), op.incarnation.to_string());
         for (channel, rx) in [("mesh-channel", &self.mesh_rx), ("backbone", &self.backbone_rx)] {
             let rx = rx.lock().unwrap();
-            let Some((held_publisher, held_version)) = rx.held_version(mesh) else { continue };
-            if held_publisher != *publisher || held_version < topology_version {
+            let Some((_, held_version)) = rx.held_version(mesh) else { continue };
+            if held_version <= topology_version {
                 continue;
             }
             let Some(full) = rx.held_full(mesh) else { continue };
@@ -337,7 +342,7 @@ impl View {
                 continue;
             }
             drop(rx);
-            crate::receive_order::reject_lifecycle_version(kind.name(), &format!("{publisher} {mesh}"), held_version, topology_version);
+            crate::receive_order::reject_lifecycle_version(kind.name(), mesh, held_version, topology_version);
             tracing::info_span!(
                 "rdm.mesh.topology.reject.via-stop-older-than-projection",
                 node = %self.current_name(),
@@ -352,7 +357,7 @@ impl View {
                 held_channel = channel,
                 via,
             )
-            .in_scope(|| tracing::info!("a NodeStopped older than the held projection of its publisher, which lists the birth without the stop: refused, the birth started after it"));
+            .in_scope(|| tracing::info!("a NodeStopped older than the held projection of its mesh, which lists the birth without the stop: refused, the birth started after it"));
             return true;
         }
         false
@@ -383,7 +388,7 @@ impl View {
     /// A projection of this node's own mesh on its own mesh channel is refused by name: its mesh-primary
     /// puts nothing of its own mesh there, whose nodes publish themselves, and its view reaches this
     /// node only by a read (gossip.md §2, §3.3, Q387). What arrives is a frame from before that rule.
-    fn own_mesh_on_its_channel(&self, mesh: &str, side: Side, publisher: &PublisherId, frame: &'static str) -> bool {
+    fn own_mesh_on_its_channel(&self, mesh: &str, side: Side, publisher: &impl std::fmt::Display, frame: &'static str) -> bool {
         if side != Side::MeshChannel || mesh != self.mesh {
             return false;
         }
@@ -460,47 +465,59 @@ impl View {
                     }
                 }
             }
-            Frame::TopologyDelta { mesh, mesh_id, source_publisher, base_version, topology_version, published_at_rafka_ms: _, changed, removed, in_flight, deleted } => {
+            Frame::TopologyDelta { mesh, base_version, chunk_count, .. } => {
+                // The forwarding mesh-primary that authored it, and the version it moves the mesh to:
+                // its envelope's `source` and `sequence` (Q389).
+                let Some(chunk) = DeltaChunk::of_frame(f) else { return SnapshotTaken::default() };
+                let (author, topology_version) = (chunk.author.clone(), &chunk.version.clone());
+                let source = author.uri();
                 if side == Side::Backbone {
-                    tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
+                    tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source, forwarded_by = "")
                         .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete snapshots travel: refused"));
                     return SnapshotTaken::default();
                 }
-                if self.own_mesh_on_its_channel(mesh, side, source_publisher, "mesh-topology-delta") {
+                if self.own_mesh_on_its_channel(mesh, side, &source, "mesh-topology-delta") {
                     return SnapshotTaken::default();
                 }
                 if self.outside_build(mesh, side) {
                     return SnapshotTaken::default();
                 }
-                let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), deleted: deleted.clone(), mesh_id: mesh_id.clone() };
                 let mut rx = self.mesh_rx.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
-                let moved = rx.take_delta_against(mesh, source_publisher, *base_version, *topology_version, &delta, order.installed_snapshot(mesh));
+                let moved = rx.take_delta_chunk_against(chunk, order.installed_snapshot(mesh));
                 match moved {
-                    Moved::Applied { delta, .. } => {
+                    Moved::Applied { delta, moved, .. } => {
                         tracing::info_span!(
                             "rdm.mesh.topology.update.via-delta",
                             node = %self.current_name(),
                             mesh = %mesh,
-                            source_publisher = %source_publisher,
+                            source = %source,
                             base_version = *base_version,
                             topology_version = *topology_version,
+                            chunk_count = *chunk_count,
+                            added = delta.added.len(),
                             changed = delta.changed.len(),
                             removed = delta.removed.len(),
                             in_flight = delta.in_flight.len(),
                             deleted = delta.deleted.len(),
                         )
-                        .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
-                        let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.deleted.clone());
+                        .in_scope(|| tracing::info!("a differential applied at exactly its base version, every chunk of it held"));
+                        let full = Full::new(moved, delta.in_flight.clone(), delta.deleted.clone());
                         let held_full = rx.held_full(mesh);
-                        let target = prior.target(source_publisher, side, *topology_version, held_full);
+                        let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target);
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
-                        order.installed_projection(mesh, source_publisher, *topology_version, &installed_full, None);
+                        order.installed_projection(mesh, &crate::snapshot::sent_by(&author), *topology_version, &installed_full, None);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
-                    Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
+                    Moved::Waiting { .. } | Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
+                    Moved::Malformed { chunk_index, chunk_count } => {
+                        drop(rx);
+                        tracing::info_span!("rdm.mesh.topology.reject.via-malformed-chunk", node = %self.current_name(), mesh = %mesh, source = %source, base_version = *base_version, topology_version = *topology_version, chunk_index, chunk_count)
+                            .in_scope(|| tracing::info!("a differential chunk whose index is outside its count, or whose count is not its differential's: refused"));
+                        SnapshotTaken::default()
+                    }
                     Moved::Desynced { gap, .. } => {
                         drop(rx);
                         let held_version = match &gap {
@@ -512,7 +529,7 @@ impl View {
                             frame = "mesh-topology-delta", repair_requested = true,
                             node = %self.current_name(),
                             mesh = %mesh,
-                            source_publisher = %source_publisher,
+                            source = %source,
                             gap = %gap,
                             held_version,
                             base_version = *base_version,

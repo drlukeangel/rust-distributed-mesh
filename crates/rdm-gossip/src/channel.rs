@@ -1246,7 +1246,7 @@ impl Channels {
             // differential from what the Mesh holds (gossip.md §3.3).
             if side == Side::ReadPeer && i.mesh != self.topology_view.view.mesh {
                 let me = self.topology_view.view.current_name();
-                let _ = self.forward_path.source_with_clock(&me, &i.mesh, &i.publisher, i.topology_version, &i.full, || self.topology_view.clock.now_rafka_ms());
+                let _ = self.forward_path.source_with_clock(&me, &i.mesh, i.topology_version, &i.full, || self.topology_view.clock.now_rafka_ms());
             }
         } else if let Some(digests) = own_digests {
             for d in digests.into_iter().filter(|d| d.fabric_id == self.topology_view.fabric && d.node.mesh == self.topology_view.view.mesh && self.topology_view.digest_view.get(d.node.node_id.as_str()).is_some()) {

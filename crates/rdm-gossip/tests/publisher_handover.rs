@@ -222,8 +222,9 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             in_flight: vec![],
             deleted: vec![],
         };
-        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), mesh_id: None, source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
-        let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), pub2.clone(), deleting_version - 1);
+        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), mesh_id: None, base_version: pred_version, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![rdm_core::framing::Birth { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation.clone() }], in_flight: vec![], deleted: vec![] }
+            .authored_delta(&rdm_gossip::envelope::Birth::publisher(&fabric(), &pub1), pred_version + 1, pred_stamp);
+        let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), deleting_version - 1);
         let late_heartbeat = Frame::digest(&with_seq(&rpc2, 3));
         // The cell's story starts here: an ignore before this instant is gossip's own reordering during setup
         // (a resend of a version the member already holds under a later stamp), not one of the late frames.
@@ -254,7 +255,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mut said: Vec<_> = ignored.iter().map(|s| fields(s)).collect();
         let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
         let mut expected = vec![
-            ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.topology.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "node-stopped".to_string(), "mesh1".to_string(), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.topology.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.topology.reject.via-stale".to_string()),
             // The predecessor's late delta is below the version the member holds of mesh1: the receive path
             // ignores it first, whoever sent it (Q389).
@@ -283,8 +284,10 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
     });
 }
 
-/// A supplied author survives an empty publication, receipt, forwarding, neighbour replay and
-/// topology-read install. A same-name member in the forwarder's view supplies no author identity.
+/// A supplied author survives an empty publication and its receipt on the backbone. A same-name member
+/// in the forwarder's view supplies no author identity. On the mesh channel the differential names its
+/// forwarder, its envelope's source, never the peer mesh's mesh-primary (Q389): a neighbour replay, a
+/// topology read of that member and the next differential name the forwarder.
 #[test]
 fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-publisher-birth").unwrap();
@@ -328,9 +331,10 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let mem_channels = rdm_gossip::channel::Channels::new(&member.gossip, &member.ep, &mem).unwrap();
         mem_channels.join(rdm_gossip::channel::ChannelId::mesh(mem.fabric_id(), mem.mesh_id()), vec![forwarder_addr]).await.unwrap();
         until("the new neighbour to apply the replayed differential", || mem.held_source_version("mesh2").is_some()).await;
-        assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
+        let sent_by = PublisherId::from(&forwarder_birth.node);
+        assert_eq!(mem.held_source_version("mesh2"), Some((sent_by.clone(), version)), "the replayed differential names its forwarder");
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
-        assert_eq!(served.publisher, author);
+        assert_eq!(served.publisher, sent_by);
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
         let reader_id = NodeId::mint();
         let read = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
@@ -338,12 +342,12 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         read_channels.join(rdm_gossip::channel::ChannelId::mesh(read.fabric_id(), read.mesh_id()), vec![]).await.unwrap();
         let chunk = rdm_gossip::snapshot::Chunk { mesh: served.mesh, mesh_id: None, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted, runtimes: Vec::new(), };
         assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)));
-        assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
+        assert_eq!(read.held_source_version("mesh2"), Some((sent_by.clone(), version)), "a topology read retains the birth it was served under");
 
-        // A subsequent material change uses the same author through the delta path.
+        // A subsequent material change goes in through the delta path, from the same forwarder.
         source_bb.publish(&src, vec![digest(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", 42005)]).await;
         until("the member to apply the next source version", || mem.held_source_version("mesh2").is_some_and(|(_, v)| v > version)).await;
-        assert_eq!(mem.held_source_version("mesh2").unwrap().0, author);
+        assert_eq!(mem.held_source_version("mesh2").unwrap().0, sent_by);
         for n in [&source, &forwarder, &member, &reader] { n.ep.close().await; }
     });
 }

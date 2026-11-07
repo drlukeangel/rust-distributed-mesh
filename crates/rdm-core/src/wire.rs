@@ -169,6 +169,81 @@ impl NodeDetails {
     }
 }
 
+/// One node as a mesh topology lists it (gossip.md §3.1): its identity, details, status and the
+/// primary roles it holds. A differential's `added` lists a node this way: a node new to the mesh, or
+/// a held birth whose details changed. Its fabric is the envelope's and its mesh the frame's.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NodeEntry {
+    /// The node's minted id.
+    pub node_id: NodeId,
+    /// The id of this birth.
+    pub incarnation: IncarnationId,
+    /// The node's type.
+    pub r#type: String,
+    /// The node's path.
+    pub path: String,
+    /// The node's name, beside its path.
+    pub name: String,
+    /// The birth's fabric endpoint id.
+    pub endpoint_id: EndpointId,
+    /// The one address of the birth's Iroh endpoint.
+    pub transport_addr: std::net::SocketAddr,
+    /// The node's status.
+    pub status: NodeStatus,
+    /// The primary roles the node holds, each with its revision.
+    pub primary: Vec<RoleRevision>,
+}
+
+impl NodeEntry {
+    /// `d` as a mesh topology lists it.
+    pub fn of(d: &MeshDigest) -> Self {
+        let n = &d.node;
+        Self {
+            node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), r#type: n.r#type.clone(),
+            path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone(), transport_addr: n.transport_addr,
+            status: d.status, primary: d.primary.clone(),
+        }
+    }
+
+    /// The node of `mesh` (the frame names it) of fabric `fabric` (the envelope names it), as a
+    /// receiver holds it: no Digest sequence or time, which only the node's own Digests carry.
+    pub fn digest(&self, fabric: &FabricId, mesh: &str) -> MeshDigest {
+        MeshDigest {
+            fabric_id: fabric.clone(),
+            node: MeshNode {
+                mesh: mesh.to_string(), r#type: self.r#type.clone(), node_id: self.node_id.clone(),
+                path: self.path.clone(), name: self.name.clone(), endpoint_id: self.endpoint_id.clone(),
+                transport_addr: self.transport_addr, incarnation: self.incarnation.clone(), supersedes: None,
+            },
+            status: self.status,
+            primary: self.primary.clone(),
+            digest_seq: 0,
+            emitted_at_rafka_ms: 0,
+        }
+    }
+}
+
+/// A held node's status change as a differential carries it (gossip.md §3.1 `TopologyDelta`): the
+/// exact birth, its status and the primary roles it holds; its details are the ones held.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NodeStatusEntry {
+    /// The node's minted id.
+    pub node_id: NodeId,
+    /// The id of this birth.
+    pub incarnation: IncarnationId,
+    /// The node's status.
+    pub status: NodeStatus,
+    /// The primary roles the node holds, each with its revision.
+    pub primary: Vec<RoleRevision>,
+}
+
+impl NodeStatusEntry {
+    /// `d`'s status and primary roles.
+    pub fn of(d: &MeshDigest) -> Self {
+        Self { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), status: d.status, primary: d.primary.clone() }
+    }
+}
+
 /// One node as a topology read serves it (gossip.md §3.3: reads initialise and repair views): its
 /// identity, endpoint and lineage, its status and primary roles, the sequence of its Digest the
 /// answerer holds (an older read never replaces a newer self-authored status), and the runtime and

@@ -24,10 +24,11 @@
 //!   the exact repeated publication never completes repair. A new publication at the same material
 //!   version carries fresh hearing evidence. A directed topology read can resume the held version.
 //! - NodeDeleting and NodeStopped: operation identity is recorded before the
-//!   existing topology-version check per publisher and subject mesh. A carried revision refused
-//!   with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs no
-//!   handler. The carried revision is still judged independently, even for a repeated operation:
-//!   an admissible higher revision advances its publisher floor without replaying the fact.
+//!   existing topology-version check per subject mesh, whichever mesh-primary published the fact
+//!   (Q389, Q391: a mesh-primary taking the role continues the mesh's version). A carried revision
+//!   refused with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs
+//!   no handler. The carried revision is still judged independently, even for a repeated operation:
+//!   an admissible higher revision advances the mesh's floor without replaying the fact.
 //!
 //! Distinct equal-key chunks of an unfinished publication remain admissible; an exact repeat is
 //! ignored without discarding its other chunks. Publication state advances only when a complete
@@ -175,12 +176,12 @@ pub(crate) fn publication_duplicate(frame: &'static str, identity: &str) {
         .in_scope(|| tracing::info!("the publication identity and content are already held"));
 }
 
-pub(crate) fn publication_inconsistent(frame: &'static str, mesh: &str, publisher: &PublisherId, revision: u64) {
+pub(crate) fn publication_inconsistent(frame: &'static str, mesh: &str, publisher: &impl std::fmt::Display, revision: u64) {
     tracing::info_span!("rdm.mesh.topology.reject.via-inconsistent", frame, subject = %format!("{mesh} {publisher}"), revision)
         .in_scope(|| tracing::info!("equal publication revision or chunk identity with different content: refused"));
 }
 
-pub(crate) fn publication_stale(frame: &'static str, mesh: &str, publisher: &PublisherId, held: u64, offered: u64) {
+pub(crate) fn publication_stale(frame: &'static str, mesh: &str, publisher: &impl std::fmt::Display, held: u64, offered: u64) {
     tracing::info_span!("rdm.mesh.topology.reject.via-stale", frame, subject = %format!("{mesh} {publisher}"), held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"))
         .in_scope(|| tracing::info!("the publication is below the actual installed source version"));
 }
@@ -291,16 +292,15 @@ impl PublicationCounters {
 enum Source {
     /// One mesh's publications.
     Mesh(String),
-    /// One publisher's lifecycle facts of one mesh.
-    Lifecycle { publisher: PublisherId, mesh: String },
-
+    /// One mesh's lifecycle facts, whichever of its mesh-primaries published them.
+    Lifecycle(String),
 }
 
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Source::Mesh(mesh) => f.write_str(mesh),
-            Source::Lifecycle { publisher, mesh } => write!(f, "{publisher} {mesh}"),
+            Source::Lifecycle(mesh) => f.write_str(mesh),
         }
     }
 }
@@ -331,9 +331,9 @@ fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
     match f.data() {
         Frame::TopologyFull { mesh, topology_version, .. } => Some(("mesh-topology", Source::Mesh(mesh.clone()), Key::TopologyVersion(*topology_version))),
-        Frame::TopologyDelta { mesh, topology_version, .. } => Some(("mesh-topology-delta", Source::Mesh(mesh.clone()), Key::TopologyVersion(*topology_version))),
-        Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.mesh.clone() }, Key::TopologyVersion(*topology_version))),
-        Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.clone(), mesh: op.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::TopologyDelta { mesh, .. } => Some(("mesh-topology-delta", Source::Mesh(mesh.clone()), Key::TopologyVersion(f.delta_version().unwrap_or_default()))),
+        Frame::NodeDeleting { op, topology_version, .. } => Some(("node-deleting", Source::Lifecycle(op.mesh.clone()), Key::TopologyVersion(*topology_version))),
+        Frame::NodeStopped { op, topology_version, .. } => Some(("node-stopped", Source::Lifecycle(op.mesh.clone()), Key::TopologyVersion(*topology_version))),
         _ => None,
     }
 }
@@ -376,11 +376,12 @@ struct InstalledSource {
     snapshot_id: Option<u64>,
 }
 
-/// The mesh a `TopologyFull` or `TopologyDelta` is of, its `topology_version`, and the mesh's id as
-/// the frame names it beside the mesh's name.
+/// The mesh a `TopologyFull` or `TopologyDelta` is of, its version (a differential's is its
+/// envelope's `sequence`), and the mesh's id as the frame names it beside the mesh's name.
 fn publication_of(f: &Frame) -> Option<(&str, u64, Option<rdm_core::MeshId>)> {
     match f.data() {
-        Frame::TopologyFull { mesh, mesh_id, topology_version, .. } | Frame::TopologyDelta { mesh, mesh_id, topology_version, .. } => Some((mesh, *topology_version, mesh_id.clone())),
+        Frame::TopologyFull { mesh, mesh_id, topology_version, .. } => Some((mesh, *topology_version, mesh_id.clone())),
+        Frame::TopologyDelta { mesh, mesh_id, .. } => Some((mesh, f.delta_version().unwrap_or_default(), mesh_id.clone())),
         _ => None,
     }
 }
@@ -516,9 +517,8 @@ mod tests {
         let old = Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
         let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
-        let relabeled = PublisherId { ..renamed };
-        assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
+        assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), 20)).is_ok());
+        assert!(order.admit(&StatusEvent::Stopped.frame(operation, 19)).is_err(), "a carried projection floor belongs to the mesh, not a label");
     }
 
     /// CONTRACT: every topology Frame variant has exactly one receive-table row naming its
@@ -569,8 +569,20 @@ mod tests {
         Frame::TopologyFull { mesh: mesh.into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], deleted: vec![] }
     }
 
-    fn delta(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, base_version: u64, topology_version: u64) -> Frame {
-        Frame::TopologyDelta { mesh: mesh.into(), mesh_id: None, source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }
+    /// The birth `p` names, of the test fabric.
+    fn birth_of(p: &PublisherId) -> crate::envelope::Birth {
+        crate::envelope::Birth { fabric: FabricId::parse("fab000000001").unwrap(), node: p.node_id.clone(), incarnation: p.incarnation.clone() }
+    }
+
+    /// An empty differential of `mesh` from `base_version` to `topology_version`, authored by the
+    /// forwarder `by` at `at`.
+    fn delta(mesh: &str, by: &PublisherId, at: u64, base_version: u64, topology_version: u64) -> Frame {
+        Frame::TopologyDelta { mesh: mesh.into(), mesh_id: None, base_version, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![], in_flight: vec![], deleted: vec![] }.authored_delta(&birth_of(by), topology_version, at)
+    }
+
+    /// `kind`'s frame of `op` at `topology_version`, published by the mesh-primary `by`.
+    fn event(kind: StatusEvent, op: LifecycleOp, by: &PublisherId, topology_version: u64) -> Frame {
+        kind.frame(op, topology_version).authored(&birth_of(by), 0, 1)
     }
 
     fn publisher(path: &str) -> PublisherId {
@@ -691,17 +703,17 @@ mod tests {
         let taken = rx.take_chunk(chunk_of(&new, 1, &new_admin));
         assert!(matches!(&taken, crate::snapshot::Taken::Installed(i) if i.first && i.topology_version == 1), "the recreated mesh installs as a first topology: {taken:?}");
         let mut members = crate::snapshot::SnapshotReceiver::default();
-        assert!(matches!(members.take_delta("mesh2", &old, 0, 33, &crate::snapshot::Delta { changed: vec![old_admin.clone()], mesh_id: Some(old_id.clone()), ..Default::default() }), crate::snapshot::Moved::Applied { .. }));
-        let first = members.take_delta("mesh2", &new, 0, 1, &crate::snapshot::Delta { changed: vec![new_admin.clone()], mesh_id: Some(new_id.clone()), ..Default::default() });
+        assert!(matches!(members.take_delta("mesh2", &birth_of(&old), 0, 33, &crate::snapshot::Delta { added: vec![old_admin.clone()], mesh_id: Some(old_id.clone()), ..Default::default() }), crate::snapshot::Moved::Applied { .. }));
+        let first = members.take_delta("mesh2", &birth_of(&new), 0, 1, &crate::snapshot::Delta { added: vec![new_admin.clone()], mesh_id: Some(new_id.clone()), ..Default::default() });
         assert!(matches!(first, crate::snapshot::Moved::Applied { topology_version: 1, .. }), "the recreated mesh's first differential starts from nothing: {first:?}");
         assert_eq!(members.held_full("mesh2").map(|f| f.member_count()), Some(1), "nothing of the deleted mesh is kept");
 
         // The forwarder.
         let mut fwd = crate::snapshot::Forwarder::default();
         fwd.set_author(crate::envelope::Birth { fabric: rdm_core::FabricId::parse("fab000000001").unwrap(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() });
-        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &old, 33, &crate::snapshot::Full::new(vec![old_admin], vec![], vec![]).of_mesh(Some(old_id.clone())), 1), crate::snapshot::Forward::Delta(_)));
-        let crate::snapshot::Forward::Delta(frame) = fwd.source("mesh1.node-admin.1", "mesh2", &new, 1, &crate::snapshot::Full::new(vec![new_admin], vec![], vec![]).of_mesh(Some(new_id.clone())), 2) else { panic!("the recreated mesh goes in") };
-        assert!(matches!(frame.data(), Frame::TopologyDelta { base_version: 0, topology_version: 1, .. }), "from nothing: {:?}", frame.data());
+        assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", 33, &crate::snapshot::Full::new(vec![old_admin], vec![], vec![]).of_mesh(Some(old_id.clone())), 1), crate::snapshot::Forward::Delta(_)));
+        let crate::snapshot::Forward::Delta(frames) = fwd.source("mesh1.node-admin.1", "mesh2", 1, &crate::snapshot::Full::new(vec![new_admin], vec![], vec![]).of_mesh(Some(new_id.clone())), 2) else { panic!("the recreated mesh goes in") };
+        assert!(matches!(frames[0].data(), Frame::TopologyDelta { base_version: 0, .. }) && frames[0].delta_version() == Some(1), "from nothing: {:?}", frames[0].data());
     }
 
     /// CONTRACT (R-RX3: Digest orders by `digest_seq`, per birth; gossip.md §3.1: a new incarnation's
@@ -722,26 +734,32 @@ mod tests {
         assert!(digest_view.record(restarted), "a new incarnation is another source");
     }
 
-    /// CONTRACT (R-RX3: lifecycle facts order by `topology_version`; the version is the publisher's
-    /// own counter of the subject's mesh, so the source is the publisher and that mesh): a fact below
-    /// the held version of its publisher and mesh is ignored, naming both versions; two facts at one
-    /// version (different subjects) are both taken; another publisher's fact at a lower version is
-    /// taken (a successor counts from 1 again), and so is the same publisher's fact of another mesh.
-    /// Must NOT happen: a successor's facts ignored against its predecessor's counter.
+    /// CONTRACT (R-RX3: lifecycle facts order by `topology_version`; Q389, Q391: the version is the
+    /// mesh's, and a mesh-primary taking the role continues it, so the source is the subject's mesh,
+    /// whichever of its mesh-primaries published the fact): a fact below the held version of its mesh is
+    /// ignored, naming the mesh and both versions; two facts at one version (different subjects) are both
+    /// taken; a successor mesh-primary's fact below the mesh's held version is ignored too, and one above
+    /// it is taken; a fact of another mesh is another source. Must NOT happen: a lifecycle fact ordered
+    /// per mesh-primary, so a predecessor's late fact passes its successor's newer one.
     #[test]
-    fn a_lifecycle_fact_below_the_held_version_of_its_publisher_and_mesh_is_ignored() {
+    fn a_lifecycle_fact_below_the_held_version_of_its_mesh_is_ignored_whichever_mesh_primary_published_it() {
         let mut order = ReceiveOrder::default();
-        let (primary, successor, acting) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"), publisher("mesh2.node-admin.1"));
+        let (primary, successor, other_mesh) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"), publisher("mesh3.node-admin.1"));
         let (a, b, c) = (birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"), birth(rdm_core::PathName::new("mesh3.node", "1").unwrap(), "mesh3", "node"));
-        assert_eq!(order.admit(&StatusEvent::Deleting.frame(op(&a, "node.delete"), primary.clone(), 8)), Ok(()));
-        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "node.stop"), primary.clone(), 8)), Ok(()), "a second fact at the held version is taken");
+        assert_eq!(order.admit(&event(StatusEvent::Deleting, op(&a, "node.delete"), &primary, 8)), Ok(()));
+        assert_eq!(order.admit(&event(StatusEvent::Stopped, op(&b, "node.stop"), &primary, 8)), Ok(()), "a second fact at the held version is taken");
         assert_eq!(
-            order.admit(&StatusEvent::Deleting.frame(op(&b, "node.delete"), primary.clone(), 7)),
-            Err(Earlier { frame: "node-deleting", source: format!("{primary} mesh1"), held: "topology_version=8".into(), offered: "topology_version=7".into() })
+            order.admit(&event(StatusEvent::Deleting, op(&b, "node.delete"), &primary, 7)),
+            Err(Earlier { frame: "node-deleting", source: "mesh1".into(), held: "topology_version=8".into(), offered: "topology_version=7".into() })
         );
-        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "node.stop"), successor, 1)), Ok(()), "another publisher counts its own versions");
-        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&c, "node.stop"), acting.clone(), 9)), Ok(()));
-        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&a, "node.stop"), acting, 2)), Ok(()), "the same publisher's fact of another mesh is another source");
+        assert_eq!(
+            order.admit(&event(StatusEvent::Stopped, op(&b, "node.stop"), &successor, 1)),
+            Err(Earlier { frame: "node-stopped", source: "mesh1".into(), held: "topology_version=8".into(), offered: "topology_version=1".into() }),
+            "the successor continues the mesh's version: its fact below the held one is older"
+        );
+        assert_eq!(order.admit(&event(StatusEvent::Stopped, op(&a, "node.stop"), &successor, 9)), Ok(()), "the successor's fact above the held version is taken");
+        assert_eq!(order.admit(&event(StatusEvent::Stopped, op(&c, "node.stop"), &other_mesh, 2)), Ok(()), "a fact of another mesh is another source");
+        assert_eq!(order.admit(&event(StatusEvent::Deleting, op(&c, "node.delete"), &other_mesh, 1)).map_err(|e| e.source), Err("mesh3".to_string()));
     }
 
     /// CONTRACT (R-RX3): a frame with no order key (a status, a NodeDeleted) is taken however often

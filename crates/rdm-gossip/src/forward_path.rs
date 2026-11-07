@@ -17,10 +17,11 @@
 //! The forwarder advances its baseline when it decides, before the send. A frame the channel
 //! refuses, or a queue whose task is gone, is named by its span and nothing else: a node that missed
 //! it is behind the next differential's base and repairs by a read (gossip.md §3.3), with no full,
-//! no timer and no retry.
+//! no timer and no retry. A differential in chunks is sent chunk by chunk; once the channel refuses
+//! one, the rest of it is not sent, since no receiver can apply it without every chunk.
 
 use crate::frame::Frame;
-use crate::snapshot::{Forward, Forwarder, Full, PublisherId};
+use crate::snapshot::{Forward, Forwarder, Full};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -33,8 +34,8 @@ pub(crate) type Sink = Arc<dyn Fn(Frame) -> Pin<Box<dyn Future<Output = anyhow::
 /// One entry of the queue, in the order it was made.
 /// `revision` is the term of the forwarder role the entry was decided in.
 enum Job {
-    /// What the forwarder decided; `source` names the single source of a `source` decision.
-    Forwarded { me: String, revision: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
+    /// What the forwarder decided; `source` names the peer mesh and version of a `source` decision.
+    Forwarded { me: String, revision: u64, source: Option<(String, u64)>, out: Forward },
     /// A lifecycle frame this primary carries into its mesh.
     Carried { me: String, revision: u64, frame: Frame },
     /// A neighbour-up replay (statuses, primaries, and the forwarder's last differential of each peer
@@ -78,22 +79,22 @@ impl ForwardPath {
     /// Decide what `source_mesh` moving to `version` puts into the mesh, and queue it behind every
     /// frame queued before it.
     #[cfg(test)]
-    pub(crate) fn source(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) {
-        let _ = self.source_with_clock(me, source_mesh, publisher, version, full, || now_ms);
+    pub(crate) fn source(&self, me: &str, source_mesh: &str, version: u64, full: &Full, now_ms: u64) {
+        let _ = self.source_with_clock(me, source_mesh, version, full, || now_ms);
     }
 
     /// Decide what `source_mesh` moving to `version` puts into the mesh, reading `now_ms` inside
     /// the forwarder lock so no replay or concurrent forward can interleave between the clock read
     /// and the forwarder's version update, and queue it behind every frame queued before it.
-    pub(crate) fn source_with_clock(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
+    pub(crate) fn source_with_clock(&self, me: &str, source_mesh: &str, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
         let mut forwarder = self.forwarder.lock().unwrap();
         let now_ms = now_ms();
         let Some(revision) = forwarder.role() else { return now_ms };
-        let out = forwarder.source(me, source_mesh, publisher, version, full, now_ms);
+        let out = forwarder.source(me, source_mesh, version, full, now_ms);
         if matches!(out, Forward::Nothing(_)) {
             return now_ms;
         }
-        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: Some((source_mesh.to_string(), publisher.clone(), version)), out });
+        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: Some((source_mesh.to_string(), version)), out });
         now_ms
     }
 
@@ -101,7 +102,7 @@ impl ForwardPath {
     /// lock its baseline is cleared and a new term begins; taking it, the baseline is `held`, what this
     /// node holds of each peer mesh from its own mesh channel (gossip.md §3.3). Returns whether the
     /// role changed.
-    pub(crate) fn set_role(&self, on: bool, held: &[(String, PublisherId, u64, Full)]) -> bool {
+    pub(crate) fn set_role(&self, on: bool, held: &[(String, u64, Full)]) -> bool {
         let mut forwarder = self.forwarder.lock().unwrap();
         let changed = forwarder.set_role(on);
         if changed && on {
@@ -157,16 +158,16 @@ impl ForwardPath {
 
 fn frames_of(out: Forward) -> Vec<Frame> {
     match out {
-        Forward::Delta(frame) => vec![*frame],
+        Forward::Delta(frames) => frames,
         Forward::Nothing(_) => Vec::new(),
     }
 }
 
-/// The source a forward frame belongs to: mesh, publisher and the version it moves the source to.
-fn identity(frame: &Frame) -> Option<(&str, &PublisherId, u64)> {
+/// The source a forward frame belongs to: the mesh and the version it moves the mesh to.
+fn identity(frame: &Frame) -> Option<(&str, u64)> {
     match frame.data() {
-        Frame::TopologyFull { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
-        Frame::TopologyDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
+        Frame::TopologyFull { mesh, topology_version, .. } => Some((mesh, *topology_version)),
+        Frame::TopologyDelta { mesh, .. } => Some((mesh, frame.delta_version().unwrap_or_default())),
         _ => None,
     }
 }
@@ -176,12 +177,12 @@ fn identity(frame: &Frame) -> Option<(&str, &PublisherId, u64)> {
 fn refused(me: &str, frame: &Frame, cause: &anyhow::Error) {
     let cause = format!("{cause:#}");
     match identity(frame) {
-        Some((mesh, publisher, version)) => {
-            tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = version, cause = %cause)
+        Some((mesh, version)) => {
+            tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = %mesh, topology_version = version, cause = %cause)
                 .in_scope(|| tracing::warn!("a forward was not sent: a node behind it repairs by a read at the next differential"));
         }
         None => {
-            tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = "", source_publisher = "", topology_version = 0u64, cause = %cause)
+            tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = "", topology_version = 0u64, cause = %cause)
                 .in_scope(|| tracing::warn!("a carried frame was not sent"));
         }
     }
@@ -223,7 +224,7 @@ fn role_dropped(job: Job, revision: u64, current: Option<u64>) {
         Job::Carried { me, frame, .. } => (me, "carried", vec![frame]),
         Job::Replayed { me, frames, .. } => (me, "replayed", frames),
     };
-    let sources: BTreeSet<String> = frames.iter().filter_map(|f| identity(f).map(|(mesh, publisher, version)| format!("{mesh}:{publisher}@{version}"))).collect();
+    let sources: BTreeSet<String> = frames.iter().filter_map(|f| identity(f).map(|(mesh, version)| format!("{mesh}@{version}"))).collect();
     let current = current.map(|c| c.to_string()).unwrap_or_else(|| "none".to_string());
     tracing::info_span!(
         "rdm.mesh.topology.reject.via-forwarder-role-dropped",
@@ -255,32 +256,38 @@ async fn send_replayed(sink: &Sink, me: String, frames: Vec<Frame>) {
     }
 }
 
-/// Put what the forwarder decided onto the mesh channel, and name it.
-async fn send_forward(sink: &Sink, me: String, source: Option<(String, PublisherId, u64)>, out: Forward) {
+/// Put what the forwarder decided onto the mesh channel, and name it: the differential's chunks in
+/// order, none after the first the channel refuses.
+async fn send_forward(sink: &Sink, me: String, source: Option<(String, u64)>, out: Forward) {
     let frames: Vec<Frame> = match out {
-        Forward::Delta(frame) => {
-            if let (Frame::TopologyDelta { base_version, changed, removed, in_flight, deleted, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
-                tracing::info_span!(
-                    "rdm.mesh.topology.update.via-forwarded-delta",
-                    node = %me,
-                    mesh = %mesh,
-                    source_publisher = %publisher,
-                    base_version = *base_version,
-                    topology_version = *version,
-                    changed = changed.len(),
-                    removed = removed.len(),
-                    in_flight = in_flight.len(),
-                    deleted = deleted.len(),
-                )
-                .in_scope(|| tracing::info!("a source moved: one delta from the version last published into this mesh"));
-            }
-            vec![*frame]
-        }
+        Forward::Delta(frames) => frames,
         Forward::Nothing(_) => return,
     };
+    if let (Some(Frame::TopologyDelta { base_version, chunk_count, .. }), Some((mesh, version))) = (frames.first().map(Frame::data), &source) {
+        let count = |f: &Frame| match f.data() {
+            Frame::TopologyDelta { added, changed, removed, in_flight, deleted, .. } => [added.len(), changed.len(), removed.len(), in_flight.len(), deleted.len()],
+            _ => [0; 5],
+        };
+        let [added, changed, removed, in_flight, deleted] = frames.iter().map(count).fold([0; 5], |a, b| std::array::from_fn(|k| a[k] + b[k]));
+        tracing::info_span!(
+            "rdm.mesh.topology.update.via-forwarded-delta",
+            node = %me,
+            mesh = %mesh,
+            base_version = *base_version,
+            topology_version = *version,
+            chunk_count = *chunk_count,
+            added,
+            changed,
+            removed,
+            in_flight,
+            deleted,
+        )
+        .in_scope(|| tracing::info!("a peer mesh moved: one differential from the version last published into this mesh"));
+    }
     for frame in &frames {
         if let Err(cause) = sink(frame.clone()).await {
             refused(&me, frame, &cause);
+            return;
         }
     }
 }
@@ -293,6 +300,7 @@ fn test_author() -> crate::envelope::Birth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::MAX_FRAME;
     use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshNode, NodeId};
     use std::time::Duration;
     use tokio::sync::mpsc;
@@ -324,10 +332,6 @@ mod tests {
         Full::new(vec![d], Vec::new(), Vec::new())
     }
 
-    fn publisher() -> PublisherId {
-        PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
-    }
-
     /// Every frame the sink was handed, in the order it was handed it. The send of the first
     /// frame handed to it takes `first_takes`; a send in `fail` returns an error.
     #[derive(Clone, Default)]
@@ -354,7 +358,7 @@ mod tests {
                         anyhow::bail!("the channel refused call {n}");
                     }
                     let key = match f.data() {
-                        Frame::TopologyDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
+                        Frame::TopologyDelta { base_version, .. } => (*base_version, f.delta_version().expect("an authored differential")),
                         Frame::TopologyFull { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } if me.carried_marker => (1, 1),
                         other => panic!("not a forward: {other:?}"),
@@ -385,10 +389,9 @@ mod tests {
         let rec = Recorder { first_takes: Duration::from_millis(100), ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), rec.sink());
         path.set_role(true, &[]);
-        let p = publisher();
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", 12, &source_at(&ids, 12), 3);
         assert_eq!(rec.seen_after(3).await, vec![(0, 10), (10, 11), (11, 12)]);
     }
 
@@ -425,7 +428,7 @@ mod tests {
     }
 
     /// CONTRACT: a forward the mesh channel refuses leaves no silent gap. The refusal is named by a
-    /// span carrying the node, mesh, source publisher, version and cause; nothing full follows it.
+    /// span carrying the node, mesh, version and cause; nothing full follows it.
     /// The baseline moved: the next differential is from v11, so a node that missed v11 is behind its
     /// base and repairs by a read (gossip.md §3.3).
     #[tokio::test]
@@ -437,20 +440,18 @@ mod tests {
         let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), rec.sink());
         path.set_role(true, &[]);
-        let p = publisher();
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
         assert_eq!(rec.seen_after(1).await, vec![(0, 10)]);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
 
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1, "the refusal is named once");
         let f = &failed[0];
         assert_eq!(f["node"], "mesh2.node-admin.1");
         assert_eq!(f["mesh"], "mesh1");
-        assert_eq!(f["source_publisher"], p.to_string());
         assert_eq!(f["topology_version"], "11");
         assert!(f["cause"].contains("the channel refused call 1"), "the cause is the channel's own: {}", f["cause"]);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
+        path.source("mesh2.node-admin.1", "mesh1", 12, &source_at(&ids, 12), 3);
         assert_eq!(rec.seen_after(2).await, vec![(0, 10), (11, 12)], "nothing full follows a refusal; the next differential is from the version decided");
     }
 
@@ -466,8 +467,7 @@ mod tests {
         forwarder.lock().unwrap().set_author(test_author());
         let path = ForwardPath { forwarder, queue };
         path.forwarder.lock().unwrap().set_role(true);
-        let p = publisher();
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
@@ -498,7 +498,7 @@ mod tests {
                         me.release.acquire().await.unwrap().forget();
                     }
                     let key = match f.data() {
-                        Frame::TopologyDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
+                        Frame::TopologyDelta { base_version, .. } => (*base_version, f.delta_version().expect("an authored differential")),
                         Frame::TopologyFull { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } => (1, 1),
                         other => panic!("not a forward: {other:?}"),
@@ -523,16 +523,15 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         let path = ForwardPath::new(Arc::default(), gate.sink());
-        let p = publisher();
         path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
         gate.entered.notified().await;
-        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         path.set_role(false, &[]);
         gate.release.add_permits(1);
-        path.set_role(true, &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))]);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
+        path.set_role(true, &[("mesh1".to_string(), 10, source_at(&ids, 10))]);
+        path.source("mesh2.node-admin.1", "mesh1", 12, &source_at(&ids, 12), 3);
         for _ in 0..400 {
             if gate.seen.lock().unwrap().contains(&(10, 12)) {
                 break;
@@ -544,7 +543,7 @@ mod tests {
         let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_revision"].clone(), f["current_revision"].clone(), f["sources"].clone())).collect();
         assert_eq!(
             named,
-            vec![("forwarded".to_string(), "1".to_string(), "3".to_string(), format!("mesh1:{p}@11")), ("carried".to_string(), "1".to_string(), "3".to_string(), String::new())],
+            vec![("forwarded".to_string(), "1".to_string(), "3".to_string(), "mesh1@11".to_string()), ("carried".to_string(), "1".to_string(), "3".to_string(), String::new())],
             "each dropped entry is named with the term it was decided in and the term that dropped it"
         );
     }
@@ -557,12 +556,11 @@ mod tests {
         let gate = Gate::new();
         gate.release.add_permits(1);
         let path = ForwardPath::new(Arc::default(), gate.sink());
-        let p = publisher();
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
         path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
         for _ in 0..400 {
             if !gate.seen.lock().unwrap().is_empty() {
                 break;
@@ -581,12 +579,11 @@ mod tests {
         let rec = Recorder { first_takes: Duration::from_millis(100), carried_marker: true, ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), rec.sink());
         path.set_role(true, &[]);
-        let p = publisher();
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         let (replayed, deltas, _) = path.replay("mesh2.node-admin.1", Vec::new(), || 2);
         assert_eq!((replayed, deltas), (1, 1), "the replay is the last differential of mesh1");
-        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 3);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 3);
         assert_eq!(rec.seen_after(4).await, vec![(0, 10), (1, 1), (0, 10), (10, 11)]);
     }
 
@@ -600,10 +597,9 @@ mod tests {
         let gate = Gate::new();
         gate.release.add_permits(1);
         let path = ForwardPath::new(Arc::default(), gate.sink());
-        let (old_primary, new_primary) = (publisher(), publisher());
-        path.set_role(true, &[("mesh1".to_string(), old_primary, 7, source_at(&ids, 7))]);
-        path.source("mesh2.node-admin.2", "mesh1", &new_primary, 7, &source_at(&ids, 7), 1);
-        path.source("mesh2.node-admin.2", "mesh1", &new_primary, 9, &source_at(&ids, 9), 2);
+        path.set_role(true, &[("mesh1".to_string(), 7, source_at(&ids, 7))]);
+        path.source("mesh2.node-admin.2", "mesh1", 7, &source_at(&ids, 7), 1);
+        path.source("mesh2.node-admin.2", "mesh1", 9, &source_at(&ids, 9), 2);
         for _ in 0..400 {
             if !gate.seen.lock().unwrap().is_empty() {
                 break;
@@ -613,33 +609,72 @@ mod tests {
         assert_eq!(*gate.seen.lock().unwrap(), vec![(7, 9)], "the held version is not sent again; the move is one differential from it");
     }
 
-    /// CONTRACT: a differential too large for one message is not sent and is named; nothing full
-    /// replaces it, and the baseline moves, so the next differential of that mesh is from its version
-    /// and a node behind it repairs by a read (gossip.md §3.3). Another mesh decided between keeps its
-    /// place.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_differential_too_large_for_one_message_is_named_and_not_sent() {
+    /// mesh1's `n` members at `version`: from v11 the first is connections-deleting.
+    fn members_at(members: &[(NodeId, IncarnationId)], version: u64) -> Full {
+        let mut digests: Vec<MeshDigest> = members.iter().enumerate().map(|(k, (id, b))| digest(k as u32 + 1, id, b, 1)).collect();
+        if version > 10 {
+            digests[0].status = NodeStatus::ConnectionsDeleting;
+        }
+        Full::new(digests, Vec::new(), Vec::new())
+    }
+
+    /// CONTRACT (gossip.md §Size: "a differential that does not fit one message is sent in chunks"):
+    /// a differential of 400 members, too large for one message, reaches the mesh channel as all of
+    /// its chunks, in order, before anything decided after it; its span names the chunk count; nothing
+    /// is named too large. Another mesh decided between keeps its place, and the next differential of
+    /// the first mesh is from its version. Must NOT happen: a differential too large for one message
+    /// not sent; another frame between its chunks.
+    #[tokio::test]
+    async fn a_differential_larger_than_one_message_reaches_the_channel_as_its_chunks_in_order() {
         let spans = Spans::default();
         let _capture = rdm_transport::test_span_capture::install(spans.clone());
-        let members: Vec<(NodeId, IncarnationId)> = (0..150).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
-        let big = |version: u64| {
-            let mut digests: Vec<MeshDigest> = members.iter().enumerate().map(|(k, (id, b))| digest(k as u32 + 1, id, b, 1)).collect();
-            if version > 10 {
-                digests[0].status = NodeStatus::ConnectionsDeleting;
-            }
-            Full::new(digests, Vec::new(), Vec::new())
-        };
+        let members: Vec<(NodeId, IncarnationId)> = (0..400).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder::default();
         let path = ForwardPath::new(Arc::default(), rec.sink());
         path.set_role(true, &[]);
-        let (p, q) = (publisher(), publisher());
-        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &big(10), 1);
-        path.source("mesh2.node-admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);
-        path.source("mesh2.node-admin.1", "mesh1", &p, 11, &big(11), 3);
-        assert_eq!(rec.seen_after(2).await, vec![(0, 5), (10, 11)]);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &members_at(&members, 10), 1);
+        path.source("mesh2.node-admin.1", "mesh3", 5, &source_at(&ids, 5), 2);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &members_at(&members, 11), 3);
+        let forwarded = spans.named("rdm.mesh.topology.update.via-forwarded-delta").await;
+        let chunks: usize = forwarded.iter().find(|f| f["mesh"] == "mesh1" && f["topology_version"] == "10").expect("the differential is named")["chunk_count"].parse().unwrap();
+        assert!(chunks > 1, "400 members do not fit one message: {chunks} chunk(s)");
+        let mut expected = vec![(0, 10); chunks];
+        expected.extend([(0, 5), (10, 11)]);
+        assert_eq!(rec.seen_after(chunks + 2).await, expected, "every chunk, in order, then what was decided after it");
+        assert!(spans.0.lock().unwrap().iter().all(|(n, _)| n != "rdm.mesh.topology.reject.via-delta-too-large"), "nothing is too large");
+    }
+
+    /// CONTRACT (gossip.md §Size: "one node entry that cannot fit one message is not sent
+    /// (`rdm.mesh.topology.reject.via-delta-too-large`), and a node behind it tops up"): a differential
+    /// with one node whose name alone exceeds a message is named, with the mesh, base, version and the
+    /// entry's size, and nothing of it is sent; nothing full replaces it, and the baseline moves, so the
+    /// next differential of that mesh is from its version and a node behind it repairs by a read
+    /// (gossip.md §3.3). Another mesh decided between keeps its place. Must NOT happen: part of a
+    /// differential sent without the entry, as if complete.
+    #[tokio::test]
+    async fn one_node_entry_too_large_for_one_message_is_named_and_its_differential_not_sent() {
+        let spans = Spans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        let (huge_id, huge_birth) = (NodeId::mint(), IncarnationId::mint());
+        let mut huge = digest(2, &huge_id, &huge_birth, 1);
+        huge.node.name = "n".repeat(MAX_FRAME + 1);
+        let with_huge = |version: u64| {
+            let mut full = source_at(&ids, version).digests();
+            full.push(huge.clone());
+            Full::new(full, Vec::new(), Vec::new())
+        };
+        let rec = Recorder::default();
+        let path = ForwardPath::new(Arc::default(), rec.sink());
+        path.set_role(true, &[]);
+        path.source("mesh2.node-admin.1", "mesh1", 10, &with_huge(10), 1);
+        path.source("mesh2.node-admin.1", "mesh3", 5, &source_at(&ids, 5), 2);
+        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 3);
+        assert_eq!(rec.seen_after(2).await, vec![(0, 5), (10, 11)], "nothing of the differential with the oversize entry is sent; the next is from its version");
         let named = spans.named("rdm.mesh.topology.reject.via-delta-too-large").await;
-        assert_eq!(named.len(), 1, "the differential that does not fit is named once");
+        assert_eq!(named.len(), 1, "the entry that fits no message is named once");
         assert_eq!((named[0]["mesh"].as_str(), named[0]["base_version"].as_str(), named[0]["topology_version"].as_str()), ("mesh1", "0", "10"));
+        assert!(named[0]["frame_bytes"].parse::<usize>().unwrap() > MAX_FRAME, "the span names the entry's size: {:?}", named[0]);
     }
 }

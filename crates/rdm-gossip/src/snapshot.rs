@@ -9,11 +9,14 @@
 //! ```text
 //! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> TopologyFull on the backbone
 //! RECEIVER         TopologyFull chunks -> SnapshotReceiver -> installed only once EVERY chunk is held
-//! FORWARDER        held source Full, last-published Full -> Forwarder -> TopologyDelta | forwarded full
-//! RECEIVER         TopologyDelta -> applied only at exactly base_version, else the source desyncs
+//! FORWARDER        held source Full, last-published Full -> Forwarder -> TopologyDelta chunks
+//! RECEIVER         TopologyDelta chunks -> applied once EVERY chunk is held, at exactly base_version,
+//!                  else the source desyncs
 //! ```
 
 use crate::frame::{Frame, MAX_FRAME};
+use rdm_core::framing::Birth as NodeBirth;
+use rdm_core::wire::{NodeEntry, NodeStatusEntry};
 use rdm_core::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -135,57 +138,101 @@ impl Full {
         self
     }
 
-    /// The complete difference from this full to `new` (gossip.md §3.3: one delta
-    /// per move from a held version to a newer one, never a replay of the versions between).
-    /// `in_flight` and `deleted` carry the overlays and departures `new` holds that this one does
-    /// not. A cleared stop overlay travels as its birth's own `changed` entry: a source's primary
-    /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
-    /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
+    /// The complete difference from this full to `new` (gossip.md §3.3: one differential per move
+    /// from a held version to a newer one, never a replay of the versions between). `added` are the
+    /// births `new` lists that this one does not list as the same exact birth, or lists with other
+    /// details; `changed` the births both list whose status or primary roles moved; `removed` the
+    /// births this one lists that `new` does not. `in_flight` and `deleted` carry the overlays and
+    /// departures `new` holds that this one does not. A cleared stop overlay travels as its birth's
+    /// own entry: a source's primary never lists a stopped birth, and lists it again only after its
+    /// `node.joined` cleared the stop ([`Full::apply`]). An expired departure is a local fact of the
+    /// receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
-        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| d.clone()).collect();
+        let (mut added, mut changed) = (Vec::new(), Vec::new());
+        for (id, d) in &new.digests {
+            match self.digests.get(id).filter(|o| o.node.incarnation == d.node.incarnation) {
+                None => added.push(d.clone()),
+                Some(o) if topology_view(o) == topology_view(d) => {}
+                Some(o) if o.node == d.node && o.fabric_id == d.fabric_id => changed.push(NodeStatusEntry::of(d)),
+                Some(_) => added.push(d.clone()),
+            }
+        }
         Delta {
-            removed: self.digests.keys().filter(|id| !new.digests.contains_key(*id)).cloned().collect(),
+            added,
+            changed,
+            removed: self.digests.values().filter(|o| new.digests.get(o.node.node_id.as_str()).is_none_or(|d| d.node.incarnation != o.node.incarnation)).map(|o| NodeBirth { node_id: o.node.node_id.clone(), incarnation: o.node.incarnation.clone() }).collect(),
             in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
             deleted: new.deleted.iter().filter(|(k, _)| !self.deleted.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
-            changed,
             mesh_id: new.mesh_id.clone(),
         }
     }
 
-    /// This full moved by `delta` (gossip.md §3.1, `TopologyDelta` carries "overlay and deleted
-    /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
-    /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
-    /// `node.joined` ended the stop. A departure ends every overlay of its exact birth, its stop
-    /// included: node.delete replaces NodeStopped with the deleted retention (gossip.md §3.1).
-    pub fn apply(&mut self, delta: &Delta) {
+    /// This full moved by `delta` (gossip.md §3.1, `TopologyDelta`), all of it or nothing: the
+    /// births added or changed, as this full now holds them. A removal takes out its exact birth
+    /// only. An added birth this full holds keeps the Digest sequence and lineage held of it, which a
+    /// differential does not carry. A `changed` entry moves the held birth's status and primary roles;
+    /// one naming a birth neither held nor added is [`Gap::ChangedBirthNotHeld`] and moves nothing. An added
+    /// or changed birth clears that exact birth's stop overlay (`NodeStopped`, `node.stop:`): the
+    /// source lists the birth again once its primary's `node.joined` ended the stop. A departure ends
+    /// every overlay of its exact birth, its stop included: node.delete replaces NodeStopped with the
+    /// deleted retention (gossip.md §3.1).
+    pub fn apply(&mut self, delta: &Delta) -> Result<Vec<MeshDigest>, Gap> {
+        let mut next = self.clone();
         if delta.mesh_id.is_some() {
-            self.mesh_id = delta.mesh_id.clone();
+            next.mesh_id = delta.mesh_id.clone();
         }
-        for d in &delta.changed {
-            self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
-            self.put(d.clone());
+        for b in &delta.removed {
+            if next.digests.get(b.node_id.as_str()).is_some_and(|d| d.node.incarnation == b.incarnation) {
+                next.unlist(b.node_id.as_str());
+                next.digests.remove(b.node_id.as_str());
+            }
         }
-        for id in &delta.removed {
-            self.unlist(id);
-            self.digests.remove(id);
+        let mut moved = Vec::new();
+        for d in &delta.added {
+            let mut d = d.clone();
+            if let Some(held) = next.digests.get(d.node.node_id.as_str()).filter(|h| h.node.incarnation == d.node.incarnation) {
+                d.digest_seq = held.digest_seq;
+                d.emitted_at_rafka_ms = held.emitted_at_rafka_ms;
+                d.node.supersedes = held.node.supersedes.clone();
+            }
+            moved.push(d);
+            next.listed(moved.last().expect("just pushed").clone());
+        }
+        for c in &delta.changed {
+            let Some(held) = next.digests.get(c.node_id.as_str()).filter(|h| h.node.incarnation == c.incarnation) else { return Err(Gap::ChangedBirthNotHeld) };
+            let mut d = held.clone();
+            d.status = c.status;
+            d.primary = c.primary.clone();
+            moved.push(d);
+            next.listed(moved.last().expect("just pushed").clone());
         }
         for o in &delta.in_flight {
-            self.in_flight.insert(o.key(), o.clone());
+            next.in_flight.insert(o.key(), o.clone());
         }
         for o in &delta.deleted {
-            self.in_flight.retain(|_, x| !(x.node_id == o.node_id && x.incarnation == o.incarnation));
-            self.deleted.insert(o.node_id.to_string(), o.clone());
+            next.in_flight.retain(|_, x| !(x.node_id == o.node_id && x.incarnation == o.incarnation));
+            next.deleted.insert(o.node_id.to_string(), o.clone());
         }
+        *self = next;
+        Ok(moved)
+    }
+
+    /// Hold `d` as listed: its exact birth's stop overlay ends ([`Self::apply`]).
+    fn listed(&mut self, d: MeshDigest) {
+        self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
+        self.put(d);
     }
 }
 
-/// What moves a held source projection from `base_version` to `topology_version`.
+/// What moves a held source projection from `base_version` to the version its differential names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Delta {
-    /// Births added or changed.
-    pub changed: Vec<MeshDigest>,
-    /// NodeIds no longer listed.
-    pub removed: Vec<String>,
+    /// Births added, with their details: a node new to the mesh, or a held birth whose details changed.
+    pub added: Vec<MeshDigest>,
+    /// Held births whose status or primary roles changed.
+    pub changed: Vec<NodeStatusEntry>,
+    /// Births no longer listed.
+    pub removed: Vec<NodeBirth>,
     /// The overlays opened or advanced.
     pub in_flight: Vec<LifecycleOp>,
     /// The departures recorded.
@@ -197,8 +244,84 @@ pub struct Delta {
 impl Delta {
     /// Whether the delta moves nothing.
     pub fn is_empty(&self) -> bool {
-        self.changed.is_empty() && self.removed.is_empty() && self.in_flight.is_empty() && self.deleted.is_empty()
+        self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty() && self.in_flight.is_empty() && self.deleted.is_empty()
     }
+
+    /// The differential `parts` make, in chunk order: what a receiver applies once it holds them all.
+    pub fn joined(parts: impl IntoIterator<Item = Delta>) -> Delta {
+        let mut whole = Delta::default();
+        for p in parts {
+            whole.added.extend(p.added);
+            whole.changed.extend(p.changed);
+            whole.removed.extend(p.removed);
+            whole.in_flight.extend(p.in_flight);
+            whole.deleted.extend(p.deleted);
+            whole.mesh_id = whole.mesh_id.or(p.mesh_id);
+        }
+        whole
+    }
+
+    /// A differential chunk's body (`TopologyDelta` data) as a receiver reads it: an added node is held
+    /// of fabric `fabric` (its envelope's) and `mesh` (its frame's).
+    pub fn of_frame(f: &Frame, fabric: &rdm_core::FabricId) -> Option<Delta> {
+        let Frame::TopologyDelta { mesh, mesh_id, added, changed, removed, in_flight, deleted, .. } = f.data() else { return None };
+        Some(Delta {
+            added: added.iter().map(|e| e.digest(fabric, mesh)).collect(),
+            changed: changed.clone(),
+            removed: removed.clone(),
+            in_flight: in_flight.clone(),
+            deleted: deleted.clone(),
+            mesh_id: mesh_id.clone(),
+        })
+    }
+}
+
+/// One item of a differential, as chunks carry it.
+#[derive(Clone)]
+enum DeltaItem {
+    Added(NodeEntry),
+    Changed(NodeStatusEntry),
+    Removed(NodeBirth),
+    InFlight(LifecycleOp),
+    Deleted(LifecycleOp),
+}
+
+/// The chunks of `delta`, the differential of `mesh` from `base_version` to `version`, authored by
+/// the forwarding mesh-primary `author` at `now_ms` (gossip.md §3.1 `TopologyDelta`): each chunk
+/// encodes within one gossip message, sized as a complete message with the widest index and count,
+/// and an empty differential is one empty chunk. `Err` names the encoded size of each node entry,
+/// overlay or departure that fits no message on its own: the differential is not sent.
+pub fn delta_chunks(mesh: &str, base_version: u64, version: u64, delta: &Delta, author: &crate::envelope::Birth, now_ms: u64) -> Result<Vec<Frame>, Vec<usize>> {
+    let items: Vec<DeltaItem> = delta.added.iter().map(|d| DeltaItem::Added(NodeEntry::of(d)))
+        .chain(delta.changed.iter().cloned().map(DeltaItem::Changed))
+        .chain(delta.removed.iter().cloned().map(DeltaItem::Removed))
+        .chain(delta.in_flight.iter().cloned().map(DeltaItem::InFlight))
+        .chain(delta.deleted.iter().cloned().map(DeltaItem::Deleted))
+        .collect();
+    let shape = |run: &[DeltaItem], chunk_index: u32, chunk_count: u32| {
+        let (mut added, mut changed, mut removed, mut in_flight, mut deleted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for it in run.iter().cloned() {
+            match it {
+                DeltaItem::Added(v) => added.push(v),
+                DeltaItem::Changed(v) => changed.push(v),
+                DeltaItem::Removed(v) => removed.push(v),
+                DeltaItem::InFlight(v) => in_flight.push(v),
+                DeltaItem::Deleted(v) => deleted.push(v),
+            }
+        }
+        Frame::TopologyDelta { mesh: mesh.to_string(), mesh_id: delta.mesh_id.clone(), base_version, chunk_index, chunk_count, added, changed, removed, in_flight, deleted }.authored_delta(author, version, now_ms)
+    };
+    let (sized, refused) = rdm_transport::chunking::pack_in_order(items, |run: &[DeltaItem]| {
+        let bytes = shape(run, u32::MAX, u32::MAX).encode();
+        if bytes.len() > MAX_FRAME { Err(bytes.len()) } else { Ok(bytes.into()) }
+    });
+    if !refused.is_empty() {
+        return Err(refused);
+    }
+    let runs: Vec<Vec<DeltaItem>> = sized.into_iter().map(|(run, _)| run).collect();
+    let runs = if runs.is_empty() { vec![Vec::new()] } else { runs };
+    let count = runs.len() as u32;
+    Ok(runs.iter().enumerate().map(|(k, run)| shape(run, k as u32, count)).collect())
 }
 
 /// A source primary's version counter: `topology_version` bumps when the normalized projection
@@ -459,7 +582,6 @@ pub enum Gap {
     /// No snapshot of this source is held.
     NoBaseline,
     /// The held version is not the delta's base.
-    /// The held version is not the delta's base.
     Version {
         /// The version held.
         held: u64,
@@ -478,6 +600,10 @@ pub enum Gap {
     /// is its mesh's primary), the birth's record in node-storage holds it (Q404 A). Pulled or read
     /// again on the one backoff rule until it is held.
     NoRuntimeFact,
+    /// A differential's `changed` entry names a birth this node does not hold at the differential's
+    /// base: what it holds of the mesh at that version is not the forwarder's, a sync issue topped up
+    /// by a read (gossip.md §3.3).
+    ChangedBirthNotHeld,
 }
 
 impl std::fmt::Display for Gap {
@@ -488,6 +614,7 @@ impl std::fmt::Display for Gap {
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
             Gap::StoppedBirthHeard => f.write_str("stopped-birth-heard"),
             Gap::NoRuntimeFact => f.write_str("no-runtime-fact"),
+            Gap::ChangedBirthNotHeld => f.write_str("changed-birth-not-held"),
         }
     }
 }
@@ -511,6 +638,22 @@ pub enum Moved {
         topology_version: u64,
         /// The delta applied.
         delta: Delta,
+        /// The births it added or changed, as the receiver now holds them.
+        moved: Vec<MeshDigest>,
+    },
+    /// A chunk of a differential not yet complete: nothing applied, no version moved.
+    Waiting {
+        /// The chunks held.
+        held: u32,
+        /// The chunks the differential has.
+        of: u32,
+    },
+    /// The chunk names an index outside its count, or a count other than its differential's.
+    Malformed {
+        /// The chunk's index.
+        chunk_index: u32,
+        /// The chunk's count.
+        chunk_count: u32,
     },
     /// The held version is this delta's: a copy of the delta held. A no-op.
     Duplicate {
@@ -525,6 +668,55 @@ pub enum Moved {
         /// Why the delta did not apply.
         gap: Gap,
     },
+}
+
+/// One chunk of a differential, as a receiver reads it from a `TopologyDelta` frame and its envelope.
+#[derive(Debug, Clone)]
+pub struct DeltaChunk {
+    /// The peer mesh's name.
+    pub mesh: String,
+    /// The forwarding mesh-primary that authored it: the envelope's `source`.
+    pub author: crate::envelope::Birth,
+    /// The version a receiver must hold for the differential to apply.
+    pub base_version: u64,
+    /// The version it moves the mesh to: the envelope's `sequence`.
+    pub version: u64,
+    /// This chunk's index within the differential.
+    pub chunk_index: u32,
+    /// The number of chunks in the differential.
+    pub chunk_count: u32,
+    /// What this chunk carries.
+    pub delta: Delta,
+}
+
+impl DeltaChunk {
+    /// The chunk an authored `TopologyDelta` is: its author and version from its envelope, an added
+    /// node held of the author's fabric. `None` for another frame or one with no authored context.
+    pub fn of_frame(f: &Frame) -> Option<Self> {
+        let (Frame::TopologyDelta { mesh, base_version, chunk_index, chunk_count, .. }, Some(c), Some(version)) = (f.data(), f.context(), f.delta_version()) else { return None };
+        Some(Self { mesh: mesh.clone(), author: c.source.clone(), base_version: *base_version, version, chunk_index: *chunk_index, chunk_count: *chunk_count, delta: Delta::of_frame(f, &c.source.fabric)? })
+    }
+}
+
+/// A differential being assembled: its mesh, its base and its version, and who authored it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DeltaKey {
+    mesh: String,
+    base_version: u64,
+    version: u64,
+    author: crate::envelope::Birth,
+}
+
+#[derive(Debug, Clone)]
+struct PendingDelta {
+    count: u32,
+    chunks: BTreeMap<u32, Delta>,
+}
+
+/// The birth that sent a held version, as the receiver's shared records name it: never compared to
+/// order anything (Q389).
+pub(crate) fn sent_by(author: &crate::envelope::Birth) -> PublisherId {
+    PublisherId { node_id: author.node.clone(), incarnation: author.incarnation.clone() }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -563,8 +755,11 @@ fn same_parts(parts: &(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>), c: 
 }
 
 fn same_delta(a: &Delta, b: &Delta) -> bool {
-    a.removed.iter().collect::<std::collections::BTreeSet<_>>() == b.removed.iter().collect()
-        && Full::new(a.changed.clone(), a.in_flight.clone(), a.deleted.clone()).same_topology(&Full::new(b.changed.clone(), b.in_flight.clone(), b.deleted.clone()))
+    let removed = |d: &Delta| d.removed.iter().map(|b| (b.node_id.to_string(), b.incarnation.to_string())).collect::<BTreeSet<_>>();
+    let changed = |d: &Delta| d.changed.iter().map(|c| (c.node_id.to_string(), c.incarnation.to_string(), format!("{:?} {:?}", c.status, c.primary))).collect::<BTreeSet<_>>();
+    removed(a) == removed(b)
+        && changed(a) == changed(b)
+        && Full::new(a.added.clone(), a.in_flight.clone(), a.deleted.clone()).same_topology(&Full::new(b.added.clone(), b.in_flight.clone(), b.deleted.clone()))
 }
 
 /// Borrow the complete image under ReceiveOrder's shared installation lock; inspecting a chunk
@@ -584,6 +779,8 @@ pub(crate) type InstalledProjection<'a> = (&'a PublisherId, u64, &'a Full, Optio
 #[derive(Debug, Default)]
 pub struct SnapshotReceiver {
     pending: HashMap<SourceKey, Pending>,
+    /// The chunks of each differential not yet complete, by (mesh, base, version, author).
+    pending_deltas: HashMap<DeltaKey, PendingDelta>,
     held: HashMap<String, Held>,
     /// Sources a delta named before any snapshot of them was held: desynchronized, with no baseline.
     unbased: BTreeMap<String, Gap>,
@@ -712,19 +909,64 @@ impl SnapshotReceiver {
 
     /// Use the actual installed source image as the delta base. A channel-local assembly cannot
     /// turn an exact-base delta into a gap after another channel installed that same source.
-    pub(crate) fn take_delta_against(&mut self, mesh: &str, source: &PublisherId, base: u64, version: u64, delta: &Delta, installed: Option<InstalledProjection<'_>>) -> Moved {
+    pub(crate) fn take_delta_chunk_against(&mut self, c: DeltaChunk, installed: Option<InstalledProjection<'_>>) -> Moved {
         if let Some((publisher, installed_version, full, _)) = installed {
-            if self.held.get(mesh).is_none_or(|local| local.version < installed_version) {
-                self.held.insert(mesh.into(), Held { publisher: publisher.clone(), version: installed_version, full: full.clone(), desynced: None, publication: None, last_delta: None, peer_read: false });
+            if self.held.get(&c.mesh).is_none_or(|local| local.version < installed_version) {
+                self.held.insert(c.mesh.clone(), Held { publisher: publisher.clone(), version: installed_version, full: full.clone(), desynced: None, publication: None, last_delta: None, peer_read: false });
             }
         }
-        self.take_delta(mesh, source, base, version, delta)
+        self.take_delta_chunk(c)
     }
 
-    /// A delta: applied only at exactly its base. One dropped because its source was already
-    /// desynchronized (its pull in flight) leaves its version as the floor that pull must reach.
-    pub fn take_delta(&mut self, mesh: &str, source: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
-        let moved = self.take_delta_at_base(mesh, source, base_version, topology_version, delta);
+    /// One chunk of a differential (gossip.md §3.1 `TopologyDelta`). It is judged against what is held
+    /// at once: a chunk of a version held, or below it, is a copy or stale, and one whose base is not
+    /// the version held shows the gap before its other chunks arrive. Otherwise it is held until every
+    /// chunk of its (mesh, base, version, author) is, and the differential they make is then applied
+    /// at exactly its base ([`Self::take_delta`]); until then nothing is applied and no version moves.
+    pub fn take_delta_chunk(&mut self, c: DeltaChunk) -> Moved {
+        if c.chunk_count == 0 || c.chunk_index >= c.chunk_count {
+            return Moved::Malformed { chunk_index: c.chunk_index, chunk_count: c.chunk_count };
+        }
+        let mesh = c.mesh.clone();
+        let another = self.held.get(&mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), c.delta.mesh_id.as_ref()));
+        match self.held.get(&mesh).filter(|_| !another) {
+            Some(h) if c.version <= h.version || h.desynced.is_some() || h.version != c.base_version => {
+                return self.take_delta(&mesh, &c.author, c.base_version, c.version, &c.delta);
+            }
+            None if c.base_version != 0 => return self.take_delta(&mesh, &c.author, c.base_version, c.version, &c.delta),
+            _ => {}
+        }
+        // What is held moved past every older assembly of this mesh.
+        let floor = self.held.get(&mesh).filter(|_| !another).map(|h| h.version);
+        self.pending_deltas.retain(|k, _| k.mesh != mesh || floor.is_none_or(|f| k.version > f));
+        let key = DeltaKey { mesh: mesh.clone(), base_version: c.base_version, version: c.version, author: c.author.clone() };
+        let identity = format!("{mesh} {} base_version={} version={} chunk_index={}", c.author.uri(), c.base_version, c.version, c.chunk_index);
+        let p = self.pending_deltas.entry(key.clone()).or_insert_with(|| PendingDelta { count: c.chunk_count, chunks: BTreeMap::new() });
+        if p.count != c.chunk_count {
+            return Moved::Malformed { chunk_index: c.chunk_index, chunk_count: c.chunk_count };
+        }
+        if let Some(held) = p.chunks.get(&c.chunk_index) {
+            if same_delta(held, &c.delta) {
+                crate::receive_order::publication_duplicate("mesh-topology-delta", &identity);
+                return Moved::Duplicate { held_version: floor.unwrap_or_default() };
+            }
+            crate::receive_order::publication_inconsistent("mesh-topology-delta", &mesh, &c.author.uri(), c.version);
+            return Moved::Inconsistent;
+        }
+        p.chunks.insert(c.chunk_index, c.delta);
+        if (p.chunks.len() as u32) < p.count {
+            return Moved::Waiting { held: p.chunks.len() as u32, of: p.count };
+        }
+        let assembled = self.pending_deltas.remove(&key).expect("just assembled");
+        let delta = Delta::joined(assembled.chunks.into_values());
+        self.take_delta(&mesh, &c.author, c.base_version, c.version, &delta)
+    }
+
+    /// A differential, whole or as one chunk judged against what is held: applied only at exactly its
+    /// base. One dropped because its source was already desynchronized (its pull in flight) leaves its
+    /// version as the floor that pull must reach.
+    pub fn take_delta(&mut self, mesh: &str, author: &crate::envelope::Birth, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
+        let moved = self.take_delta_at_base(mesh, author, base_version, topology_version, delta);
         if matches!(moved, Moved::Desynced { gap: Gap::AlreadyDesynced, .. }) {
             let floor = self.dropped.entry(mesh.to_string()).or_insert(topology_version);
             *floor = (*floor).max(topology_version);
@@ -732,14 +974,15 @@ impl SnapshotReceiver {
         moved
     }
 
-    fn take_delta_at_base(&mut self, mesh: &str, source: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
+    fn take_delta_at_base(&mut self, mesh: &str, author: &crate::envelope::Birth, base_version: u64, topology_version: u64, delta: &Delta) -> Moved {
+        let source = &author.uri();
         // A differential from version 0 is a mesh's first into this mesh channel: its forwarder held
         // nothing of it before, and a node that holds nothing of it starts from nothing.
         let another = self.held.get(mesh).is_some_and(|h| another_mesh(h.full.mesh_id().as_ref(), delta.mesh_id.as_ref()));
         if base_version == 0 && (another || !self.held.contains_key(mesh)) {
             self.unbased.remove(mesh);
             self.dropped.remove(mesh);
-            self.held.insert(mesh.to_string(), Held { publisher: source.clone(), version: 0, full: Full::default(), desynced: None, publication: None, last_delta: None, peer_read: false });
+            self.held.insert(mesh.to_string(), Held { publisher: sent_by(author), version: 0, full: Full::default(), desynced: None, publication: None, last_delta: None, peer_read: false });
         }
         let Some(h) = self.held.get_mut(mesh) else {
             let already = self.unbased.contains_key(mesh);
@@ -753,15 +996,14 @@ impl SnapshotReceiver {
             return Moved::Stale;
         }
         if h.version == topology_version {
-            let same = match &h.last_delta {
-                Some((base, applied)) => *base == base_version && same_delta(applied, delta),
-                None => { let mut candidate = h.full.clone(); candidate.apply(delta); h.full.same_topology(&candidate) },
-            };
+            // The differential applied, or one chunk of it: what it carries is held already.
+            let same = h.last_delta.as_ref().is_some_and(|(base, applied)| *base == base_version && same_delta(applied, delta))
+                || { let mut candidate = h.full.clone(); candidate.apply(delta).is_ok() && h.full.same_topology(&candidate) };
             if !same {
                 crate::receive_order::publication_inconsistent("mesh-topology-delta", mesh, source, topology_version);
                 return Moved::Inconsistent;
             }
-            crate::receive_order::publication_duplicate("mesh-topology-delta", &format!("{mesh} {source} base_version={base_version} topology_version={topology_version}"));
+            crate::receive_order::publication_duplicate("mesh-topology-delta", &format!("{mesh} {} base_version={base_version} topology_version={topology_version}", author.uri()));
             return Moved::Duplicate { held_version: h.version };
         }
         if h.desynced.is_some() {
@@ -771,13 +1013,16 @@ impl SnapshotReceiver {
             let gap = Gap::Version { held: h.version, base: base_version };
             return Self::desync(mesh, h, gap);
         }
-        h.full.apply(delta);
+        let moved = match h.full.apply(delta) {
+            Ok(moved) => moved,
+            Err(gap) => return Self::desync(mesh, h, gap),
+        };
         h.version = topology_version;
-        h.publisher = source.clone();
+        h.publisher = sent_by(author);
         h.publication = None;
         h.peer_read = false;
         h.last_delta = Some((base_version, delta.clone()));
-        Moved::Applied { mesh: mesh.to_string(), base_version, topology_version, delta: delta.clone() }
+        Moved::Applied { mesh: mesh.to_string(), base_version, topology_version, delta: delta.clone(), moved }
     }
 
     fn desync(mesh: &str, h: &mut Held, gap: Gap) -> Moved {
@@ -897,23 +1142,22 @@ impl SnapshotReceiver {
 
 #[derive(Debug, Clone)]
 struct Published {
-    /// The mesh-primary whose aggregate the version last published came from: named in served
-    /// copies and spans, never compared (Q389).
-    publisher: PublisherId,
     version: u64,
     full: Full,
     /// The last differential put into this mesh channel, `(base_version, delta)`: what a
-    /// neighbour-up replay sends again.
+    /// neighbour-up replay sends again, as its chunks.
     last: Option<(u64, Delta)>,
 }
 
 /// What the forwarding primary puts on its own Mesh's channel for a peer mesh it holds.
 #[derive(Debug)]
 pub enum Forward {
-    /// The peer mesh moved from the version last published into this Mesh to a newer one.
-    Delta(Box<Frame>),
+    /// The peer mesh moved from the version last published into this Mesh to a newer one: the
+    /// differential, as its chunks, in order.
+    Delta(Vec<Frame>),
     /// Nothing to say: the same version, an older one, a move that changes nothing a Mesh
-    /// member holds, or a differential too large for one message.
+    /// member holds, or a differential with a node entry, overlay or departure too large for one
+    /// message.
     Nothing(&'static str),
 }
 
@@ -923,7 +1167,8 @@ pub enum Forward {
 /// topologies the forwarder holds, not a replay of the versions between. The version is the peer
 /// mesh's, whichever of its mesh-primaries sent it (Q389), and the baseline is the mesh's, whichever
 /// forwarder last published into it: a forwarder taking the role starts from what this Mesh already
-/// holds ([`Forwarder::start_from`]). Nothing on the mesh channel is a full.
+/// holds ([`Forwarder::start_from`]). Nothing on the mesh channel is a full. A differential that does
+/// not fit one message is sent as chunks ([`delta_chunks`]).
 #[derive(Debug, Default)]
 pub struct Forwarder {
     author: Option<crate::envelope::Birth>,
@@ -946,9 +1191,13 @@ impl Forwarder {
     /// Supply this publisher's owned exact birth before making a publication.
     pub fn set_author(&mut self, author: crate::envelope::Birth) { self.author = Some(author); }
 
+    fn author(&self) -> &crate::envelope::Birth {
+        self.author.as_ref().expect("forwarder requires its supplied author birth")
+    }
+
     pub(crate) fn author_frame(&self, frame: Frame, now_ms: u64) -> Frame {
         assert!(frame.context().is_some() || !matches!(frame.data(), Frame::MeshStatus { .. } | Frame::FabricStatus { .. }), "a forwarded status retains its original author and revision");
-        frame.authored(self.author.as_ref().expect("forwarder requires its supplied author birth"), 0, now_ms)
+        frame.authored(self.author(), 0, now_ms)
     }
 
     pub(crate) fn publication_counter(&self) -> Arc<AtomicU64> { self.snapshots.clone() }
@@ -976,72 +1225,68 @@ impl Forwarder {
         self.role_on.then_some(self.role_revision)
     }
 
-    /// The baseline on taking the role: `held`, `(mesh, publisher, version, topology)`, what this node
-    /// holds of each peer mesh from its own mesh channel or a read, the version its Mesh's nodes
-    /// reached from the forwarder before it. The next move of each peer mesh is a differential from
-    /// there; a node that holds another version repairs by a read (gossip.md §3.3).
-    pub fn start_from(&mut self, held: &[(String, PublisherId, u64, Full)]) {
-        for (mesh, publisher, version, full) in held {
+    /// The baseline on taking the role: `held`, `(mesh, version, topology)`, what this node holds of
+    /// each peer mesh from its own mesh channel or a read, the version its Mesh's nodes reached from
+    /// the forwarder before it. The next move of each peer mesh is a differential from there; a node
+    /// that holds another version repairs by a read (gossip.md §3.3).
+    pub fn start_from(&mut self, held: &[(String, u64, Full)]) {
+        for (mesh, version, full) in held {
             if mesh != &self.own_mesh {
-                self.published.insert(mesh.clone(), Published { publisher: publisher.clone(), version: *version, full: full.clone(), last: None });
+                self.published.insert(mesh.clone(), Published { version: *version, full: full.clone(), last: None });
             }
         }
     }
 
-    fn delta_frame(&self, mesh: &str, publisher: &PublisherId, base_version: u64, topology_version: u64, delta: &Delta, now_ms: u64) -> Frame {
-        Frame::TopologyDelta {
-            mesh: mesh.to_string(),
-            mesh_id: delta.mesh_id.clone(),
-            source_publisher: publisher.clone(),
-            base_version,
-            topology_version,
-            published_at_rafka_ms: now_ms,
-            changed: delta.changed.clone(),
-            removed: delta.removed.clone(),
-            in_flight: delta.in_flight.clone(),
-            deleted: delta.deleted.clone(),
+    /// The chunks of `delta`, the differential of `mesh` from `base_version` to `version`, or the
+    /// span naming each item too large for one message.
+    fn delta_frames(&self, me: &str, mesh: &str, base_version: u64, version: u64, delta: &Delta, now_ms: u64) -> Option<Vec<Frame>> {
+        match delta_chunks(mesh, base_version, version, delta, self.author(), now_ms) {
+            Ok(frames) => Some(frames),
+            Err(sizes) => {
+                for bytes in sizes {
+                    tracing::info_span!("rdm.mesh.topology.reject.via-delta-too-large", node = %me, mesh = %mesh, base_version, topology_version = version, frame_bytes = bytes, limit = MAX_FRAME)
+                        .in_scope(|| tracing::warn!("a node entry, overlay or departure fits no message on its own: the differential is not sent; a node behind it repairs by a read"));
+                }
+                None
+            }
         }
-        .authored(self.author.as_ref().expect("forwarder requires its supplied author birth"), 0, now_ms)
     }
 
-    /// The peer `mesh` is now held at `version` (a complete topology with loads). What to forward:
-    /// the differential from the version last published into this Mesh, whoever published it; from
-    /// version 0, nothing, when this Mesh was never given the peer mesh. A differential too large for
-    /// one message is not sent: the baseline still moves, the span names it, and a node behind it
-    /// repairs by a read at the next differential's base.
-    pub fn source(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Forward {
-        let stripped = full.clone();
+    /// The peer `mesh` is now held at `version` (a complete topology). What to forward: the
+    /// differential from the version last published into this Mesh, whoever published it, in as many
+    /// chunks as it takes; from version 0 when this Mesh was never given the peer mesh. A differential
+    /// with one node entry, overlay or departure that fits no message on its own is not sent: the
+    /// baseline still moves, the span names it, and a node behind it repairs by a read at the next
+    /// differential's base.
+    pub fn source(&mut self, me: &str, mesh: &str, version: u64, full: &Full, now_ms: u64) -> Forward {
         if mesh == self.own_mesh {
             // Held for a topology read; its own nodes publish themselves on the mesh channel.
-            self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped, last: None });
+            self.published.insert(mesh.to_string(), Published { version, full: full.clone(), last: None });
             return Forward::Nothing("its own mesh: its nodes publish themselves");
         }
         // Never published into this Mesh, or a later mesh of the same name (another id): from nothing.
-        let held = self.published.get(mesh).filter(|p| !another_mesh(p.full.mesh_id().as_ref(), stripped.mesh_id().as_ref()));
+        let held = self.published.get(mesh).filter(|p| !another_mesh(p.full.mesh_id().as_ref(), full.mesh_id().as_ref()));
         let first = held.is_none();
-        let basis = held.cloned().unwrap_or(Published { publisher: publisher.clone(), version: 0, full: Full::default(), last: None });
+        let basis = held.cloned().unwrap_or(Published { version: 0, full: Full::default(), last: None });
         if version == basis.version {
             return Forward::Nothing("the version is the one last published");
         }
         if version < basis.version {
             return Forward::Nothing("the version is older than the one last published");
         }
-        let delta = basis.full.delta_to(&stripped);
+        let delta = basis.full.delta_to(full);
         // The first differential of a peer mesh is sent even when empty: it gives the Mesh the mesh.
         if !first && delta.is_empty() && version == basis.version + 1 {
             // Nothing a Mesh member holds moved: no frame, and `base_version` stays what receivers hold.
-            self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version: basis.version, full: stripped, last: basis.last });
+            self.published.insert(mesh.to_string(), Published { version: basis.version, full: full.clone(), last: basis.last });
             return Forward::Nothing("the move changes nothing a member of this Mesh holds");
         }
-        let frame = self.delta_frame(mesh, publisher, basis.version, version, &delta, now_ms);
-        self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped, last: Some((basis.version, delta)) });
-        let bytes = frame.encode().len();
-        if bytes > MAX_FRAME {
-            tracing::info_span!("rdm.mesh.topology.reject.via-delta-too-large", node = %me, mesh = %mesh, base_version = basis.version, topology_version = version, frame_bytes = bytes, limit = MAX_FRAME)
-                .in_scope(|| tracing::warn!("the differential does not fit one message: not sent; a node behind it repairs by a read"));
-            return Forward::Nothing("the differential does not fit one message");
+        let frames = self.delta_frames(me, mesh, basis.version, version, &delta, now_ms);
+        self.published.insert(mesh.to_string(), Published { version, full: full.clone(), last: Some((basis.version, delta)) });
+        match frames {
+            Some(frames) => Forward::Delta(frames),
+            None => Forward::Nothing("a node entry, overlay or departure of the differential fits no message"),
         }
-        Forward::Delta(Box::new(frame))
     }
 
     /// Forget what was published of `mesh`: the mesh left.
@@ -1049,20 +1294,21 @@ impl Forwarder {
         self.published.remove(mesh);
     }
 
-    /// The last differential of each peer mesh, sent again (a join, heal or refeed replay): a node
-    /// at its base applies it, one that holds it already takes nothing, and one further behind
-    /// repairs by a read. The published versions do not move.
+    /// The last differential of each peer mesh, sent again as its chunks (a join, heal or refeed
+    /// replay): a node at its base applies it, one that holds it already takes nothing, and one further
+    /// behind repairs by a read. The published versions do not move.
     pub fn replay(&mut self, now_ms: u64) -> Vec<Frame> {
         let mut meshes: Vec<String> = self.published.iter().filter(|(m, p)| **m != self.own_mesh && p.last.is_some()).map(|(m, _)| m.clone()).collect();
         meshes.sort();
+        let author = self.author().clone();
         meshes
             .into_iter()
             .filter_map(|m| {
                 let p = &self.published[&m];
                 let (base, delta) = p.last.as_ref()?;
-                let frame = self.delta_frame(&m, &p.publisher, *base, p.version, delta, now_ms);
-                (frame.encode().len() <= MAX_FRAME).then_some(frame)
+                delta_chunks(&m, *base, p.version, delta, &author, now_ms).ok()
             })
+            .flatten()
             .collect()
     }
 
@@ -1072,20 +1318,21 @@ impl Forwarder {
     }
 
     /// [`Self::snapshots`] of `mesh` alone when one is named: a source of another mesh is not copied.
+    /// A copy names this primary as the birth it is served from.
     pub fn snapshots_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
         let mut v: Vec<SourceSnapshot> = self
             .published
             .iter()
             .filter(|(m, _)| mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), mesh_id: p.full.mesh_id(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
+            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), mesh_id: p.full.mesh_id(), publisher: sent_by(self.author()), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
     }
 
-    /// The publisher and version last published for `mesh`, when any.
-    pub fn published_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
-        self.published.get(mesh).map(|p| (p.publisher.clone(), p.version))
+    /// The version last published for `mesh`, when any.
+    pub fn published_version(&self, mesh: &str) -> Option<u64> {
+        self.published.get(mesh).map(|p| p.version)
     }
 }
 
@@ -1144,8 +1391,8 @@ mod tests {
         let mut rx = SnapshotReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
         // The 7 -> 8 delta is lost; 8 -> 9 shows the gap, 9 -> 10 is dropped while the pull is in flight.
-        assert!(matches!(rx.take_delta("mesh1", &p, 8, 9, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 7, base: 8 }, .. }));
-        assert!(matches!(rx.take_delta("mesh1", &p, 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::AlreadyDesynced, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 8, 9, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 7, base: 8 }, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::AlreadyDesynced, .. }));
         // The pull answers v9, read before its server installed v10.
         assert!(matches!(rx.take_chunk_against(chunk(&p, 9), true, None), Taken::Installed(_)));
         assert_eq!(rx.desynced().into_iter().map(|(m, _)| m).collect::<Vec<_>>(), vec!["mesh1".to_string()], "a read older than the dropped delta leaves the source behind: it pulls again");
@@ -1153,6 +1400,151 @@ mod tests {
         assert!(matches!(rx.take_chunk_against(chunk(&p, 10), true, None), Taken::Installed(_)));
         assert!(rx.desynced().is_empty(), "a read that reaches the dropped delta resumes the source");
         assert_eq!(rx.held_version("mesh1").map(|(_, v)| v), Some(10));
+    }
+
+    /// The birth `p` names, of the test fabric: the author of a differential.
+    fn author_of(p: &PublisherId) -> crate::envelope::Birth {
+        crate::envelope::Birth { fabric: rdm_core::FabricId::parse("fab000000001").unwrap(), node: p.node_id.clone(), incarnation: p.incarnation.clone() }
+    }
+
+    /// A forwarding mesh-primary of mesh1 holding the role, and its birth.
+    fn forwarder() -> (Forwarder, crate::envelope::Birth) {
+        let author = author_of(&PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() });
+        let mut f = Forwarder::default();
+        f.set_own_mesh("mesh1");
+        f.set_author(author.clone());
+        f.set_role(true);
+        (f, author)
+    }
+
+    /// mesh2's node `name`, ready.
+    fn member(name: &str) -> MeshDigest {
+        MeshDigest {
+            fabric_id: rdm_core::FabricId::parse("fab000000001").unwrap(),
+            node: rdm_core::MeshNode { mesh: "mesh2".into(), r#type: "node".into(), node_id: rdm_core::NodeId::mint(), path: "mesh2.node".into(), name: name.into(), endpoint_id: rdm_core::EndpointId(rdm_core::NodeId::mint().to_string()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None },
+            status: rdm_core::model::NodeStatus::Ready,
+            primary: Vec::new(),
+            digest_seq: 0,
+            emitted_at_rafka_ms: 0,
+        }
+    }
+
+    /// `frames` as a receiver reads them off the wire: each encoded, decoded and read as its chunk.
+    fn heard(frames: &[Frame]) -> Vec<DeltaChunk> {
+        frames.iter().map(|f| DeltaChunk::of_frame(&Frame::decode(&f.encode()).expect("the chunk decodes")).expect("a differential chunk")).collect()
+    }
+
+    /// CONTRACT (gossip.md §3.1 `TopologyDelta`, §Size: "a differential that does not fit one message is
+    /// sent in chunks and applied once every chunk is held"): a peer mesh of 400 nodes goes into the
+    /// mesh channel as a differential from nothing in several chunks, each a complete message within
+    /// `MAX_FRAME`, each naming its index and the count, the forwarder as its envelope's source and the
+    /// peer mesh's version as its sequence. A receiver holding every chunk but one holds nothing of the
+    /// mesh and moves no version; a repeated chunk is a copy; the last chunk applies the differential, and
+    /// the receiver then holds the forwarder's topology. A receiver missing one chunk never applies it,
+    /// and the next differential is a gap for it. Must NOT happen: a partial differential applied; a
+    /// differential too large for one message not sent.
+    #[test]
+    fn a_differential_larger_than_one_message_is_sent_in_chunks_and_applied_only_once_every_chunk_is_held() {
+        let (mut fwd, author) = forwarder();
+        let nodes: Vec<MeshDigest> = (0..400).map(|k| member(&k.to_string())).collect();
+        let full = Full::new(nodes.clone(), vec![], vec![]);
+        let Forward::Delta(frames) = fwd.source("mesh1.node-admin.1", "mesh2", 7, &full, 1) else { panic!("the peer mesh goes in") };
+        let n = frames.len();
+        assert!(n > 1, "400 nodes do not fit one message: {n} chunk(s)");
+        for (k, f) in frames.iter().enumerate() {
+            assert!(f.encode().len() <= MAX_FRAME, "chunk {k} is {} B", f.encode().len());
+            let Frame::TopologyDelta { base_version, chunk_index, chunk_count, .. } = f.data() else { panic!("a differential") };
+            assert_eq!((*base_version, *chunk_index, *chunk_count), (0, k as u32, n as u32));
+            let c = f.context().expect("authored");
+            assert_eq!((&c.source, c.version(), c.kind.as_str()), (&author, Some(7), "rdm.mesh.members.delta"));
+        }
+        let chunks = heard(&frames);
+        let mut rx = SnapshotReceiver::default();
+        for c in &chunks[..n - 1] {
+            assert!(matches!(rx.take_delta_chunk(c.clone()), Moved::Waiting { .. }));
+        }
+        assert_eq!(rx.held_version("mesh2"), None, "nothing is applied before every chunk is held");
+        assert!(matches!(rx.take_delta_chunk(chunks[0].clone()), Moved::Duplicate { .. }), "a repeated chunk is a copy");
+        let applied = rx.take_delta_chunk(chunks[n - 1].clone());
+        assert!(matches!(&applied, Moved::Applied { base_version: 0, topology_version: 7, moved, .. } if moved.len() == 400), "the last chunk applies the differential: {applied:?}");
+        assert!(rx.held_full("mesh2").expect("held").same_topology(&full), "the receiver holds the forwarder's topology");
+
+        let mut missing = SnapshotReceiver::default();
+        for c in chunks.iter().skip(1) {
+            assert!(matches!(missing.take_delta_chunk(c.clone()), Moved::Waiting { .. }));
+        }
+        assert_eq!(missing.held_version("mesh2"), None, "with one chunk missing the differential is never applied");
+        let mut moved = nodes.clone();
+        moved[0].status = rdm_core::model::NodeStatus::ConnectionsDeleting;
+        let Forward::Delta(next) = fwd.source("mesh1.node-admin.1", "mesh2", 8, &Full::new(moved, vec![], vec![]), 2) else { panic!("the move goes in") };
+        assert_eq!(next.len(), 1, "one node's status change is one chunk");
+        let next = heard(&next).remove(0);
+        assert!(matches!(missing.take_delta_chunk(next.clone()), Moved::Desynced { gap: Gap::NoBaseline, .. }), "the next differential is a gap for the receiver that missed a chunk");
+        assert!(matches!(rx.take_delta_chunk(next), Moved::Applied { base_version: 7, topology_version: 8, .. }));
+    }
+
+    /// CONTRACT (gossip.md §3.1 `TopologyDelta`: "applied only when the receiver holds exactly
+    /// `base_version`"; §3.3: "a delta whose base version the receiver does not hold triggers GetTopology
+    /// repair"): a receiver holding the peer mesh at v5 hears a differential in chunks from base 6 to 7:
+    /// its first chunk raises the gap at once, naming the version held and the base, before the other
+    /// chunks arrive; the others find the source already desynchronized, and the held version stays 5.
+    /// Must NOT happen: a differential at another base applied, or its gap shown only when every chunk
+    /// arrived.
+    #[test]
+    fn a_differential_at_another_base_raises_the_gap_at_its_first_chunk() {
+        let (mut fwd, _) = forwarder();
+        let at5 = Full::new(vec![member("1")], vec![], vec![]);
+        let Forward::Delta(first) = fwd.source("mesh1.node-admin.1", "mesh2", 5, &at5, 1) else { panic!("the peer mesh goes in") };
+        let mut rx = SnapshotReceiver::default();
+        assert!(matches!(rx.take_delta_chunk(heard(&first).remove(0)), Moved::Applied { topology_version: 5, .. }));
+        let (mut other, _) = forwarder();
+        other.start_from(&[("mesh2".into(), 6, at5.clone())]);
+        let big = Full::new((0..400).map(|k| member(&k.to_string())).collect(), vec![], vec![]);
+        let Forward::Delta(frames) = other.source("mesh1.node-admin.2", "mesh2", 7, &big, 2) else { panic!("the move goes in") };
+        let chunks = heard(&frames);
+        assert!(chunks.len() > 1);
+        assert!(matches!(rx.take_delta_chunk(chunks[0].clone()), Moved::Desynced { gap: Gap::Version { held: 5, base: 6 }, .. }), "the first chunk shows the gap");
+        assert!(matches!(rx.take_delta_chunk(chunks[1].clone()), Moved::Desynced { gap: Gap::AlreadyDesynced, .. }));
+        assert_eq!(rx.held_version("mesh2").map(|(_, v)| v), Some(5));
+        assert_eq!(rx.desynced().into_iter().map(|(m, _)| m).collect::<Vec<_>>(), vec!["mesh2".to_string()], "the source tops up");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `TopologyDelta`; Q387 rule 3: "An addition carries node details; a
+    /// later status change carries only member identity and status"): mesh2 moves from v1 (nodes 1, 2,
+    /// 3) to v2 (node 1 connections-deleting, node 2 renamed, node 3 gone, node 4 new). The
+    /// differential lists node 1 in `changed` with its birth, status and primary roles only; nodes 2
+    /// and 4 in `added` with their details; node 3's exact birth in `removed`. A receiver at v1 applies
+    /// it onto the details it holds and then holds the forwarder's v2. A status change of a birth the
+    /// receiver does not hold is a gap. Must NOT happen: a status change resending a node's details; a
+    /// status change applied to a birth not held.
+    #[test]
+    fn a_status_change_carries_the_birth_and_its_status_and_applies_onto_the_details_held() {
+        let (mut fwd, _) = forwarder();
+        let (one, two, three, four) = (member("1"), member("2"), member("3"), member("4"));
+        let v1 = Full::new(vec![one.clone(), two.clone(), three.clone()], vec![], vec![]);
+        let Forward::Delta(first) = fwd.source("mesh1.node-admin.1", "mesh2", 1, &v1, 1) else { panic!("the peer mesh goes in") };
+        let mut rx = SnapshotReceiver::default();
+        assert!(matches!(rx.take_delta_chunk(heard(&first).remove(0)), Moved::Applied { topology_version: 1, .. }));
+        let mut deleting = one.clone();
+        deleting.status = rdm_core::model::NodeStatus::ConnectionsDeleting;
+        let mut renamed = two.clone();
+        renamed.node.name = "two".into();
+        let v2 = Full::new(vec![deleting.clone(), renamed.clone(), four.clone()], vec![], vec![]);
+        let Forward::Delta(frames) = fwd.source("mesh1.node-admin.1", "mesh2", 2, &v2, 2) else { panic!("the move goes in") };
+        let Frame::TopologyDelta { added, changed, removed, .. } = frames[0].data() else { panic!("a differential") };
+        assert_eq!(changed, &vec![NodeStatusEntry::of(&deleting)], "a status change is the birth, its status and its primary roles");
+        let mut names: Vec<&str> = added.iter().map(|e| e.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["4", "two"], "a new node and a renamed one carry their details");
+        assert_eq!(removed, &vec![NodeBirth { node_id: three.node.node_id.clone(), incarnation: three.node.incarnation.clone() }]);
+        assert!(matches!(rx.take_delta_chunk(heard(&frames).remove(0)), Moved::Applied { topology_version: 2, .. }));
+        let held = rx.held_full("mesh2").expect("held");
+        assert!(held.same_topology(&v2), "the receiver holds v2");
+        assert_eq!(held.digests().into_iter().find(|d| d.node.node_id == one.node.node_id).map(|d| d.node), Some(one.node.clone()), "node 1 keeps the details held");
+
+        let stranger = Delta { changed: vec![NodeStatusEntry::of(&member("5"))], ..Delta::default() };
+        assert!(matches!(rx.take_delta("mesh2", &author_of(&PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }), 2, 3, &stranger), Moved::Desynced { gap: Gap::ChangedBirthNotHeld, .. }), "a status change of a birth not held is a gap");
+        assert_eq!(rx.held_version("mesh2").map(|(_, v)| v), Some(2));
     }
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
@@ -1168,14 +1560,14 @@ mod tests {
         let p = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let mut rx = SnapshotReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
-        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));
-        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }));
-        assert!(matches!(rx.take_delta("mesh1", &p, 6, 7, &Delta::default()), Moved::Stale));
+        assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }));
+        assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 6, 7, &Delta::default()), Moved::Stale));
         assert!(matches!(rx.take_chunk(chunk(&p, 6)), Taken::Refused(Refusal::OlderThanHeld { held_version: 8, offered_version: 6 })));
         assert_eq!(rx.held_version("mesh1"), Some((p.clone(), 8)));
         assert!(rx.desynced().is_empty());
         assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Installed(i) if i.refreshed), "a new publication at the held material version is heard");
-        assert!(matches!(rx.take_delta("mesh1", &p, 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 8, base: 9 }, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 8, base: 9 }, .. }));
         assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Refused(Refusal::Duplicate)));
         assert!(!rx.desynced().is_empty(), "gossip repeats do not complete repair");
         assert!(matches!(rx.take_read_chunk(chunk(&p, 8)), Taken::Installed(i) if i.resumed));

@@ -110,21 +110,21 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
 /// frames"): the two status events keep their positions, `NodeDeleting` variant 3 and `NodeStopped`
 /// 22 (appended after the reserved position 21); `NodeRestarting` 5 is reserved (Q183). Each is the
 /// lifecycle op (build, operation, node id, incarnation, path.name, owning mesh, event instant), then the
-/// forwarding primary, then the publisher's exact identity (node, incarnation) and the
-/// `topology_version` at which its subject changed, appended after `forwarded_by`. A peer mesh's
-/// primary forwards each onto its own channel, preserving the op, the publisher and the version;
-/// the frame's own mesh hears the original. What must NOT happen: a field moved, a variant
-/// inserted before the end, or a forward that drops the publisher or the version.
+/// forwarding primary, then the `topology_version` of the subject's mesh at which its subject changed;
+/// the publishing mesh-primary is the envelope's `source`, never repeated in the body. A peer mesh's
+/// primary forwards each onto its own channel, preserving the op and the version; the frame's own mesh
+/// hears the original. What must NOT happen: a field moved, a variant inserted before the end, a body
+/// repeating its publisher, or a forward that drops the version.
 #[test]
-fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publisher_and_version() {
+fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_version() {
     let fixtures = [
         (
-            Frame::NodeDeleting { op: op("node.delete"), forwarded_by: None, publisher: publisher(), topology_version: 1 },
-            "03 04 6e6f6465 0c363668387172717661616a6b 0b 6e6f64652e64656c657465 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 0a 6d657368312e6e6f6465 01 31 05 6d65736831 ac02 000c7930736579396772773679330c30313233343536373839616201",
+            Frame::NodeDeleting { op: op("node.delete"), forwarded_by: None, topology_version: 1 },
+            "03 04 6e6f6465 0c363668387172717661616a6b 0b 6e6f64652e64656c657465 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 0a 6d657368312e6e6f6465 01 31 05 6d65736831 ac02 00 01",
         ),
         (
-            Frame::NodeStopped { op: op("node.stop"), forwarded_by: None, publisher: publisher(), topology_version: 300 },
-            "13 04 6e6f6465 0c363668387172717661616a6b 09 6e6f64652e73746f70 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 0a 6d657368312e6e6f6465 01 31 05 6d65736831 ac02 000c7930736579396772773679330c303132333435363738396162ac02",
+            Frame::NodeStopped { op: op("node.stop"), forwarded_by: None, topology_version: 300 },
+            "13 04 6e6f6465 0c363668387172717661616a6b 09 6e6f64652e73746f70 01 01 0c303132333435363738396162 0c397763707266677776746879 00 00 0c303132333435363738396162 0c397763707266677776746879 0a 6d657368312e6e6f6465 01 31 05 6d65736831 ac02 00 ac02",
         ),
     ];
     for (frame, hex) in fixtures {
@@ -135,9 +135,9 @@ fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publi
         let forwarded = forward_of(frame.clone(), "mesh3.node-admin.1", "mesh3").expect("a peer mesh forwards it");
         assert_eq!(forwarded.type_position(), kind);
         match (&frame, &forwarded) {
-            (Frame::NodeDeleting { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeDeleting { op: b, forwarded_by, publisher: pb, topology_version: vb })
-            | (Frame::NodeStopped { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeStopped { op: b, forwarded_by, publisher: pb, topology_version: vb }) => {
-                assert_eq!((a, pa, va), (b, pb, vb), "the op, the publisher and the version are preserved");
+            (Frame::NodeDeleting { op: a, topology_version: va, .. }, Frame::NodeDeleting { op: b, forwarded_by, topology_version: vb })
+            | (Frame::NodeStopped { op: a, topology_version: va, .. }, Frame::NodeStopped { op: b, forwarded_by, topology_version: vb }) => {
+                assert_eq!((a, va), (b, vb), "the op and the version are preserved");
                 assert_eq!(forwarded_by.as_deref(), Some("mesh3.node-admin.1"));
             }
             other => panic!("{other:?}"),
