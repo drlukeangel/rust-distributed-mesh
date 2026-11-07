@@ -54,6 +54,13 @@ pub(crate) async fn read_until(running: &node::RunningNode, primary: &crate::com
     .unwrap_or_else(|_| panic!("{what}"));
 }
 
+/// Whether `running` heard a Digest of `node_id` itself: the node may hold it from its primary's view, by
+/// a read (Q387), and that is not hearing it.
+pub(crate) fn heard_directly(running: &node::RunningNode, node_id: &NodeId) -> bool {
+    let long_ago = std::time::Instant::now().checked_sub(Duration::from_secs(600)).unwrap_or_else(std::time::Instant::now);
+    running.topology_view.digest_view.heard_direct_since(long_ago).iter().any(|d| &d.node.node_id == node_id)
+}
+
 pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
@@ -64,9 +71,9 @@ pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, 
 }
 
 /// The cell's mesh: `primary` launched the node `running` (`mesh1.node.1`, Ready at its
-/// primary); `commander` (`mesh1.node-admin.2`) never says anything on the mesh channel, so the node's
-/// heartbeat view holds no digest of it, while the primary carries it in the member projection the
-/// node installed (`_carried`). The commander reaches the node by its exact birth (`target`).
+/// primary); `commander` (`mesh1.node-admin.2`) never says anything on the mesh channel, so the node
+/// hears no Digest of it, while the primary carries it in the view the node takes by a read
+/// (`_carried`; gossip.md §3.3, Q387). The commander reaches the node by its exact birth (`target`).
 pub(crate) struct Rig {
     pub(crate) primary: crate::common::AdminSide,
     pub(crate) commander: crate::common::AdminSide,
@@ -155,7 +162,7 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     } else {
         assert!(running.topology_view.projected_member_at(&commander_key).is_none(), "a projection the node holds names the commander: the cell proves nothing");
     }
-    assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view holds the commander: the cell proves nothing");
+    assert!(!heard_directly(&running, &commander_id), "the node heard a Digest of the commander itself: the cell proves nothing");
 
     // The commander reaches the node by its birth, as the primary's view holds it.
     let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
@@ -194,7 +201,7 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
 
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the commander's stop is answered Stopped: {left:?}");
-        assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view came to hold the commander before its start: the cell proves nothing");
+        assert!(!heard_directly(&running, &commander_id), "the node heard a Digest of the commander itself before its start: the cell proves nothing");
 
         // The commander deployed this birth and awaits its join, as the admin that commands its start.
         commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
@@ -245,7 +252,7 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
-        assert!(running.topology_view.digest_view.get(commander_id.as_str()).is_none(), "the node's heartbeat view holds the commander: the cell proves nothing");
+        assert!(!heard_directly(&running, &commander_id), "the node heard a Digest of the commander itself: the cell proves nothing");
         commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call, with no record of it");
