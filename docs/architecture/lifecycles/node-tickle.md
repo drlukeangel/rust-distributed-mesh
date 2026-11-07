@@ -8,7 +8,7 @@ and if that fails the same probe through up to two live peers of the node's mesh
 a failure, a deadline included, shows nothing, and only [node.runtime.inspect](node-runtime-inspect.md)
 shows a runtime gone. It is run by:
 
-- the mesh-primary in [node recovery](node-recovery.md), on a member marked `PendingReconnect`;
+- the mesh-primary in [node recovery](node-recovery.md), on a member it self-heals (`PendingReconnect`) or one an ordered investigation names (Q393);
 - the fabric-primary in [node recovery](node-recovery.md) of an unheard mesh-primary (Q335);
 - [node investigation](node-investigation.md) of a silent primary ([elections](../fabric-node-lifecycle-elections.md));
 - the successor ladder of [node.primary.update](node-primary-update.md) after the row.

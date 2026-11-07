@@ -15,9 +15,9 @@ its path and name, Q335.)
 | Field | Contract |
 |---|---|
 | Runs it | The mesh-primary of the member's mesh; for a lost mesh-primary, the successor its election names; the fabric-primary only when no successor takes the role (Q335) |
-| Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a call to them was never sent for a reachability reason or ended with its attempts spent (step 1) |
+| Detection | The mesh-primary's tick (every gossip interval) reads the members unheard past the staleness floor, which it writes `PendingReconnect` as it starts their self-heal, and the members an ordered investigation names: a command to them never sent for a reachability reason, or a call to them ended with its attempts spent (step 1) |
 | Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.runtime.inspect, node.tickle direct and via peers; one verdict |
-| Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict (except `running` from an investigator that hears no other node, Q153): re-created. Nothing waits on the provider's `Exited` |
+| Trigger | The verdict and the investigation's reason (Q111, Q393): reached, commanded back through node.mesh.join; any other verdict as step 3 has it. Nothing waits on the provider's `Exited` |
 | Execution | The mesh-primary runs the recovery itself and records each step on the node record; the investigation's verdict is its `rdm.node.investigated` event ([build.md §5](../build.md#5-buildstateadapter)). It is never a Build: no build.create, no Build record, nothing claimed. Work on one node is serialized at its mesh-primary: a recovery and any other step on that node (a node command, a Build's step) run one after the other, and a Build in flight elsewhere in the mesh neither holds it nor is held by it. A lost mesh-primary is investigated and recovered by the successor its election names, as any member of its mesh, its own workflow; the fabric-primary investigates and recovers it only when no successor takes the role (Q335) |
 | Steps | node.delete of the unheard instance, node.create at the same path and name, keyed on the target birth `(node.id, incarnation)` |
 | Retained | path and name, placement and storage (from the node record), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a Build that deletes the node and creates its path again naming its executable: a new executable is a new node ([build-deployment.md](../build-deployment.md), Q345); the predecessor's data dir when the verdict is `exited`, its `storage_persistence` is `persistent` and the directory exists |
@@ -30,19 +30,11 @@ its path and name, Q335.)
 The mesh-primary runs one loop for its own members on every gossip interval, never on a timer of its
 own. A recovery that ends failed is run again by the next check that finds the node still lost; its calls retry only under their `Send` (Q344).
 
-1. **Silence.** Each node's pruner marks a member `PendingReconnect` once it is unheard past the
-   staleness floor. Nothing is sent; the mark comes from the digests not arriving. Peers stop routing
+1. **Silence.** Each node's pruner holds a member silent once it is unheard past the staleness floor; its mesh-primary writes it `PendingReconnect` as it starts the self-heal. Nothing is sent; the mark comes from the digests not arriving. Peers stop routing
    new work to it. Silence is not death. Every node-admin keeps the silence bookkeeping
    (`first_seen`), so a node-admin that becomes mesh-primary mid-window continues the window already
-   running. The mesh-primary also marks a member `PendingReconnect` at once when a command to it was
-   never sent for a reachability reason (the connect refused, timed out or failed; the endpoint
-   unresolved), and when a call to it ends with its attempts spent: its own call, or one another
-   caller reports with Status `ReportCallFailed` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)).
-   The mark is an observer mark: it never replaces a lifecycle state the node reported and
-   the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), a silence mark ends when a digest
-   of the exact birth arrives after it or when the birth answers its tickle; a spent-call mark ends only
-   when the exact birth answers, a call of this primary's or the investigation's tickle; either ends
-   when the view no longer holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
+   running. A command to it never sent for a reachability reason (the connect refused, timed out or failed; the endpoint unresolved), or a call to it that ends with its attempts spent (its own, or one another caller reports with Status `ReportCallFailed`), starts an ordered investigation of it, which sets no `PendingReconnect` (step 3).
+   `PendingReconnect` never replaces a lifecycle state the node reported and the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`); it ends when a digest of the exact birth arrives after it, when the birth answers its tickle, or when the view no longer holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
    ready ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
 2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
    [node investigation](node-investigation.md) on the exact birth: the by-destination connections index, node.runtime.inspect (`exited` or `os-stopped` is the verdict, and no tickle is sent), node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at once. Any answer from the exact birth ends the ladder and cancels the
@@ -59,7 +51,11 @@ own. A recovery that ends failed is run again by the next check that finds the n
    ready or unheard again), never to the fabric-primary, which has no primary above it, and
    never to a birth with a command of its primary open or in flight, which is that command's. A
    commanded start that stops at a step leaves the birth off its channels, Pending, for the next
-   command. Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at once, except `running` from an investigator that hears no other node, which is unreachable from it, not lost: nothing is written, and the next investigation decides again (Q153; [node investigation](node-investigation.md)). Nothing holds, nothing is inspected again, and nothing waits for the provider's `Exited`
+   command. Any other verdict follows the investigation's reason (Q393). A self-heal (the birth unheard past
+   the staleness floor, its mesh-primary investigating it, the birth `PendingReconnect` while it runs):
+   `running` is commanded back through node.mesh.join, except `running` from an investigator that hears no other node, which is unreachable from it, not lost: nothing is written, and it investigates again (Q153), and `os-stopped` commanded to start (node.start; a start it refuses as already live is `running`), each sent until answered; `exited`, a birth not proven by the end of
+   the retries, or a join or start unanswered at the end of its attempts is written `dead`, and the
+   recovery below runs at once. An ordered investigation (a command to it never sent for a reachability reason, another caller's `ReportCallFailed`, the mesh-primary's own call ended with its attempts spent) sets no `PendingReconnect`: a verdict that matches the birth's status in the topology does nothing (`running` and a live status, or a lifecycle state the node reported; `os-stopped` and `stopped`; `exited` and `dead`); one that differs follows the self-heal. Nothing waits for the provider's `Exited`
    (Q110, Q111). A birth that comes back once its verdict is not `reached`, during its successor's creation or after it, is a deleted birth: every view refuses
    its Digest by name ([gossip.md receiver rules](../gossip.md#31-frame-catalog)), and its mesh-primary
    decides it by its path and name and its atlas ([node investigation](node-investigation.md), Q207): its
@@ -119,7 +115,7 @@ sequenceDiagram
 
 ## States written
 
-This operation writes no state of its own. Its verdict is [node investigation](node-investigation.md)'s `rdm.node.investigated`, and each step writes what [node.delete](node-delete.md) and [node.create](node-create.md) write.
+Its mesh-primary writes the birth `PendingReconnect` as a self-heal starts and `dead` when the investigation concludes in failure (Q393); its verdict is [node investigation](node-investigation.md)'s `rdm.node.investigated`, and each step writes what [node.delete](node-delete.md) and [node.create](node-create.md) write.
 
 | written | by | when |
 |---|---|---|
@@ -130,8 +126,10 @@ As stored:
 `exited`:
 
 ```json
-{"len":478,"specversion":"1.0","id":"01a1ae8d-f449-75a0-8b01-f4d18d8ccc70","source":"rdm://whpdxrcdyfvh/fdceh6x7d3y6/d3fbkvnm7w63","type":"rdm.node.investigated","subject":"5edf9fd8kmzc","time":"2026-11-06T01:51:41.126Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-07b2cd84abccf6fa5a1c1b873da2e267-3e5747e696e2eea8-01","data":{"incarnation":"vzrw2nsrfnv9","name":"1","next":"recreate","path":"mesh2.node","verdict":"exited"},"crc32":"38f4e36f"}
+{"len":478,"specversion":"1.0","id":"01a1ae8d-f449-75a0-8b01-f4d18d8ccc70","source":"rdm://whpdxrcdyfvh/fdceh6x7d3y6/d3fbkvnm7w63","type":"rdm.node.investigated","subject":"5edf9fd8kmzc","time":"2026-11-06T01:51:41.126Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-07b2cd84abccf6fa5a1c1b873da2e267-3e5747e696e2eea8-01","data":{"incarnation":"vzrw2nsrfnv9","name":"1","next":"recreate","path":"mesh2.node","verdict":"exited","reason":"self-heal","trigger":"silence"},"crc32":"38f4e36f"}
 ```
+
+`reason` is `self-heal` or `ordered`; `trigger` is `silence` for a self-heal, else what started the ordered investigation: `connect-refused`, `connect-timed-out`, `connect-failed`, `endpoint-unresolved`, `attempts-spent` or `report-call-failed` (Q393).
 
 ## Failure
 

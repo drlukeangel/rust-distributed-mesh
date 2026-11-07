@@ -65,7 +65,7 @@ the same order starts the workflow again, resuming from the progress recorded on
    Digest by name, and its mesh-primary decides it by its path and name and its atlas
    ([node investigation](node-investigation.md), Q207): its recovery or its re-created birth is there, so the primary whose atlas decided it terminates its runtime (Q110).
    Nothing holds, and nothing waits for evidence. From the backbone the re-create terminates nothing in the
-   mesh. On `exited`, `os-stopped` or `unproven`, its node.delete of the exact lost birth writes that
+   mesh. On `exited`, `os-stopped`, or a birth not proven by the end of the retries (Q393), its node.delete of the exact lost birth writes that
    birth's row deleted with no `TerminateRuntime`, which frees the name, then node.create at the
    path and name; a delete that finds another birth at the path writes nothing; a lost birth that comes back
    is a deleted birth (Q142, Q148). On `running`, the investigation's report stands and the executor

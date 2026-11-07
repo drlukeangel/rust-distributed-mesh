@@ -5460,8 +5460,9 @@ async fn control_run(cell: &str, shape: Shape) {
     // While it hears no node the victim is the lowest Ready node-admin of mesh2 in its own view and
     // becomes mesh2's primary there (elections §4.1); it investigates the nodes it cannot hear, the restarted
     // broker among them. A node its investigation does not reach is re-created at once at its path.name with
-    // a new node.id (node-recovery.md step 3: "Any other verdict (`running`, `os-stopped`, `exited`,
-    // `unproven`): the recovery below, at once"; node-investigation.md; Q188, Q195). Which nodes, if any, is
+    // a new node.id once it is written dead (node-recovery.md step 3, Q393: "... a join or start unanswered
+    // at the end of its attempts is written `dead`, and the recovery below runs at once"; node-investigation.md;
+    // Q188, Q195). Which nodes, if any, is
     // not pinned: it is the race of the victim's tickles with the drop of the cut, and a recovery may still run
     // when the healed checkpoint is stable (the old birth is held until its delete ends). Each re-created path is
     // read from the fabric-primary's view once the closing quiet window is over, and its re-creation is held to

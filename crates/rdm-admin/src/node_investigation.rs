@@ -1,14 +1,16 @@
-//! Node investigation (rulings INDEX Q107 item 1; node-investigation.md): the one function every
-//! caller uses on one exact birth, ending in one verdict, reached / running / os-stopped / exited /
-//! unproven.
+//! Node investigation (rulings INDEX Q107 item 1, Q393; node-investigation.md): the one function every
+//! caller uses on one exact birth, ending in one verdict, reached / running / os-stopped / exited, or
+//! `dead` when the birth is not proven by the end of the investigation's retries.
 //!
 //! Its steps, in order: (a) the leads, one read of the store's by-destination connections index
 //! (connections.md §3.1), naming the nodes in any mesh that hold a connection to the exact birth: the
 //! peers the kick goes through first, never evidence of reachability, since a row nobody marked
-//! dropped survives a cut or a crashed source; (b) the direct tickle and (c) the same kick through
-//! peers, the leads first ([`crate::offline::tickle`], node-tickle.md); (d) on `unreached` alone, the
-//! provider about the exact runtime (node.runtime.inspect, node-runtime-inspect.md). Only an answer
-//! from the exact birth is `reached`; every other verdict is the provider's.
+//! dropped survives a cut or a crashed source; (b) the provider about the exact runtime
+//! (node.runtime.inspect, node-runtime-inspect.md), whose `exited` or `os-stopped` is the verdict;
+//! (c) the direct tickle and (d) the same kick through peers, the leads first
+//! ([`crate::offline::tickle`], node-tickle.md). Only an answer from the exact birth is `reached`;
+//! unreached, the verdict is the inspect's, an `unavailable` one asked again under the investigation's
+//! retries ([`ask_again`]) and `dead` at their end.
 
 use crate::model::{Node, NodeId, NodeStatus};
 use crate::offline::{Tickle, TickleCalls};
@@ -37,27 +39,29 @@ pub enum Finding {
         /// The exit code, when one is provable.
         code: Option<i32>,
     },
-    /// Nothing tells the birth gone or alive: named by what was missing.
-    Unproven {
+    /// The birth is not proven alive or exited by the end of the investigation's retries (Q393): its
+    /// inspect answered `unavailable` each time it was asked, or no exact birth was there to ask about;
+    /// named by what was missing.
+    Dead {
         /// What was missing.
         reason: String,
     },
 }
 
 impl Finding {
-    /// The verdict as node-investigation.md names it: `reached`, `running`, `os-stopped`, `exited` or
-    /// `unproven`.
+    /// The verdict as node-investigation.md names it: `reached`, `running`, `os-stopped` or `exited`,
+    /// or `dead` for a birth not proven by the end of the retries.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Reached { .. } => "reached",
             Self::Running => "running",
             Self::OsStopped => "os-stopped",
             Self::Exited { .. } => "exited",
-            Self::Unproven { .. } => "unproven",
+            Self::Dead { .. } => "dead",
         }
     }
 
-    /// The provider's answer the verdict came from (node.runtime.inspect's), `unproven` as its
+    /// The provider's answer the verdict came from (node.runtime.inspect's), `dead` as its last
     /// `unavailable`; `None` for `reached`, which asked the provider nothing.
     pub fn inspected(&self) -> Option<crate::deployment::provider::Inspected> {
         use crate::deployment::provider::Inspected;
@@ -66,7 +70,7 @@ impl Finding {
             Self::Running => Some(Inspected::Running),
             Self::OsStopped => Some(Inspected::OsStopped),
             Self::Exited { code } => Some(Inspected::Exited(*code)),
-            Self::Unproven { reason } => Some(Inspected::Unavailable(reason.clone())),
+            Self::Dead { reason } => Some(Inspected::Unavailable(reason.clone())),
         }
     }
 
@@ -75,14 +79,109 @@ impl Finding {
         match self {
             Self::Reached { carrier: Some(carrier), .. } => carrier.to_string(),
             Self::Exited { code } => code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into()),
-            Self::Unproven { reason } => reason.clone(),
+            Self::Dead { reason } => reason.clone(),
             _ => String::new(),
         }
     }
 }
 
+/// Why an investigation runs (Q393; node-recovery.md steps 1 and 3): the reason is the
+/// investigation's, named on its `rdm.node.investigated` event and its spans, never a status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// A self-heal: the birth went unheard past the staleness floor and its mesh-primary investigates
+    /// it, the birth `PendingReconnect` while it runs.
+    SelfHeal,
+    /// An ordered investigation, which sets no `PendingReconnect`: `trigger` names what ordered it, a
+    /// command never sent for a reachability reason (`connect-refused`, `connect-timed-out`,
+    /// `connect-failed`, `endpoint-unresolved`), the mesh-primary's own call ended with its attempts
+    /// spent (`attempts-spent`) or another caller's `ReportCallFailed` (`report-call-failed`).
+    Ordered {
+        /// What ordered it.
+        trigger: &'static str,
+    },
+}
+
+impl Reason {
+    /// `self-heal` or `ordered`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SelfHeal => "self-heal",
+            Self::Ordered { .. } => "ordered",
+        }
+    }
+
+    /// What started it: `silence` for a self-heal, else what ordered it.
+    pub fn trigger(&self) -> &'static str {
+        match self {
+            Self::SelfHeal => "silence",
+            Self::Ordered { trigger } => trigger,
+        }
+    }
+}
+
+/// Whether an ordered investigation's `finding` matches `status`, the birth's status in the topology,
+/// so it does nothing (node-recovery.md step 3, Q393): `running` (and `reached`, the birth's own answer
+/// that it runs) and a live status or a lifecycle state the node reported, in which its runtime runs;
+/// `os-stopped` and `stopped`; `exited` and `dead`. Anything else differs and follows the self-heal.
+pub fn matches_topology(finding: &Finding, status: NodeStatus) -> bool {
+    use NodeStatus as S;
+    match finding {
+        Finding::Reached { .. } | Finding::Running => matches!(status, S::Starting | S::Pending | S::Ready | S::ConnectionsDeleting | S::ConnectionsDeleted | S::Stopping | S::Stopped),
+        Finding::OsStopped => status == S::Stopped,
+        Finding::Exited { .. } => status == S::Dead,
+        Finding::Dead { .. } => false,
+    }
+}
+
+/// What follows an investigation's verdict (node-recovery.md step 3, Q393).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follows {
+    /// An ordered investigation whose verdict matches the birth's status in the topology: nothing.
+    Nothing,
+    /// The birth is commanded back through node.mesh.join, sent until answered.
+    MeshJoin,
+    /// The birth is commanded to start (node.start), sent until answered.
+    Start,
+    /// The birth is written `dead`, and its recovery runs at once.
+    Dead,
+}
+
+impl Follows {
+    /// `nothing`, `node.mesh.join`, `node.start` or `dead`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Nothing => "nothing",
+            Self::MeshJoin => "node.mesh.join",
+            Self::Start => "node.start",
+            Self::Dead => "dead",
+        }
+    }
+}
+
+/// What follows `finding` for an investigation run for `reason` of a birth whose status in the
+/// topology is `status` (node-recovery.md step 3, Q393): an ordered investigation whose verdict
+/// matches the status ([`matches_topology`]) does nothing; any other verdict follows the self-heal:
+/// `reached` and `running` are commanded back through node.mesh.join, `os-stopped` is commanded to
+/// start, and `exited` or `dead` (not proven by the end of the retries) is written `dead`.
+pub fn follows(finding: &Finding, reason: Reason, status: NodeStatus) -> Follows {
+    if matches!(reason, Reason::Ordered { .. }) && matches_topology(finding, status) {
+        return Follows::Nothing;
+    }
+    match finding {
+        Finding::Reached { .. } | Finding::Running => Follows::MeshJoin,
+        Finding::OsStopped => Follows::Start,
+        Finding::Exited { .. } | Finding::Dead { .. } => Follows::Dead,
+    }
+}
+
+/// [`follows`] for a `reached` birth, its answer whatever it said: the birth runs.
+pub fn follows_reached(reason: Reason, status: NodeStatus) -> Follows {
+    follows(&Finding::Running, reason, status)
+}
+
 /// node.runtime.inspect's answer ([`crate::deployment::provider::inspect_runtime`]) as the
-/// investigation's verdict: its `unavailable` unproven.
+/// investigation's verdict: its `unavailable` is `dead` once no retry is left ([`ask_again`]).
 impl From<crate::deployment::provider::Inspected> for Finding {
     fn from(inspected: crate::deployment::provider::Inspected) -> Self {
         use crate::deployment::provider::Inspected;
@@ -90,40 +189,75 @@ impl From<crate::deployment::provider::Inspected> for Finding {
             Inspected::Exited(code) => Finding::Exited { code },
             Inspected::Running => Finding::Running,
             Inspected::OsStopped => Finding::OsStopped,
-            Inspected::Unavailable(reason) => Finding::Unproven { reason },
+            Inspected::Unavailable(reason) => Finding::Dead { reason },
         }
     }
 }
 
 /// Investigate `node`'s exact birth from `view` over `calls`, the caller's own Node RPC client, call
-/// deadline, carriers and leads read (`docs/architecture/lifecycles/node-investigation.md`; Q273): the
-/// index read ([`crate::offline::leads_of`]); then `inspect`, the caller's node.runtime.inspect of the
-/// birth's exact runtime, whose `exited` or `os-stopped` is the verdict with no tickle sent; otherwise
-/// the direct tickle and the same kick through peers, the leads first ([`crate::offline::tickle_with`]).
-/// An answer from the exact birth is `reached`; nobody reaching it, the verdict is the inspect's
-/// (`running` stays `running`, `unavailable` is `unproven`). A node the view holds no birth of runs no
-/// ladder and is unproven by name, the provider not asked.
-pub async fn investigate<C, V>(node: &Node, view: &Topology, calls: &C, inspect: V) -> Finding
+/// deadline, carriers and leads read (`docs/architecture/lifecycles/node-investigation.md`; Q273,
+/// Q393): the index read ([`crate::offline::leads_of`]); then `inspect`, the caller's
+/// node.runtime.inspect of the birth's exact runtime, whose `exited` or `os-stopped` is the verdict
+/// with no tickle sent; otherwise the direct tickle and the same kick through peers, the leads first
+/// ([`crate::offline::tickle_with`]). An answer from the exact birth is `reached`; nobody reaching it,
+/// the verdict is the inspect's: `running` stays `running`, and an `unavailable` answer is asked again
+/// under the investigation's retries ([`ask_again`]), `dead` when still not proven at their end. A
+/// node the view holds no birth of runs no ladder and is `dead` by name, the provider not asked.
+pub async fn investigate<C, I, V>(node: &Node, view: &Topology, calls: &C, inspect: I) -> Finding
 where
     C: TickleCalls + ?Sized,
+    I: Fn() -> V,
     V: std::future::Future<Output = Finding>,
 {
     if node.incarnation_id.is_none() {
-        return Finding::Unproven { reason: format!("{} holds no recorded birth: there is no exact birth to tickle", node.node_id) };
+        return Finding::Dead { reason: format!("{} holds no recorded birth: there is no exact birth to tickle", node.node_id) };
     }
     let leads = crate::offline::leads_of(node, view, calls).await;
-    let inspected = inspect.await;
+    let inspected = inspect().await;
     if matches!(inspected, Finding::Exited { .. } | Finding::OsStopped) {
         return inspected;
     }
     match crate::offline::tickle_with(node, view, calls, leads).await {
-        Err(reason) => Finding::Unproven { reason },
+        Err(reason) => Finding::Dead { reason },
         Ok(Tickle::Reached { answer, carrier }) => Finding::Reached { answer, carrier },
         Ok(Tickle::Unreached(unreached)) => {
             unreached.next("verdict");
             drop(unreached);
-            inspected
+            match inspected {
+                Finding::Dead { .. } => ask_again(&inspect).await,
+                proven => proven,
+            }
         }
+    }
+}
+
+/// The investigation's retries of an inspect that answered `unavailable` (node-investigation.md step
+/// 4, Q393): `inspect` asked again under one `Send` (its attempts, each within its time limit and each
+/// resend after its delay on the one schedule, node-rpc.md §43). The first answer that proves the
+/// runtime running, os-stopped or exited is the verdict; a birth still not proven when the attempts are
+/// spent is `dead`, named by the last answer.
+pub async fn ask_again<I, V>(inspect: &I) -> Finding
+where
+    I: Fn() -> V,
+    V: std::future::Future<Output = Finding>,
+{
+    let asked = rdm_transport::Send::default()
+        .run(
+            |_: &String| false,
+            || {
+                let answer = inspect();
+                async move {
+                    match answer.await {
+                        Finding::Dead { reason } => Err(reason),
+                        proven => Ok(proven),
+                    }
+                }
+            },
+        )
+        .await;
+    match asked {
+        Ok(proven) => proven,
+        Err(end) => Finding::Dead { reason: format!("not proven by the end of the investigation's retries: {end}") },
     }
 }
 
@@ -216,14 +350,15 @@ impl NodeInvestigatedWriter {
 }
 
 /// The verdict `verdict` of the investigation of `node`'s birth at `incarnation`, and what RDM does
-/// with it, `next`: written by this primary, the one that investigated, as one `rdm.node.investigated`
+/// with it, `next`, for the investigation's `reason` (Q393): written by this primary, the one that investigated, as one `rdm.node.investigated`
 /// event (node-investigation.md, build.md §5), before anything acts on it; from that write the
 /// application's `on_node_investigated` is sent, once, on a task of its own (fabric-node-hooks.md,
 /// Q312). Both under `rdm.node_admin.node.update.via-on-node-investigated`, a child of the span current
 /// here, which names the event; the event and the notice carry the current span's trace context.
 /// `ids` are the fabric's and the birth's mesh's ([`fabric_and_mesh_of`]). The notice gates nothing
 /// and orders nothing; an event not written sends none, named on the span.
-pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext) {
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext, reason: Reason) {
     use tracing::Instrument as _;
     let context = crate::build::current_context();
     let (fabric_id, mesh_id) = ids;
@@ -235,6 +370,8 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
         mesh = %node.mesh,
         verdict = verdict.as_str(),
         next = next.as_str(),
+        reason = reason.as_str(),
+        trigger = reason.trigger(),
         event_id = tracing::field::Empty,
         outcome = tracing::field::Empty,
         "otel.kind" = "internal",
@@ -244,7 +381,7 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
         span.in_scope(|| tracing::info!("this admin holds no rafka-time: the verdict is not written and the notice is not sent"));
         return;
     };
-    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.path, &node.name, verdict.as_str(), next.as_str());
+    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.path, &node.name, verdict.as_str(), next.as_str(), reason);
     span.record("event_id", event.id.as_str());
     if let Err(e) = writer.events.events.append(&event).instrument(span.clone()).await {
         span.record("outcome", "event-not-written");
@@ -303,7 +440,7 @@ pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment
 }
 
 /// [`inspect_birth_with_handle`]'s answer as the investigation's verdict: the provider's inspection of
-/// the exact runtime of `n`'s birth, unproven by name when no runtime fact is held.
+/// the exact runtime of `n`'s birth, `dead` by name when no runtime fact is held.
 pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, digest_view: &rdm_gossip::digest_view::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
     inspect_birth_with_handle(provider, digest_view, nodes, n).await.0.into()
 }
@@ -519,11 +656,14 @@ mod tests {
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
     /// "A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
-    ///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`."
+    ///  one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
+    ///  retries is `dead` (Q393)."
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:10
     /// "2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
     ///  3. [node.tickle](node-tickle.md), direct.
-    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`.
+    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
+    ///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
+    ///     still not proven at their end is `dead`.
     ///  Only an answer from the exact birth counts as `reached`."
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:20
     /// "The verdict is the one decision (Q111). Reached: the node is commanded back through
@@ -532,8 +672,8 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:55
     /// "Target: One node, by `(node.id, incarnation)`
     ///  Steps: The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers
-    ///  Result: `reached`, `running`, `os-stopped`, `exited` or `unproven`"
-    #[tokio::test]
+    ///  Result: `reached`, `running`, `os-stopped` or `exited`, or `dead` when not proven by the end of the retries"
+    #[tokio::test(start_paused = true)]
     async fn only_the_exact_births_answer_is_reached_and_only_the_provider_proves_an_exit() {
         let (node, view) = world();
         let rig = |direct: Option<StatusReply>, carried: Option<(NodeId, StatusReply)>| Rig { direct, carried, asked: Mutex::default() };
@@ -541,28 +681,100 @@ mod tests {
         for said in [Finding::Exited { code: Some(137) }, Finding::OsStopped] {
             let asked = AtomicBool::new(false);
             let r = rig(Some(current(&node)), Some((of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id, current(&node))));
-            assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its verdict");
+            assert_eq!(investigate(&node, &view, &r, || provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its verdict");
             assert!(asked.load(Ordering::SeqCst), "the provider is asked first");
             assert!(r.asked.lock().unwrap().is_empty(), "no tickle is sent once the inspect proved it gone: {:?}", r.asked.lock().unwrap());
         }
         // Running or unavailable: the ladder runs, and only the exact birth's answer is reached; nobody
-        // reaching it, the verdict is the inspect's.
-        for said in [Finding::Running, Finding::Unproven { reason: "Unknown".into() }] {
+        // reaching it, the verdict is the inspect's (an `unavailable` one asked again under the
+        // investigation's retries, `dead` at their end).
+        for said in [Finding::Running, Finding::Dead { reason: "Unknown".into() }] {
             let asked = AtomicBool::new(false);
-            let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(said.clone(), &asked)).await;
+            let found = investigate(&node, &view, &rig(Some(current(&node)), None), || provider_says(said.clone(), &asked)).await;
             assert_eq!(found, Finding::Reached { answer: current(&node), carrier: None });
-            let found = investigate(&node, &view, &rig(None, Some((of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id, current(&node)))), provider_says(said.clone(), &asked)).await;
+            let found = investigate(&node, &view, &rig(None, Some((of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id, current(&node)))), || provider_says(said.clone(), &asked)).await;
             assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some(of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id) });
             assert_eq!((found.name(), found.detail()), ("reached", of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id.to_string()));
             let another_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
             let r = rig(Some(current(&another_birth)), Some((of(&view, rdm_core::PathName::new("mesh1.node", "2").unwrap()).node_id, current(&another_birth))));
-            assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "nobody reached the exact birth: the inspect's answer");
+            let found = investigate(&node, &view, &r, || provider_says(said.clone(), &asked)).await;
+            match &said {
+                Finding::Dead { .. } => assert!(matches!(&found, Finding::Dead { reason } if reason.contains("not proven by the end of the investigation's retries") && reason.contains("Unknown")), "nobody reached the exact birth and the inspect never proved it: dead at the end of the retries, {found:?}"),
+                _ => assert_eq!(found, said, "nobody reached the exact birth: the inspect's answer"),
+            }
             assert_eq!(r.asked.lock().unwrap().first().map(String::as_str), Some("direct"), "the direct probe first");
         }
         let asked = AtomicBool::new(false);
-        let found = investigate(&Node { incarnation_id: None, ..node.clone() }, &view, &rig(None, None), provider_says(Finding::Running, &asked)).await;
-        assert!(matches!(&found, Finding::Unproven { reason } if reason.contains("no recorded birth")), "{found:?}");
+        let found = investigate(&Node { incarnation_id: None, ..node.clone() }, &view, &rig(None, None), || provider_says(Finding::Running, &asked)).await;
+        assert!(matches!(&found, Finding::Dead { reason } if reason.contains("no recorded birth")), "{found:?}");
         assert!(!asked.load(Ordering::SeqCst), "no ladder ran: the provider is not asked");
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:12
+    /// "4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
+    ///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
+    ///     still not proven at their end is `dead`."
+    /// (Q393: "ITS DEAD IF IT CAN'T PROVE IT OR IT GETS TO RUN RETRIES TILL THE END AND THEN ITS DEAD"):
+    /// unreached, an `unavailable` inspect is asked again under one `Send` of the default attempts; the
+    /// first answer that proves the runtime is the verdict, and one never proven is `dead` once the
+    /// attempts are spent, named by its last answer. Must NOT happen: `unavailable` taken as the verdict
+    /// at its first answer, more asks than the step's first plus the Send's attempts, or a retry once
+    /// an answer proved the runtime.
+    // @feature: node-investigation
+    #[tokio::test(start_paused = true)]
+    async fn an_unavailable_inspect_is_asked_again_under_the_retries_and_dead_only_at_their_end() {
+        let (node, view) = world();
+        let unreached = || Rig { direct: None, carried: None, asked: Mutex::default() };
+        let attempts = usize::from(rdm_transport::Send::default().attempts);
+        // Never proven: the step's ask and each attempt of the Send, then dead.
+        let asks = std::sync::atomic::AtomicUsize::new(0);
+        let found = investigate(&node, &view, &unreached(), || {
+            asks.fetch_add(1, Ordering::SeqCst);
+            async { Finding::Dead { reason: "the provider cannot tell its runtime's state: Unknown".into() } }
+        })
+        .await;
+        assert!(matches!(&found, Finding::Dead { reason } if reason.contains("its Send spent") && reason.contains("Unknown")), "{found:?}");
+        assert_eq!(found.name(), "dead");
+        assert_eq!(asks.load(Ordering::SeqCst), 1 + attempts, "the step's ask, then each attempt of the investigation's retries");
+        // Proven on a retry: that answer is the verdict, and nothing is asked after it.
+        for proven in [Finding::Exited { code: Some(9) }, Finding::Running, Finding::OsStopped] {
+            let asks = std::sync::atomic::AtomicUsize::new(0);
+            let found = investigate(&node, &view, &unreached(), || {
+                let n = asks.fetch_add(1, Ordering::SeqCst);
+                let answer = if n < 2 { Finding::Dead { reason: "Unknown".into() } } else { proven.clone() };
+                async move { answer }
+            })
+            .await;
+            assert_eq!(found, proven, "the first answer that proves the runtime is the verdict");
+            assert_eq!(asks.load(Ordering::SeqCst), 3, "no ask after the proving one");
+        }
+    }
+
+    /// CONTRACT (node-recovery.md step 3, Q393; lead note 0001 C2: "`running` matches a live status
+    /// (pending, ready) AND a lifecycle state the node reported (connections-deleting,
+    /// connections-deleted, stopping, stopped) ... `os-stopped` matches `stopped`. `exited` matches
+    /// `dead`. Anything else differs and follows the self-heal."): an ordered investigation's verdict
+    /// matches the birth's status in the topology exactly in those pairs; `reached`, the birth's own
+    /// answer that it runs, matches as `running` does; `dead` (not proven) matches nothing. Must NOT
+    /// happen: `running` matching `dead`, `os-stopped` matching `ready`, or `exited` matching a live
+    /// status.
+    // @feature: node-investigation
+    #[test]
+    fn an_ordered_verdict_matches_the_topology_only_in_the_ruled_pairs() {
+        use NodeStatus as S;
+        let all = [S::Starting, S::Pending, S::Ready, S::ConnectionsDeleting, S::ConnectionsDeleted, S::Leaving, S::Stopping, S::Stopped, S::PendingReconnect, S::Dead, S::Deleting, S::Deleted, S::Withdrawn];
+        let (node, _) = world();
+        let reached = Finding::Reached { answer: current(&node), carrier: None };
+        let runs = [S::Starting, S::Pending, S::Ready, S::ConnectionsDeleting, S::ConnectionsDeleted, S::Stopping, S::Stopped];
+        for status in all {
+            assert_eq!(matches_topology(&Finding::Running, status), runs.contains(&status), "running and {status:?}");
+            assert_eq!(matches_topology(&reached, status), runs.contains(&status), "reached and {status:?}");
+            assert_eq!(matches_topology(&Finding::OsStopped, status), status == S::Stopped, "os-stopped and {status:?}");
+            assert_eq!(matches_topology(&Finding::Exited { code: None }, status), status == S::Dead, "exited and {status:?}");
+            assert!(!matches_topology(&Finding::Dead { reason: String::new() }, status), "dead (not proven) and {status:?}");
+        }
+        assert_eq!((Reason::SelfHeal.as_str(), Reason::SelfHeal.trigger()), ("self-heal", "silence"));
+        assert_eq!((Reason::Ordered { trigger: "report-call-failed" }.as_str(), Reason::Ordered { trigger: "report-call-failed" }.trigger()), ("ordered", "report-call-failed"));
     }
 
     /// CONTRACT (node-investigation.md: "Only an answer from the exact birth counts as `reached`"; Q332:
@@ -578,7 +790,8 @@ mod tests {
         for (direct, carried) in [(Some(current(&node)), None), (None, Some((carrier.clone(), current(&node))))] {
             for (looked_at, what) in [(&node, "a member"), (&primary, "a node-admin primary")] {
                 let rig = Rig { direct: direct.clone(), carried: carried.clone(), asked: Mutex::default() };
-                let found = investigate(looked_at, &view, &rig, provider_says(Finding::Running, &AtomicBool::new(false))).await;
+                let asked = AtomicBool::new(false);
+                let found = investigate(looked_at, &view, &rig, || provider_says(Finding::Running, &asked)).await;
                 assert!(matches!(found, Finding::Reached { .. }), "{what} is reached by its answer: {found:?}");
             }
         }
@@ -587,12 +800,15 @@ mod tests {
     // @feature: node-investigation
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
     /// "A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
-    ///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
+    ///  one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
+    ///  retries is `dead` (Q393). Its steps, in order:
     ///  1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
     ///     It names the peers to try; it never proves the node is reachable.
     ///  2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
     ///  3. [node.tickle](node-tickle.md), direct.
-    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`."
+    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
+    ///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
+    ///     still not proven at their end is `dead`."
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:59
     /// "Spans: [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own"
     #[tokio::test]
@@ -658,7 +874,7 @@ mod tests {
         let found = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             let node_for_inspect = node.clone();
-            investigate(&node, &view, &rig, async move {
+            investigate(&node, &view, &rig, || async {
                 let outcome = crate::deployment::provider::Inspected::Running;
                 span_inspection(
                     "mesh1.node-admin.1",

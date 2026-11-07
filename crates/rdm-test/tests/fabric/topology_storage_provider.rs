@@ -1016,7 +1016,7 @@ async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
     assert_eq!(estate.node_view(&role()).await.node_id, replacement.node_id, "a returning deleted birth cannot become the current node");
     estate.stop().await;
     let spans = estate.spans();
-    assert!(named(&spans, "rdm.node_admin.node.update.via-true-offline").iter().any(|sp| attr(sp, "node_id") == old_id), "the existing investigation clock reaches its normal lifecycle verdict");
+    assert!(named(&spans, "rdm.node_admin.node.update.via-dead").iter().any(|sp| attr(sp, "node_id") == old_id), "the existing investigation clock reaches its normal lifecycle verdict");
     assert!(named(&spans, MOVE).iter().any(|sp| attr(sp, "node_id") == successor && sp["attributes"]["outcome"] == "moved" && attr(sp, "provider") == TOPOLOGY_STORAGE_TARGET), "the successor moves onto {TOPOLOGY_STORAGE_TARGET} under the change");
     estate.record_trace_url(&s(&blocked["trace_id"]));
 }

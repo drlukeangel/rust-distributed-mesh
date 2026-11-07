@@ -116,7 +116,7 @@ pub enum CutSpec {
     /// armed: no exited verdict of them can be read, while every other runtime, a launch of this admin's
     /// included, is inspected as ever. It models a lost mesh whose runtimes no surviving admin can
     /// inspect (elections §5, i144 Q51), and nothing holds.
-    ProviderUnproven {
+    ProviderUnknown {
         /// The runtimes' pids.
         pids: Vec<u32>,
     },
@@ -286,7 +286,7 @@ impl CutSpec {
                 node_id.as_ref().map_or_else(|| node.as_ref().is_none_or(|wanted| location.as_ref() == Some(wanted)), |wanted| wanted == id)
                     && state.as_deref().is_none_or(|wanted| wanted == s)
             },
-            (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
+            (CutSpec::ProviderUnknown { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
             (CutSpec::StorageStep { node }, Probe::StorageStep { path, name, .. }) => node.as_ref().is_none_or(|wanted| wanted.path == *path && wanted.name == *name),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
@@ -387,7 +387,7 @@ impl AdminFaults {
         // A cut that held nothing is spent by its release too: it can no longer hold.
         c.released = true;
         // A condition (not a held call) has no held caller to clear it.
-        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. } | CutSpec::ProviderUnproven { .. }) {
+        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. } | CutSpec::ProviderUnknown { .. }) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             // Dropping the span ends it: the hold span lasts from the first consultation to here.

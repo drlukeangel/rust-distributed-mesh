@@ -4,7 +4,7 @@
 //!
 //! The lost mesh is made uninspectable with the testkit's provider-domain cut on every surviving
 //! admin: each one's provider reports a foreign control domain and refuses the lost runtimes' locators,
-//! so its look at the lost mesh's admins answers `unproven`. A lost mesh the survivors can inspect is
+//! so its look at the lost mesh's admins never proves them, and they are `dead` at the end of the retries (Q393). A lost mesh the survivors can inspect is
 //! recovered the same way (`fabric_primary::losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_backbone`).
 
 use rdm_core::PathName;
@@ -61,16 +61,16 @@ async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> 
 }
 
 /// Make mesh1's runtimes uninspectable to every node-admin outside it while each can still launch and
-/// inspect its own (the provider-unproven cut, by pid: their inspection answers `Unknown`), then SIGKILL
+/// inspect its own (the provider-unknown cut, by pid: their inspection answers `Unknown`), then SIGKILL
 /// every process of mesh1, the Day-0 admin included. The pids killed.
-async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
+async fn lose_mesh1_unknown(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
     let mut pids = Vec::new();
     for n in nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh1" && location(n) != Estate::path("mesh1.node-admin", "1")) {
         pids.push(estate.pid_of(&location(&n)).await);
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
     for n in nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) != "mesh1" && n["type"] == "node-admin") {
-        FaultClient::at(estate, &location(&n)).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
+        FaultClient::at(estate, &location(&n)).await.arm("mesh1-unknown", json!({"kind": "provider-unknown", "pids": pids})).await;
     }
     estate.fabric_ready();
     for pid in &pids {
@@ -85,7 +85,7 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
 /// lowest Ready mesh-primary, exactly as in the own-mesh arm" (Q335); "It takes no primary role";
 /// step 4: the node at the fabric-primary's path.name, Ready, is restored as mesh-primary and
 /// fabric-primary): mesh1 is the fabric-primary's mesh. mesh2's admins cannot inspect mesh1's runtimes
-/// (the provider-unproven cut: their inspection answers `Unknown`), and every process of mesh1 is killed.
+/// (the provider-unknown cut: their inspection answers `Unknown`), and every process of mesh1 is killed.
 /// Fabric recovery does not start before the mark (the staleness floor); from it, mesh2's primary runs
 /// it from the backbone, its node investigation of the lost birth not `reached`, and the node
 /// re-created at mesh1.node-admin.1 is restored as mesh-primary and fabric-primary. Must NOT happen: fabric
@@ -103,7 +103,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     let backbone_row = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["is_primary"] == true && n["type"] == "node-admin").cloned().expect("mesh2's primary");
     let backbone = location(&backbone_row);
     estate.enter(&backbone).await;
-    lose_mesh1_unproven(&estate, &nodes).await;
+    lose_mesh1_unknown(&estate, &nodes).await;
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
     let floor = rdm_core::cadence::staleness_floor();
@@ -209,7 +209,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     let old_dir = estate.bootstrap_data_dir("mesh1");
     let old_key = std::fs::read(old_dir.join("node-key")).expect("the old birth's endpoint key");
     let backbone = location(&nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin").expect("mesh2's admin"));
-    lose_mesh1_unproven(&estate, &nodes).await;
+    lose_mesh1_unknown(&estate, &nodes).await;
     estate.enter(&backbone).await;
     let floor = rdm_core::cadence::staleness_floor();
     let recreated = new_birth_within(&estate, &Estate::path("mesh1.node-admin", "1"), &old_id, floor * 12 + Duration::from_secs(120)).await;

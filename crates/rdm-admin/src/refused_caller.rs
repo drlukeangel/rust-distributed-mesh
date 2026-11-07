@@ -293,6 +293,7 @@ mod tests {
             builds: builds.clone(),
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &admin.node_id),
+            reasons: Arc::default(),
         };
         // The records the decision reads (query.md §1): mesh1's rows under its writer in the view.
         let stores = crate::current_record::stores_over(rows.clone(), &*topology.read().await).await;

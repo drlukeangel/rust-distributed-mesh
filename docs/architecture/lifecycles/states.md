@@ -11,7 +11,7 @@ lives on its own page; op fields and enums live only in the
 - **Fabric:** `pending` → `ready`.
 - **Mesh:** `pending` → `ready` → `deleting` → `deleted`. A mesh is alive while it holds a node; only its mesh-primary leaves it, always last, and the mesh is then dead and never restarted. A mesh id is never reissued; deleted is final. A deleted mesh releases its name within the fabric as a deleted node releases its name within its path; a mesh created again under that name is a new mesh with a new id.
 - **Node:** starting → pending → ready → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted under the [node object contract](../node-rpc-envelope.md#typed-object-contract). Stopped is a status: a live, stopped process. Start rejoins that same process and restores readiness only after all start gates pass. Delete shows exact runtime exit, writes the durable row deleted and releases identity/name; it is not a return to readiness.
-- **Node under investigation:** `PendingReconnect` is the status of a node under [node investigation](node-investigation.md), written on its record by its mesh-primary ([node recovery](node-recovery.md) step 1); the verdict ends it. A node row may also carry the observer-inferred mark `Dead` (TRUE OFFLINE), written by the node's mesh-primary, never itself a reason to act.
+- **Node under investigation:** `PendingReconnect` is the status of a node its mesh-primary self-heals because it went unheard past the staleness floor; `dead` is the status its mesh-primary writes when an investigation concludes in failure, after which the recovery runs ([node recovery](node-recovery.md), Q393).
 
 A mesh is ready when every planned exact member birth for the accepted
 Build that is not stopped is ready: a stopped birth is at rest by command (below), receives no
@@ -32,6 +32,8 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | node left | the node, on its own record | node.mesh.leave's completion, `StopMeshLeft` on node.stop's stream |
 | node stopping | the node, on its own record | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
 | node stopped | the node, on its own record | the matching stopped frame on the stop call's stream |
+| node pending-reconnect | the node's mesh-primary, on the node's record | the start of its self-heal (node-recovery.md step 1) |
+| node dead | the node's mesh-primary, on the node's record | an investigation concluded in failure (node-recovery.md step 3) |
 | node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's admission at its mesh-primary, published as NodeDeleting |
 | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step event |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |

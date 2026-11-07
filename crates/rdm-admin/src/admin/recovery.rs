@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// What the mesh primary's recovery of one TRUE OFFLINE member reads and calls
+/// What the mesh primary's recovery of one member written dead reads and calls
 /// (node-recovery.md "Detection and proof" step 3, sequence step 1).
 #[derive(Clone)]
 pub(crate) struct RecoverySubmitter {
@@ -34,6 +34,9 @@ pub(crate) struct RecoverySubmitter {
     /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
     /// application's `on_node_investigated`, sent from that write (Q312).
     pub investigated: crate::node_investigation::NodeInvestigatedWriter,
+    /// Why each birth this tick wrote dead was investigated (Q393): its re-create's event names it; a
+    /// birth with none held is a self-heal's.
+    pub reasons: Arc<Mutex<HashMap<(NodeId, IncarnationId), crate::node_investigation::Reason>>>,
 }
 
 impl RecoverySubmitter {
@@ -41,7 +44,7 @@ impl RecoverySubmitter {
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-/// What the provider's inspection of a TRUE OFFLINE member found: node.runtime.inspect's own answer
+/// What the provider's inspection of a member written dead found: node.runtime.inspect's own answer
 /// ([`crate::deployment::provider::inspect_runtime`]).
 pub use crate::deployment::provider::Inspected;
 
@@ -57,14 +60,15 @@ pub(crate) fn verdict_name(outcome: &Inspected) -> &'static str {
 }
 
 /// The investigation's verdict on an unreached birth from the inspection's answer `name`
-/// ([`verdict_name`]): `unavailable` is `unproven` (node-investigation.md step 4).
+/// ([`verdict_name`]), or from the verdict's own name: an `unavailable` answer, the investigation's
+/// retries spent, is `dead` (node-investigation.md step 4, Q393).
 fn investigated_verdict(name: &str) -> crate::wiring::NodeInvestigatedVerdict {
     use crate::wiring::NodeInvestigatedVerdict as V;
     match name {
         "running" => V::Running,
         "os-stopped" => V::OsStopped,
         "exited" => V::Exited,
-        _ => V::Unproven,
+        _ => V::Dead,
     }
 }
 
@@ -85,10 +89,10 @@ impl RecoverySubmitter {
         crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, Some(&*self.nodes_storage), node).await
     }
 
-    /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md step 3, sequence step 1):
-    /// its ladder ended unreached, so the provider's inspection is the investigation's last step, and
-    /// its verdict, whatever it is, opens the recovery at once (Q110, Q111): nothing holds, nothing is
-    /// inspected again, nothing waits for a proof of termination. The recovery's node.delete runs
+    /// One birth written dead on the mesh primary's tick (node-recovery.md step 3, sequence step 1,
+    /// Q393): its investigation concluded in failure, and the recovery runs at once (Q110, Q111); the
+    /// provider's inspection here names the verdict its event carries, and nothing waits for a proof of
+    /// termination. The recovery's node.delete runs
     /// `TerminateRuntime` first when the runtime runs ([`crate::deployment::pipeline`]). A birth whose
     /// removal this admin's view holds announced is that workflow's, read after the inspection (the
     /// tick's view predates it).
@@ -150,7 +154,8 @@ impl RecoverySubmitter {
             // The verdict opens the re-create: it is written as its event, and the application is told
             // once from that write, under the recovery's span (fabric-node-hooks.md "on_node_investigated").
             let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
-            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate).instrument(span.clone()).await;
+            let reason = self.reasons.lock().unwrap().get(&(node.node_id.clone(), incarnation.clone())).copied().unwrap_or(crate::node_investigation::Reason::SelfHeal);
+            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate, reason).instrument(span.clone()).await;
         }
         let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);
@@ -211,7 +216,7 @@ impl RecoverySubmitter {
     /// The inspection's span (node-runtime-inspect.md "Spans"), with `handle` the exact runtime handle
     /// the provider was asked about (none when nothing was asked).
     pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected, handle: Option<&DeploymentHandle>) {
-        crate::node_investigation::span_inspection(&self.me_id.to_string(), node, outcome, handle, "the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime");
+        crate::node_investigation::span_inspection(&self.me_id.to_string(), node, outcome, handle, "the mesh primary asked the provider about the exact runtime of the member written dead");
     }
 
     /// The recovery of `node`'s unreached birth on its verdict `outcome`: this mesh primary submits
@@ -414,7 +419,7 @@ pub fn durable_births(view: &Topology, durable: &[crate::storage::NodeRecord], p
     births
 }
 
-/// What the mesh primary's tick watches, by node id: every silent (`PendingReconnect` or `Dead`)
+/// What the mesh primary's tick watches, by node id: every `PendingReconnect` or `Dead`
 /// member of its own mesh in its view other than itself (the birth `me_id`: never by path and name,
 /// which a recovery keeps under a new node id); and every birth of its own mesh only a durable
 /// runtime row names (`durable_births`: never heard, never launched by this admin), which is node
@@ -438,9 +443,25 @@ pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashS
     view.births().map(|n| n.node_id.to_string()).chain(watched.keys().cloned()).collect()
 }
 
-/// The watched births the tick inspects for recovery (node-recovery.md): none unless this admin
-/// holds its mesh's primary role; else every watched birth of its own mesh (its secondary
-/// node-admins included, mesh-recovery.md:8-9) held TRUE OFFLINE at its exact incarnation.
+/// `n`'s exact birth written dead by its mesh-primary (node-recovery.md step 3, Q393): an investigation
+/// run for `reason` concluded in failure. Held in this admin's view (`Records::offline`, shown `Dead`)
+/// and on the node's record ([`crate::node_rows::NodeRows::investigated`], on its own task), the reason
+/// kept for its re-create's event; the tick's recovery takes it at once ([`recovery_due`]).
+pub(crate) fn write_dead(records: &Records, recovery: &RecoverySubmitter, rows: Option<Arc<crate::node_rows::NodeRows>>, gate: &crate::stop_gate::StopGate, n: &Node, reason: crate::node_investigation::Reason) {
+    let Some(incarnation) = n.incarnation_id.clone() else { return };
+    recovery.reasons.lock().unwrap().insert((n.node_id.clone(), incarnation.clone()), reason);
+    if records.offline.lock().unwrap().insert((n.node_id.clone(), incarnation)) {
+        records.inputs_moved();
+    }
+    if let Some(rows) = rows {
+        let n = n.clone();
+        tokio::spawn(gate.until_stopped(async move { let _ = rows.investigated(&n, NodeStatus::Dead).await; }));
+    }
+}
+
+/// The watched births the tick recovers (node-recovery.md step 3, Q393): none unless this admin holds
+/// its mesh's primary role; else every watched birth of its own mesh (its secondary node-admins
+/// included, mesh-recovery.md:8-9) written dead at its exact incarnation.
 pub fn recovery_due(holds_role: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
     if !holds_role {
         return Vec::new();

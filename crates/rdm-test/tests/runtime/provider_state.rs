@@ -53,12 +53,15 @@ async fn node_where(estate: &Estate, node: &PathName, what: &str, within: Durati
     wait_for(what, within, || async { estate.node_value_opt(node).await.filter(|n| f(n)) }).await
 }
 
-/// CONTRACT (node-recovery.md step 3: "Any other verdict (`running`, `os-stopped`, `exited`,
-/// `unproven`): the recovery below, at once. Nothing holds"; sequence step 3: `TerminateRuntime` first
+/// CONTRACT (node-recovery.md step 3, Q393: "A self-heal ...: `os-stopped` commanded to start (node.start;
+/// a start it refuses as already live is `running`), each sent until answered; ... a join or start
+/// unanswered at the end of its attempts is written `dead`, and the recovery below runs at once";
+/// sequence step 3: `TerminateRuntime` first
 /// "when the verdict was `running`"; step 4 and `R-FM2`: a newly allocated data dir on any verdict but
 /// `exited`): a member the operating system holds suspended (SIGSTOP, acknowledged `T`) goes silent;
-/// its mesh-primary's ladder ends in the provider's inspection, verdict `os-stopped`, and the recovery
-/// is submitted on that verdict: the path is re-created with a new node.id over a newly allocated data
+/// its mesh-primary's ladder ends in the provider's inspection, verdict `os-stopped`; its start, sent to a
+/// runtime that answers nothing, ends unanswered, the birth is written dead, and the recovery is
+/// submitted on that verdict: the path is re-created with a new node.id over a newly allocated data
 /// dir, ready, and the suspended runtime is sent nothing: its node.delete's
 /// `TerminateRuntime` reads it `os-stopped` at the step's instant and asks the provider nothing, and it
 /// stays suspended, using no CPU. Must NOT happen: the member held, a signal to the suspended runtime,
@@ -130,7 +133,8 @@ async fn hold_until_recovered(estate: &Estate, path: &PathName) -> Held {
 /// CONTRACT (node-recovery.md "Execution": "A lost mesh-primary is investigated and recovered by the
 /// successor its election names, as any member of its mesh, its own workflow; the fabric-primary
 /// investigates and recovers it only when no successor takes the role (Q335)"; step 3:
-/// "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at once" and
+/// "`os-stopped` commanded to start ..., each sent until answered; ... a join or start unanswered at the
+/// end of its attempts is written `dead`, and the recovery below runs at once" (Q393) and
 /// TerminateRuntime "never skipped for what it reads, except `os-stopped`, which recovery leaves as it
 /// is"; node-delete.md: the immediate terminate is "Explicit delete only, never recovery, which respects
 /// suspension"; node-investigation.md "Spans": node.runtime.inspect's own; node-runtime-inspect.md "Its

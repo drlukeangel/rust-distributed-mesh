@@ -173,7 +173,8 @@ pub struct BuildEndedCtx {
 }
 
 /// A node investigation's verdict as `on_node_investigated` carries it (node-investigation.md:
-/// `reached`, `running`, `os-stopped`, `exited` or `unproven`).
+/// `reached`, `running`, `os-stopped` or `exited`, or `dead` when not proven by the end of the
+/// retries, Q393).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeInvestigatedVerdict {
     /// The exact birth answered, or was heard again by its digest.
@@ -184,8 +185,8 @@ pub enum NodeInvestigatedVerdict {
     OsStopped,
     /// The provider inspected its exact runtime and it exited.
     Exited,
-    /// Nothing tells the birth gone or alive.
-    Unproven,
+    /// The birth is not proven alive or exited by the end of the investigation's retries.
+    Dead,
 }
 
 impl NodeInvestigatedVerdict {
@@ -196,7 +197,7 @@ impl NodeInvestigatedVerdict {
             Self::Running => "running",
             Self::OsStopped => "os-stopped",
             Self::Exited => "exited",
-            Self::Unproven => "unproven",
+            Self::Dead => "dead",
         }
     }
 }

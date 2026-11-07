@@ -793,7 +793,7 @@ impl AdminRunner {
                 None if explicit => {
                     let step = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
                     let reason = format!("node.delete:path {node_path:?}, name {node_name:?} {step}: the runtime of {} at {} is not resolved here, so none can be inspected or terminated: the step fails by name and no receipt is manufactured (Q160): {e}", from.node_id, from.incarnation.as_str(), node_path = &node.path, node_name = &node.name);
-                    tracing::info_span!("rdm.node_admin.node.delete.via-unproven-runtime", build_id = %crate::deployment::pipeline::build_span(build_id), node_path = %node.path, node_name = %node.name, incarnation_id = %from.incarnation.as_str(), step, reason = %reason)
+                    tracing::info_span!("rdm.node_admin.node.delete.via-unresolved-runtime", build_id = %crate::deployment::pipeline::build_span(build_id), node_path = %node.path, node_name = %node.name, incarnation_id = %from.incarnation.as_str(), step, reason = %reason)
                         .in_scope(|| tracing::info!("the birth's runtime is not known here: its delete's step fails by name"));
                     return Err(crate::executor::RunEnd::failed(reason));
                 }
@@ -964,7 +964,7 @@ impl AdminRunner {
         let held_runtimes = if rdm_core::is_node_admin(&r#type) { self.held_runtimes().await } else { Vec::new() };
         // The predecessor's data dir only when the delete read the old runtime exited, the node's
         // `storage_persistence` is `persistent` and the directory exists (Q358, Q359); a newly allocated
-        // one otherwise. An os-stopped or unproven runtime may still run on that directory, so only an
+        // one otherwise. An os-stopped runtime, or one not proven exited, may still run on that directory, so only an
         // exited one hands it on. What the directory holds is the application's to judge, in its
         // `pre_node_ready` (Q350): RDM never looks inside it. A record that names no
         // `storage.persistence`: the type's own default stands for it.
@@ -1375,7 +1375,7 @@ impl crate::path_investigation::PathProbe for AdminRunner {
         let view = self.topology.read().await.clone();
         let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.node_id.to_string(), connections: self.connections.clone() };
         // node.runtime.inspect's span is the evidence (node-runtime-inspect.md "Observability contract").
-        let inspect = async {
+        let inspect = || async {
             let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await;
             crate::node_investigation::span_inspection(self.node_id.as_str(), node, &inspected, handle.as_ref(), "the path check's investigation asked the provider about the unreached previous birth's exact runtime");
             crate::node_investigation::Finding::from(inspected)

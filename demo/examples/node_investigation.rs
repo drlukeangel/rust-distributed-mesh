@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
     };
 
     let provider = ProcessDeploymentProvider::new();
-    let reached = investigate(target, &view, &calls, async {
+    let reached = investigate(target, &view, &calls, || async {
         inspect_runtime(&provider, &fact, Some(dir), inc.as_str()).await.into()
     })
     .await;
@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
     let mut unreached_node = target.clone();
     unreached_node.node_id = NodeId::mint();
     unreached_node.mesh = "isolated".to_string();
-    let inspected = investigate(&unreached_node, &view, &calls, async {
+    let inspected = investigate(&unreached_node, &view, &calls, || async {
         inspect_runtime(&provider, &fact, Some(dir), inc.as_str()).await.into()
     })
     .await;

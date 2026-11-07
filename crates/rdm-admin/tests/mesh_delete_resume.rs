@@ -901,7 +901,7 @@ fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row()
         let with_row = inspect_birth(&fleet, &digest_view, Some(&nodes), &lost).await;
         (without_row, with_row)
     });
-    assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no digest") && reason.contains("no node record")), "no digest and no record: unproven, naming both: {without_row:?}");
+    assert!(matches!(&without_row, Finding::Dead { reason } if reason.contains("no digest") && reason.contains("no node record")), "no digest and no record: not proven, naming both: {without_row:?}");
     assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
 }
 

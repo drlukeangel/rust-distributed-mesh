@@ -24,8 +24,8 @@ The lifecycle architecture rests on five design rules:
    ([States](lifecycles/states.md#routing)).
 2. **Liveness and status are separate axes** (§4): the status is on a node's row and in its
    Digest; liveness is its Digests arriving, read on the observer's own clock.
-3. **Observation and exact departure are different facts.** Local `Dead`/stale vocabulary may
-   describe an observer's routing view, but destructive recovery and Node RPC Gone require canonical
+3. **Observation and exact departure are different facts.** Local stale vocabulary may
+   describe an observer's routing view, and `dead` is the status its mesh-primary writes when an investigation concludes in failure (Q393), but destructive recovery and Node RPC Gone require canonical
    exact-runtime deletion/supersession evidence. A stopped status is a lifecycle state, not evidence that the
    runtime has disappeared.
 4. **Events, not timers.** Every transition is event-observable (span-emitting). The time-based
@@ -389,7 +389,7 @@ The projected kinds' channels, the projection frame and the pull a node makes at
 A node has one state, its **status**: starting, pending, ready, connections-deleting,
 connections-deleted, leaving, left, stopping, stopped, deleting and deleted, each set by its workflow as
 [States](lifecycles/states.md#states) and [node status](lifecycles/node-status.md#node-status-change)
-define, and `PendingReconnect`, the status of a node under [node investigation](lifecycles/node-investigation.md).
+define, and `PendingReconnect`, the status of a node under its mesh-primary's self-heal [investigation](lifecycles/node-investigation.md) (Q393).
 The node writes its status on its own record (Q356) and publishes it in its Digest at once when it
 changes and on every heartbeat ([gossip](gossip.md#31-frame-catalog)); its mesh-primary writes
 `PendingReconnect`, deleting and deleted. A stopping node's last Digest carries stopping, and its
@@ -405,8 +405,8 @@ mesh-primary publishes `NodeStopped` from the stop stream's `node.stopped` frame
 | pending | the node, at its accepted join ([node-mesh-join](lifecycles/node-mesh-join.md) step 10) | the traffic/topology filters — routed no traffic |
 | ready | the node, at its node.started | the rebind path; every traffic and topology filter |
 | leaving, stopping, stopped | the node, on its own record ([States](lifecycles/states.md#who-sets-each-state)) | the routing rule: routed no traffic |
-| `Dead` | never sent; receiver-side vocabulary | the traffic/topology filters |
-| `PendingReconnect` | the staleness sweep; the mesh-primary, at once, for a member a command was never sent to for a reachability reason ([node recovery](lifecycles/node-recovery.md) step 1) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
+| `Dead` | written on the node's record by its mesh-primary when an investigation of it concludes in failure (Q393); the node never publishes it | the traffic/topology filters |
+| `PendingReconnect` | the mesh-primary, on the node's record, as its self-heal of a member unheard past the staleness floor starts ([node recovery](lifecycles/node-recovery.md) step 1, Q393) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
 
 Every state in that table has a reader. That is the bar a state has to clear to exist.
 
@@ -583,9 +583,7 @@ A silent member is its mesh-primary's
 [node recovery](lifecycles/node-recovery.md); a peer mesh's lost mesh-primary is the fabric-primary's
 [node investigation](lifecycles/node-investigation.md) and [node recovery](lifecycles/node-recovery.md) (Q335).
 
-**What a mesh-primary records of a silent member** is on the node's record: the `PendingReconnect`
-and `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), each set and cleared by the mesh-primary on the
-record it holds and written whole and revalidated by a successor's own
+**What a mesh-primary records of a silent member** is on the node's record: the `PendingReconnect` and `dead` statuses ([States](lifecycles/states.md#states)): `PendingReconnect` written as its self-heal starts and `dead` when an investigation concludes in failure (Q393), each written by the mesh-primary on the record it holds and written whole and revalidated by a successor's own
 inspection. An application's own record of an outage and the work it owes on a return (Rafka's
 `NodeOfflineRecord` and its refill job) is the application's. A deleted node's identity never takes
 its name back: a digest from a deleted incarnation is refused by name as deleted and by the

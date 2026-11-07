@@ -366,8 +366,9 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
 
 /// CONTRACT (#2784; Q111, Q181, Q188): the same silence on ONE node of the peer mesh without the
 /// fabric-primary. The node alone goes unheard; no call reaches it by any route. Its mesh-primary's node
-/// investigation does not reach it, and node-recovery.md step 3 decides: "Any other verdict (`running`,
-/// `os-stopped`, `exited`, `unproven`): the recovery below, at once" (Q181: a silent node is replaced;
+/// investigation does not reach it, and node-recovery.md step 3 decides: "... `exited`, a birth not proven
+/// by the end of the retries, or a join or start unanswered at the end of its attempts is written
+/// `dead`, and the recovery below runs at once" (Q393; Q181: a silent node is replaced;
 /// Q188: the cell follows the page). So exactly one recovery runs, submitted by that
 /// mesh-primary on a verdict other than `reached`: one node.delete of the exact silent birth, whose
 /// TerminateRuntime ends its container and the provider removes it ("no runtime of a superseded birth

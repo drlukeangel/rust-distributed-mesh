@@ -734,10 +734,10 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
     eprintln!("Q122 hung fabric-primary: {fp_name:?} (birth {}) re-created as {} by {standby:?}'s fabric recovery", s(&fp["node_id"]), s(&after["node_id"]));
 }
 
-/// The `observer`'s first fold span of its tickle ladder for `node_id` that nobody answered (TRUE
-/// OFFLINE, node-recovery.md steps 2-3: the inspection and the recovery follow at once), once exported.
+/// The `observer`'s first span writing `node_id` dead (node-recovery.md step 3, Q393: its
+/// investigation concluded in failure, and the recovery follows at once), once exported.
 fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value) -> Option<&'a Value> {
-    let mut found: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-true-offline").into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
+    let mut found: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-dead").into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
     found.sort_by_key(|sp| start(sp));
     found.into_iter().next()
 }

@@ -1,22 +1,26 @@
 //! The offline tickle (`docs/architecture/node-identity-and-state.md` §7.3,
 //! `docs/architecture/lifecycles/node-tickle.md`).
 //!
-//! A silent node is never restarted or deleted for being silent. Every node's own pruner marks it
-//! `PendingReconnect` at the staleness floor. Every node-admin keeps the silence bookkeeping
-//! (`first_seen`), so a node-admin that takes the primary role mid-window tickles on the window already
-//! running; only the node-admin holding its mesh's `mesh-primary` role tickles. Half a floor after the
-//! mark (floor + half a floor in all) it runs the one reach ladder, `node.tickle` ([`tickle`],
-//! node-tickle.md: direct, then through up to two live peers at once), which this module holds for
-//! every caller of it. Each ladder runs beside the loop, one per exact birth, and the first tick
-//! after it ends folds what it found (node-recovery.md: one loop, on every gossip interval). An
-//! answer is `reachable-silent`: recorded, no action. The inspect runs before the ladder (Q273): its
-//! `exited` or `os-stopped` holds the birth offline with no probe sent; a ladder nobody answered is the
-//! birth held offline (TRUE OFFLINE) at that fold, and its recovery follows at once (node-recovery.md
-//! steps 2-3; node-tickle.md "What follows": "on `unreached` the investigation's verdict is the
-//! inspect's answer, read before the tickle"): nothing holds and nothing is probed again (Q111, Q181). A node that leaves the
-//! silent set has returned. The `Dead` status is observer-inferred, never sent, never itself a reason
-//! to act: the investigation's verdict is.
-//! The admin writes the node's status on its row in nodes.storage and shows it in the view.
+//! A silent node is never restarted or deleted for being silent. Every node's pruner holds it silent
+//! at the staleness floor, and its mesh-primary writes it `PendingReconnect` as it starts the
+//! self-heal (Q393). Every node-admin keeps the silence bookkeeping (`first_seen`), so a node-admin
+//! that takes the primary role mid-window tickles on the window already running; only the node-admin
+//! holding its mesh's `mesh-primary` role tickles. Half a floor after the mark (floor + half a floor
+//! in all) it runs the investigation: the inspect first (Q273), then the one reach ladder,
+//! `node.tickle` ([`tickle`], node-tickle.md: direct, then through up to two live peers at once),
+//! which this module holds for every caller of it. Each ladder runs beside the loop, one per exact
+//! birth, and the first tick after it ends folds what it found (node-recovery.md: one loop, on every
+//! gossip interval). A command never sent for a reachability reason, or a call whose attempts are
+//! spent, orders an investigation instead ([`UnreachableMark`]): it sets no `PendingReconnect`, and a
+//! verdict that matches the birth's status in the topology does nothing
+//! ([`crate::node_investigation::matches_topology`]). Otherwise the verdict follows the self-heal
+//! (node-recovery.md step 3, [`crate::node_investigation::follows`]): `reached` is commanded back,
+//! `running` commanded back through node.mesh.join and `os-stopped` commanded to start, each sent until
+//! answered; `exited`, a birth not proven by the end of the retries, or a join or start unanswered at
+//! the end of its attempts is written `dead`, and its recovery follows at once. A node that leaves the
+//! silent set has returned.
+//! The mesh-primary writes `PendingReconnect` and `dead` on the node's record in nodes.storage and
+//! shows them in the view.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,13 +37,19 @@ pub(crate) struct SilentNode {
     /// no receipt of (a birth only a durable runtime row names), whose silence is first seen at the
     /// tick that lists it.
     pub marked_at_ms: Option<u64>,
+    /// Why it is investigated (Q393): a self-heal of a birth the view holds silent, or an ordered
+    /// investigation from its mark ([`marked_from`]).
+    pub reason: crate::node_investigation::Reason,
+    /// The birth's status in the topology, which an ordered investigation's verdict is compared with.
+    pub status: crate::model::NodeStatus,
 }
 
 /// The silent set of one tick: every watched birth, each with its mark read from this admin's digest
 /// view at `now` (`now_ms` on the local clock): the birth's last receipt plus the staleness floor
 /// `floor`, the instant its silence passed the floor (node-recovery.md "Detection and proof" step 1:
-/// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness
-/// floor"). A birth the digest view holds only from its mesh-primary's projection is unheard since the digest view
+/// "Each node's pruner holds a member silent once it is unheard past the staleness floor; its
+/// mesh-primary writes it `PendingReconnect` as it starts the self-heal"), each a self-heal until its
+/// mark makes it an ordered one ([`marked_from`]). A birth the digest view holds only from its mesh-primary's projection is unheard since the digest view
 /// first held it, and is tickled only once the view holds it off ready (its caller's
 /// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the view holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
@@ -52,15 +62,16 @@ pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model:
                 .or_else(|| digest_view.projected_at(n.node_id.as_str(), now))
                 .filter(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && *unheard >= floor)
                 .map(|(_, unheard)| now_ms.saturating_sub((unheard - floor).as_millis() as u64));
-            SilentNode { node_id: n.node_id.to_string(), path: n.location(), incarnation: n.incarnation_id.clone(), marked_at_ms }
+            SilentNode { node_id: n.node_id.to_string(), path: n.location(), incarnation: n.incarnation_id.clone(), marked_at_ms, reason: crate::node_investigation::Reason::SelfHeal, status: n.status }
         })
         .collect()
 }
 
-/// A command its birth never received for a reachability reason (node-tickle.md step 1): the
-/// mesh-primary marks the birth `PendingReconnect` at once, so its tickle ladder runs from this mark
-/// instead of after the staleness floor. An observer mark: it ends when the birth is heard after it,
-/// answers its tickle, or leaves the view.
+/// What orders an investigation of a birth (node-recovery.md step 1, Q393): a command it never received
+/// for a reachability reason (node-tickle.md step 1), or a call to it whose attempts are spent. Its
+/// tick investigates the birth from this mark instead of after the staleness floor, and sets no
+/// `PendingReconnect`. It ends when the birth is heard after it, answers its tickle, leaves the view,
+/// or its ordered investigation found nothing to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnreachableMark {
     /// The exact birth the command named.
@@ -70,25 +81,31 @@ pub struct UnreachableMark {
     /// The same instant on the local clock, ms since the Unix epoch.
     pub at_ms: u64,
     /// `connect-refused`, `connect-timed-out`, `connect-failed` or `endpoint-unresolved` for a command
-    /// never sent; [`ATTEMPTS_SPENT`] for a call whose attempts are spent.
+    /// never sent; [`ATTEMPTS_SPENT`] for this admin's own call whose attempts are spent;
+    /// [`REPORT_CALL_FAILED`] for another caller's. The ordered investigation's trigger.
     pub reason: &'static str,
 }
 
-/// The reason of a spent-call mark ([`mark_spent`]): a call to the birth ended with its attempts spent.
+/// The reason of a spent-call mark ([`mark_spent`]) of this admin's own call to the birth, ended with
+/// its attempts spent.
 pub const ATTEMPTS_SPENT: &str = "attempts-spent";
+
+/// The reason of a spent-call mark ([`mark_spent`]) another caller reported with Status
+/// `ReportCallFailed`.
+pub const REPORT_CALL_FAILED: &str = "report-call-failed";
 
 impl UnreachableMark {
     /// Whether this is a spent-call mark (node-recovery.md step 1, Q340): it ends only when the exact
     /// birth answers or the view no longer holds it, never on a digest.
     pub fn is_spent_call(&self) -> bool {
-        self.reason == ATTEMPTS_SPENT
+        self.reason == ATTEMPTS_SPENT || self.reason == REPORT_CALL_FAILED
     }
 }
 
-/// Whether a reachability `NotSent` marks a birth whose mesh-primary holds `recorded` for it
-/// (node-recovery.md step 1): an observer mark beside a live status (`Pending`, `Ready`, or
-/// none held), never over a lifecycle state the node reported and the mesh-primary recorded
-/// (connections-deleting, stopping, stopped).
+/// Whether a reachability `NotSent` or a spent call orders an investigation of a birth whose
+/// mesh-primary holds `recorded` for it (node-recovery.md step 1): beside a live status (`Pending`,
+/// `Ready`, or none held), never over a lifecycle state the node reported and the mesh-primary
+/// recorded (connections-deleting, stopping, stopped).
 pub(crate) fn marks_over(recorded: Option<rdm_core::model::NodeStatus>) -> bool {
     match recorded {
         Some(rdm_core::model::NodeStatus::Starting | rdm_core::model::NodeStatus::Pending | rdm_core::model::NodeStatus::Ready | rdm_core::model::NodeStatus::PendingReconnect) | None => true,
@@ -102,14 +119,15 @@ pub(crate) fn marks_over(recorded: Option<rdm_core::model::NodeStatus>) -> bool 
 pub type UnreachableMarks = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<crate::model::NodeId, UnreachableMark>>>;
 
 /// A call whose attempts are spent on `node` (node-rpc.md §43; Q311), this admin the primary above it
-/// (node-investigation.md, Caller): the birth is marked `PendingReconnect` at once, as a command never
-/// sent for a reachability reason marks it (node-recovery.md step 1), with the same observer rule
-/// ([`marks_over`]), and investigated from the mark (step 2): a member by the mesh-primary's tick, a
-/// mesh-primary by the fabric-primary's primary watch (Q338). No timing rule of its own. A birth
-/// already marked keeps its mark
-/// (one investigation per silence). `from` names whose call it was: this admin's own, or the birth
-/// that reported it (`ReportCallFailed`). One span, `rdm.node_admin.node.update.via-call-failed`;
-/// the outcome is `marked`, `already-marked` or `kept-lifecycle-status`.
+/// (node-investigation.md, Caller): the mark orders an investigation of the birth at once, as a command
+/// never sent for a reachability reason does (node-recovery.md step 1, Q393), which sets no
+/// `PendingReconnect`, with the same rule ([`marks_over`]), and the birth is investigated from the mark
+/// (step 2): a member by the mesh-primary's tick, a mesh-primary by the fabric-primary's primary watch
+/// (Q338). No timing rule of its own. A birth already marked keeps its mark (one investigation per
+/// mark). `from` names whose call it was: this admin's own (`own-call`, trigger [`ATTEMPTS_SPENT`]), or
+/// the birth that reported it (`ReportCallFailed`, trigger [`REPORT_CALL_FAILED`]). One span,
+/// `rdm.node_admin.node.update.via-call-failed`; the outcome is `marked`, `already-marked` or
+/// `kept-lifecycle-status`.
 pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_gossip::digest_view::DigestView>, node: &crate::model::Node, from: &str, reason: &str) -> &'static str {
     let Some(incarnation) = node.incarnation_id.clone() else { return "no-birth" };
     let recorded = digest_view.and_then(|d| d.member_status(&node.node_id, &incarnation));
@@ -120,7 +138,8 @@ pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_goss
         match held.get(&node.node_id) {
             Some(m) if m.incarnation == incarnation => "already-marked",
             _ => {
-                held.insert(node.node_id.clone(), UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::local_now_ms(), reason: ATTEMPTS_SPENT });
+                let trigger = if from == "own-call" { ATTEMPTS_SPENT } else { REPORT_CALL_FAILED };
+                held.insert(node.node_id.clone(), UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::local_now_ms(), reason: trigger });
                 "marked"
             }
         }
@@ -136,7 +155,7 @@ pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_goss
         outcome,
         "otel.kind" = "internal",
     )
-    .in_scope(|| tracing::info!("a call whose attempts are spent: the primary above the birth marks it pending-reconnect at once, as a command never sent marks it, and investigates it from the mark"));
+    .in_scope(|| tracing::info!("a call whose attempts are spent: the primary above the birth orders an investigation of it from the mark, as a command never sent does; it sets no pending-reconnect"));
     outcome
 }
 
@@ -238,19 +257,25 @@ pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topol
     marks.clone()
 }
 
-/// Every marked birth of `mesh` the view holds, other than this admin itself, is watched `PendingReconnect`.
+/// Every marked birth of `mesh` the view holds, other than this admin itself, is watched at the status
+/// the view holds for it: an ordered investigation sets no `PendingReconnect` (Q393).
 pub(crate) fn watch_marked(watched: &mut std::collections::BTreeMap<String, crate::model::Node>, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>, view: &crate::topology::Topology, mesh: &str, me: &crate::model::NodeId) {
     for (id, m) in marks {
         if let Some(n) = view.births().find(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && n.mesh == mesh && &n.node_id != me) {
-            watched.entry(id.to_string()).or_insert_with(|| crate::model::Node { status: crate::model::NodeStatus::PendingReconnect, ..n.clone() });
+            watched.entry(id.to_string()).or_insert_with(|| n.clone());
         }
     }
 }
 
-/// A silent birth's mark is the earlier of its view's floor mark and its unreachable mark.
+/// A silent birth's mark is the earlier of its view's floor mark and its unreachable mark. A marked
+/// birth the view does not hold silent (`PendingReconnect` or `Dead`) is an ordered investigation,
+/// its trigger the mark's (Q393); a birth the view holds silent stays its mesh-primary's self-heal.
 pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>) -> SilentNode {
     if let Some((_, m)) = marks.iter().find(|(id, m)| id.as_str() == s.node_id && s.incarnation.as_ref() == Some(&m.incarnation)) {
         s.marked_at_ms = Some(s.marked_at_ms.map_or(m.at_ms, |at| at.min(m.at_ms)));
+        if !matches!(s.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead) {
+            s.reason = crate::node_investigation::Reason::Ordered { trigger: m.reason };
+        }
     }
     s
 }
@@ -637,6 +662,35 @@ pub(crate) struct OfflineTickReport {
     /// Silent nodes the view no longer holds (deleted, or recovered under a new node.id at their
     /// path and name): not heard again, gone.
     pub gone: Vec<String>,
+    /// Births whose verdict, `running`, follows the self-heal: commanded back through node.mesh.join,
+    /// sent until answered (node-recovery.md step 3, Q393).
+    pub rejoin: Vec<String>,
+    /// Births whose verdict, `os-stopped`, follows the self-heal: commanded to start (node.start), sent
+    /// until answered.
+    pub start: Vec<String>,
+    /// Births whose ordered investigation's verdict matched their status in the topology: nothing was
+    /// done, and the mark that ordered it ends.
+    pub matched: Vec<String>,
+}
+
+/// The verdict of one investigation and what follows it (node-recovery.md step 3, Q393): one
+/// `rdm.node_admin.node.resolve.via-verdict` span naming the verdict, the investigation's reason and
+/// trigger, the birth's status in the topology and what follows: `nothing`, `node.mesh.join`,
+/// `node.start` or `dead`.
+fn verdict_span(id: &str, path: &crate::model::PathName, verdict: &str, n: &SilentNode, follows: crate::node_investigation::Follows, observer: &str) {
+    tracing::info_span!(
+        "rdm.node_admin.node.resolve.via-verdict",
+        node_id = %id,
+        node_path = %path.path, node_name = %path.name,
+        verdict,
+        reason = n.reason.as_str(),
+        trigger = n.reason.trigger(),
+        status = ?n.status,
+        follows = follows.as_str(),
+        observer = %observer,
+        "otel.kind" = "internal",
+    )
+    .in_scope(|| tracing::info!(node_id = %id, verdict, follows = follows.as_str(), "the investigation's verdict and what follows it"));
 }
 
 /// How one ladder of the ladder ended (node-recovery.md step 2): the tickle's result, or no ladder run.
@@ -645,9 +699,10 @@ enum LadderEnd {
     /// The exact birth answered the tickle (`reached`): its answer's name, whether it was `Current`,
     /// and the carrier that carried it (`None`: direct).
     Reached { answer: &'static str, current: bool, carrier: Option<crate::model::NodeId> },
-    /// Nobody reached the birth: how the direct probe ended, the carriers asked, and the instant on
-    /// the tick clock the ladder ended (`verdict_at_ms`: the ladder's probes ended).
-    Unreached { direct: String, asked: String, verdict_at_ms: u64 },
+    /// The investigation's verdict on a birth nobody reached, or one the inspect proved gone:
+    /// `running`, `os-stopped`, `exited` or `dead`; how the direct probe ended, the carriers asked, and
+    /// the instant on the tick clock the ladder ended (`verdict_at_ms`: the ladder's probes ended).
+    Found { finding: crate::node_investigation::Finding, direct: String, asked: String, verdict_at_ms: u64 },
     /// No ladder ran: the birth could not be probed, by name (no incarnation, no client).
     NotRun(String),
     /// The inspect read the runtime running, nobody reached the birth, and the investigator hears no
@@ -660,10 +715,13 @@ enum LadderEnd {
 /// gone, the inspect's verdict named, with no tickle sent; or the ladder's result.
 #[derive(Debug)]
 pub enum Ladder {
-    /// The inspect proved the runtime exited or os-stopped: its verdict's name.
-    Gone(String),
-    /// The ladder ran: its result.
+    /// The inspect proved the runtime exited or os-stopped: its verdict, no tickle sent.
+    Gone(crate::node_investigation::Finding),
+    /// The ladder ran and reached the birth, or no ladder ran (by name).
     Tickled(Result<Tickle, String>),
+    /// Nobody reached the birth: the tickle's end and the investigation's verdict, the inspect's
+    /// answer after the retries (`running`, `os-stopped`, `exited` or `dead`; Q393).
+    Unreached(Unreached, crate::node_investigation::Finding),
     /// The inspect read the runtime running, the ladder went unanswered, and the investigator hears no
     /// other node ([`hears_none`]): it is the one cut off (Q153).
     InvestigatorHearsNone(Unreached),
@@ -678,14 +736,17 @@ pub fn hears_none(view: &rdm_gossip::digest_view::DigestView, me: &crate::model:
     view.heard_direct_since(since).iter().all(|d| &d.node.node_id == me)
 }
 
-/// The ladder's result for a birth the inspect did not prove gone (`inspected`), once its tickle
-/// ended (`tickled`): `running` that nobody reached, from an investigator that hears no other node
-/// (`hears_none`, asked only then), is [`Ladder::InvestigatorHearsNone`]; anything else is the
-/// tickle's own result, a `running` with no peer to try from an investigator that hears others
-/// included (Q153).
-pub fn ladder_of(inspected: &crate::deployment::provider::Inspected, tickled: Result<Tickle, String>, hears_none: impl FnOnce() -> bool) -> Ladder {
+/// The ladder's result for a birth the inspect did not prove gone, once its tickle ended (`tickled`),
+/// with `finding` the investigation's verdict should nobody have reached it (the inspect's answer
+/// after its retries, [`crate::node_investigation::ask_again`]): `running` that nobody reached, from
+/// an investigator that hears no other node (`hears_none`, asked only then), is
+/// [`Ladder::InvestigatorHearsNone`]; any other unreached birth is [`Ladder::Unreached`] with its
+/// verdict, a `running` with no peer to try from an investigator that hears others included (Q153);
+/// a reached birth, or no ladder, is the tickle's own result.
+pub fn ladder_of(finding: crate::node_investigation::Finding, tickled: Result<Tickle, String>, hears_none: impl FnOnce() -> bool) -> Ladder {
     match tickled {
-        Ok(Tickle::Unreached(unreached)) if matches!(inspected, crate::deployment::provider::Inspected::Running) && hears_none() => Ladder::InvestigatorHearsNone(unreached),
+        Ok(Tickle::Unreached(unreached)) if matches!(finding, crate::node_investigation::Finding::Running) && hears_none() => Ladder::InvestigatorHearsNone(unreached),
+        Ok(Tickle::Unreached(unreached)) => Ladder::Unreached(unreached, finding),
         tickled => Ladder::Tickled(tickled),
     }
 }
@@ -714,8 +775,11 @@ pub(crate) struct OfflineTickle {
     /// Silent nodes whose tickle has settled (answered, or true offline): not tickled again until
     /// they leave and re-enter the silent set.
     settled: HashSet<String>,
-    /// The nodes held true offline now, by node id.
+    /// The nodes written dead now, by node id: an investigation of them concluded in failure.
     offline: HashSet<String>,
+    /// The births the last tick listed only for an ordered investigation (Q393): one that leaves the
+    /// silent set was never held off its mesh, so it is not a birth heard again.
+    ordered: HashSet<String>,
     /// The ladder in flight for each exact birth, at most one: a birth whose ladder runs is not
     /// tickled again until a tick folds the ladder.
     running: HashMap<Birth, LadderRun>,
@@ -749,7 +813,7 @@ impl OfflineTickle {
         tickle
     }
 
-    /// Is this node held true offline?
+    /// Is this node written dead?
     #[cfg(test)]
     pub(crate) fn is_offline(&self, id: &str) -> bool {
         self.offline.contains(id)
@@ -812,6 +876,11 @@ impl OfflineTickle {
         self.first_seen.retain(|id, _| silent_ids.contains(id));
         self.offline.retain(|id| silent_ids.contains(id));
         for id in left {
+            // A birth listed only for an ordered investigation was never held off its mesh: its mark
+            // ended, and it is not heard again (Q393).
+            if self.ordered.contains(&id) {
+                continue;
+            }
             // Heard again while the tick still watches the node (its view, or the durable rows that
             // name a birth not yet in its view); a node id it no longer watches was deleted (or
             // recovered under a new node.id at its path and name): gone.
@@ -835,6 +904,7 @@ impl OfflineTickle {
         for n in &silent {
             self.first_seen.entry(n.node_id.clone()).or_insert(n.marked_at_ms.unwrap_or(now_ms));
         }
+        self.ordered = silent.iter().filter(|n| matches!(n.reason, crate::node_investigation::Reason::Ordered { .. })).map(|n| n.node_id.clone()).collect();
         if !holds_role {
             return report;
         }
@@ -859,6 +929,14 @@ impl OfflineTickle {
                     // span carried the answer; this is the mesh-primary's record of it.
                     self.offline.remove(&id);
                     self.settled.insert(id.clone());
+                    // An ordered investigation whose birth answered while the topology holds it running
+                    // does nothing (Q393): it is not commanded back.
+                    if crate::node_investigation::follows_reached(n.reason, n.status) == crate::node_investigation::Follows::Nothing {
+                        verdict_span(&id, &path, "reached", n, crate::node_investigation::Follows::Nothing, &self.observer);
+                        report.matched.push(id.clone());
+                        report.reachable_silent.push(id);
+                        continue;
+                    }
                     let seen = observe(id.clone()).await;
                     let carrier = carrier.map(|id| id.to_string()).unwrap_or_default();
                     tracing::info_span!(
@@ -892,30 +970,44 @@ impl OfflineTickle {
                     tracing::info_span!("rdm.node_admin.node.reject.via-no-birth", node_id = %id, node_path = %path.path, node_name = %path.name, error = %reason, observer = %self.observer, "otel.kind" = "internal")
                         .in_scope(|| tracing::warn!(node_id = %id, error = %reason, "no ladder ran over the birth: no status change"));
                 }
-                LadderEnd::Unreached { direct: e, asked, verdict_at_ms } => {
-                    // Nobody reached the birth: the ladder is the investigation's reach, and the birth is
-                    // held offline at this fold, so its inspection and recovery follow on this tick
-                    // (node-recovery.md steps 2-3: "Any other verdict ...: the recovery below, at once.
-                    // Nothing holds, nothing is inspected again"; Q111, Q181). It is not probed again.
+                LadderEnd::Found { finding, direct: e, asked, verdict_at_ms } => {
+                    // The investigation's verdict (node-recovery.md step 3, Q393): an ordered one that
+                    // matches the birth's status in the topology does nothing; any other follows the
+                    // self-heal. Nothing is probed again.
                     self.settled.insert(id.clone());
-                    if self.offline.insert(id.clone()) {
-                        let seen = observe(id.clone()).await;
-                        tracing::info_span!(
-                            "rdm.node_admin.node.update.via-true-offline",
-                            node_id = %id,
-                            node_path = %path.path, node_name = %path.name,
-                            error = %e,
-                            asked = %asked,
-                            iroh_known_addrs = %seen.known_addrs,
-                            iroh_active_addrs = %seen.active_addrs,
-                            no_path_at_ms = verdict_at_ms as i64,
-                            ladder_began_ms = started_at_ms as i64,
-                            observer = %self.observer,
-                            first_seen_ms = seen_at as i64,
-                            "otel.kind" = "internal",
-                        )
-                        .in_scope(|| tracing::info!(node_id = %id, error = %e, "nobody reached the birth on its one ladder: TRUE OFFLINE, its inspection and recovery follow at once"));
-                        report.offline.push(id);
+                    let follows = crate::node_investigation::follows(&finding, n.reason, n.status);
+                    verdict_span(&id, &path, finding.name(), n, follows, &self.observer);
+                    match follows {
+                        crate::node_investigation::Follows::Nothing => report.matched.push(id),
+                        crate::node_investigation::Follows::MeshJoin => report.rejoin.push(id),
+                        crate::node_investigation::Follows::Start => report.start.push(id),
+                        crate::node_investigation::Follows::Dead => {
+                            // Written dead at this fold: its recovery follows at once (node-recovery.md
+                            // step 3: "is written `dead`, and the recovery below runs at once").
+                            if self.offline.insert(id.clone()) {
+                                let seen = observe(id.clone()).await;
+                                tracing::info_span!(
+                                    "rdm.node_admin.node.update.via-dead",
+                                    node_id = %id,
+                                    node_path = %path.path, node_name = %path.name,
+                                    verdict = finding.name(),
+                                    detail = %finding.detail(),
+                                    reason = n.reason.as_str(),
+                                    trigger = n.reason.trigger(),
+                                    error = %e,
+                                    asked = %asked,
+                                    iroh_known_addrs = %seen.known_addrs,
+                                    iroh_active_addrs = %seen.active_addrs,
+                                    no_path_at_ms = verdict_at_ms as i64,
+                                    ladder_began_ms = started_at_ms as i64,
+                                    observer = %self.observer,
+                                    first_seen_ms = seen_at as i64,
+                                    "otel.kind" = "internal",
+                                )
+                                .in_scope(|| tracing::info!(node_id = %id, verdict = finding.name(), "the investigation concluded in failure: the birth is written dead, and its recovery follows at once"));
+                                report.offline.push(id);
+                            }
+                        }
                     }
                 }
             }
@@ -944,14 +1036,21 @@ impl OfflineTickle {
             let (cancelled_id, cancelled_path, cancelled_by) = (id.clone(), path.clone(), self.observer.clone());
             let run = self.gate.until_stopped(async move {
                 match ladder.await {
-                    // The inspect proved the runtime gone: no tickle was sent, and the birth is held offline
-                    // as an unreached one is, its recovery following at once.
-                    Ladder::Gone(verdict) => LadderEnd::Unreached { direct: format!("not probed: node.runtime.inspect answered {verdict}"), asked: String::new(), verdict_at_ms: tick_ms + tick_began.elapsed().as_millis() as u64 },
+                    // The inspect proved the runtime gone: no tickle was sent, and its verdict is the
+                    // investigation's.
+                    Ladder::Gone(finding) => LadderEnd::Found { direct: format!("not probed: node.runtime.inspect answered {}", finding.name()), finding, asked: String::new(), verdict_at_ms: tick_ms + tick_began.elapsed().as_millis() as u64 },
                     Ladder::Tickled(Ok(Tickle::Reached { answer, carrier })) => LadderEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
                     Ladder::Tickled(Ok(Tickle::Unreached(unreached))) => {
+                        // A ladder that carried no verdict of its own: the inspect never proved the
+                        // runtime.
                         unreached.next(next);
                         let verdict_at_ms = tick_ms + tick_began.elapsed().as_millis() as u64;
-                        LadderEnd::Unreached { direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
+                        LadderEnd::Found { finding: crate::node_investigation::Finding::Dead { reason: "nobody reached the birth and no inspect proved its runtime".into() }, direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
+                    }
+                    Ladder::Unreached(unreached, finding) => {
+                        unreached.next(next);
+                        let verdict_at_ms = tick_ms + tick_began.elapsed().as_millis() as u64;
+                        LadderEnd::Found { finding, direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
                     }
                     Ladder::Tickled(Err(reason)) => LadderEnd::NotRun(reason),
                     Ladder::InvestigatorHearsNone(unreached) => {
@@ -1015,7 +1114,7 @@ pub(crate) mod tests {
     const PROBE_DELAY: u64 = FLOOR / 2;
 
     fn silent(id: &str) -> Vec<SilentNode> {
-        vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: None, marked_at_ms: None }]
+        vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: None, marked_at_ms: None, reason: crate::node_investigation::Reason::SelfHeal, status: crate::model::NodeStatus::PendingReconnect }]
     }
 
     /// How a cell says the via-peer rung of a ladder ended, when the direct probe did not answer.
@@ -1196,7 +1295,7 @@ pub(crate) mod tests {
         const INTERVAL: Duration = Duration::from_millis(500);
 
         fn marked(id: &str) -> SilentNode {
-            SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0) }
+            SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0), reason: crate::node_investigation::Reason::SelfHeal, status: crate::model::NodeStatus::PendingReconnect }
         }
 
         /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
@@ -1723,7 +1822,7 @@ pub(crate) mod tests {
             let (node, view) = (Arc::new(node), Arc::new(view));
             let mut t = OfflineTickle::new();
             let id = b.0.to_string();
-            let set = || vec![SilentNode { node_id: b.0.to_string(), path: crate::model::PathName::new("mesh1.node", "1").unwrap(), incarnation: Some(b.1.clone()), marked_at_ms: None }];
+            let set = || vec![SilentNode { node_id: b.0.to_string(), path: crate::model::PathName::new("mesh1.node", "1").unwrap(), incarnation: Some(b.1.clone()), marked_at_ms: None, reason: crate::node_investigation::Reason::SelfHeal, status: crate::model::NodeStatus::PendingReconnect }];
             // The instant each ladder's ladder ended.
             let verdict_at: Arc<Mutex<Vec<Instant>>> = Arc::default();
             let ladder = async |t: &mut OfflineTickle, now: u64| {
@@ -1785,7 +1884,7 @@ pub(crate) mod tests {
     /// sighting (a window that grows by the time between the mark and the tick that saw it).
     #[tokio::test(start_paused = true)]
     async fn the_one_tickle_is_made_half_a_floor_after_the_mark_not_after_the_tick_that_first_saw_it() {
-        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: None, marked_at_ms: Some(0) }];
+        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: crate::model::PathName::new("mesh1.node", id).unwrap(), incarnation: None, marked_at_ms: Some(0), reason: crate::node_investigation::Reason::SelfHeal, status: crate::model::NodeStatus::PendingReconnect }];
         let mut t = OfflineTickle::new();
         assert!(tick(&mut t, 700, true, marked("a"), false, no_path()).await.tickled.is_empty(), "listed 700 ms after its mark: no tickle yet");
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
@@ -1854,8 +1953,9 @@ pub(crate) mod tests {
 
     /// CONTRACT (node-recovery.md step 2: "Half a floor after the mark it runs node investigation on the
     /// exact birth: ... node.tickle direct, the same tickle via up to two eligible live peers ..., then
-    /// node.runtime.inspect"; step 3: "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`):
-    /// the recovery below, at once. Nothing holds, nothing is inspected again"; node-tickle.md "What
+    /// node.runtime.inspect"; step 3: "... `exited`, a birth not proven by the end of the retries, or a
+    /// join or start unanswered at the end of its attempts is written `dead`, and the recovery below
+    /// runs at once" (Q393); node-tickle.md "What
     /// follows": "on `unreached` the investigation's verdict is the inspect's answer, read before the
     /// tickle"; Q111, Q181): the mesh-primary's one ladder,
     /// half a floor after the mark, that nobody answers is held offline at the tick that folds it, so the
@@ -1868,7 +1968,7 @@ pub(crate) mod tests {
         let capture = crate::span_capture::Capture::new("q181-one-ladder-no-hold-down");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let mut t = OfflineTickle::observed_by("mesh1.node-admin.1".into(), crate::stop_gate::StopGate::new());
-        let admin = vec![SilentNode { node_id: "a".into(), path: crate::model::PathName::new("mesh1.node-admin", "2").unwrap(), incarnation: None, marked_at_ms: Some(0) }];
+        let admin = vec![SilentNode { node_id: "a".into(), path: crate::model::PathName::new("mesh1.node-admin", "2").unwrap(), incarnation: None, marked_at_ms: Some(0), reason: crate::node_investigation::Reason::SelfHeal, status: crate::model::NodeStatus::PendingReconnect }];
         assert!(tick(&mut t, 0, true, admin.clone(), false, no_path()).await.tickled.is_empty(), "nothing before half a floor after the mark");
         let r = tick(&mut t, PROBE_DELAY, true, admin.clone(), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "the one ladder runs half a floor after the mark");
@@ -1876,7 +1976,7 @@ pub(crate) mod tests {
         let later = tick(&mut t, PROBE_DELAY + FLOOR, true, admin, false, no_path()).await;
         assert!(later.tickled.is_empty(), "no second ladder a floor later: nothing holds, nothing is probed again: {later:?}");
         assert!(capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened").is_empty(), "no hold-down is opened");
-        let offline = capture.named("rdm.node_admin.node.update.via-true-offline");
+        let offline = capture.named("rdm.node_admin.node.update.via-dead");
         assert_eq!(offline.len(), 1, "one offline mark, at the fold of the one ladder");
         assert_eq!(offline[0].attributes.get("node_path").map(String::as_str), Some("mesh1.node-admin"), "{:?}", offline[0].attributes);
     }
@@ -1923,12 +2023,12 @@ pub(crate) mod tests {
         let folded = ladder(&mut t, verdict_at + 5_000).await;
         assert_eq!(folded.offline, vec!["a".to_string()], "the tick after the ladder ended folds its no path: TRUE OFFLINE");
         assert!(ladder(&mut t, verdict_at + FLOOR).await.tickled.is_empty(), "no second ladder a floor later");
-        let failed = capture.named("rdm.node_admin.node.update.via-true-offline");
+        let failed = capture.named("rdm.node_admin.node.update.via-dead");
         assert_eq!(failed.len(), 1, "one TRUE OFFLINE span");
         let at = |k: &str| failed[0].attributes.get(k).cloned().unwrap_or_default();
         assert_eq!((at("no_path_at_ms"), at("ladder_began_ms")), (verdict_at.to_string(), PROBE_DELAY.to_string()), "the mark names the ladder's verdict and its start, not the folding tick: {:?}", failed[0].attributes);
         assert!(capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened").is_empty(), "no hold-down");
-        eprintln!("span rdm.node_admin.node.update.via-true-offline trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
+        eprintln!("span rdm.node_admin.node.update.via-dead trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1951,7 +2051,7 @@ pub(crate) mod tests {
             silent("a"),
             |_| true,
             PROBE_DELAY,
-            |_| async move { crate::offline::ladder_of(&crate::deployment::provider::Inspected::Running, Ok(unreached(&[])), || hears_none) },
+            |_| async move { crate::offline::ladder_of(crate::node_investigation::Finding::Running, Ok(unreached(&[])), || hears_none) },
             |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
         )
         .await
@@ -1980,17 +2080,22 @@ pub(crate) mod tests {
         let spans = capture.named("rdm.node_admin.node.resolve.via-investigator-hears-none");
         assert_eq!(spans.len(), 1, "one span names the birth unreachable from this investigator");
         assert_eq!(spans[0].attributes.get("verdict").map(String::as_str), Some("running"), "{:?}", spans[0].attributes);
-        assert!(capture.named("rdm.node_admin.node.update.via-true-offline").is_empty(), "no TRUE OFFLINE span");
+        assert!(capture.named("rdm.node_admin.node.update.via-dead").is_empty(), "no TRUE OFFLINE span");
         assert_eq!(running_unreached_with_no_peer(&mut t, 2 * PROBE_DELAY + 1, true).await.tickled, vec!["a".to_string()], "the next investigation decides again half a floor on");
         eprintln!("span rdm.node_admin.node.resolve.via-investigator-hears-none trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
     }
 
-    /// CONTRACT (Q153; node-investigation.md step 4, "Any other verdict"): the same `running` birth
-    /// nobody reached, with no peer to try, investigated by a primary that still hears other nodes, is
-    /// TRUE OFFLINE and recovered as before: no `via-investigator-hears-none` span. What must NOT
-    /// happen: a hung node in a mesh with no other ready peer never recovered.
+    /// CONTRACT (Q153, Q393; node-recovery.md step 3: "A self-heal ...: `running` is commanded back
+    /// through node.mesh.join, except `running` from an investigator that hears no other node ...,
+    /// each sent until answered"): the same `running` birth nobody reached, with no peer to try,
+    /// investigated by a primary that still hears other nodes, is a self-heal's `running`: it is
+    /// commanded back through node.mesh.join (`rejoin`), not written dead at the fold, and no
+    /// `via-investigator-hears-none` span names it; one `via-verdict` span names what follows. What must
+    /// NOT happen: a running birth written dead before its join was sent, or a hung node in a mesh with
+    /// no other ready peer left alone.
+    // @feature: node-recovery
     #[tokio::test(start_paused = true)]
-    async fn a_running_birth_with_no_peer_to_try_from_an_investigator_that_hears_others_is_offline() {
+    async fn a_running_birth_with_no_peer_to_try_from_an_investigator_that_hears_others_is_commanded_back() {
         let capture = crate::span_capture::Capture::new("q153-investigator-hears-others");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let mut t = OfflineTickle::observed_by("mesh2.node-admin.1".into(), crate::stop_gate::StopGate::new());
@@ -2000,10 +2105,13 @@ pub(crate) mod tests {
             tokio::task::yield_now().await;
         }
         let folded = running_unreached_with_no_peer(&mut t, PROBE_DELAY + 1, false).await;
-        assert_eq!(folded.offline, vec!["a".to_string()], "an investigator that hears others: TRUE OFFLINE, its recovery follows");
-        assert!(t.is_offline("a"));
+        assert_eq!(folded.rejoin, vec!["a".to_string()], "an investigator that hears others: the self-heal's running is commanded back through node.mesh.join");
+        assert!(folded.offline.is_empty() && !t.is_offline("a"), "not written dead before its join is answered or spent: {folded:?}");
         assert!(capture.named("rdm.node_admin.node.resolve.via-investigator-hears-none").is_empty(), "no hears-none span");
-        assert_eq!(capture.named("rdm.node_admin.node.update.via-true-offline").len(), 1, "one TRUE OFFLINE span");
+        assert!(capture.named("rdm.node_admin.node.update.via-dead").is_empty(), "no dead span at the fold");
+        let verdict = capture.named("rdm.node_admin.node.resolve.via-verdict");
+        assert_eq!(verdict.len(), 1, "one verdict span");
+        assert_eq!((verdict[0].attributes.get("verdict").map(String::as_str), verdict[0].attributes.get("follows").map(String::as_str), verdict[0].attributes.get("reason").map(String::as_str)), (Some("running"), Some("node.mesh.join"), Some("self-heal")));
     }
 
     #[tokio::test(start_paused = true)]

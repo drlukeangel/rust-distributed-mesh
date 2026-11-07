@@ -73,7 +73,7 @@ fn reason(r: &Result<rdm_admin::control_plane::Opened, Refusal>) -> String {
 }
 
 /// Node investigation as the cells set it (node-investigation.md): the provider reads the one exact
-/// birth `exited` names (node id and incarnation) exited; every other birth is unproven.
+/// birth `exited` names (node id and incarnation) exited; every other birth is not proven exited (`dead`).
 struct Investigation {
     exited: Option<(NodeId, IncarnationId)>,
 }
@@ -83,7 +83,7 @@ impl rdm_admin::path_investigation::PathProbe for Investigation {
     async fn investigate(&self, node: &Node) -> Finding {
         match &self.exited {
             Some((id, incarnation)) if *id == node.node_id && Some(incarnation) == node.incarnation_id.as_ref() => Finding::Exited { code: Some(137) },
-            _ => Finding::Unproven { reason: "the provider holds no exited runtime of this exact birth".into() },
+            _ => Finding::Dead { reason: "the provider holds no exited runtime of this exact birth".into() },
         }
     }
 }
@@ -120,7 +120,7 @@ async fn a_dead_birth_with_no_exited_verdict_is_refused_node_not_live() {
     assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "no investigation is held: refused node-not-live, not {}", reason(&out));
     let _ = r.cp.investigation.set(Arc::new(Investigation { exited: None }));
     let out = delete_of(&r, &PathName::new("mesh1.node", "1").unwrap()).await;
-    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "the investigation's verdict is unproven: refused node-not-live, not {}", reason(&out));
+    assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "the investigation's verdict is dead (not proven exited): refused node-not-live, not {}", reason(&out));
     assert_eq!(r.builds.current().await.unwrap().map(|b| b.build_id), before, "nothing is accepted");
 }
 

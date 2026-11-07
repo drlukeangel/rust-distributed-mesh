@@ -65,8 +65,8 @@ async fn main() -> Result<()> {
     let mut exited_fact = fact.clone();
     exited_fact.locator = RuntimeLocator::Process { pid: u32::MAX - 1, start: 1 };
 
-    let unproven_code = inspect_runtime(&provider, &exited_fact, Some(scratch_str), inc.as_str()).await;
-    println!("exited without exit record: {:?}", unproven_code);
+    let unknown_code = inspect_runtime(&provider, &exited_fact, Some(scratch_str), inc.as_str()).await;
+    println!("exited without exit record: {:?}", unknown_code);
 
     ExitRecord {
         deployment_id: exited_fact.deployment_id.clone(),

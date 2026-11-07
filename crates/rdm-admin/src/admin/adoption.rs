@@ -320,12 +320,12 @@ impl Answers for ProbeAnswers {
         node.node_id = lost.node_id.clone();
         node.incarnation_id = Some(lost.incarnation_id.clone());
         let view = Topology { fabric: self.fabric.clone(), meshes: Vec::new(), nodes: Vec::new() };
-        let inspect = async {
+        let inspect = || async {
             let row = crate::node_rows::birth_record(&*self.nodes, &lost.node_id, &lost.incarnation_id).await.ok().flatten();
             Finding::from(super::rows_writer::inspection_of(&*self.provider, &None, row.as_ref()).await)
         };
         if !self.resolve(&lost.node_id, &lost.location(), &lost.mesh, "node-admin", &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
-            return inspect.await;
+            return inspect().await;
         }
         crate::node_investigation::investigate(&node, &view, &self.calls(), inspect).await
     }

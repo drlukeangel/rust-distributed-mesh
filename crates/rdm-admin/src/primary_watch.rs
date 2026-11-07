@@ -38,9 +38,9 @@ pub struct Plan {
 #[derive(Debug, Default)]
 pub struct Said {
     investigated: HashSet<Birth>,
-    /// Each node-admin birth of the fabric-primary's mesh this admin found unreached and
-    /// uninspectable (`Unproven`), from the first such look: commanded back when heard again. Any
-    /// other finding ends it.
+    /// Each node-admin birth of the fabric-primary's mesh this admin found unreached and never proven
+    /// by the end of the retries (`Dead`), from the first such look: commanded back when heard again.
+    /// Any other finding ends it.
     unreachable: std::collections::HashMap<Birth, std::time::Instant>,
 }
 
@@ -149,9 +149,16 @@ impl Looker {
     /// tickle ladder and, on `unreached`, the provider's inspection (node-tickle.md "What follows";
     /// node-recovery.md step 2, run by the primary watch: fabric-node-lifecycle-elections.md §4.1).
     pub async fn look(&self, view: &Topology, n: &Node) -> Finding {
+        self.look_for(view, n, crate::node_investigation::Reason::SelfHeal).await
+    }
+
+    /// [`Self::look`] for an investigation run for `reason` (Q393): an ordered one whose birth answers
+    /// while the view holds it running is not commanded back.
+    pub async fn look_for(&self, view: &Topology, n: &Node, reason: crate::node_investigation::Reason) -> Finding {
         let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: self.connections.clone() };
-        let finding = crate::node_investigation::investigate(n, view, &calls, self.inspect(n)).await;
-        if let Finding::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. } = &finding {
+        let finding = crate::node_investigation::investigate(n, view, &calls, || self.inspect(n)).await;
+        let commanded_back = crate::node_investigation::follows_reached(reason, n.status) != crate::node_investigation::Follows::Nothing;
+        if let (true, Finding::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. }) = (commanded_back, &finding) {
             // A primary this admin holds off its mesh that answers Current is commanded back
             // through node.mesh.join (node-tickle.md "What follows", Q87) by the fabric-primary, the
             // authority above a mesh-primary: every admin looks, one commands (commands go down).
@@ -160,7 +167,7 @@ impl Looker {
                 // Held off its mesh in this watch's eyes (it was looked at because it was silent): the
                 // view's ready is its last word before the silence, not where it stands now.
                 let held = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
-                heard_again.command(&held, incarnation).await;
+                heard_again.command_for(&held, incarnation, reason).await;
             }
         }
         finding
@@ -317,6 +324,11 @@ pub async fn run(w: Watch) {
             }
         }
         for node in plan.investigate {
+            // A marked birth the view does not hold silent is an ordered investigation (Q393).
+            let reason = match marks.get(&node.node_id).filter(|m| node.incarnation_id.as_ref() == Some(&m.incarnation)) {
+                Some(m) if !matches!(node.status, NodeStatus::PendingReconnect | NodeStatus::Dead) => crate::node_investigation::Reason::Ordered { trigger: m.reason },
+                _ => crate::node_investigation::Reason::SelfHeal,
+            };
             let trigger = if marked(&node) { "call-failed" } else { "silence" };
             let span = tracing::info_span!(
                 "rdm.node_admin.primary.update.via-investigation",
@@ -325,6 +337,8 @@ pub async fn run(w: Watch) {
                 suspect_node_id = %node.node_id,
                 suspect_incarnation = node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""),
                 trigger,
+                reason = reason.as_str(),
+                follows = tracing::field::Empty,
                 holds_fabric_role = node.is_fabric_primary,
                 finding = tracing::field::Empty,
                 detail = tracing::field::Empty,
@@ -337,7 +351,9 @@ pub async fn run(w: Watch) {
             let seen = rdm_transport::iroh_obs::observe_remote(&w.channels.endpoint(), key).await;
             span.record("iroh_known_addrs", seen.known_addrs.as_str());
             span.record("iroh_active_addrs", seen.active_addrs.as_str());
-            let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
+            let finding = w.looker.look_for(&view, &node, reason).instrument(span.clone()).await;
+            let follows = crate::node_investigation::follows(&finding, reason, node.status);
+            span.record("follows", follows.as_str());
             // The verdict on the fabric-primary's lost birth is fabric recovery's input (Q337): the
             // workflow running here for that birth acts on it, with no look of its own.
             w.fabric_recovery.take_verdict(&node, &finding);
@@ -350,7 +366,7 @@ pub async fn run(w: Watch) {
             // A node-admin of the fabric-primary's mesh unreached and uninspectable is commanded back
             // when heard again; any other finding ends that.
             if let Some(b) = birth(&node) {
-                if matches!(finding, Finding::Unproven { .. }) && fabric_mesh.as_deref() == Some(node.mesh.as_str()) {
+                if matches!(finding, Finding::Dead { .. }) && fabric_mesh.as_deref() == Some(node.mesh.as_str()) {
                     said.unreachable.entry(b).or_insert_with(std::time::Instant::now);
                 } else {
                     said.unreachable.remove(&b);
@@ -365,7 +381,13 @@ pub async fn run(w: Watch) {
             // (unheard here, which a cut makes) elects it, and its mesh-primary recovers the lost birth:
             // nothing is written here, and the birth is not looked at again in this silence. The recovery is
             // submitted once per silence and owed until it runs ([`submit_recovery`]).
-            let unheard_primary = !matches!(finding, Finding::Reached { .. }) && finding.inspected().is_some() && !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node));
+            // An ordered investigation whose verdict matches the view does nothing, and its mark ends (Q393).
+            if follows == crate::node_investigation::Follows::Nothing {
+                if let Some(incarnation) = node.incarnation_id.as_ref() {
+                    w.records.unreachable.lock().unwrap().retain(|id, m| !(id == &node.node_id && &m.incarnation == incarnation));
+                }
+            }
+            let unheard_primary = follows != crate::node_investigation::Follows::Nothing && !matches!(finding, Finding::Reached { .. }) && finding.inspected().is_some() && !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node));
             let left = if unheard_primary { w.looker.node_admin_left(&view, &node.mesh, &node.node_id).await } else { None };
             let recovers = unheard_primary && w.recovery.is_some() && left.is_none();
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {

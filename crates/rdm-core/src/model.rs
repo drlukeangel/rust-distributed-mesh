@@ -30,9 +30,10 @@ pub enum NodeStatus {
     ///
     /// Position 3 on the wire; serialized as `leaving`.
     Leaving,
-    /// Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks
-    /// the silent peer in place and keeps it; its next digest flips it back (node-identity-and-state.md
-    /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
+    /// Under its mesh-primary's self-heal (Q393): unheard past the staleness floor (`RDM_STALENESS_MS`,
+    /// 30 s), held silent by the pruner, and written on its record by its mesh-primary as the self-heal
+    /// starts; its rejoin (pending, then ready) ends it (node-recovery.md step 1). Never death, and never
+    /// a reason to restart or delete it: the investigation's verdict is.
     ///
     /// Position 4 on the wire; serialized as `pending-reconnect`.
     PendingReconnect,
@@ -41,9 +42,10 @@ pub enum NodeStatus {
     ///
     /// Position 5 on the wire; serialized as `reserved5`.
     Reserved5,
-    /// True offline: half a floor after the mark the mesh primary's one tickle ladder reached nobody,
-    /// and its inspection and the recovery on its verdict follow at once (node-recovery.md steps 2-3).
-    /// Observer inferred only; never sent, never itself the reason to act: the verdict is.
+    /// Dead: an investigation of the node concluded in failure (Q393: `exited`, not proven by the end
+    /// of the retries, or a join or start unanswered at the end of its attempts), written on its record
+    /// by its mesh-primary; its recovery follows at once (node-recovery.md step 3). The node never
+    /// publishes it.
     ///
     /// Position 6 on the wire; serialized as `dead`.
     Dead,
@@ -97,9 +99,13 @@ impl NodeStatus {
     /// `Deleted` or `Withdrawn` node stands. A start of a stopped node (`Starting`) and a new join
     /// (`Pending`, from any status but `Deleting`) begin its next cycle. `Deleting` is the
     /// mesh-primary's, from node.delete's admission, over any status (states.md). A stop's
-    /// acknowledgement (`Stopping`) sets stopping over any status but `Stopped`. Every other status
-    /// only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting, pending,
-    /// ready, deleting, stopping, connections-deleting, connections-deleted, leaving, left, stopped).
+    /// acknowledgement (`Stopping`) sets stopping over any status but `Stopped`. The mesh-primary writes
+    /// `PendingReconnect` as its self-heal of the node starts, over a live status only (starting,
+    /// pending, ready), and `Dead` when an investigation of it concludes in failure, over any status but
+    /// deleting, deleted, withdrawn and dead (Q393); the rejoin moves `PendingReconnect` to pending, then
+    /// ready. Every other status only moves forward along node.stop's frames (node-stop.md steps 1-4,
+    /// Q205: starting, pending, ready, deleting, stopping, connections-deleting, connections-deleted,
+    /// leaving, left, stopped).
     pub fn moves_to(self, to: NodeStatus) -> bool {
         use NodeStatus as S;
         fn order(s: S) -> u8 {
@@ -123,6 +129,8 @@ impl NodeStatus {
             S::Pending => self != S::Deleting,
             S::Deleting => true,
             S::Stopping => self != S::Stopped,
+            S::PendingReconnect => matches!(self, S::Starting | S::Pending | S::Ready),
+            S::Dead => !matches!(self, S::Deleting | S::Deleted | S::Withdrawn | S::Dead),
             _ => order(to) > order(self),
         }
     }
@@ -386,6 +394,26 @@ mod tests {
         assert!(v.get("kind").is_none() && v.get("node_type").is_none(), "one field names the type: {v}");
         assert_eq!(v["mesh"], "mesh1");
         assert_eq!(v["status"], "pending");
+    }
+
+    /// CONTRACT (Q393; lead note 0001 C2: "`PendingReconnect` from Starting | Pending | Ready; `Dead`
+    /// from every status but Deleting, Deleted, Withdrawn and Dead. PendingReconnect -> Pending -> Ready
+    /// (the rejoin) already moves"): the record order takes the mesh-primary's two investigation
+    /// statuses in exactly those arms. Must NOT happen: `PendingReconnect` over a lifecycle state the node
+    /// reported (stopping, stopped, ...), `Dead` over a deleting or deleted node, or a rejoin that
+    /// cannot leave `PendingReconnect`.
+    // @feature: node-investigation
+    #[test]
+    fn the_mesh_primary_writes_pending_reconnect_over_a_live_status_and_dead_over_any_but_a_deleting_one() {
+        use NodeStatus as S;
+        let all = [S::Starting, S::Pending, S::Ready, S::ConnectionsDeleting, S::ConnectionsDeleted, S::Leaving, S::Left, S::Stopping, S::Stopped, S::PendingReconnect, S::Reserved5, S::Dead, S::Deleting, S::Deleted, S::Withdrawn];
+        for from in all {
+            assert_eq!(from.moves_to(S::PendingReconnect), matches!(from, S::Starting | S::Pending | S::Ready), "{from:?} -> PendingReconnect");
+            assert_eq!(from.moves_to(S::Dead), !matches!(from, S::Deleting | S::Deleted | S::Withdrawn | S::Dead), "{from:?} -> Dead");
+        }
+        assert!(S::PendingReconnect.moves_to(S::Pending) && S::Pending.moves_to(S::Ready), "the rejoin: pending, then ready");
+        assert!(S::Dead.moves_to(S::Deleting), "the recovery's delete follows dead");
+        assert!(!S::PendingReconnect.moves_to(S::Ready), "a rejoin passes through pending");
     }
 
     #[test]

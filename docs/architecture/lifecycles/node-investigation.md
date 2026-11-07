@@ -3,13 +3,16 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [node.tickle](node-tickle.md) · [node.runtime.inspect](node-runtime-inspect.md) · [Connections](../connections.md#31-declared-indexes)
 
 A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
-one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
+one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
+retries is `dead` (Q393). Its steps, in order:
 
 1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
    It names the peers to try; it never shows the node is reachable.
 2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
 3. [node.tickle](node-tickle.md), direct.
-4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`.
+4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an inspect that answers `unavailable`
+   is asked again under the investigation's retries, and a birth still not proven at their end is
+   `dead`.
 
 Only an answer from the exact birth counts as `reached`.
 
@@ -19,12 +22,11 @@ fabric-primary investigates it the same way, and the re-created node-admin is th
 the same election. A lost fabric-primary is investigated from outside its mesh, by a mesh-primary, only once it has been unheard for twice the staleness floor ([fabric recovery](fabric-recovery.md) step 2, Q349).
 
 A node that does not answer a call is silent, whatever it gossips (Q182): a call whose attempts end
-unanswered marks its birth at the primary above it (the caller itself when it is that primary; any
-other caller reports the birth to it with Status `ReportCallFailed`), and the primary investigates
-that birth as it investigates silence ([node recovery](node-recovery.md) step 2).
+unanswered starts an ordered investigation of its birth at the primary above it (the caller itself when it is that primary; any
+other caller reports the birth to it with Status `ReportCallFailed`), which sets no `PendingReconnect` ([node recovery](node-recovery.md) step 3, Q393).
 
 The verdict is the one decision (Q111). The primary that investigated writes it as one `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, verdict and what follows ([build.md §5](../build.md#5-buildstateadapter)); an investigation is never an entity of its own. Reached: the node is commanded back through
-[node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path and name with a new node.id (Q110). `running` from an investigator that hears no other node (every other birth it holds is unheard past the floor, so it is the one cut off) is unreachable from that investigator, not lost: nothing is written, and the next investigation decides again (Q153). Fabric recovery's backbone arm excepts `running` ([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
+[node.mesh.join](node-mesh-join.md). Any other verdict follows the investigation's reason ([node recovery](node-recovery.md) step 3, Q393); a birth written `dead` is re-created at the same path and name with a new node.id (Q110). `running` from an investigator that hears no other node (every other birth it holds is unheard past the floor, so it is the one cut off) is unreachable from that investigator, not lost: nothing is written, and the next investigation decides again (Q153). Fabric recovery's backbone arm excepts `running` ([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
 
 Nothing waits on the provider's `Exited`: not node recovery, a primary change, a name's release,
 node.delete or mesh.delete.
@@ -55,13 +57,13 @@ row deleted ([node.delete](node-delete.md), releasing the name) and reports it t
 | Caller | The primary above the node: its mesh-primary for a member of any type, the fabric-primary for a mesh-primary or another mesh's node-admin |
 | Target | One node, by `(node.id, incarnation)` |
 | Steps | The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers |
-| Result | `reached`, `running`, `os-stopped`, `exited` or `unproven` |
-| What follows | Reached: node.mesh.join. Any other verdict (except `running` from an investigator that hears no other node, Q153): re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
+| Result | `reached`, `running`, `os-stopped` or `exited`, or `dead` when not proven by the end of the retries |
+| What follows | Reached: node.mesh.join. Any other verdict: [node recovery](node-recovery.md) step 3 (Q393); a birth written `dead` (except `running` from an investigator that hears no other node, Q153) is re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
 | Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |
 
 ## States written
 
-This operation writes no state. The primary that investigated writes its verdict as one `rdm.node.investigated` line in `events.jsonl`, `subject` the node.id.
+Its mesh-primary writes the birth `PendingReconnect` as a self-heal starts and `dead` when the investigation concludes in failure (Q393); the primary that investigated writes its verdict as one `rdm.node.investigated` line in `events.jsonl`, `subject` the node.id.
 
 | written | by | when |
 |---|---|---|
@@ -72,17 +74,19 @@ As stored:
 `running`:
 
 ```json
-{"len":479,"specversion":"1.0","id":"01a1ae8d-f7ff-78e6-ae7a-39a947f345d3","source":"rdm://1x5fjsz93tvg/qn3q564n8162/e17kbs6jpr37","type":"rdm.node.investigated","subject":"2f24nqm969pk","time":"2026-11-06T01:51:42.078Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-f6d90ec5f0388ba0a08e7bd700fdcfbc-2af7920987bef87b-01","data":{"incarnation":"sj4z3ysdhycf","name":"2","next":"recreate","path":"mesh2.node","verdict":"running"},"crc32":"92311d5d"}
+{"len":479,"specversion":"1.0","id":"01a1ae8d-f7ff-78e6-ae7a-39a947f345d3","source":"rdm://1x5fjsz93tvg/qn3q564n8162/e17kbs6jpr37","type":"rdm.node.investigated","subject":"2f24nqm969pk","time":"2026-11-06T01:51:42.078Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-f6d90ec5f0388ba0a08e7bd700fdcfbc-2af7920987bef87b-01","data":{"incarnation":"sj4z3ysdhycf","name":"2","next":"recreate","path":"mesh2.node","verdict":"running","reason":"self-heal","trigger":"silence"},"crc32":"92311d5d"}
 ```
 
 `exited`:
 
 ```json
-{"len":478,"specversion":"1.0","id":"01a1ae8e-8303-7b68-a51e-7c18a3cda9d3","source":"rdm://r15rc3tfkg4r/hreemf4h5nvz/81sve0k0m8tj","type":"rdm.node.investigated","subject":"sxq64k0v26ft","time":"2026-11-06T01:52:17.663Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c8bb95b7d2b4fe23b91c4599eb7e3aef-2966089bcad66d63-01","data":{"incarnation":"tejwha92fdsb","name":"3","next":"recreate","path":"mesh1.node","verdict":"exited"},"crc32":"8be0c776"}
+{"len":478,"specversion":"1.0","id":"01a1ae8e-8303-7b68-a51e-7c18a3cda9d3","source":"rdm://r15rc3tfkg4r/hreemf4h5nvz/81sve0k0m8tj","type":"rdm.node.investigated","subject":"sxq64k0v26ft","time":"2026-11-06T01:52:17.663Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c8bb95b7d2b4fe23b91c4599eb7e3aef-2966089bcad66d63-01","data":{"incarnation":"tejwha92fdsb","name":"3","next":"recreate","path":"mesh1.node","verdict":"exited","reason":"self-heal","trigger":"silence"},"crc32":"8be0c776"}
 ```
 
 `os-stopped`:
 
 ```json
-{"len":482,"specversion":"1.0","id":"01a1ae8d-e0cc-7129-9be0-4c3bdb204341","source":"rdm://3fe2gyr0vby2/3mfm6ref1hfp/2237s0fb95jf","type":"rdm.node.investigated","subject":"9mn1y1x703ft","time":"2026-11-06T01:51:36.138Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c493098f704d67cd64d1d14876e49e4a-abb790c9e3f739f1-01","data":{"incarnation":"psc6we56fj63","name":"1","next":"recreate","path":"mesh2.node","verdict":"os-stopped"},"crc32":"b88c01db"}
+{"len":482,"specversion":"1.0","id":"01a1ae8d-e0cc-7129-9be0-4c3bdb204341","source":"rdm://3fe2gyr0vby2/3mfm6ref1hfp/2237s0fb95jf","type":"rdm.node.investigated","subject":"9mn1y1x703ft","time":"2026-11-06T01:51:36.138Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c493098f704d67cd64d1d14876e49e4a-abb790c9e3f739f1-01","data":{"incarnation":"psc6we56fj63","name":"1","next":"recreate","path":"mesh2.node","verdict":"os-stopped","reason":"self-heal","trigger":"silence"},"crc32":"b88c01db"}
 ```
+
+`reason` is `self-heal` or `ordered`; `trigger` is `silence` for a self-heal, else what started the ordered investigation: `connect-refused`, `connect-timed-out`, `connect-failed`, `endpoint-unresolved`, `attempts-spent` or `report-call-failed` (Q393).

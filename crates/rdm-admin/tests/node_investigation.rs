@@ -80,13 +80,15 @@ fn ready_node(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {
 // @feature: node-investigation
 /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
 /// "Node investigation is the one function every caller uses on one exact birth, ending in
-///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
+///  one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
+///  retries is `dead` (Q393). Its steps, in order:
 ///  1. Read the by-destination connections index (connections.md §3.1). It names the peers to try;
 ///     it never proves the node is reachable.
 ///  2. node.runtime.inspect. `exited` or `os-stopped` is the verdict; no tickle is sent.
 ///  3. node.tickle, direct.
-///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or
-///     `unproven` for `unavailable`.
+///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
+///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
+///     still not proven at their end is `dead`.
 ///  Only an answer from the exact birth counts as `reached`." (Q273)
 #[test]
 fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_unless_the_runtime_is_proven_gone(
@@ -240,9 +242,12 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         // Case A: the inspect answers running, then the lead carrier reaches the exact birth -> `Reached`.
         let provider_asked = Arc::new(AtomicBool::new(false));
         let provider_asked_a = provider_asked.clone();
-        let found_a = investigate(&target, &view, &tickle_client, async move {
-            provider_asked_a.store(true, Ordering::SeqCst);
-            Finding::Running
+        let found_a = investigate(&target, &view, &tickle_client, || {
+            let asked = provider_asked_a.clone();
+            async move {
+                asked.store(true, Ordering::SeqCst);
+                Finding::Running
+            }
         })
         .await;
         assert_eq!(
@@ -291,7 +296,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
 
         let digest_view = rdm_gossip::digest_view::DigestView::default();
         let target_b = target.clone();
-        let found_b = investigate(&target, &view, &tickle_client, async move {
+        let found_b = investigate(&target, &view, &tickle_client, || async {
             let (outcome, handle) =
                 inspect_birth_with_handle(&provider, &digest_view, Some(&nodes_store), &target_b)
                     .await;

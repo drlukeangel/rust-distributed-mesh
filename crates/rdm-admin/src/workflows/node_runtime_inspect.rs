@@ -64,7 +64,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:28
     /// "Answers | `Running`, `OsStopped`, `Exited { exit_code: i32 }`, `Unavailable { reason }`"
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:29
-    /// "| Not a result | A RuntimeFact's presence says neither running nor gone; a provider that cannot answer for the domain answers `unavailable { reason }`, which is investigation's `unproven` |"
+    /// "| Not a result | A RuntimeFact's presence says neither running nor gone; a provider that cannot answer for the domain answers `unavailable { reason }`, which investigation asks again under its retries; a birth not proven at their end is `dead` (Q393) |"
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:31
     /// "Side effects | None. Never signals, stops, removes, or mutates the runtime."
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:39
@@ -273,10 +273,10 @@ mod tests {
             &node,
             &view,
             &Calls(tickles_ran.clone()),
-            async { crate::node_investigation::Finding::from(got.clone()) },
+            || async { crate::node_investigation::Finding::from(got.clone()) },
         )
         .await;
         assert!(tickles_ran.load(std::sync::atomic::Ordering::SeqCst), "node investigation's tickles follow when the 2 s bound expires");
-        assert!(matches!(finding, crate::node_investigation::Finding::Unproven { reason } if reason.starts_with("deadline")));
+        assert!(matches!(&finding, crate::node_investigation::Finding::Dead { reason } if reason.contains("deadline")), "unreached, an inspect past its bound every time it is asked is dead at the end of the retries: {finding:?}");
     }
 }

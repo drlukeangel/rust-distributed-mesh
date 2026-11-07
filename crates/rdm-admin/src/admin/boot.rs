@@ -2519,6 +2519,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     builds: control.builds.clone(),
                                                     failed: Arc::default(),
                                                     investigated: investigated.clone(),
+                                                    reasons: Arc::default(),
                                                 };
                                                 // A node that will not move in a storage change's mesh.unblock is re-created by this
                                                 // mesh-primary's node recovery, never part of the change (storage.md §2 step 4).
@@ -2641,18 +2642,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // One reading of the clocks for the tick: each birth's mark is read from the view at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason, or
-                                                // a call to it whose attempts are spent (the one clock, Q332), is PendingReconnect from
-                                                // that instant, so its ladder runs half a floor after the mark.
+                                                // a call to it whose attempts are spent (the one clock, Q332), is investigated from that
+                                                // instant, half a floor after the mark: an ordered investigation, which sets no
+                                                // PendingReconnect (Q393).
                                                 let marks = crate::offline::held_marks(&records.unreachable, &view, &recovery.digest_view, now);
                                                 crate::offline::watch_marked(&mut watched, &marks, &view, &mesh, &me_id);
                                                 // The topology decides who is tickled (Luke, Q87): a mesh-primary's view comes from the
                                                 // fabric-primary and is current, so a member it holds ready there is not
                                                 // tickled on this admin's own fresh digest view; only a member the view holds off
-                                                // ready (its mark, or a command never sent) is.
+                                                // ready, or one a mark orders investigated (Q393), is.
                                                 let silent: Vec<crate::offline::SilentNode> = crate::offline::silent_set(
-                                                    watched.values().filter(|n| n.status != NodeStatus::Ready).filter(|n| {
+                                                    watched.values().filter(|n| {
                                                         marks.contains_key(&n.node_id)
-                                                            || !recovery
+                                                            || n.status != NodeStatus::Ready && !recovery
                                                                 .digest_view
                                                                 .get_at(n.node_id.as_str(), now)
                                                                 .or_else(|| recovery.digest_view.projected_at(n.node_id.as_str(), now))
@@ -2666,6 +2668,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 .into_iter()
                                                 .map(|s| crate::offline::marked_from(s, &marks))
                                                 .collect();
+                                                // Why each listed birth is investigated, and its status in the topology (Q393).
+                                                let listed: HashMap<String, (crate::node_investigation::Reason, NodeStatus)> = silent.iter().map(|s| (s.node_id.clone(), (s.reason, s.status))).collect();
                                                 let client = Some(runner.node_rpc.client.clone());
                                                 // The one ladder's view of the carriers: this tick's, shared by its ladders.
                                                 let ladder_view = Arc::new(view.clone());
@@ -2690,24 +2694,33 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 use crate::offline::Ladder;
                                                                 let Some(node) = node else { return Ladder::Tickled(Err(format!("{id} is not in the topology"))) };
                                                                 // node.runtime.inspect first (Q273): exited or os-stopped is the verdict, and no
-                                                                // tickle is sent.
-                                                                let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*inspector.provider, &inspector.digest_view, inspector.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), &node).await;
-                                                                crate::node_investigation::span_inspection(&me, &node, &inspected, handle.as_ref(), "the recovery tick's investigation asked the provider first");
-                                                                if matches!(inspected, crate::deployment::provider::Inspected::Exited(_) | crate::deployment::provider::Inspected::OsStopped) {
-                                                                    return Ladder::Gone(crate::node_investigation::Finding::from(inspected).name().to_string());
+                                                                // tickle is sent. Unreached, an `unavailable` answer is asked again under the
+                                                                // investigation's retries (Q393).
+                                                                let inspect = || async {
+                                                                    let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*inspector.provider, &inspector.digest_view, inspector.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), &node).await;
+                                                                    crate::node_investigation::span_inspection(&me, &node, &inspected, handle.as_ref(), "the recovery tick's investigation asked the provider about the birth's exact runtime");
+                                                                    crate::node_investigation::Finding::from(inspected)
+                                                                };
+                                                                let inspected = inspect().await;
+                                                                if matches!(inspected, crate::node_investigation::Finding::Exited { .. } | crate::node_investigation::Finding::OsStopped) {
+                                                                    return Ladder::Gone(inspected);
                                                                 }
                                                                 let Some(client) = client else { return Ladder::Tickled(Err("this admin has no Node RPC client".to_string())) };
                                                                 let investigator = me_id.clone();
                                                                 let tickled = crate::offline::tickle(&node, &view, &crate::offline::TickleClient {
                                                                     client,
                                                                     me_id,
-                                                                    me,
+                                                                    me: me.clone(),
                                                                     connections,
                                                                 }).await;
+                                                                let finding = match (&tickled, inspected) {
+                                                                    (Ok(crate::offline::Tickle::Unreached(_)), crate::node_investigation::Finding::Dead { .. }) => crate::node_investigation::ask_again(&inspect).await,
+                                                                    (_, proven) => proven,
+                                                                };
                                                                 // `running` from an investigator that hears no other node: every other birth it
                                                                 // holds, its own mesh's and the backbone's, is unheard past the floor, so it is the
                                                                 // one cut off, and the birth is unreachable from it, not lost (Q153).
-                                                                crate::offline::ladder_of(&inspected, tickled, || crate::offline::hears_none(&inspector.digest_view, &investigator, floor))
+                                                                crate::offline::ladder_of(finding, tickled, || crate::offline::hears_none(&inspector.digest_view, &investigator, floor))
                                                             }
                                                         },
                                                         |id| {
@@ -2722,11 +2735,55 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         },
                                                     )
                                                     .await;
+                                                // The self-heal starts: its mesh-primary writes the birth PendingReconnect on its
+                                                // record as its investigation runs (node-recovery.md step 1, Q393). An ordered
+                                                // investigation writes none.
+                                                let rows = records.rows.get().cloned();
+                                                for id in &report.tickled {
+                                                    if let (Some(n), Some((crate::node_investigation::Reason::SelfHeal, _)), Some(rows)) = (watched.get(id).cloned(), listed.get(id).copied(), rows.clone()) {
+                                                        tokio::spawn(stop.until_stopped(async move { let _ = rows.investigated(&n, NodeStatus::PendingReconnect).await; }));
+                                                    }
+                                                }
+                                                // An investigation concluded in failure: the birth is written dead on its record and
+                                                // in this admin's view, and its recovery follows at once (node-recovery.md step 3).
                                                 for id in &report.offline {
-                                                    if let Some(n) = watched.get(id) {
-                                                        if let Some(inc) = n.incarnation_id.clone() {
-                                                            records.offline.lock().unwrap().insert((n.node_id.clone(), inc));
-                                                        }
+                                                    if let (Some(n), Some((reason, _))) = (watched.get(id), listed.get(id).copied()) {
+                                                        write_dead(&records, &recovery, rows.clone(), &stop, n, reason);
+                                                    }
+                                                }
+                                                // A self-heal's `running` is commanded back through node.mesh.join and its
+                                                // `os-stopped` commanded to start, each sent until answered; unanswered at the end of
+                                                // its attempts, the birth is written dead and recovered (Q393). Each on its own task.
+                                                if let Some(heard_again) = ladder_heard_again.get().cloned() {
+                                                    for (id, start) in report.rejoin.iter().map(|id| (id, false)).chain(report.start.iter().map(|id| (id, true))) {
+                                                        let (Some(n), Some((reason, status))) = (watched.get(id).cloned(), listed.get(id).copied()) else { continue };
+                                                        let Some(incarnation) = n.incarnation_id.clone() else { continue };
+                                                        let (heard_again, records, recovery, rows, gate) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), stop.clone());
+                                                        tokio::spawn(stop.until_stopped(async move {
+                                                            use crate::heard_again::SelfHealEnd;
+                                                            use crate::wiring::NodeInvestigatedVerdict as V;
+                                                            let mut end = if start { heard_again.self_heal_start(&n, &incarnation, reason).await } else { heard_again.self_heal_join(&n, &incarnation, V::Running, reason).await };
+                                                            // A start refused as already live: the birth runs, and it is `running`.
+                                                            if matches!(end, SelfHealEnd::Live(_)) {
+                                                                end = match crate::node_investigation::follows(&crate::node_investigation::Finding::Running, reason, status) {
+                                                                    crate::node_investigation::Follows::MeshJoin => heard_again.self_heal_join(&n, &incarnation, V::Running, reason).await,
+                                                                    _ => end,
+                                                                };
+                                                            }
+                                                            if let SelfHealEnd::Unanswered(how) = &end {
+                                                                let verdict = if start { "os-stopped" } else { "running" };
+                                                                tracing::info_span!("rdm.node_admin.node.update.via-dead", node_id = %n.node_id, node_path = %n.path, node_name = %n.name, verdict, detail = %how, reason = reason.as_str(), trigger = reason.trigger(), "otel.kind" = "internal")
+                                                                    .in_scope(|| tracing::info!(node_id = %n.node_id, verdict, "the self-heal's command went unanswered to the end of its attempts: the birth is written dead, and its recovery follows at once"));
+                                                                write_dead(&records, &recovery, rows, &gate, &n, reason);
+                                                            }
+                                                        }));
+                                                    }
+                                                }
+                                                // An ordered investigation whose verdict matched the topology did nothing: the mark
+                                                // that ordered it ends.
+                                                for id in &report.matched {
+                                                    if matches!(listed.get(id), Some((crate::node_investigation::Reason::Ordered { .. }, _))) {
+                                                        records.unreachable.lock().unwrap().retain(|nid, _| nid.as_str() != id);
                                                     }
                                                 }
                                                 // A birth heard again, or answering its tickle, is reached (node-recovery.md step 3).

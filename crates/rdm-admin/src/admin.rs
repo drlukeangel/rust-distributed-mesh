@@ -1092,6 +1092,7 @@ mod tests {
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&view.fabric.id, &view.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().node_id),
+            reasons: Arc::default(),
         };
         (recovery, nodes_storage, member)
     }
@@ -1110,10 +1111,9 @@ mod tests {
         (outcome, capture.named("rdm.node_admin.node.resolve.via-provider-inspection"), capture.named("rdm.node_admin.node.update.via-node-recovery"))
     }
 
-    /// CONTRACT (node-recovery.md step 3: "Any other verdict (`running`, `os-stopped`, `exited`,
-    /// `unproven`): the recovery below, at once. Nothing holds, nothing is inspected again, and nothing
-    /// waits for a proof of termination"; node-runtime-inspect.md "Spans"): the mesh primary asks the
-    /// provider about a TRUE OFFLINE member's exact runtime, and whatever the provider reads, the
+    /// CONTRACT (node-recovery.md step 3: "... is written `dead`, and the recovery below runs at once
+    /// ... Nothing waits for the provider's `Exited`" (Q393); node-runtime-inspect.md "Spans"): the mesh
+    /// primary asks the provider about the exact runtime of a member written dead, and whatever the provider reads, the
     /// verdict is spanned with its page name and the recovery is submitted on that same tick, keyed on
     /// the exact birth, and again on the next tick while it is still owed. Must NOT happen: a member
     /// held because its runtime runs, is suspended or cannot be told; a submit only on an exit.
@@ -1269,6 +1269,7 @@ mod tests {
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint()),
+            reasons: Arc::default(),
         };
         let mut member = Node::allocated(path.clone(), "mesh2", "node");
         member.node_id = node_id.clone();
@@ -1520,7 +1521,7 @@ mod tests {
             assert_eq!((e.specversion.as_str(), e.r#type.as_str(), e.datacontenttype.as_str(), e.subject.as_ref()), ("1.0", crate::events_storage::NODE_INVESTIGATED, "application/json", Some(&member.node.node_id)), "a CloudEvents 1.0 rdm.node.investigated event about the member: {e:?}");
             assert_eq!(e.source, recovery.investigated.events.source.uri(), "written by the mesh-primary that investigated, its exact birth");
             let data = serde_json::Value::Object(e.data.clone());
-            assert_eq!(data, serde_json::json!({"incarnation": member.node.incarnation, "path": "mesh2.node", "name": "1", "verdict": verdict.as_str(), "next": "recreate"}), "the event's data");
+            assert_eq!(data, serde_json::json!({"incarnation": member.node.incarnation, "path": "mesh2.node", "name": "1", "verdict": verdict.as_str(), "next": "recreate", "reason": "self-heal", "trigger": "silence"}), "the event's data: the investigation's reason and trigger beside its verdict (Q393)");
             assert!(e.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the event carries the investigation's trace context: {e:?}");
             assert_eq!(attr("event_id"), e.id.to_string(), "the notice is sent from the event's write, which its span names");
             assert_eq!(recovery.investigated.events.events.event(&e.id).await.unwrap().as_ref(), Some(e), "the event read by its id");
@@ -1559,14 +1560,14 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md step 3: the provider is asked "about the exact runtime recorded at
-    /// launch", and any verdict but `reached` opens the recovery at once): a TRUE OFFLINE member whose
-    /// digest carries no runtime is inspected through its durable runtime row, and that point read is
-    /// refused. With no runtime fact the provider is not asked: the verdict is `unavailable`, naming the
+    /// launch"; a birth written `dead` is recovered at once, Q393): a member written dead whose digest
+    /// carries no runtime is inspected through its durable runtime row, and that point read is refused.
+    /// With no runtime fact the provider is not asked: the inspect's answer is `unavailable`, naming the
     /// row and the store's own cause, and the recovery is submitted on it. Must NOT happen: the refusal
     /// read as "no row", an inspection of a guessed runtime, a member held for want of a verdict.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_true_offline_member_whose_runtime_row_cannot_be_read_is_unproven_and_recovered() {
+    async fn a_member_written_dead_whose_runtime_row_cannot_be_read_is_recovered() {
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unreadable")).unwrap();
         let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
         let digest_view = DigestView::default();
@@ -1700,10 +1701,12 @@ mod tests {
         assert_eq!(watched, vec![PathName::new("mesh1.node", "1").unwrap()], "only its own mesh's silent member is watched");
     }
 
-    /// CONTRACT (node-tickle.md step 1; R-PV1: a `NotSent` command "is a reason to ask now"; i144 R9): a
-    /// member heard a moment ago (well within the floor) that a command never reached for a
-    /// reachability reason is watched `PendingReconnect` by its mesh-primary's tick, counted silent,
-    /// and its silence window starts at the mark, not at the floor. A digest of the birth heard after
+    /// CONTRACT (node-tickle.md step 1; R-PV1: a `NotSent` command "is a reason to ask now"; i144 R9;
+    /// node-recovery.md step 1, Q393: it "starts an ordered investigation of it, which sets no
+    /// `PendingReconnect`"): a member heard a moment ago (well within the floor) that a command never
+    /// reached for a reachability reason is watched by its mesh-primary's tick at the status its view
+    /// holds, counted silent as an ordered investigation whose trigger is the mark's reason, and its
+    /// silence window starts at the mark, not at the floor. A digest of the birth heard after
     /// the mark ends it; so does the view no longer holding the birth. A mark of another mesh's birth
     /// stands in the one map and is not this tick's to watch (the primary watch reads it, Q338).
     /// Must NOT happen: a marked member left out of the silent set because its last digest is recent.
@@ -1732,10 +1735,11 @@ mod tests {
         assert!(watched.is_empty(), "nothing is silent past the floor");
         crate::offline::watch_marked(&mut watched, &held, &view, "mesh1", &me.node.node_id);
         let n = watched.get(own.node.node_id.as_str()).expect("the marked member is watched");
-        assert_eq!(n.status, NodeStatus::PendingReconnect);
+        assert_eq!(n.status, NodeStatus::Ready, "an ordered investigation sets no PendingReconnect: the view's status");
         assert!(!watched.contains_key(peer.node.node_id.as_str()), "another mesh's birth is not this tick's to watch");
         let silent: Vec<_> = crate::offline::silent_set(watched.values(), &digest_view, now, 5_000, floor).into_iter().map(|s| crate::offline::marked_from(s, &held)).collect();
         assert_eq!(silent.iter().map(|s| (s.node_id.clone(), s.marked_at_ms)).collect::<Vec<_>>(), vec![(own.node.node_id.to_string(), Some(1_000))], "silent from the mark, its window from the mark's instant");
+        assert_eq!((silent[0].reason, silent[0].status), (crate::node_investigation::Reason::Ordered { trigger: "connect-timed-out" }, NodeStatus::Ready), "an ordered investigation, its trigger the mark's");
         // A digest heard after the mark (the birth's next, a higher digest_seq) ends it.
         let mut next = own.clone();
         next.digest_seq += 1;
@@ -1747,11 +1751,12 @@ mod tests {
     }
 
     /// CONTRACT (i151.s2; node-rpc.md §43, Q311: "a call whose attempts end unanswered starts node
-    /// investigation on that birth (the mesh-primary itself, ...)"; node-recovery.md step 1: "The
-    /// mesh-primary also marks a member `PendingReconnect` at once when a command to it was never
-    /// sent"; step 2: "Half a floor after the mark it runs node investigation"): a mesh-primary's own
-    /// call to a member of its mesh whose attempts are spent marks the birth at once, the tick watches it
-    /// from the mark, and its ladder starts half a floor after the mark, never before. A second spent
+    /// investigation on that birth (the mesh-primary itself, ...)"; node-recovery.md step 1: "a call to it
+    /// that ends with its attempts spent (its own, ...), starts an ordered investigation of it, which sets
+    /// no `PendingReconnect`" (Q393); step 2: "Half a floor after the mark it runs node investigation"): a
+    /// mesh-primary's own call to a member of its mesh whose attempts are spent marks the birth at once,
+    /// the tick watches it from the mark at the status its view holds, an ordered investigation whose
+    /// trigger is `attempts-spent`, and its ladder starts half a floor after the mark, never before. A second spent
     /// call keeps the first mark (one investigation per silence). Must NOT happen: a birth of another
     /// mesh marked here (it is reported to its own mesh-primary), or a ladder before half a floor.
     // @feature: node-lifecycle
@@ -1792,15 +1797,16 @@ mod tests {
         assert!(!marks.lock().unwrap().contains_key(&peer.node.node_id), "another mesh's birth is reported to its own mesh-primary, never marked here");
         decider.decide(&spent(&own)).await;
         assert_eq!(marks.lock().unwrap().get(&own.node.node_id), Some(&first), "a later spent call keeps the first mark");
-        // The tick: the marked member is watched PendingReconnect, silent from the mark's instant.
+        // The tick: the marked member is watched at its view's status, silent from the mark's instant.
         let floor = std::time::Duration::from_secs(30);
         let now = std::time::Instant::now();
         let held = crate::offline::held_marks(&marks, &view, &digest_view, now);
         let mut watched = watched_births(&view, &me.node.node_id, "mesh1", &[]);
         crate::offline::watch_marked(&mut watched, &held, &view, "mesh1", &me.node.node_id);
-        assert_eq!(watched.get(own.node.node_id.as_str()).map(|n| n.status), Some(NodeStatus::PendingReconnect));
+        assert_eq!(watched.get(own.node.node_id.as_str()).map(|n| n.status), Some(NodeStatus::Ready), "no PendingReconnect for an ordered investigation");
         let silent: Vec<_> = crate::offline::silent_set(watched.values(), &digest_view, now, first.at_ms, floor).into_iter().map(|s| crate::offline::marked_from(s, &held)).collect();
         assert_eq!(silent.iter().map(|s| (s.node_id.clone(), s.marked_at_ms)).collect::<Vec<_>>(), vec![(own.node.node_id.to_string(), Some(first.at_ms))]);
+        assert_eq!(silent[0].reason, crate::node_investigation::Reason::Ordered { trigger: "attempts-spent" });
         // Its ladder starts half a floor after the mark (node-recovery.md step 2), not a tick before.
         let half = floor.as_millis() as u64 / 2;
         let started = std::sync::atomic::AtomicUsize::new(0);
@@ -2045,7 +2051,7 @@ mod tests {
         assert!(!heard.contains(&unknown), "a node id neither viewed nor watched is not");
         // The ladder: the member held TRUE OFFLINE, then no longer silent while the view still lacks it.
         let mut t = crate::offline::OfflineTickle::new();
-        let silent = |ids: &[&str]| ids.iter().map(|i| crate::offline::SilentNode { node_id: (*i).to_string(), path: rdm_core::PathName::new("mesh2.node", *i).unwrap(), incarnation: None, marked_at_ms: None }).collect::<Vec<_>>();
+        let silent = |ids: &[&str]| ids.iter().map(|i| crate::offline::SilentNode { node_id: (*i).to_string(), path: rdm_core::PathName::new("mesh2.node", *i).unwrap(), incarnation: None, marked_at_ms: None, reason: crate::node_investigation::Reason::SelfHeal, status: NodeStatus::PendingReconnect }).collect::<Vec<_>>();
         let floor = 30_000u64;
         let mut report = crate::offline::OfflineTickReport::default();
         for (now, set) in [(0, silent(&[&id, &unknown])), (floor / 2, silent(&[&id, &unknown])), (floor / 2, silent(&[&id, &unknown])), (floor * 3 / 2, silent(&[&id, &unknown])), (floor * 3 / 2, silent(&[&id, &unknown])), (floor * 3 / 2 + 1, vec![])] {

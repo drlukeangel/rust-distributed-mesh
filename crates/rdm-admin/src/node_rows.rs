@@ -211,6 +211,40 @@ impl NodeRows {
         r.map(|_| ())
     }
 
+    /// The status an investigation of `record`'s exact birth writes on its record (Q393;
+    /// node-recovery.md steps 1 and 3): `PendingReconnect` as this mesh-primary starts its self-heal,
+    /// `Dead` when an investigation of it concludes in failure. Written by the record's one order
+    /// ([`rdm_core::model::NodeStatus::moves_to`]): a status it refuses leaves the record unchanged, as
+    /// does a record of another birth of the node, or none. Only the record's writer writes it: the
+    /// node's mesh-primary (the fabric-primary for a mesh with no primary). One
+    /// `rdm.node_admin.node.update.via-node-row` span. `Ok(true)` when it was written.
+    pub async fn investigated(&self, record: &Node, to: NodeStatus) -> Result<bool, RowRefused> {
+        let me = self.writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))?;
+        let state = match to {
+            NodeStatus::PendingReconnect => "pending-reconnect",
+            NodeStatus::Dead => "dead",
+            _ => "other",
+        };
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-row", node_path = %me.path, node_name = %me.name, subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, state, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let written = async {
+            let Some(mut row) = self.storage.node(&record.node_id).await.map_err(|e| RowRefused::Unwritten(e.to_string()))?.map(|l| l.record) else {
+                return Ok(false);
+            };
+            if record.incarnation_id.as_ref() != Some(&row.incarnation) || !row.set_state(to) {
+                return Ok(false);
+            }
+            self.storage.put_node(&row).await.map_err(|e| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the {state} state of node {} is not written: {e}", record.node_id, me_path = &me.path, me_name = &me.name)))?;
+            Ok(true)
+        };
+        let r: Result<bool, RowRefused> = tracing::Instrument::instrument(written, span.clone()).await;
+        match &r {
+            Ok(true) => span.record("outcome", "written"),
+            Ok(false) => span.record("outcome", "unchanged"),
+            Err(e) => span.record("outcome", e.outcome()).record("detail", e.to_string().as_str()),
+        };
+        r
+    }
+
     /// `NodeDeleted` (lifecycles/node-delete.md step 3): the node's record with state `Deleted`, its
     /// config kept. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &rdm_core::OperationId) -> Result<(), RowRefused> {

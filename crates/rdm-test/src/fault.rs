@@ -39,7 +39,7 @@ enum CutWire {
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
     Declaration { node_id: Option<rdm_core::NodeId>, node: Option<PathName>, state: Option<String> },
-    ProviderUnproven { pids: Vec<u32> },
+    ProviderUnknown { pids: Vec<u32> },
     DriftPass { node: Option<String> },
     StorageStep { node: Option<PathName> },
     StorageSwitch,

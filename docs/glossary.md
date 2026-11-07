@@ -201,9 +201,9 @@ Every term below links to the architecture pages that define it.
   `mesh-primary` runs when a node is unheard past the staleness floor, probing the birth with
   `node.tickle` and reading its runtime state via `node.runtime.inspect` before deciding whether to
   wait, reconnect, or recover the node via [`node.recovery`](architecture/lifecycles/node-recovery.md).
-- **node investigation verdicts (`reached`, `running`, `os-stopped`, `exited`, `unproven`)**
-  ([node investigation](architecture/lifecycles/node-investigation.md)): The five possible outcomes
-  of [node investigation](architecture/lifecycles/node-investigation.md) on one exact birth.
+- **node investigation verdicts (`reached`, `running`, `os-stopped`, `exited`)**
+  ([node investigation](architecture/lifecycles/node-investigation.md)): The four possible outcomes
+  of [node investigation](architecture/lifecycles/node-investigation.md) on one exact birth; a birth not proven by the end of its retries is `dead` (Q393).
   `reached` means the exact birth answered `node.tickle` (with no command left unanswered past the
   staleness floor) and is commanded back via [`node.mesh.join`](architecture/lifecycles/node-mesh-join.md);
   any other verdict comes from [`node.runtime.inspect`](architecture/lifecycles/node-runtime-inspect.md)
