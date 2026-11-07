@@ -247,12 +247,9 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         }
         apply(&mut reversed, live);
         assert_eq!(reversed, held);
-        // The incomplete-assembly shape runs on a quiet edge, before the burst: the burst leaves about
-        // two thousand pushes in the publisher's per-peer gossip send queue (SEND_QUEUE_CAP 64), a
-        // push into that full queue is dropped at the publisher, and on this one-edge topic no other
-        // peer can IHave it back (gossip.md §7 repairs through the mesh, §8's pull is the recovery):
-        // a record published into the draining queue would be lost for a reason the shape does not
-        // measure (the :313 reds of 2026-10-19, read in i143-prd.md).
+        // The incomplete-assembly shape runs on a quiet edge, before the burst: on this one-edge topic a
+        // record published behind a burst's backlog could be lost for a reason the shape does not measure
+        // (the reds of 2026-10-19, read in i143-prd.md).
         // The testkit drops one incoming part; publishing, assembly expiry and recovery stay public.
         rdm_test::gossip_faults::drop_chunk_once(&root.channels, LARGE, 1)
             .await
@@ -299,7 +296,9 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
         );
         let mut lost = receiver.1.lost();
         let before = *lost.borrow();
-        for version in 2..4098 {
+        // Four times the channel's receive queue (8192 events, gossip.md §3.4), none of it read: the
+        // queue overflows however fast the edge carries it, and `dropped` below proves it did.
+        for version in 2..32770 {
             sender
                 .0.publish(event(&Row {
                     version,
