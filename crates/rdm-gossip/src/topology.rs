@@ -3665,6 +3665,46 @@ mod tests {
         assert!(peer.digest_view.get(ready.node.node_id.as_str()).is_some_and(|(d, _)| d.status == NodeStatus::Ready), "a ready node is held ready");
     }
 
+    /// CONTRACT (gossip.md "Node-stopped lifecycle overlay", §3.1 `TopologyFull`, Q390): mesh1.node-admin.2,
+    /// not its mesh's primary, holds mesh1.node.1 from its own Digest. Its mesh-primary's aggregate lists
+    /// the node `stopped`, with no operation identity; then the primary's `NodeStopped` of that stop
+    /// arrives on the mesh channel, naming its operation (a standalone stop's occurrence). The frame is
+    /// the same stop: the admin keeps the digest it held of the birth when it dropped it, so the view it
+    /// serves lists the birth `stopped` with its endpoint, and the mesh-primary's `node.joined` holds the
+    /// birth again from it and ends the stop under both identities: a late copy of the frame opens
+    /// nothing. Must NOT happen: the frame replacing what the admin held of the stopped birth, so that it
+    /// serves no stopped entry and, as the next mesh-primary, holds no endpoint to start the birth by
+    /// (the gate's node_stop reds at 9d8d01079: `held_digest_seq` 0 on the second `via-node-stopped`).
+    #[test]
+    fn a_node_stopped_after_the_aggregate_listed_the_stop_keeps_the_stopped_births_digest() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let primary = born("mesh1", "node-admin", 1, 1);
+        let node = born("mesh1", "node", 1, 7);
+        let (id, inc) = (node.node.node_id.clone(), node.node.incarnation.clone());
+        let admin = test_view("mesh1", "mesh1.node-admin.2");
+        assert!(admin.digest_view.record(node.clone()));
+        let mut listed = node.clone();
+        listed.status = NodeStatus::Stopped;
+        let aggregate = Frame::aggregate("mesh1", None, &author_of(&publisher_of(&primary)), 2, 2, 0, 1, vec![primary.clone(), listed]);
+        assert!(hear(&mut admin.order.lock().unwrap(), &admin, &aggregate, &fabric, Side::Backbone));
+        assert!(admin.digest_view.holds_stopped(id.as_str(), &inc), "the node the aggregate lists stopped is held stopped");
+        let mut stop = op_at(node.node.location(), "mesh1", "node", &id, &inc, "node.stop");
+        stop.operation = stop.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let frame = StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 2);
+        let mut channel = crate::receive_order::ReceiveOrder::default();
+        assert!(hear(&mut channel, &admin, &frame, &fabric, Side::MeshChannel));
+        assert!(admin.digest_view.in_flight().iter().any(|op| op.key() == stop.key()), "the frame's identity is held with the stop");
+        let kept = admin.digest_view.held_digest_of(&stop).expect("the digest held of the birth when it was dropped");
+        assert_eq!((kept.digest_seq, &kept.node.endpoint_id), (7, &node.node.endpoint_id), "the frame keeps what the admin held of the stopped birth");
+        let (in_flight, deleted) = admin.digest_view.overlays_of("mesh1");
+        let served = admin.digest_view.aggregate_nodes("mesh1", Vec::new(), &in_flight, &deleted);
+        assert_eq!(served.iter().map(|d| (d.node.node_id.clone(), d.status, d.digest_seq)).collect::<Vec<_>>(), vec![(id.clone(), NodeStatus::Stopped, 7)], "the view it serves lists the birth stopped");
+        assert!(admin.digest_view.joined(&op_at(node.node.location(), "mesh1", "node", &id, &inc, "node.start")), "node.joined ends the stop");
+        assert_eq!(admin.digest_view.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((7, NodeStatus::Pending)), "the birth is held again from the digest kept");
+        assert!(admin.digest_view.in_flight().is_empty(), "both identities of the stop end with it");
+        assert!(!admin.digest_view.stopped(stop), "a late copy of the frame opens nothing");
+    }
+
     /// CONTRACT (proposal edit 12's check, "preserve delivery of changed primary records"; gossip.md "A
     /// primary change on gossip"): each node entry of an aggregate carries the primary roles the node
     /// holds, and a receiver takes the primary records from them (`take_primaries`): the mesh-primary's

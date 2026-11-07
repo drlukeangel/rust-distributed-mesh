@@ -663,6 +663,12 @@ impl DigestView {
         if held.as_ref().is_some_and(|(inc, _, _)| *inc != op.incarnation) {
             return false;
         }
+        // A stop of the exact birth this view holds stopped already is that same stop, under the
+        // identity another source names it by: an aggregate or a read lists the birth `stopped` with no
+        // operation identity (Q390), its `NodeStopped` names the operation. That identity is held with
+        // the stop, so it ends with it ([`Self::end_stop`]); the mark is kept: what this view held of
+        // the birth when it dropped it, and the latest digest of it refused since.
+        let held_stopped = self.holds_stopped(op.node_id.as_str(), &op.incarnation);
         let new = {
             let mut held = self.in_flight.lock().unwrap();
             let ended = self.ended_overlays.lock().unwrap().contains(&crate::receive_order::LifecycleIdentity::of(&op));
@@ -675,7 +681,7 @@ impl DigestView {
                 false
             }
         };
-        if !new {
+        if !new || held_stopped {
             if carried.is_some() {
                 if let Some(m) = self.stopped_marks.lock().unwrap().get_mut(op.node_id.as_str()) {
                     if m.incarnation == op.incarnation && m.carried.is_none() {
