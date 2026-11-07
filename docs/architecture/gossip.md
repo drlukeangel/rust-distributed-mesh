@@ -215,7 +215,7 @@ composition and invents no wall clock of its own; the product supplies the adopt
 
 Size:
 
-- every frame fits one gossip message; a backbone mesh topology is chunked under one `snapshot_id`, and every list it carries (`digests`, `in_flight`, `deleted`) is inside that sizing; it is not installed until every chunk is held; a differential that does not fit one message is sent in chunks and applied once every chunk is held; one node entry that cannot fit one message is not sent (`rdm.mesh.topology.reject.via-delta-too-large`), and a node behind it tops up (§3.3);
+- every frame fits one gossip message; a backbone mesh topology is chunked under its envelope id `rdm.mesh.members/<mesh>/<version>/<chunk>`, and its one list of nodes is inside that sizing; it is not installed until every chunk is held; a differential that does not fit one message is sent in chunks and applied once every chunk is held; one node entry that cannot fit one message is not sent (`rdm.mesh.topology.reject.via-delta-too-large`), and a node behind it tops up (§3.3);
 - there is no ACK, no per-peer resend, no deletion queue and no gossip-level replay: a lost push is repaired by iroh-gossip; a node that missed an event learns the state from the next delta, mesh topology or top-up (§3.3).
 
 #### Reserved lifecycle frame positions

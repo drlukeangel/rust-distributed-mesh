@@ -644,7 +644,7 @@ mod tests {
         let mut theirs = digest(&other, &other_inc, None, NodeStatus::Ready, 1);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); theirs.node.path = at.path; theirs.node.name = at.name; }
         theirs.node.mesh = "mesh1".into();
-        let read = crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new(), runtimes: Vec::new(), };
+        let read = crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, author: None, topology_version: 1, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], runtimes: Vec::new() };
         assert!(matches!(view.take_read_chunk(read, Side::Read, &fabric), Taken::Installed(_)), "the read is installed");
         assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's read carries");
     }
@@ -1350,7 +1350,7 @@ mod tests {
         let view = test_view("mesh1", id.as_str());
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let itself = |status, seq| digest(&id, &inc, None, status, seq);
-        let mesh_topology = |version: u64, d: MeshDigest| Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], deleted: vec![] };
+        let mesh_topology = |version: u64, d: MeshDigest| Frame::aggregate("mesh1", None, &crate::envelope::Birth::publisher(&FabricId::parse("fab000000001").unwrap(), &publisher.clone()), version, version, 0, 1, vec![d]);
         view.take_snapshot(&mesh_topology(1, itself(NodeStatus::Pending, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         assert!(view.digest_view.member_status(&id, &inc).is_none(), "before its first publication, by the node id it joined under");
         *view.digest_view.own.lock().unwrap() = Some(id.to_string());
@@ -1464,7 +1464,7 @@ mod tests {
         assert!(view.digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.node-admin.1".to_string()))] {
-            let late = Frame::TopologyFull { mesh: "mesh1".into(), mesh_id: None, publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
+            let late = Frame::aggregate("mesh1", None, &crate::envelope::Birth::publisher(&FabricId::parse("fab000000001").unwrap(), &predecessor.clone()), 9, 9, 0, 1, vec![digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 6)]);
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
             assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((NodeStatus::Ready, 5)), "{side:?}: the authored status stands");
             assert_eq!(view.digest_view.member_status(&id, &inc), Some(NodeStatus::Ready));
@@ -2128,20 +2128,7 @@ mod tests {
         };
         let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
         let forwarder_id = NodeId::mint();
-        let first = Frame::TopologyFull {
-            mesh: "mesh2".into(),
-            mesh_id: None,
-            publisher: publisher.clone(),
-            forwarded_by: Some(forwarder_id.to_string()),
-            topology_version: 1,
-            published_at_rafka_ms: 1,
-            snapshot_id: 1,
-            chunk_index: 0,
-            chunk_count: 1,
-            digests: vec![at(1)],
-            in_flight: vec![],
-            deleted: vec![],
-        };
+        let first = Frame::aggregate("mesh2", None, &crate::envelope::Birth::publisher(&FabricId::parse("fab000000001").unwrap(), &publisher.clone()), 1, 1, 0, 1, vec![at(1)]);
         let _ = view.take_snapshot(&first, &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         const LAST: u64 = 20_000;
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2251,20 +2238,7 @@ mod tests {
         let m1 = MeshId::mint();
         let (admin, connections_deleting, leaving) = (born("mesh1", "node-admin", 1, 1), born("mesh1", "node", 1, 1), born("mesh1", "node", 2, 1));
         let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
-        let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::TopologyFull {
-            mesh: "mesh1".into(),
-            mesh_id: Some(m1.clone()),
-            publisher: publisher.clone(),
-            forwarded_by: None,
-            topology_version: version,
-            published_at_rafka_ms: version,
-            snapshot_id: version,
-            chunk_index: 0,
-            chunk_count: 1,
-            digests,
-            in_flight: Vec::new(),
-            deleted: Vec::new(),
-        };
+        let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::aggregate("mesh1", Some(m1.clone()), &crate::envelope::Birth::publisher(&FabricId::parse("fab000000001").unwrap(), &publisher.clone()), version, version, 0, 1, digests);
         let said = |d: &MeshDigest, status: NodeStatus| {
             let mut d = d.clone();
             d.status = status;
@@ -2827,20 +2801,7 @@ mod tests {
             let publisher = birth_at(rdm_core::PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), mesh, "node-admin", 1);
             let ready = birth_at(rdm_core::PathName::new(format!("{mesh}.node"), "1").unwrap(), mesh, "node", 3);
             let pending = MeshDigest { status: NodeStatus::Pending, ..ready.clone() };
-            let read = crate::snapshot::Chunk {
-                mesh: mesh.into(),
-                mesh_id: None,
-                publisher: publisher_of(&publisher),
-                forwarded_by: None,
-                topology_version: 5,
-                snapshot_id: 1,
-                chunk_index: 0,
-                chunk_count: 1,
-                digests: vec![publisher.clone(), ready.clone()],
-                in_flight: vec![],
-                deleted: vec![],
-                runtimes: Vec::new(),
-            };
+            let read = crate::snapshot::Chunk { mesh: mesh.into(), mesh_id: None, author: None, topology_version: 5, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: vec![publisher.clone(), ready.clone()], runtimes: Vec::new() };
             assert!(matches!(reads(read), Taken::Installed(_)), "{mesh}: the read installs v5");
             assert_eq!(status_of(&ready), Some(NodeStatus::Ready), "{mesh}: the read holds the member Ready");
             let v4 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 4, 4, vec![publisher.clone(), pending.clone()], vec![], vec![]), 40);
@@ -2873,20 +2834,7 @@ mod tests {
         let ready = birth_at(rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", 3);
         let pending = MeshDigest { status: NodeStatus::Pending, ..ready.clone() };
         let held = |d: &MeshDigest| view.digest_view.member_status(&d.node.node_id, &d.node.incarnation);
-        let read_at = |version: u64, broker: &MeshDigest| crate::snapshot::Chunk {
-            mesh: "mesh1".into(),
-            mesh_id: None,
-            publisher: publisher_of(&publisher),
-            forwarded_by: None,
-            topology_version: version,
-            snapshot_id: version,
-            chunk_index: 0,
-            chunk_count: 1,
-            digests: vec![publisher.clone(), broker.clone()],
-            in_flight: vec![],
-            deleted: vec![],
-            runtimes: Vec::new(),
-        };
+        let read_at = |version: u64, broker: &MeshDigest| crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, author: None, topology_version: version, time_ms: version, chunk_index: 0, chunk_count: 1, digests: vec![publisher.clone(), broker.clone()], runtimes: Vec::new() };
 
         assert!(matches!(view.take_read_chunk(read_at(5, &pending), Side::Read, &fabric), Taken::Installed(_)), "the read at v5 installs");
         assert_eq!(held(&ready), Some(NodeStatus::Pending), "v5 holds the broker Pending, its Digest as the primary held it");
@@ -3095,7 +3043,7 @@ mod tests {
         let p = publisher_of(&admin);
         let full = |version: u64, at: u64| stamped(snapshot_of("mesh1", &p, Some("mesh1.node-admin.1"), version, version, vec![admin.clone(), rpc1.clone(), rpc2.clone()], vec![], vec![]), at);
         let delta = |base_version: u64, topology_version: u64, at: u64| delta_of("mesh1", &p, base_version, topology_version, at, vec![], vec![], vec![]);
-        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone(), rpc2.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
+        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, author: None, topology_version: version, time_ms: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone(), rpc2.clone()], runtimes: Vec::new() };
 
         assert!(hears(&full(7, 700)));
         assert!(hears(&delta(7, 8, 800)));
@@ -3447,7 +3395,7 @@ mod tests {
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone(), rpc3.clone()]).await);
         let published = bb.own.lock().unwrap().as_ref().map(|(v, _)| *v).expect("published");
         assert!(published >= 3, "three material changes bump the version three times: {published}");
-        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, publisher: p.clone(), forwarded_by: Some("topology-read".into()), topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone()], in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
+        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, author: None, topology_version: version, time_ms: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone()], runtimes: Vec::new() };
         let taken = m_channels.take_read_chunk(read(1), "mesh1");
         assert!(
             matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: 1 }) if held_version == published),
@@ -3494,20 +3442,7 @@ mod tests {
         assert_eq!(view.backbone_rx.lock().unwrap().held_version("mesh1"), Some((p.clone(), 1)));
 
         // The in-flight topology read served at v0 arrives on Side::Read, followed by the primary record.
-        let read_v0 = crate::snapshot::Chunk {
-            mesh: "mesh1".into(),
-            mesh_id: None,
-            publisher: p.clone(),
-            forwarded_by: Some("topology-read".into()),
-            topology_version: 0,
-            snapshot_id: 1,
-            chunk_index: 0,
-            chunk_count: 1,
-            digests: vec![primary.clone(), admin2.clone()],
-            in_flight: vec![],
-            deleted: vec![],
-            runtimes: Vec::new(),
-        };
+        let read_v0 = crate::snapshot::Chunk { mesh: "mesh1".into(), mesh_id: None, author: None, topology_version: 0, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: vec![primary.clone(), admin2.clone()], runtimes: Vec::new() };
         let taken = view.take_read_chunk(read_v0, Side::Read, &fabric);
         assert!(
             matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version: 1, offered_version: 0 })),
@@ -3641,7 +3576,7 @@ mod tests {
     fn a_projected_member_is_found_by_its_endpoint_key_as_a_scan_of_the_sources_finds_it() {
         let p = |mesh: &str| PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
         let (p1, p2) = (p("mesh1"), p("mesh2"));
-        let chunk = |mesh: &str, publisher: &PublisherId, digests: Vec<MeshDigest>| Chunk { mesh: mesh.into(), mesh_id: None, publisher: publisher.clone(), forwarded_by: None, topology_version: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![], runtimes: Vec::new(), };
+        let chunk = |mesh: &str, publisher: &PublisherId, digests: Vec<MeshDigest>| Chunk { mesh: mesh.into(), mesh_id: None, author: None, topology_version: 1, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: digests, runtimes: Vec::new() };
         let (a, b, c) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
         let inc = IncarnationId::mint();
         let keys = ["key-a", "key-b", "key-c", "key-a2", "key-z"];

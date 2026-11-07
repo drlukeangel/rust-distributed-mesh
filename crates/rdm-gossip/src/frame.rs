@@ -351,6 +351,12 @@ impl Frame {
         let context = crate::envelope::Context::aggregate(&self, author, version, time_ms);
         Self::Authored { context, frame: Box::new(self) }
     }
+    /// Chunk `chunk_index` of `chunk_count` of `mesh`'s aggregate listing `nodes`, authored by its
+    /// mesh-primary `author` at the mesh's `version` and the publication's Rafka-time `time_ms`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aggregate(mesh: impl Into<String>, mesh_id: Option<MeshId>, author: &crate::envelope::Birth, version: u64, time_ms: u64, chunk_index: u32, chunk_count: u32, nodes: Vec<MeshDigest>) -> Self {
+        Self::TopologyFull { mesh: mesh.into(), mesh_id, chunk_index, chunk_count, nodes: nodes.iter().map(NodeEntry::of).collect() }.authored_aggregate(author, version, time_ms)
+    }
     /// The mesh's version a `TopologyFull` carries: its envelope's `sequence` (Q389). `None` for
     /// another frame or one with no authored context.
     pub fn aggregate_version(&self) -> Option<u64> {
