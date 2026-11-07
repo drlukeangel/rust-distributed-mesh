@@ -574,14 +574,6 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
             emitted_at_rafka_ms: 0,
             primary: Vec::new(),
         };
-        // A node's first Digest carries its details and its later ones its status only (gossip.md §3.1):
-        // the acceptor holds the dialer from that first Digest, so the dialer publishes once both are
-        // neighbours (bounded: no neighbour fails at `heard` below).
-        let _ = tokio::time::timeout(Duration::from_secs(20), async {
-            on_dialer_channels.wait_for_neighbour().await;
-            on_acceptor_channels.wait_for_neighbour().await;
-        })
-        .await;
         let publishing = on_dialer_channels.publish_every(Duration::from_millis(100), move || own.clone());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         let mut heard = false;

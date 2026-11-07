@@ -81,10 +81,7 @@ async fn node_own_sample_counts_active_neighbours_through_isolation_and_return()
     mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
 
-    // Joined: A has a neighbour, has heard B, and frames flowed both ways. B's first Digest carries its
-    // details and its later ones its status only (gossip.md §3.1): A holds B from that first Digest, so
-    // B publishes once A is its neighbour.
-    mb_channels.wait_for_neighbour().await;
+    // Joined: A has a neighbour, has heard B, and frames flowed both ways.
     let pb = mb_channels.publish_every(Duration::from_millis(200), move || db.clone());
     let joined = published_until(&ma_channels, &da, |g| g.neighbours == 1 && g.heard >= 2 && g.frames_received >= 1).await;
     assert!(joined.frames_sent >= 1, "{joined:?}");
@@ -103,7 +100,6 @@ async fn node_own_sample_counts_active_neighbours_through_isolation_and_return()
     let mc_channels = rdm_gossip::channel::Channels::new(&c.gossip, &c.ep, &mc).unwrap();
     mc_channels.join(rdm_gossip::channel::ChannelId::mesh(mc.fabric_id(), mc.mesh_id()), vec![addr_of(&a)]).await.unwrap();
     let dc = digest(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", &c.ep);
-    mc_channels.wait_for_neighbour().await;
     let pc = mc_channels.publish_every(Duration::from_millis(200), move || dc.clone());
     let returned = published_until(&ma_channels, &da, |g| g.neighbours >= 1 && g.frames_received > isolated.frames_received).await;
     assert!(returned.heard >= 1, "{returned:?}");

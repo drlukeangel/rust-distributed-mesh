@@ -71,10 +71,6 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let mb = rdm_gossip::topology::TopologyView::new(&fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let mb_channels = rdm_gossip::channel::Channels::new(&b.gossip, &b.ep, &mb).unwrap();
         mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![seed]).await.unwrap();
-        // A node's first Digest carries its details and its later ones its status only (gossip.md §3.1):
-        // each holds the other from that first Digest, so both publish once they are neighbours.
-        mb_channels.wait_for_neighbour().await;
-        ma_channels.wait_for_neighbour().await;
         let started = std::time::Instant::now();
         let pa = ma_channels.publish_every(Duration::from_millis(500), move || da.clone());
         let pb = mb_channels.publish_every(Duration::from_millis(500), move || db.clone());
