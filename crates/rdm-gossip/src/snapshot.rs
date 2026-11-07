@@ -866,7 +866,9 @@ impl SnapshotReceiver {
         let publisher = author.as_ref().map(|b| PublisherId { node_id: b.node.clone(), incarnation: b.incarnation.clone() }).or_else(|| self.held.get(&mesh).and_then(|h| h.publisher.clone()));
         let retained = if from_read { same.and_then(|h| h.publication.clone()) } else { Some(publication) };
         self.unbased.remove(&mesh);
-        self.pending.retain(|k, p| !(k.mesh == mesh && (p.version < version || (k.author == author && p.version == version))));
+        // An install drops what was assembling below its version and its own set; a read, the repair
+        // completion, also every set at its version: their stragglers install nothing.
+        self.pending.retain(|k, p| !(k.mesh == mesh && (p.version < version || (p.version == version && (from_read || k.author == author)))));
         // A copy older than a delta dropped while the source was desynchronized is still behind it:
         // the source stays desynchronized, and its holder pulls again (Q130).
         let behind = self.dropped.get(&mesh).copied().filter(|d| *d > version);

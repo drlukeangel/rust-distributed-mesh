@@ -3704,6 +3704,7 @@ mod tests {
         // The fabric-primary, mesh2's primary, holds mesh1's last aggregate and forwards it.
         let fp = TopologyView::new(&fabric, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         fp.view.primary.store(true, Ordering::Relaxed);
+        fp.view.forwarder.lock().unwrap().set_author(test_author());
         let taken = fp.view.take_snapshot(&Frame::aggregate("mesh1", None, &author_of(&publisher_of(&lost)), 7, 70, 0, 1, vec![lost.clone(), x.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut fp.view.order.lock().unwrap());
         let (mesh, from, v, full) = taken.source.expect("a complete peer aggregate");
         let _ = fp.view.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, &from, v, &full, 70);
