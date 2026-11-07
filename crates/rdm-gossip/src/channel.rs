@@ -278,7 +278,8 @@ pub(crate) fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame
 pub(crate) struct Replayed {
     pub(crate) direct: Vec<Frame>,
     pub(crate) frames: usize,
-    pub(crate) full_chunks: usize,
+    /// The peer meshes' last differentials among the frames.
+    pub(crate) deltas: usize,
     pub(crate) bytes: usize,
 }
 
@@ -289,9 +290,9 @@ impl Replayed {
             f.authored(author, 0, now_ms)
         }).collect();
         let bytes = direct.iter().map(|f| f.encode().len()).sum();
-        let full_chunks = direct.iter().filter(|f| matches!(f.data(), Frame::TopologyFull { .. })).count();
+        let deltas = direct.iter().filter(|f| matches!(f.data(), Frame::TopologyDelta { .. })).count();
         let frames = direct.len();
-        Self { direct, frames, full_chunks, bytes }
+        Self { direct, frames, deltas, bytes }
     }
 }
 
@@ -422,7 +423,7 @@ impl Channel {
                             let sender = shared.read().await.clone();
                             let replayed = if sender.is_some() { replay() } else { Replayed::default() };
                             if replayed.frames > 0 {
-                                tracing::info_span!("rdm.mesh.topology.update.via-neighbour-replay", node = %node, channel = %channel, peer = %p.fmt_short(), frames = replayed.frames, full_chunks = replayed.full_chunks, bytes = replayed.bytes)
+                                tracing::info_span!("rdm.mesh.topology.update.via-neighbour-replay", node = %node, channel = %channel, peer = %p.fmt_short(), frames = replayed.frames, deltas = replayed.deltas, bytes = replayed.bytes)
                                     .in_scope(|| tracing::info!("a neighbour came up: this primary says what it holds once"));
                             }
                             if let Some(sender) = sender {
@@ -852,7 +853,7 @@ impl Channels {
         let view = topology_view;
         let location = LocationView::new(endpoint, &view.view.current_name())?.with_held_name(view.view.held_name.clone());
         let author: Arc<Mutex<Option<crate::envelope::Birth>>> = Arc::default();
-        let (forward_path, forward_rx) = ForwardPath::pair(view.view.forwarder.clone(), Arc::default());
+        let (forward_path, forward_rx) = ForwardPath::pair(view.view.forwarder.clone());
         Ok(Self {
             gossip: gossip.clone(),
             endpoint: endpoint.clone(),
@@ -991,15 +992,15 @@ impl Channels {
         let node = view.view.current_name();
         let (replay_view, replay_fabric, replay_clock, replay_forward_path) = (view.view.clone(), view.fabric.clone(), view.clock.clone(), self.forward_path.clone());
         // A neighbour coming up on this channel (a join, a heal, a refeed) hears what the primary
-        // holds: the statuses, and the forwarded full of every source it has published (gossip.md
+        // holds: the statuses, and the last differential of each peer mesh it published (gossip.md
         // §3.1, §3.3), queued under the forwarder's lock so no delta decided after the replay can
-        // pass it on the channel.
+        // pass it on the channel. A node behind that differential's base repairs by a read.
         let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let replay_me = replay_view.current_name();
                 let prefix = replay_view.digest_view.statuses.held_frames(&replay_fabric, &replay_me);
-                let (frames, full_chunks, bytes) = replay_forward_path.replay(&replay_me, prefix, || replay_clock.now_rafka_ms());
-                Replayed { direct: Vec::new(), frames, full_chunks, bytes }
+                let (frames, deltas, bytes) = replay_forward_path.replay(&replay_me, prefix, || replay_clock.now_rafka_ms());
+                Replayed { direct: Vec::new(), frames, deltas, bytes }
             } else {
                 Replayed::default()
             }
@@ -1231,9 +1232,9 @@ impl Channels {
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.topology_view.fabric) {
                 self.mesh().register(&d);
             }
-            // A peer source installed from a topology read is a full this node holds: while it holds
-            // its Mesh's forwarder role, it goes into the Mesh as a backbone install would (gossip.md
-            // §3.3); without the role, its first full carries it (`Backbone::forward_fulls`).
+            // A peer mesh installed from a topology read is a topology this node holds: while it holds
+            // its Mesh's forwarder role, it goes into the Mesh as a backbone install would, the
+            // differential from what the Mesh holds (gossip.md §3.3).
             if side == Side::ReadPeer && i.mesh != self.topology_view.view.mesh {
                 let me = self.topology_view.view.current_name();
                 let _ = self.forward_path.source_with_clock(&me, &i.mesh, &i.publisher, i.topology_version, &i.full, || self.topology_view.clock.now_rafka_ms());

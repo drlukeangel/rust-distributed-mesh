@@ -104,16 +104,17 @@ impl View {
         let order = self.order.lock().unwrap();
         let mut by_mesh: std::collections::BTreeMap<String, SourceSnapshot> = Default::default();
         for s in channel.into_iter().chain(backbone) {
-            let held = order.installed_snapshot(&s.mesh).map(|(publisher, version, ..)| (publisher.clone(), version));
-            let is_held = |c: &SourceSnapshot| held.as_ref().is_some_and(|(p, v)| &c.publisher == p && c.topology_version == *v);
+            let held = order.installed_snapshot(&s.mesh).map(|(_, version, ..)| version);
+            let is_held = |c: &SourceSnapshot| held == Some(c.topology_version);
             match by_mesh.entry(s.mesh.clone()) {
                 std::collections::btree_map::Entry::Vacant(e) => {
                     e.insert(s);
                 }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
                     let kept = e.get();
-                    // The one this node holds of the source; else, of one publisher, the higher version.
-                    let newer = !is_held(kept) && (is_held(&s) || (s.publisher == kept.publisher && s.topology_version > kept.topology_version));
+                    // The one this node holds of the mesh; else the higher version, whichever
+                    // mesh-primary sent it (Q389).
+                    let newer = !is_held(kept) && (is_held(&s) || s.topology_version > kept.topology_version);
                     if newer {
                         e.insert(s);
                     }
@@ -419,12 +420,12 @@ impl View {
                         if let Some(owner) = &owner { order.publication_installed(mesh, publisher, i.topology_version, owner, i.snapshot_id); }
                         let installed = self.installed(&i, fabric, side, *published_at_rafka_ms, prior);
                         drop(rx);
-                        order.installed_projection(&i.mesh, &i.publisher, i.topology_version, Some(*published_at_rafka_ms), &i.full, Some(i.snapshot_id));
+                        order.installed_projection(&i.mesh, &i.publisher, i.topology_version, &i.full, Some(i.snapshot_id));
                         installed
                     }
                 }
             }
-            Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted } => {
+            Frame::TopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms: _, changed, removed, in_flight, deleted } => {
                 if side == Side::Backbone {
                     tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
                         .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete snapshots travel: refused"));
@@ -461,16 +462,15 @@ impl View {
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target);
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
-                        order.installed_projection(mesh, source_publisher, *topology_version, Some(*published_at_rafka_ms), &installed_full, None);
+                        order.installed_projection(mesh, source_publisher, *topology_version, &installed_full, None);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
                     Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
                     Moved::Desynced { gap, .. } => {
                         drop(rx);
-                        let (held_version, held_publisher) = match &gap {
-                            Gap::Version { held, .. } => (*held as i64, String::new()),
-                            Gap::OtherRevision { held } => (-1, held.to_string()),
-                            _ => (-1, String::new()),
+                        let held_version = match &gap {
+                            Gap::Version { held, .. } => *held as i64,
+                            _ => -1,
                         };
                         tracing::info_span!(
                             "rdm.mesh.topology.update.via-gap",
@@ -480,7 +480,6 @@ impl View {
                             source_publisher = %source_publisher,
                             gap = %gap,
                             held_version,
-                            held_publisher = %held_publisher,
                             base_version = *base_version,
                             topology_version = *topology_version,
                         )
@@ -531,7 +530,7 @@ impl View {
             }
         };
         let mut order = self.order.lock().unwrap();
-        if let Err(e) = order.admit_read(&chunk.mesh, &chunk.publisher, chunk.topology_version) {
+        if let Err(e) = order.admit_read(&chunk.mesh, chunk.topology_version) {
             tracing::info_span!(
                 "rdm.mesh.topology.reject.via-stale",
                 node = %self.current_name(),
@@ -543,7 +542,7 @@ impl View {
                 publisher = %chunk.publisher,
             )
             .in_scope(|| tracing::info!("a topology read of a version below the one this node installed of its source: ignored"));
-            let held_version = order.floor(&chunk.mesh, &chunk.publisher).unwrap_or_default();
+            let held_version = order.floor(&chunk.mesh).unwrap_or_default();
             drop(order);
             record_own(own_digests);
             return Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: chunk.topology_version });
@@ -553,9 +552,12 @@ impl View {
         let installed = order.installed_snapshot(&chunk.mesh);
         let taken = rx.take_chunk_against(chunk, true, installed);
         if let Taken::Installed(i) = &taken {
+            if side == Side::ReadPeer {
+                rx.note_peer_read(&i.mesh);
+            }
             self.installed(i, fabric, side, 0, prior);
             drop(rx);
-            order.installed_projection(&i.mesh, &i.publisher, i.topology_version, None, &i.full, None);
+            order.installed_projection(&i.mesh, &i.publisher, i.topology_version, &i.full, None);
         } else {
             drop(rx);
             drop(order);
@@ -587,7 +589,7 @@ impl View {
             members = i.full.member_count(),
             in_flight = i.full.in_flight().len(),
             deleted = i.full.deleted().len(),
-            new_revision = i.new_revision,
+            first = i.first,
             resumed = i.resumed,
             refreshed = i.refreshed,
         )

@@ -1,14 +1,12 @@
 //! The path a forwarding mesh primary's frames take onto its own mesh channel.
 //!
 //! ONE ordered sender carries every frame the primary puts on its mesh channel for the backbone:
-//! the forwarder's decisions (the backbone receiver, the own-mesh publication, the role fulls) and the
-//! lifecycle frames it carries in. A decision is made under the forwarder's lock and queued while
-//! that lock is still held, so the queue's order is the decision order; a single task empties the
-//! queue, finishing every frame of a decision (a chunked full is one decision) before it takes the
-//! next. A receiver applies a delta only at exactly the base it holds for that source, and installs
-//! a full only once it holds every chunk: what depends on a frame is the later frames of the SAME
-//! source and publisher, and one task sending one decision at a time keeps them in order and
-//! contiguous. The queue is unbounded and never drops: topology forwards are low-rate.
+//! the forwarder's differentials of the peer meshes it holds and the lifecycle frames it carries in.
+//! A decision is made under the forwarder's lock and queued while that lock is still held, so the
+//! queue's order is the decision order; a single task empties the queue, one decision at a time. A
+//! receiver applies a delta only at exactly the base it holds for that mesh: what depends on a
+//! frame is the later frames of the SAME mesh, and one task sending them in order keeps them in
+//! order. The queue is unbounded and never drops: topology forwards are low-rate.
 //!
 //! Only the mesh's primary (holding the forwarder role) decides or carries anything. The role
 //! and its term live under the forwarder's lock: taking or losing it clears the baseline and begins
@@ -17,15 +15,15 @@
 //! current one: what a node decided as primary is never sent once it no longer is.
 //!
 //! The forwarder advances its baseline when it decides, before the send. A frame the channel
-//! refuses, or a queue whose task is gone, sets `owes_full`: the next publication of the primary
-//! puts the full of every source into the mesh (the role's mechanism), with no timer and no retry.
+//! refuses, or a queue whose task is gone, is named by its span and nothing else: a node that missed
+//! it is behind the next differential's base and repairs by a read (gossip.md §3.3), with no full,
+//! no timer and no retry.
 
 use crate::frame::Frame;
 use crate::snapshot::{Forward, Forwarder, Full, PublisherId};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -39,8 +37,9 @@ enum Job {
     Forwarded { me: String, revision: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
     /// A lifecycle frame this primary carries into its mesh.
     Carried { me: String, revision: u64, frame: Frame },
-    /// A neighbour-up replay (statuses, primaries, and the forwarder's published fulls), decided and
-    /// queued under the forwarder's lock so no delta decided after it can pass it on the channel.
+    /// A neighbour-up replay (statuses, primaries, and the forwarder's last differential of each peer
+    /// mesh), decided and queued under the forwarder's lock so no delta decided after it can pass it
+    /// on the channel.
     Replayed { me: String, revision: Option<u64>, frames: Vec<Frame> },
 }
 
@@ -52,30 +51,28 @@ pub(crate) struct ForwardRx(mpsc::UnboundedReceiver<Job>);
 pub(crate) struct ForwardPath {
     forwarder: Arc<Mutex<Forwarder>>,
     queue: mpsc::UnboundedSender<Job>,
-    owes_full: Arc<AtomicBool>,
 }
 
 impl ForwardPath {
     /// The path over `forwarder`, sending to `sink` from one task that lives as long as any clone.
-    /// `owes_full` is the flag whose set state makes the next publication a full of every source.
     #[cfg(test)]
-    pub(crate) fn new(forwarder: Arc<Mutex<Forwarder>>, owes_full: Arc<AtomicBool>, sink: Sink) -> Self {
+    pub(crate) fn new(forwarder: Arc<Mutex<Forwarder>>, sink: Sink) -> Self {
         forwarder.lock().unwrap().set_author(test_author());
-        let (me, rx) = Self::pair(forwarder, owes_full);
+        let (me, rx) = Self::pair(forwarder);
         me.spawn_sender(rx, sink);
         me
     }
 
     /// Create the path and its receiver before the channel's sink is bound, so the channel's
     /// neighbour-up replay closure can queue onto it from the moment the channel subscribes.
-    pub(crate) fn pair(forwarder: Arc<Mutex<Forwarder>>, owes_full: Arc<AtomicBool>) -> (Self, ForwardRx) {
+    pub(crate) fn pair(forwarder: Arc<Mutex<Forwarder>>) -> (Self, ForwardRx) {
         let (queue, rx) = mpsc::unbounded_channel();
-        (Self { forwarder, queue, owes_full }, ForwardRx(rx))
+        (Self { forwarder, queue }, ForwardRx(rx))
     }
 
     /// Start the single ordered sender task emptying `rx` into `sink`.
     pub(crate) fn spawn_sender(&self, rx: ForwardRx, sink: Sink) {
-        tokio::spawn(send_in_order(rx.0, sink, self.owes_full.clone(), self.forwarder.clone()));
+        tokio::spawn(send_in_order(rx.0, sink, self.forwarder.clone()));
     }
 
     /// Decide what `source_mesh` moving to `version` puts into the mesh, and queue it behind every
@@ -100,42 +97,17 @@ impl ForwardPath {
         now_ms
     }
 
-    /// The first publication of every source in `held` (taking the role, or owing a full): one
-    /// decision, queued behind every frame queued before it.
-    #[cfg(test)]
-    pub(crate) fn fulls(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) {
-        let _ = self.fulls_with_clock(me, node_mesh, reason, held, || now_ms);
-    }
-
-    /// [`Self::fulls`], reading `now_ms` inside the forwarder lock.
-    pub(crate) fn fulls_with_clock(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: impl FnOnce() -> u64) -> u64 {
-        let mut forwarder = self.forwarder.lock().unwrap();
-        let now_ms = now_ms();
-        let Some(revision) = forwarder.role() else { return now_ms };
-        let frames = forwarder.fulls(me, held, now_ms);
-        let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        tracing::info_span!("rdm.mesh.topology.update.via-forwarded-full", node = %me, mesh = %node_mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
-            .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
-        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: None, out: Forward::Full(frames) });
-        now_ms
-    }
-
-    /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. A forwarder that
-    /// takes or loses the role has published nothing into its mesh: under the forwarder's lock its
-    /// baseline is cleared, a new term begins, and the first publication of every source after
-    /// taking it is owed as a full (gossip.md §3.3). Returns whether the role changed.
-    pub(crate) fn set_role(&self, on: bool) -> bool {
+    /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. Under the forwarder's
+    /// lock its baseline is cleared and a new term begins; taking it, the baseline is `held`, what this
+    /// node holds of each peer mesh from its own mesh channel (gossip.md §3.3). Returns whether the
+    /// role changed.
+    pub(crate) fn set_role(&self, on: bool, held: &[(String, PublisherId, u64, Full)]) -> bool {
         let mut forwarder = self.forwarder.lock().unwrap();
         let changed = forwarder.set_role(on);
-        if changed {
-            self.owes_full.store(on, Ordering::Relaxed);
+        if changed && on {
+            forwarder.start_from(held);
         }
         changed
-    }
-
-    /// The flag whose set state makes the next publication a full of every source.
-    pub(crate) fn owes_full(&self) -> Arc<AtomicBool> {
-        self.owes_full.clone()
     }
 
     /// Carry a lifecycle frame into the mesh, behind every frame queued before it.
@@ -145,29 +117,29 @@ impl ForwardPath {
         self.enqueue(Job::Carried { me: me.to_string(), revision, frame });
     }
 
-    /// Queue a neighbour-up replay (statuses, primaries, and the forwarder's published fulls) under
-    /// the forwarder's lock, behind every frame queued before it and ahead of any delta decided
-    /// after it. Returns `(frames, full_chunks, bytes)`.
+    /// Queue a neighbour-up replay (statuses, primaries, and the forwarder's last differential of each
+    /// peer mesh) under the forwarder's lock, behind every frame queued before it and ahead of any delta
+    /// decided after it. Returns `(frames, deltas, bytes)`.
     pub(crate) fn replay(&self, me: &str, mut frames: Vec<Frame>, now_ms: impl FnOnce() -> u64) -> (usize, usize, usize) {
         let mut forwarder = self.forwarder.lock().unwrap();
         let now_ms = now_ms();
         let revision = forwarder.role();
         if revision.is_some() {
-            frames.extend(forwarder.replay(me, now_ms));
+            frames.extend(forwarder.replay(now_ms));
         }
         if frames.is_empty() {
             return (0, 0, 0);
         }
         let frames: Vec<_> = frames.into_iter().map(|f| forwarder.author_frame(f, now_ms)).collect();
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        let fulls = frames.iter().filter(|f| matches!(f.data(), Frame::TopologyFull { .. })).count();
+        let deltas = frames.iter().filter(|f| matches!(f.data(), Frame::TopologyDelta { .. })).count();
         let len = frames.len();
         self.enqueue(Job::Replayed { me: me.to_string(), revision, frames });
-        (len, fulls, bytes)
+        (len, deltas, bytes)
     }
 
     /// Queue `job`, called while the lock that decided it is held. A queue whose task is gone
-    /// sends nothing; the span names it and the next publication is a full.
+    /// sends nothing; the span names it.
     fn enqueue(&self, job: Job) {
         if let Err(mpsc::error::SendError(job)) = self.queue.send(job) {
             let (me, frames) = match job {
@@ -177,7 +149,7 @@ impl ForwardPath {
             };
             let cause = anyhow::anyhow!("the forward queue of node {me} has no sender task");
             for frame in &frames {
-                refused(&self.owes_full, &me, frame, &cause);
+                refused(&me, frame, &cause);
             }
         }
     }
@@ -185,7 +157,6 @@ impl ForwardPath {
 
 fn frames_of(out: Forward) -> Vec<Frame> {
     match out {
-        Forward::Full(frames) => frames,
         Forward::Delta(frame) => vec![*frame],
         Forward::Nothing(_) => Vec::new(),
     }
@@ -200,15 +171,14 @@ fn identity(frame: &Frame) -> Option<(&str, &PublisherId, u64)> {
     }
 }
 
-/// The channel (or the queue) did not take `frame`. A frame of a source leaves the mesh without
-/// something it may hold a base for: the next publication is a full. The span names what failed.
-fn refused(owes_full: &AtomicBool, me: &str, frame: &Frame, cause: &anyhow::Error) {
+/// The channel (or the queue) did not take `frame`. The span names what failed; a node that missed
+/// a differential is behind the next one's base and repairs by a read.
+fn refused(me: &str, frame: &Frame, cause: &anyhow::Error) {
     let cause = format!("{cause:#}");
     match identity(frame) {
         Some((mesh, publisher, version)) => {
-            owes_full.store(true, Ordering::Relaxed);
             tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = version, cause = %cause)
-                .in_scope(|| tracing::warn!("a forward was not sent: the next publication puts the full of every source into the mesh"));
+                .in_scope(|| tracing::warn!("a forward was not sent: a node behind it repairs by a read at the next differential"));
         }
         None => {
             tracing::info_span!("rdm.mesh.topology.update.via-forward-send-failed", node = %me, mesh = "", source_publisher = "", topology_version = 0u64, cause = %cause)
@@ -219,8 +189,8 @@ fn refused(owes_full: &AtomicBool, me: &str, frame: &Frame, cause: &anyhow::Erro
 
 /// The one sender: each entry in the order it was queued, every frame of it before the next. An
 /// entry decided in a term of the forwarder role that is not the current one is dropped, named:
-/// the node lost the role (or lost and retook it, owing a full) after deciding it.
-async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_full: Arc<AtomicBool>, forwarder: Arc<Mutex<Forwarder>>) {
+/// the node lost the role (or lost and retook it) after deciding it.
+async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, forwarder: Arc<Mutex<Forwarder>>) {
     while let Some(job) = rx.recv().await {
         let revision = match &job {
             Job::Carried { revision, .. } | Job::Forwarded { revision, .. } => Some(*revision),
@@ -236,11 +206,11 @@ async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_fu
         match job {
             Job::Carried { me, frame, .. } => {
                 if let Err(cause) = sink(frame.clone()).await {
-                    refused(&owes_full, &me, &frame, &cause);
+                    refused(&me, &frame, &cause);
                 }
             }
-            Job::Forwarded { me, source, out, .. } => send_forward(&sink, &owes_full, me, source, out).await,
-            Job::Replayed { me, frames, .. } => send_replayed(&sink, &owes_full, me, frames).await,
+            Job::Forwarded { me, source, out, .. } => send_forward(&sink, me, source, out).await,
+            Job::Replayed { me, frames, .. } => send_replayed(&sink, me, frames).await,
         }
     }
 }
@@ -268,7 +238,7 @@ fn role_dropped(job: Job, revision: u64, current: Option<u64>) {
 }
 
 /// Put what a neighbour-up replay queued onto the mesh channel, in order.
-async fn send_replayed(sink: &Sink, owes_full: &AtomicBool, me: String, frames: Vec<Frame>) {
+async fn send_replayed(sink: &Sink, me: String, frames: Vec<Frame>) {
     let mut refused_sources: BTreeSet<String> = BTreeSet::new();
     for frame in &frames {
         if let Some((mesh, ..)) = identity(frame) {
@@ -277,25 +247,17 @@ async fn send_replayed(sink: &Sink, owes_full: &AtomicBool, me: String, frames: 
             }
             if let Err(cause) = sink(frame.clone()).await {
                 refused_sources.insert(mesh.to_string());
-                refused(owes_full, &me, frame, &cause);
+                refused(&me, frame, &cause);
             }
         } else if let Err(cause) = sink(frame.clone()).await {
-            refused(owes_full, &me, frame, &cause);
+            refused(&me, frame, &cause);
         }
     }
 }
 
 /// Put what the forwarder decided onto the mesh channel, and name it.
-async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: Option<(String, PublisherId, u64)>, out: Forward) {
+async fn send_forward(sink: &Sink, me: String, source: Option<(String, PublisherId, u64)>, out: Forward) {
     let frames: Vec<Frame> = match out {
-        Forward::Full(frames) => {
-            if let Some((mesh, publisher, version)) = &source {
-                let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-                tracing::info_span!("rdm.mesh.topology.update.via-forwarded-full", node = %me, mesh = %mesh, source_publisher = %publisher, topology_version = *version, reason = "first-for-source", chunks = frames.len(), bytes)
-                    .in_scope(|| tracing::info!("the first publication of this source into the mesh is a full, loads omitted"));
-            }
-            frames
-        }
         Forward::Delta(frame) => {
             if let (Frame::TopologyDelta { base_version, changed, removed, in_flight, deleted, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
                 tracing::info_span!(
@@ -316,17 +278,9 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
         }
         Forward::Nothing(_) => return,
     };
-    // A source one of whose frames was refused sends no more of this decision: a full missing a
-    // chunk is never installed, and the next publication is a full.
-    let mut refused_sources: BTreeSet<String> = BTreeSet::new();
     for frame in &frames {
-        let Some((mesh, ..)) = identity(frame) else { continue };
-        if refused_sources.contains(mesh) {
-            continue;
-        }
         if let Err(cause) = sink(frame.clone()).await {
-            refused_sources.insert(mesh.to_string());
-            refused(owes_full, &me, frame, &cause);
+            refused(&me, frame, &cause);
         }
     }
 }
@@ -428,15 +382,15 @@ mod tests {
         }
     }
 
-    /// CONTRACT: forwards decided in order (a full at v10, then deltas v10 to v11 and v11 to v12)
-    /// reach the mesh channel in the order they were decided, whatever the first send takes: a
-    /// receiver applies a delta only at exactly its base, so v12 ahead of v11 drops v11.
+    /// CONTRACT: forwards decided in order (the first differential, from 0 to v10, then v10 to v11
+    /// and v11 to v12) reach the mesh channel in the order they were decided, whatever the first
+    /// send takes: a receiver applies a delta only at exactly its base, so v12 ahead of v11 drops v11.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn forwards_decided_in_order_reach_the_channel_in_that_order() {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), ..Recorder::default() };
-        let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
-        path.set_role(true);
+        let path = ForwardPath::new(Arc::default(), rec.sink());
+        path.set_role(true, &[]);
         let p = publisher();
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
@@ -477,23 +431,21 @@ mod tests {
     }
 
     /// CONTRACT: a forward the mesh channel refuses leaves no silent gap. The refusal is named by a
-    /// span carrying the node, mesh, source publisher, version and cause, and the primary owes the
-    /// mesh a full: its next publication puts the full of every source into it.
+    /// span carrying the node, mesh, source publisher, version and cause; nothing full follows it.
+    /// The baseline moved: the next differential is from v11, so a node that missed v11 is behind its
+    /// base and repairs by a read (gossip.md §3.3).
     #[tokio::test]
-    async fn a_refused_forward_is_named_and_the_next_publication_owes_a_full() {
+    async fn a_refused_forward_is_named_and_the_next_differential_is_from_its_version() {
         let spans = Spans::default();
         let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         // The channel refuses the second send: the delta v10 to v11.
         let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
-        let owes = Arc::new(AtomicBool::new(false));
-        let path = ForwardPath::new(Arc::default(), owes.clone(), rec.sink());
-        path.set_role(true);
-        owes.store(false, Ordering::Relaxed);
+        let path = ForwardPath::new(Arc::default(), rec.sink());
+        path.set_role(true, &[]);
         let p = publisher();
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         assert_eq!(rec.seen_after(1).await, vec![(0, 10)]);
-        assert!(!owes.load(Ordering::Relaxed), "a forward that was sent owes nothing");
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
 
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
@@ -504,28 +456,27 @@ mod tests {
         assert_eq!(f["source_publisher"], p.to_string());
         assert_eq!(f["topology_version"], "11");
         assert!(f["cause"].contains("the channel refused call 1"), "the cause is the channel's own: {}", f["cause"]);
-        assert!(owes.load(Ordering::Relaxed), "the next publication owes the mesh a full");
+        path.source("mesh2.node-admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
+        assert_eq!(rec.seen_after(2).await, vec![(0, 10), (11, 12)], "nothing full follows a refusal; the next differential is from the version decided");
     }
 
-    /// CONTRACT: a queue whose sender task is gone is named, never silent, and owes a full.
+    /// CONTRACT: a queue whose sender task is gone is named, never silent.
     #[tokio::test]
-    async fn a_queue_with_no_sender_task_is_named_and_owes_a_full() {
+    async fn a_queue_with_no_sender_task_is_named() {
         let spans = Spans::default();
         let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
-        let owes = Arc::new(AtomicBool::new(false));
         let (queue, rx) = mpsc::unbounded_channel();
         drop(rx);
         let forwarder = Arc::new(Mutex::new(Forwarder::default()));
         forwarder.lock().unwrap().set_author(test_author());
-        let path = ForwardPath { forwarder, queue, owes_full: owes.clone() };
+        let path = ForwardPath { forwarder, queue };
         path.forwarder.lock().unwrap().set_role(true);
         let p = publisher();
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
-        assert!(owes.load(Ordering::Relaxed));
     }
 
     /// A sink whose first send blocks until the test lets it go; every frame it is handed is
@@ -567,33 +518,34 @@ mod tests {
 
     /// CONTRACT: a forward decided while this node was the primary and still queued when it loses
     /// the role is never sent: the role dropped between the decision and the send, and a node that
-    /// is no longer its mesh's primary puts nothing into the mesh. The full v10 is on the channel
-    /// before the role drops; the delta v10 to v11 and a carried frame queued behind it are not.
-    /// Taking the role again sends the full of the new term, behind nothing of the old one.
+    /// is no longer its mesh's primary puts nothing into the mesh. The differential to v10 is on the
+    /// channel before the role drops; the delta v10 to v11 and a carried frame queued behind it are
+    /// not. Taking the role again, the new term starts from what the mesh holds (v10) and its next
+    /// differential is from there, behind nothing of the old term.
     #[tokio::test]
     async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
         let spans = Spans::default();
         let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
-        let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
+        let path = ForwardPath::new(Arc::default(), gate.sink());
         let p = publisher();
-        path.set_role(true);
+        path.set_role(true, &[]);
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         gate.entered.notified().await;
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
         path.carry("mesh2.node-admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
-        path.set_role(false);
+        path.set_role(false, &[]);
         gate.release.add_permits(1);
-        path.set_role(true);
-        path.fulls("mesh2.node-admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 12, source_at(&ids, 12))], 3);
+        path.set_role(true, &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))]);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
         for _ in 0..400 {
-            if gate.seen.lock().unwrap().contains(&(0, 12)) {
+            if gate.seen.lock().unwrap().contains(&(10, 12)) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (0, 12)], "nothing queued before the role dropped reaches the channel");
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (10, 12)], "nothing queued before the role dropped reaches the channel");
         let dropped = spans.named("rdm.mesh.topology.reject.via-forwarder-role-dropped").await;
         let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_revision"].clone(), f["current_revision"].clone(), f["sources"].clone())).collect();
         assert_eq!(
@@ -603,20 +555,19 @@ mod tests {
         );
     }
 
-    /// CONTRACT: a node that does not hold the role decides nothing: a source moving, a role full
-    /// and a carried frame put nothing into the mesh, and leave no baseline behind.
+    /// CONTRACT: a node that does not hold the role decides nothing: a source moving and a carried
+    /// frame put nothing into the mesh, and leave no baseline behind.
     #[tokio::test]
     async fn a_node_without_the_role_forwards_nothing() {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         gate.release.add_permits(1);
-        let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
+        let path = ForwardPath::new(Arc::default(), gate.sink());
         let p = publisher();
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
-        path.fulls("mesh2.node-admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
         path.carry("mesh2.node-admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
         assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
-        path.set_role(true);
+        path.set_role(true, &[]);
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
         for _ in 0..400 {
             if !gate.seen.lock().unwrap().is_empty() {
@@ -624,32 +575,58 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the first publication after taking the role is a full, and nothing before it was sent");
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the mesh held nothing of mesh1: the first differential after taking the role is from 0, and nothing before it was sent");
     }
 
-    /// CONTRACT: every producer shares the one order: a role full, a carried lifecycle frame, a
-    /// neighbour-up replay and a delta reach the channel in the order they were queued, whatever
-    /// the first send takes.
+    /// CONTRACT: every producer shares the one order: a differential, a carried lifecycle frame, a
+    /// neighbour-up replay (the last differential again) and the next differential reach the channel
+    /// in the order they were queued, whatever the first send takes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn every_producer_shares_one_order() {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), carried_marker: true, ..Recorder::default() };
-        let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
-        path.set_role(true);
+        let path = ForwardPath::new(Arc::default(), rec.sink());
+        path.set_role(true, &[]);
         let p = publisher();
-        path.fulls("mesh2.node-admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
+        path.source("mesh2.node-admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         path.carry("mesh2.node-admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
-        let (replayed, fulls, _) = path.replay("mesh2.node-admin.1", Vec::new(), || 2);
-        assert_eq!((replayed, fulls), (1, 1));
+        let (replayed, deltas, _) = path.replay("mesh2.node-admin.1", Vec::new(), || 2);
+        assert_eq!((replayed, deltas), (1, 1), "the replay is the last differential of mesh1");
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 3);
         assert_eq!(rec.seen_after(4).await, vec![(0, 10), (1, 1), (0, 10), (10, 11)]);
     }
 
-    /// CONTRACT: a chunked full stays contiguous on the channel: the chunks of one decision are
-    /// all sent before the next decision's frames, even while the first chunk's send is slow, and
-    /// a source decided between two others keeps its place.
+    /// CONTRACT: a forwarder taking the role starts from what its mesh holds of each peer mesh (the
+    /// version its nodes reached from the forwarder before it, whoever that was), and the peer mesh's
+    /// next move goes in as the differential from there, whichever mesh-primary of the peer mesh
+    /// sent it (Q389). Nothing full is sent.
+    #[tokio::test]
+    async fn a_forwarder_taking_the_role_continues_from_what_its_mesh_holds() {
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        let gate = Gate::new();
+        gate.release.add_permits(1);
+        let path = ForwardPath::new(Arc::default(), gate.sink());
+        let (old_primary, new_primary) = (publisher(), publisher());
+        path.set_role(true, &[("mesh1".to_string(), old_primary, 7, source_at(&ids, 7))]);
+        path.source("mesh2.node-admin.2", "mesh1", &new_primary, 7, &source_at(&ids, 7), 1);
+        path.source("mesh2.node-admin.2", "mesh1", &new_primary, 9, &source_at(&ids, 9), 2);
+        for _ in 0..400 {
+            if !gate.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(7, 9)], "the held version is not sent again; the move is one differential from it");
+    }
+
+    /// CONTRACT: a differential too large for one message is not sent and is named; nothing full
+    /// replaces it, and the baseline moves, so the next differential of that mesh is from its version
+    /// and a node behind it repairs by a read (gossip.md §3.3). Another mesh decided between keeps its
+    /// place.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_chunked_full_is_sent_whole_before_the_decision_after_it() {
+    async fn a_differential_too_large_for_one_message_is_named_and_not_sent() {
+        let spans = Spans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let members: Vec<(NodeId, IncarnationId)> = (0..150).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
         let big = |version: u64| {
             let mut digests: Vec<MeshDigest> = members.iter().enumerate().map(|(k, (id, b))| digest(k as u32 + 1, id, b, 1)).collect();
@@ -659,19 +636,16 @@ mod tests {
             Full::new(digests, Vec::new(), Vec::new())
         };
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
-        let rec = Recorder { first_takes: Duration::from_millis(100), ..Recorder::default() };
-        let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
-        path.set_role(true);
+        let rec = Recorder::default();
+        let path = ForwardPath::new(Arc::default(), rec.sink());
+        path.set_role(true, &[]);
         let (p, q) = (publisher(), publisher());
-        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::TopologyFull { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.node-admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, deleted: dep }.authored(&test_author(), 0, 1)).len();
-        assert!(chunks > 1, "the full spans {chunks} chunks");
         path.source("mesh2.node-admin.1", "mesh1", &p, 10, &big(10), 1);
         path.source("mesh2.node-admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);
         path.source("mesh2.node-admin.1", "mesh1", &p, 11, &big(11), 3);
-        let seen = rec.seen_after(chunks + 1 + 1).await;
-        let mut expected: Vec<(u64, u64)> = vec![(0, 10); chunks];
-        expected.push((0, 5));
-        expected.push((10, 11));
-        assert_eq!(seen, expected);
+        assert_eq!(rec.seen_after(2).await, vec![(0, 5), (10, 11)]);
+        let named = spans.named("rdm.mesh.topology.reject.via-delta-too-large").await;
+        assert_eq!(named.len(), 1, "the differential that does not fit is named once");
+        assert_eq!((named[0]["mesh"].as_str(), named[0]["base_version"].as_str(), named[0]["topology_version"].as_str()), ("mesh1", "0", "10"));
     }
 }

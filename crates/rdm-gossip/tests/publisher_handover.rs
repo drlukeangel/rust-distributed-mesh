@@ -261,18 +261,21 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mut expected = vec![
             ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.topology.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.topology.reject.via-stale".to_string()),
+            // The predecessor's late delta is below the version the member holds of mesh1: the receive path
+            // ignores it first, whoever sent it (Q389).
+            ("mesh:mesh1".to_string(), "mesh-topology-delta".to_string(), "mesh1".to_string(), format!("topology_version={v2}"), format!("topology_version={}", pred_version + 1), "rdm.mesh.topology.reject.via-stale".to_string()),
         ];
         // Two senders: the receive order across them is gossip's own.
         said.sort();
         expected.sort();
         assert_eq!(said, expected, "each late lifecycle frame and heartbeat is ignored by the receive path, by name: {ignored:#?}");
-        // The predecessor's late full and delta of mesh1 are projections of the member's own mesh on its
-        // channel: refused by name whatever their stamp (gossip.md §3.3, Q387: that view comes by a read).
+        // The predecessor's late full of mesh1, above the held version, is a projection of the member's own
+        // mesh on its channel: refused by name (gossip.md §3.3, Q387: that view comes by a read).
         let own: Vec<(String, String)> = at("rdm.mesh.topology.reject.via-own-mesh-on-its-channel", rpc1.node.node_id.as_str()).into_iter()
             .filter(|s| s["start_unix_nano"].as_u64().is_some_and(|t| t >= late_from) && attr(s, "publisher") == pub1.to_string())
             .map(|s| (attr(s, "mesh"), attr(s, "frame"))).collect();
         let mut own = own; own.sort(); own.dedup();
-        assert_eq!(own, vec![("mesh1".to_string(), "mesh-topology".to_string()), ("mesh1".to_string(), "mesh-topology-delta".to_string())], "the late full and delta of mesh1 are refused as its own mesh on its channel");
+        assert_eq!(own, vec![("mesh1".to_string(), "mesh-topology".to_string())], "the late full of mesh1 is refused as its own mesh on its channel");
         let _ = (pred_stamp, pred_version);
         for refusal in ["rdm.mesh.topology.reject.via-predecessor-publisher", "rdm.mesh.topology.reject.via-non-primary-publisher"] {
             assert!(spans.iter().all(|s| s["name"] != refusal), "no frame is refused for who published it: {refusal}");
@@ -324,12 +327,12 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let (held_author, version) = fwd_bb.held_source("mesh2").unwrap();
         assert_eq!(held_author, author, "receipt keeps the supplied author, not the same-name member");
 
-        // This neighbour joins after the empty source installed: its baseline is a replayed full.
+        // This neighbour joins after the empty source installed: its baseline is the replayed differential from 0.
         let own = digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 42004);
         let mem = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let mem_channels = rdm_gossip::channel::Channels::new(&member.gossip, &member.ep, &mem).unwrap();
         mem_channels.join(rdm_gossip::channel::ChannelId::mesh(mem.fabric_id(), mem.mesh_id()), vec![forwarder_addr]).await.unwrap();
-        until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
+        until("the new neighbour to apply the replayed differential", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
         assert_eq!(served.publisher, author);

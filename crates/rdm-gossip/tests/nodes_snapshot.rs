@@ -339,53 +339,52 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 9)));
         let mut f10 = changed_member.clone();
         f10[0].status = NodeStatus::Pending;
-        let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10, vec![], vec![]));
+        let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10.clone(), vec![], vec![]));
         assert!(matches!(rx.take_delta("mesh2", &p, 9, 11, &d9_11), Moved::Applied { topology_version: 11, .. }), "the primary's next delta continues from the baseline");
-        // A new source primary is a new revision: its delta before its full is a gap, its full resumes.
+        // A new mesh-primary of mesh2 continues the mesh's version (Q389, Q391): its delta at the held
+        // base applies, whoever sent the one before, and a full of it below the held version is refused.
         let successor = publisher("mesh2.node-admin.2");
-        assert!(matches!(rx.take_delta("mesh2", &successor, 1, 2, &d78), Moved::Desynced { gap: Gap::OtherRevision { .. }, .. }));
-        let first_of_successor = topology_full_chunks(&f8, &successor, 1, 1, None);
-        let mut revision = None;
-        for c in &first_of_successor {
-            if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
-                revision = Some(*i);
-            }
+        let mut f12 = f10.clone();
+        f12[0].status = NodeStatus::Ready;
+        let d11_12 = Full::new(f10.clone(), vec![], vec![]).delta_to(&Full::new(f12, vec![], vec![]));
+        assert!(matches!(rx.take_delta("mesh2", &successor, 11, 12, &d11_12), Moved::Applied { topology_version: 12, .. }), "the mesh's version, whichever mesh-primary sent it");
+        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 12)));
+        for c in &topology_full_chunks(&f8, &successor, 1, 1, None) {
+            let refused = rx.take_chunk(chunk_of(c));
+            assert!(matches!(refused, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { held_version: 12, offered_version: 1 })), "a version below the held one is older, whoever sent it: {refused:?}");
         }
-        let revision = revision.expect("the successor's full installs");
-        assert!(revision.new_revision && revision.resumed);
-        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "its versions start again, never compared with the previous birth's");
 
         // A chunk lost for good: the incomplete snapshot is never applied, and the top-up from the
         // Mesh's own primary completes the picture; the straggler chunks that follow install nothing.
-        let lossy = topology_full_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 8, 14, None);
+        let lossy = topology_full_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 18, 14, None);
         assert!(lossy.len() > 2);
         for (k, c) in lossy.iter().enumerate() {
             if k != 1 {
                 assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { .. }), "chunk {k} of a snapshot missing chunk 1 installs nothing");
             }
         }
-        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "the held version stands while a chunk is missing");
-        let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 8, digests: big.digests(8), in_flight: vec![], deleted: vec![] };
+        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 12)), "the held version stands while a chunk is missing");
+        let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 18, digests: big.digests(8), in_flight: vec![], deleted: vec![] };
         let r = installed(read_baseline(&mut rx, &top_up));
-        assert_eq!(r.topology_version, 8);
-        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)), "the top-up completed what the lost chunk left incomplete");
+        assert_eq!(r.topology_version, 18);
+        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 18)), "the top-up completed what the lost chunk left incomplete");
         let late = rx.take_chunk(chunk_of(&lossy[1]));
         assert!(matches!(late, Taken::Waiting { .. } | Taken::Refused(_)), "the straggler installs nothing: {late:?}");
-        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)));
+        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 18)));
         // A newer snapshot supersedes an incomplete one.
-        let lossy2 = topology_full_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 9, 15, None);
+        let lossy2 = topology_full_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 19, 15, None);
         assert!(matches!(rx.take_chunk(chunk_of(&lossy2[0])), Taken::Waiting { .. }));
-        let newest = topology_full_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 10, 16, None);
+        let newest = topology_full_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 20, 16, None);
         let mut done = None;
         for c in &newest {
             if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
                 done = Some(*i);
             }
         }
-        assert_eq!(done.expect("the newer snapshot completes").topology_version, 10);
+        assert_eq!(done.expect("the newer snapshot completes").topology_version, 20);
         let straggler = rx.take_chunk(chunk_of(&lossy2[1]));
-        assert!(matches!(straggler, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { held_version: 10, offered_version: 9 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
-        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 10)));
+        assert!(matches!(straggler, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { held_version: 20, offered_version: 19 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
+        assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 20)));
 
         // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------
         let src = publisher("mesh2.node-admin.1");
@@ -397,9 +396,10 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let mut fwd = Forwarder::default();
         fwd.set_author(crate::gossip_wire::author());
         let first = fwd.source("mesh1.node-admin.1", "mesh2", &src, 41, &f41, 1);
-        let Forward::Full(first_frames) = first else { panic!("the first publication of a source is a full") };
-        let carried_loads = first_frames.iter().any(|f| matches!(f, Frame::TopologyFull { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
-        assert!(!carried_loads, "a forwarded full omits loads");
+        let Forward::Delta(first_frame) = first else { panic!("the first publication of a peer mesh is a differential") };
+        let (_, _, first_base, first_to, first_parts) = delta_of(&first_frame);
+        assert_eq!((first_base, first_to, first_parts.changed.len()), (0, 41, f41.member_count()), "from 0: every node of the peer mesh is an addition");
+        assert!(first_parts.changed.iter().all(|d| d.in_flight.is_none()), "a forwarded differential omits loads");
         // The forwarder never held 42; it holds 43. One delta from what it last published.
         let Forward::Delta(delta) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 43, &f43, 2) else { panic!("a moved source is a delta") };
         let (mesh, source, base, to, parts) = delta_of(&delta);
@@ -420,22 +420,36 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(matches!(fwd.source("mesh1.node-admin.1", "mesh2", &src, 44, &f43, 3), Forward::Nothing(_)));
         let mut d45 = f43.digests();
         d45[0].status = NodeStatus::Pending;
-        let Forward::Delta(next) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 45, &Full::new(d45, vec![], vec![]), 4) else { panic!("a further move is a delta") };
+        let f45 = Full::new(d45, vec![], vec![]);
+        let Forward::Delta(next) = fwd.source("mesh1.node-admin.1", "mesh2", &src, 45, &f45, 4) else { panic!("a further move is a delta") };
         let (_, _, base, to, _) = delta_of(&next);
         assert_eq!((base, to), (43, 45), "the base stays the last version published into the Mesh");
-        // A role change publishes a full before any delta; a new source revision does too.
+        // A forwarder taking the role starts from what its Mesh holds (v45, from the forwarder before
+        // it); the next move of mesh2 is the differential from there, whichever of mesh2's primaries
+        // sent it (Q389). Nothing full is sent.
         fwd.reset();
-        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 45, &f43, 5), Forward::Full(_)), "taking the role: a full first");
-        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &publisher("mesh2.node-admin.2"), 1, &f41, 6), Forward::Full(_)), "a new source primary is a new revision: a full first");
-        // A delta too large for one message is the full.
+        fwd.start_from(&[("mesh2".to_string(), src.clone(), 45, f45.clone())]);
+        let mesh2_successor = publisher("mesh2.node-admin.2");
+        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &mesh2_successor, 45, &f45, 5), Forward::Nothing(_)), "the version the Mesh holds is not sent again");
+        let mut d46 = f45.digests();
+        d46[0].status = NodeStatus::Ready;
+        let f46 = Full::new(d46, vec![], vec![]);
+        let Forward::Delta(after_take) = fwd.source("mesh1.node-admin.2", "mesh2", &mesh2_successor, 46, &f46, 6) else { panic!("taking the role: a differential from what the Mesh holds") };
+        let (_, _, take_base, take_to, _) = delta_of(&after_take);
+        assert_eq!((take_base, take_to), (45, 46));
+        // A differential too large for one message is not sent; the baseline moves, and the next one is from it.
         let huge = Mesh::new("mesh2", 80);
-        let Forward::Full(_) = fwd.source("mesh1.node-admin.2", "mesh2", &src, 46, &Full::new(huge.digests(1), vec![], vec![]), 7) else { panic!("a different publisher: full") };
+        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 47, &Full::new(huge.digests(1), vec![], vec![]), 7), Forward::Nothing(_)), "80 additions do not fit one message");
         let mut churned = huge.digests(2);
         churned.iter_mut().for_each(|d| d.status = NodeStatus::ConnectionsDeleting);
-        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 47, &Full::new(churned, vec![], vec![]), 8), Forward::Full(_)), "a delta that does not fit one message is the full");
+        assert!(matches!(fwd.source("mesh1.node-admin.2", "mesh2", &src, 48, &Full::new(churned.clone(), vec![], vec![]), 8), Forward::Nothing(_)), "80 status changes do not fit one message");
+        churned[0].status = NodeStatus::Ready;
+        let Forward::Delta(small) = fwd.source("mesh1.node-admin.2", "mesh2", &src, 49, &Full::new(churned, vec![], vec![]), 9) else { panic!("a move that fits is sent") };
+        let (_, _, small_base, small_to, _) = delta_of(&small);
+        assert_eq!((small_base, small_to), (48, 49), "the next differential is from the version that did not fit: a node behind it repairs by a read");
         result.insert(
             "forwarder".into(),
-            json!({ "delta_base": base, "delta_to": to, "delta_changed": parts.changed.len(), "first_publication": "full", "missed_intermediate_versions": "one delta 41 -> 43" }),
+            json!({ "delta_base": base, "delta_to": to, "delta_changed": parts.changed.len(), "first_publication": "differential from 0", "missed_intermediate_versions": "one delta 41 -> 43", "role_take": "differential 45 -> 46" }),
         );
 
         // ---- 6. through real gossip: source primary -> forwarding primary -> ordinary member -----
@@ -464,9 +478,16 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         fwd_m_channels.join(rdm_gossip::channel::ChannelId::backbone(fwd_m.fabric_id()), vec![src_addr.clone()]).await.unwrap();
         let fwd_bb = fwd_m_channels.backbone().expect("the backbone is joined");
         let _ = rdm_gossip::channel::ChannelId::backbone(&fab).topic();
+        // The forwarder sends each differential once (a node that misses one tops up at the next):
+        // the member is its neighbour on mesh1's channel before mesh2 is published.
+        fwd_m_channels.wait_for_neighbour().await;
+        mem_m_channels.wait_for_neighbour().await;
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
-        let remote = Mesh::new("mesh2", 40);
+        // Eight nodes: the first differential of mesh2 (every node an addition) fits one message. A peer
+        // mesh whose first differential does not is not sent and is read instead; chunked differentials
+        // are step 4 of #338.
+        let remote = Mesh::new("mesh2", 8);
         // Publish (the admin's hierarchy loop does this every gossip interval) until the
         // forwarding primary holds the snapshot, then until the ordinary member does.
         let held_by_fwd = {
@@ -485,16 +506,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let v1 = held_by_fwd.1;
         assert_eq!(v1, 1, "one projection, one version, however many publications");
         let at_member = {
-            let mut n = 0;
-            wait("the ordinary member to install the forwarded full", || {
-                n += 1;
-                let (fbb, mm) = (fwd_bb.clone(), mem_m.clone());
-                async move {
-                    if n % 5 == 0 {
-                        fbb.forward_fulls().await;
-                    }
-                    mm.held_source_version("mesh2")
-                }
+            wait("the ordinary member to apply the first differential of mesh2", || {
+                let mm = mem_m.clone();
+                async move { mm.held_source_version("mesh2") }
             })
             .await
         };
@@ -538,15 +552,16 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(bumps_seen, 2, "the real publisher bumped twice: the first projection and the one change (12 heartbeats bumped nothing)");
         // The source primary forwards its own Mesh as a source too; the remote change is the forwarding primary's delta.
         let deltas_sent: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.node-admin.1").collect();
-        assert_eq!(deltas_sent.len(), 1, "one remote change produced one delta: {deltas_sent:?}");
-        assert_eq!((attr(deltas_sent[0], "base_version"), attr(deltas_sent[0], "topology_version"), attr(deltas_sent[0], "changed")), (v1.to_string(), v2.to_string(), "1".to_string()));
+        assert_eq!(deltas_sent.len(), 2, "the first differential of mesh2 and one for the remote change: {deltas_sent:?}");
+        assert_eq!((attr(deltas_sent[0], "base_version"), attr(deltas_sent[0], "topology_version")), ("0".to_string(), v1.to_string()), "the first is from 0");
+        assert_eq!((attr(deltas_sent[1], "base_version"), attr(deltas_sent[1], "topology_version"), attr(deltas_sent[1], "changed")), (v1.to_string(), v2.to_string(), "1".to_string()));
         let applied = named(&spans, "rdm.mesh.topology.update.via-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.node.1").collect::<Vec<_>>();
-        assert_eq!(applied.len(), 1, "the ordinary member applied it once");
+        assert_eq!(applied.len(), 2, "the ordinary member applied each once");
         let installs = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
         let backbone_installs = installs.iter().filter(|s| attr(s, "channel") == "backbone" && attr(s, "node") == "mesh1.node-admin.1").count();
         assert!(backbone_installs >= 1, "the forwarding primary installed complete backbone snapshots");
-        let chunked_install = installs.iter().find(|s| attr(s, "channel") == "backbone" && attr(s, "members") == "40").map(|s| (attr(s, "snapshot_id"), attr(s, "topology_version")));
-        assert!(chunked_install.is_some(), "a 40-member snapshot installed whole");
+        let chunked_install = installs.iter().find(|s| attr(s, "channel") == "backbone" && attr(s, "members") == "8").map(|s| (attr(s, "snapshot_id"), attr(s, "topology_version")));
+        assert!(chunked_install.is_some(), "an 8-member snapshot installed whole");
         result.insert(
             "real_gossip".into(),
             json!({
@@ -556,7 +571,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
                 "topology_version_spans": bumps_seen,
                 "heartbeat_intervals_without_a_bump": 12,
                 "deltas_forwarded": deltas_sent.len(),
-                "delta": { "changed_member": changed_name, "base_version": attr(deltas_sent[0], "base_version"), "topology_version": attr(deltas_sent[0], "topology_version"), "trace_id": deltas_sent[0]["trace_id"], "span_id": deltas_sent[0]["span_id"] },
+                "delta": { "changed_member": changed_name, "base_version": attr(deltas_sent[1], "base_version"), "topology_version": attr(deltas_sent[1], "topology_version"), "trace_id": deltas_sent[1]["trace_id"], "span_id": deltas_sent[1]["span_id"] },
                 "member_applied_spans": applied.iter().map(|s| json!({ "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),
                 "member_loads_held": false,
             }),

@@ -128,6 +128,9 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
         fwd_m_channels.set_publisher(&fwd_pub);
         fwd_m_channels.join(rdm_gossip::channel::ChannelId::backbone(fwd_m.fabric_id()), vec![src_addr]).await.unwrap();
         let fwd_bb = fwd_m_channels.backbone().expect("the backbone is joined");
+        // The forwarder sends each differential once: the member is its neighbour before mesh2 is published.
+        fwd_m_channels.wait_for_neighbour().await;
+        mem_m_channels.wait_for_neighbour().await;
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
 
@@ -146,7 +149,6 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
         loop {
             let members = src_m.digest_view.current(src_m.digest_view.staleness_floor());
             src_bb.publish(&src_m, members).await;
-            fwd_bb.forward_fulls().await;
             if fwd_bb.held_source("mesh2").is_some() && mem_m.held_source_version("mesh2").is_some() {
                 break;
             }
@@ -166,9 +168,9 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
         let member_seen = mem_m
             .digest_view
             .get(src_digest.node.node_id.as_str())
-            .expect("ordinary member holds the remote member from the forwarded snapshot")
+            .expect("ordinary member holds the remote member from the forwarded differential")
             .0;
-        assert!(member_seen.load.is_none(), "forwarded cross-mesh projection omits loads: {member_seen:?}");
+        assert!(member_seen.load.is_none(), "the forwarded cross-mesh differential omits loads: {member_seen:?}");
 
         drop(src_bb);
         drop(fwd_bb);
@@ -185,9 +187,10 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
             installs.iter().any(|s| s["attributes"]["node"] == "mesh1.node-admin.1" && s["attributes"]["channel"] == "backbone"),
             "backbone snapshot install span recorded on mesh1.node-admin.1: {installs:?}"
         );
+        let applied: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-delta").collect();
         assert!(
-            installs.iter().any(|s| s["attributes"]["node"] == "mesh1.node.1" && s["attributes"]["channel"] == "mesh-channel"),
-            "forwarded snapshot install span recorded on mesh1.node.1: {installs:?}"
+            applied.iter().any(|s| s["attributes"]["node"] == "mesh1.node.1" && s["attributes"]["mesh"] == "mesh2" && s["attributes"]["base_version"] == "0"),
+            "the forwarded differential of mesh2, from 0, applied on mesh1.node.1: {applied:?}"
         );
     });
 }

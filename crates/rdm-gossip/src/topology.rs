@@ -2095,7 +2095,7 @@ mod tests {
             }
         }
         let mut replay = primary.digest_view.statuses.held_frames(&fabric, "mesh2.node-admin.1");
-        replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.node-admin.1", 3));
+        replay.extend(primary.forwarder.lock().unwrap().replay(3));
         for f in &replay {
             match f {
                 Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => {
@@ -2527,7 +2527,7 @@ mod tests {
             assert_eq!(status_of(&ready), Some(NodeStatus::Ready), "{mesh}: the member never leaves Ready");
             let ignored = spans.named("rdm.mesh.topology.reject.via-stale");
             assert!(
-                ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "mesh-topology" && f["subject"] == mesh && f["held_key"].ends_with("topology_version=5") && f["frame_key"] == "published_at_rafka_ms=40 topology_version=4"),
+                ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "mesh-topology" && f["subject"] == mesh && f["held_key"].ends_with("topology_version=5") && f["frame_key"] == "topology_version=4"),
                 "{mesh}: the ignore span names the backbone, the source, the version held and the one offered: {ignored:#?}"
             );
             let v5 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 5, 5, vec![publisher.clone(), ready.clone()], vec![], vec![]), 50);
@@ -2584,23 +2584,23 @@ mod tests {
     }
 
     /// CONTRACT (R-RX3, Luke 2026-10-12: "a message received out of order with a previous, earlier
-    /// version is ignored", per mesh by `published_at_rafka_ms` then `topology_version`; R-RX2: one
-    /// publisher per mesh, no cross-publisher rule; R-RX1: no refusal by who published): once a
-    /// channel took a source's newer publication, a publication of that mesh stamped before it is
-    /// ignored by the receive path and the receiver keeps what it holds, whoever published either.
-    /// Two receivers:
-    /// - a peer mesh primary on the backbone holds mesh2 from mesh2.node-admin.1; mesh2.node-admin.1 is deleted
-    ///   and mesh2.node-admin.2 becomes mesh2's primary (R-RX4: nobody else publishes mesh2), whose
-    ///   mesh topology is installed; mesh2.node-admin.1's last mesh topology, stamped before it, arrives after it
+    /// version is ignored"; Q389: the mesh's version orders it, whichever mesh-primary sent it; Q391: a
+    /// successor continues the version; R-RX1: no refusal by who published): once a channel took a
+    /// mesh's newer version, a publication of that mesh at a lower version is ignored by the receive path
+    /// and the receiver keeps what it holds, whoever published either. Two receivers:
+    /// - a peer mesh primary on the backbone holds mesh2 v1 from mesh2.node-admin.1; mesh2.node-admin.1 is
+    ///   deleted and mesh2.node-admin.2 becomes mesh2's primary (R-RX4: nobody else publishes mesh2) and
+    ///   continues at v2, which is installed; mesh2.node-admin.1's last mesh topology, v1, arrives after it
     ///   and is ignored; the deleted primary is not held again (rafka-v2 s41's red, trace
     ///   6cf5759abdce42d61c414560c772b308);
-    /// - on an ordinary node's mesh channel, mesh1.node-admin.2's full (after the role moved) is installed
-    ///   over mesh1.node-admin.1's; mesh1.node-admin.1's full and delta stamped before it are each ignored;
-    /// - no source is marked desynchronized: nothing is repaired, for nothing is missing.
+    /// - on an ordinary node's mesh channel, mesh1.node-admin.2's differential 5 to 6 (after the role moved)
+    ///   applies over mesh1.node-admin.1's v5; mesh1.node-admin.1's late full and delta below v6 are each
+    ///   ignored;
+    /// - no mesh is marked desynchronized: nothing is repaired, for nothing is missing.
     /// Must NOT happen: a receiver switched back to the earlier publication's projection; a frame
     /// refused by who published it; an earlier publication read as a version gap.
     #[test]
-    fn a_publication_stamped_before_the_newest_its_channel_holds_of_the_mesh_is_ignored_and_never_switches_the_receiver_back() {
+    fn a_mesh_topology_below_the_version_its_channel_holds_of_the_mesh_is_ignored_and_never_switches_the_receiver_back() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let held = |view: &View, side: Side, mesh: &str| view.receiver(side).lock().unwrap().held_version(mesh);
 
@@ -2612,11 +2612,11 @@ mod tests {
         assert!(hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2), None, 1, 1, mesh2_full(), vec![], vec![]), 100), &fabric, Side::Backbone));
         // mesh2.node-admin.1 is deleted and mesh2.node-admin.2 is established as the mesh's primary.
         let deleted = op_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &admin2.node.node_id, &admin2.node.incarnation, "node.delete");
-        assert!(hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2b), None, 1, 1, vec![admin2b.clone(), rpc[0].clone(), rpc[1].clone()], vec![], vec![deleted.clone()]), 300), &fabric, Side::Backbone));
-        assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 1)), "the successor primary's mesh topology of mesh2 is installed");
-        // The former primary's last mesh topology, stamped before the successor's, arrives late.
-        assert!(!hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2), None, 2, 3, mesh2_full(), vec![], vec![]), 200), &fabric, Side::Backbone), "mesh2.node-admin.1's last mesh topology is ignored");
-        assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 1)), "the peer keeps the successor primary's mesh topology of mesh2");
+        assert!(hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2b), None, 2, 1, vec![admin2b.clone(), rpc[0].clone(), rpc[1].clone()], vec![], vec![deleted.clone()]), 300), &fabric, Side::Backbone));
+        assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 2)), "the successor primary's mesh topology of mesh2, at the version it continued, is installed");
+        // The former primary's last mesh topology, below the successor's version, arrives late.
+        assert!(!hear(&mut backbone, &peer, &stamped(snapshot_of("mesh2", &publisher_of(&admin2), None, 1, 3, mesh2_full(), vec![], vec![]), 400), &fabric, Side::Backbone), "mesh2.node-admin.1's last mesh topology is ignored, however late its stamp");
+        assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 2)), "the peer keeps the successor primary's mesh topology of mesh2");
         assert!(peer.digest_view.is_deleted(admin2.node.node_id.as_str()) && peer.digest_view.get(admin2.node.node_id.as_str()).is_none(), "the deleted primary is not held again");
 
         // An ordinary node's mesh channel: mesh1's role moves from mesh1.node-admin.1 to mesh1.node-admin.2.
@@ -2624,37 +2624,38 @@ mod tests {
         let mut channel = crate::receive_order::ReceiveOrder::default();
         let (p1, p2, rpc1) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 1));
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 5, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 500), &fabric, Side::MeshChannel));
-        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p2), Some("mesh1.node-admin.2"), 1, 1, vec![p1.clone(), p2.clone(), rpc1.clone()], vec![], vec![]), 700), &fabric, Side::MeshChannel));
-        assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)), "the successor's full is installed: its revision");
-        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 6, 2, vec![p1.clone(), rpc1.clone()], vec![], vec![]), 600), &fabric, Side::MeshChannel), "the predecessor's full stamped before the successor's is ignored");
-        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p1), base_version: 5, topology_version: 6, published_at_rafka_ms: 600, changed: vec![], removed: vec![p2.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
-        assert!(!hear(&mut channel, &member, &late_delta, &fabric, Side::MeshChannel), "the predecessor's delta stamped before the successor's full is ignored");
-        assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)), "the member keeps the successor's projection");
+        let moved = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p2), base_version: 5, topology_version: 6, published_at_rafka_ms: 700, changed: vec![], removed: vec![p1.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        assert!(hear(&mut channel, &member, &moved, &fabric, Side::MeshChannel));
+        assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 6)), "the successor's differential applies at the version held");
+        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&p1), Some("mesh1.node-admin.1"), 5, 2, vec![p1.clone(), rpc1.clone()], vec![], vec![]), 800), &fabric, Side::MeshChannel), "the predecessor's full below the held version is ignored, however late its stamp");
+        let late_delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p1), base_version: 4, topology_version: 5, published_at_rafka_ms: 800, changed: vec![], removed: vec![p2.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        assert!(!hear(&mut channel, &member, &late_delta, &fabric, Side::MeshChannel), "the predecessor's delta below the held version is ignored");
+        assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 6)), "the member keeps the successor's projection");
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked desynchronized: {:?}", member.mesh_rx.lock().unwrap().desynced());
         assert!(peer.backbone_rx.lock().unwrap().desynced().is_empty());
     }
 
-    /// CONTRACT (R-RX3, R-RX2, R-RX1, Luke 2026-10-12; gossip.md §3.3: "the source publisher's exact
-    /// identity is its revision"): a publication is ordered by its stamp and version alone, never by
-    /// whether its publisher is held stopped or deleted here. A newer version of the revision a receiver
-    /// holds, published before its publisher stopped, is taken for what it carries. Three receivers:
+    /// CONTRACT (R-RX3, R-RX1, Luke 2026-10-12; Q389, Q391: the mesh's version orders it, whichever
+    /// mesh-primary sent it, and a successor continues it): a publication is ordered by its version alone,
+    /// never by whether its publisher is held stopped or deleted here. A newer version, published before its
+    /// publisher stopped, is taken for what it carries. Three receivers:
     /// - the fabric-primary on the backbone (rafka-v2 s42's successor, scratchpad m2a1.log:390-401): it
     ///   holds mesh1.node-admin.1's v7 listing mesh1.node-admin.2 Ready and executed mesh1.node-admin.1's stop; v8,
     ///   carrying mesh1.node-admin.2's stop, is taken, so mesh1.node-admin.2 is held stopped, and mesh1.node-admin.1's
     ///   own entry in it is refused by the stop the fabric-primary executed (`via-stopped-birth`, via
-    ///   `projection`); mesh1.node-admin.3 takes the role and its full, stamped after v8, is installed;
-    ///   mesh1.node-admin.1's v9, stamped before that full, is ignored by the receive path;
+    ///   `projection`); mesh1.node-admin.3 takes the role and its full, continuing at v9, is installed;
+    ///   mesh1.node-admin.1's late republish of v8 is ignored by the receive path;
     /// - an own-mesh member on its mesh channel holds mesh1.node-admin.1's stop from the fabric-primary's
     ///   event; mesh1.node-admin.1's v8, listing itself Ready, is taken. A lifecycle fact carries no
     ///   `published_at_rafka_ms`, so no key orders it against another publisher's projection: the
     ///   projection is the source's next word, and the stop ends in it (`via-stop-ended-in-projection`);
     /// - a node-admin that holds mesh1.node-admin.1 deleted (deleted) takes its v8 the same way; the
     ///   deleted publisher is not held again (its own entry is refused by name, the departure stands).
-    /// Must NOT happen: a receiver kept on an older version of the revision it holds; a publication refused
+    /// Must NOT happen: a receiver kept on an older version than one it is offered; a publication refused
     /// because its publisher is held stopped or deleted; a receiver switched back to an earlier
     /// publication after the successor's full.
     #[test]
-    fn a_newer_version_of_the_held_revision_published_before_its_publisher_stopped_is_taken_and_one_stamped_before_the_successors_full_is_ignored() {
+    fn a_newer_version_published_before_its_publisher_stopped_is_taken_and_one_below_the_successors_version_is_ignored() {
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -2674,10 +2675,10 @@ mod tests {
         assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&p), 8)), "a newer version of the held revision, published before its publisher stopped, is taken");
         assert!(fp.digest_view.in_flight().contains(&stop_x) && fp.digest_view.get(x.node.node_id.as_str()).is_none() && !fp.digest_view.routable(x.node.node_id.as_str()), "the stop v8 carries is held: mesh1.node-admin.2 is no longer held Ready");
         assert!(fp.digest_view.in_flight().contains(&stop_p) && fp.digest_view.get(p.node.node_id.as_str()).is_none(), "the publisher's own stop stands: v8 never carried it");
-        assert!(hear(&mut backbone, &fp, &stamped(snapshot_of("mesh1", &publisher_of(&successor), None, 1, 1, vec![successor.clone(), rpc.clone()], vec![stop_p.clone(), stop_x.clone()], vec![]), 20), &fabric, Side::Backbone));
-        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 1)), "the successor's full is installed: its revision");
-        assert!(!hear(&mut backbone, &fp, &snapshot_of("mesh1", &publisher_of(&p), None, 9, 9, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone), "v9, stamped before the successor's full, is ignored");
-        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 1)), "the receiver keeps the successor's full");
+        assert!(hear(&mut backbone, &fp, &stamped(snapshot_of("mesh1", &publisher_of(&successor), None, 9, 9, vec![successor.clone(), rpc.clone()], vec![stop_p.clone(), stop_x.clone()], vec![]), 20), &fabric, Side::Backbone));
+        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 9)), "the successor's full, continuing the mesh's version, is installed");
+        assert!(!hear(&mut backbone, &fp, &snapshot_of("mesh1", &publisher_of(&p), None, 8, 10, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone), "the predecessor's late v8, below the successor's v9, is ignored");
+        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 9)), "the receiver keeps the successor's full");
         assert!(fp.digest_view.in_flight().contains(&stop_x) && fp.digest_view.in_flight().contains(&stop_p), "both stops stand");
 
         // An own-mesh member, on its mesh channel: the stop is the fabric-primary's.
@@ -2712,18 +2713,18 @@ mod tests {
         assert_eq!(stop_ended.iter().map(|f| (f["node"].clone(), (f["member_path"].clone(), f["member_name"].clone()), f["publisher"].clone())).collect::<Vec<_>>(), vec![("mesh1.node.9".to_string(), ("mesh1.node-admin".to_string(), "1".to_string()), publisher_of(&p).to_string())], "{stop_ended:#?}");
     }
 
-    /// CONTRACT (R-RX1, R-RX2, R-RX3, Luke 2026-10-12; gossip.md §3.3: "A new source primary begins a
-    /// new revision, and a receiver installs a full of that revision before applying any of its deltas"): an
-    /// ordinary node of mesh2 holds mesh1's forwarded projection of mesh1.node-admin.1's lost birth, and the
-    /// primary record its entry read gave it names that birth. mesh1 recovers as itself, its new primary
-    /// birth publishes, and mesh2's primary forwards the new revision's full and then a delta: the full is
-    /// installed as a new revision and the delta applied, with no primary evidence for the new birth and no
-    /// repair. The lost birth's last full, stamped before the new revision's, arrives after it and is
-    /// ignored by the receive path. Must NOT happen: a publication refused for a publisher the primary
-    /// record does not name; a source marked desynchronized with nothing missing (mesh_recover
+    /// CONTRACT (R-RX1, Q389, Q391; gossip.md §3.3): an ordinary node of mesh2 holds mesh1's
+    /// forwarded projection of mesh1.node-admin.1's lost birth at v7, and the primary record its entry
+    /// read gave it names that birth. mesh1 recovers as itself and its new primary birth continues the
+    /// mesh's version; mesh2's primary forwards the move as the differential 7 to 8 (the lost birth
+    /// removed, the new one added) and then 8 to 9: each applies at exactly its base, whichever
+    /// mesh-primary of mesh1 sent it, with no primary evidence for the new birth and no repair. The lost
+    /// birth's last full, below the held version, arrives after them and is ignored by the receive path.
+    /// Must NOT happen: a publication refused for a publisher the primary record does not name; a mesh
+    /// marked desynchronized with nothing missing (mesh_recover
     /// `a_lost_mesh_recovers_as_itself_under_the_same_build`: mesh2.node.1-3 refused 35 frames each).
     #[test]
-    fn a_new_revision_on_the_mesh_channel_is_installed_with_no_primary_record_and_the_lost_births_earlier_full_is_ignored() {
+    fn a_new_mesh_primary_continues_the_mesh_version_on_the_mesh_channel_with_no_primary_record_and_the_lost_births_earlier_full_is_ignored() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let member = test_view("mesh2", "mesh2.node.1");
         let mut channel = crate::receive_order::ReceiveOrder::default();
@@ -2731,33 +2732,34 @@ mod tests {
         assert!(matches!(member.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lost, 1)), RoleTaken::Held { .. }), "the entry read's primary record of mesh1");
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.node-admin.1"), 7, 1, vec![lost.clone(), rpc.clone()], vec![], vec![]), 70), &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&lost), 7)));
-        assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&recovered), Some("mesh2.node-admin.1"), 1, 2, vec![recovered.clone(), rpc.clone()], vec![], vec![]), 90), &fabric, Side::MeshChannel));
-        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 1)), "the new revision's full is installed: no primary evidence is asked of its publisher");
-        let delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 1, topology_version: 2, published_at_rafka_ms: 95, changed: vec![], removed: vec![rpc.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        let moved = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 7, topology_version: 8, published_at_rafka_ms: 90, changed: vec![recovered.clone()], removed: vec![lost.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
+        assert!(hear(&mut channel, &member, &moved, &fabric, Side::MeshChannel));
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 8)), "the new mesh-primary's differential applies at the held version: no primary evidence is asked of its publisher");
+        let delta = Frame::TopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 8, topology_version: 9, published_at_rafka_ms: 95, changed: vec![], removed: vec![rpc.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         assert!(hear(&mut channel, &member, &delta, &fabric, Side::MeshChannel));
-        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 2)), "its delta applies at exactly its base");
-        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.node-admin.1"), 8, 3, vec![lost.clone(), rpc.clone()], vec![], vec![]), 80), &fabric, Side::MeshChannel), "the lost birth's full stamped before the new revision's is ignored");
-        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 2)));
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 9)), "its delta applies at exactly its base");
+        assert!(!hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.node-admin.1"), 7, 3, vec![lost.clone(), rpc.clone()], vec![], vec![]), 99), &fabric, Side::MeshChannel), "the lost birth's full below the held version is ignored, however late its stamp");
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 9)));
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked for repair: {:?}", member.mesh_rx.lock().unwrap().desynced());
     }
 
     /// CONTRACT (R-RX3, Luke 2026-10-13: "a frame whose order key is earlier than the newest the
     /// receiver holds for the same source is ignored, once, in the gossip receive path"; i143 s53:
-    /// out-of-order frames are ignored only in receive_order.rs): every earlier frame of the held
-    /// publisher is ignored by the receive path before the snapshot receiver reads it, so the receiver
-    /// orders nothing by version. An ordinary node of mesh1 holds mesh1.node-admin.1's v7 full and applies
-    /// its 7→8 delta; then:
+    /// out-of-order frames are ignored only in receive_order.rs; Q389: the mesh's version orders it): every
+    /// earlier frame of the mesh is ignored by the receive path before the snapshot receiver reads it, so
+    /// the receiver orders nothing by version. An ordinary node of mesh1 holds mesh1.node-admin.1's v7 full
+    /// and applies its 7→8 delta; then:
     /// - a copy of that delta is taken by the receive path (its key equals the held one) and the
     ///   receiver absorbs it as a copy (`via-duplicate`), with no gap;
-    /// - the publisher's v6 full, its 6→7 delta and a topology read of its v6 are each ignored by the
-    ///   receive path, the ignore span naming the frame, the source, the key held and the one offered;
+    /// - a v6 full, a 6→7 delta and a topology read of v6 are each ignored by the receive path, the
+    ///   ignore span naming the frame, the mesh, the version held and the one offered;
     /// - the top-up installs the publisher's v9 and its 9→11 delta applies; the 8→9 delta the top-up
     ///   already covered is ignored by the receive path.
-    /// Must NOT happen: an earlier frame of the held publisher reaching the receiver (a `via-snapshot`
+    /// Must NOT happen: an earlier frame of the mesh reaching the receiver (a `via-snapshot`
     /// refusal, or a `via-duplicate` for anything but the copy); the held projection moved
     /// back; a source marked desynchronized.
     #[test]
-    fn an_earlier_full_delta_or_read_of_the_held_publisher_is_ignored_by_the_receive_path_before_the_snapshot_receiver_reads_it() {
+    fn an_earlier_full_delta_or_read_of_the_mesh_is_ignored_by_the_receive_path_before_the_snapshot_receiver_reads_it() {
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -2786,9 +2788,9 @@ mod tests {
         assert_eq!(held(), Some((p.clone(), 8)), "nothing earlier moved the held projection back");
         let ignored = spans.named("rdm.mesh.topology.reject.via-stale");
         for (frame, held, offered) in [
-            ("mesh-topology", &*format!("publisher={p} topology_version=8"), "published_at_rafka_ms=600 topology_version=6"),
-            ("mesh-topology-delta", &*format!("publisher={p} topology_version=8"), "published_at_rafka_ms=650 topology_version=7"),
-            ("topology-read", &*format!("publisher={p} topology_version=8"), "topology_version=6"),
+            ("mesh-topology", "topology_version=8", "topology_version=6"),
+            ("mesh-topology-delta", "topology_version=8", "topology_version=7"),
+            ("topology-read", "topology_version=8", "topology_version=6"),
         ] {
             assert!(ignored.iter().any(|f| f["frame"] == frame && f["subject"] == "mesh1" && f["held_key"] == held && f["frame_key"] == offered), "the receive path names the ignored {frame}, its source and both keys: {ignored:#?}");
         }
@@ -3010,7 +3012,7 @@ mod tests {
                 if stamp == 459 {
                     if let Some(f_lock) = self.forwarder_lock.get() {
                         if let Ok(mut f) = f_lock.try_lock() {
-                            *self.replayed_during_stamp.lock().unwrap() = f.replay("mesh1.node-admin.1", 471);
+                            *self.replayed_during_stamp.lock().unwrap() = f.replay(471);
                         }
                     }
                     if let Some(v_lock) = self.version_lock.get() {
@@ -3046,8 +3048,6 @@ mod tests {
         m_channels.join(crate::channel::ChannelId::backbone(&fabric), vec![]).await.unwrap();
         let bb = m_channels.backbone().expect("the backbone is joined");
         bb.set_mesh_primary(true);
-        // Clear `full_due` after initial role take so publication 1 is a normal source full and publication 2 is a delta.
-        bb.full_due.store(false, Ordering::Relaxed);
         let _ = racing.version_lock.set(bb.version.clone());
         let _ = racing.forwarder_lock.set(m.view.forwarder.clone());
 
@@ -3100,7 +3100,7 @@ mod tests {
         assert!(m.installed_snapshot("mesh1").is_none_or(|(_, v, _)| v != 1), "its own older image is not installed");
         let refused: Vec<_> = spans.named("rdm.mesh.topology.reject.via-stale").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("topology-read")).collect();
         assert_eq!(refused.len(), 1, "one refusal, named: {refused:#?}");
-        assert_eq!((refused[0]["node"].as_str(), refused[0]["held_key"].clone(), refused[0]["frame_key"].as_str()), ("mesh1.node-admin.1", format!("publisher={p} topology_version={published}"), "topology_version=1"));
+        assert_eq!((refused[0]["node"].as_str(), refused[0]["held_key"].clone(), refused[0]["frame_key"].as_str()), ("mesh1.node-admin.1", format!("topology_version={published}"), "topology_version=1"));
         assert!(spans.named("rdm.mesh.topology.update.via-snapshot-installed").iter().all(|f| f.get("channel").map(String::as_str) != Some("topology-read")), "no read installs");
     }
 

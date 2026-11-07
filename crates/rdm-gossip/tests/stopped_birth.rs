@@ -302,7 +302,7 @@ fn an_own_mesh_node_holding_node_stopped_ends_the_stop_by_the_nodes_next_cycle_d
         assert_eq!((attr(ended[0], "node"), attr(ended[0], "digest_seq"), attr(ended[0], "status")), ("mesh1.node.2".to_string(), "3".to_string(), "Pending".to_string()));
         let joined: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-node-joined").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
         assert_eq!((joined.len(), joined.first().map(|s| attr(s, "node"))), (1, Some(p_node_id.to_string())), "the mesh-primary took node.joined once: {joined:#?}");
-        let own_mesh_frames: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().chain(named(&spans, "rdm.mesh.topology.update.via-forwarded-full")).filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1" && attr(s, "chunks") != "0").collect();
+        let own_mesh_frames: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1").collect();
         assert!(own_mesh_frames.is_empty(), "the primary put nothing of mesh1 on mesh1's channel: {own_mesh_frames:#?}");
         let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-digest-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.node.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "digest_seq"))).collect();
         assert_eq!(statuses, vec!["Ready@1".to_string(), "Pending@3".to_string(), "Ready@4".to_string()], "the member's statuses of the birth come from its own Digests alone (Q387)");

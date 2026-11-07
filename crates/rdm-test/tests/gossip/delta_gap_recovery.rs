@@ -228,47 +228,43 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let held = &held;
     let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held:?}: no exact runtime published: {r:?}")), hung: None };
 
-    // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
-    // every source it has published into the Mesh.
+    // Joined: the observer is a new neighbour of mesh1's primary, which replays its last differential
+    // of each peer mesh into the Mesh (gossip.md §3.3).
     // The backbone mesh topology carries loads: a member's load is its own digest's, so the first backbone
     // topology published before mesh2's nodes published theirs carries none yet.
-    until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone mesh topology carrying loads", Duration::from_secs(60), &observer.arrivals, || {
+    until_arrival("the observer hears a differential of mesh2 on mesh1's channel and the backbone mesh topology carrying loads", Duration::from_secs(60), &observer.arrivals, || {
         let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
-        (!observer.forwarded_fulls_of("mesh2").is_empty() && backbone).then_some(())
+        (!observer.deltas_of("mesh2").is_empty() && backbone).then_some(())
     })
     .await;
-    // The first publication of a source into the Mesh is a full: no delta of mesh2 precedes it.
-    let join_full = observer.forwarded_fulls_of("mesh2");
-    let first_full_at = join_full.iter().map(|x| x.heard_at_ns).min().unwrap();
-    assert!(observer.deltas_of("mesh2").iter().all(|d| d.0 > first_full_at), "a delta of mesh2 never precedes its full inside the Mesh");
-    // A forwarded full omits loads; the backbone mesh topology carries them.
-    let loads_forwarded = join_full.iter().any(|x| matches!(x.frame.data(), Frame::TopologyFull { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));
+    // Nothing full of a peer mesh goes on the mesh channel: mesh2 reaches mesh1 as differentials only.
+    assert!(observer.forwarded_fulls_of("mesh2").is_empty(), "no full of mesh2 on mesh1's channel");
+    let differentials: Vec<Seen> = observer.all().into_iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::TopologyDelta { mesh, .. } if mesh == "mesh2")).collect();
+    // A forwarded differential omits loads; the backbone mesh topology carries them.
+    let loads_forwarded = differentials.iter().any(|x| matches!(x.frame.data(), Frame::TopologyDelta { changed, .. } if changed.iter().any(|d| d.in_flight.is_some())));
     let loads_on_backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::TopologyFull { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
-    assert!(!loads_forwarded, "the forwarded cross-Mesh projection carries no loads");
+    assert!(!loads_forwarded, "the forwarded cross-Mesh differential carries no loads");
     assert!(loads_on_backbone, "the backbone mesh topology carries loads");
-    let publisher = join_full
+    let publisher = observer
+        .all()
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::TopologyFull { publisher, .. } => Some(publisher.clone()),
+            Frame::TopologyFull { mesh, publisher, .. } if mesh == "mesh2" && x.channel == "backbone" => Some(publisher.clone()),
             _ => None,
         })
         .unwrap();
     let mesh2_admin = nodes.iter().find(|n| n.location() == PathName::new("mesh2.node-admin", "1").unwrap()).map(|n| n.node_id.clone()).expect("mesh2.node-admin.1 in the settled views");
     assert_eq!(publisher.node_id, mesh2_admin, "the version belongs to the source Mesh's primary");
-    let stripped_full_bytes: usize = {
-        // The chunks of the newest forwarded full of mesh2 (one snapshot).
-        let newest = join_full.iter().filter_map(|x| match x.frame.data() { Frame::TopologyFull { snapshot_id, .. } => Some(*snapshot_id), _ => None }).max().unwrap();
-        join_full.iter().filter(|x| matches!(x.frame.data(), Frame::TopologyFull { snapshot_id, .. } if *snapshot_id == newest)).map(|x| x.bytes).sum()
-    };
+    let differential_bytes: usize = differentials.iter().map(|x| x.bytes).max().unwrap();
     let backbone_full_bytes: usize = {
         let all = observer.all();
         let newest = all.iter().filter_map(|x| match x.frame.data() { Frame::TopologyFull { mesh, snapshot_id, forwarded_by: None, publisher: p, .. } if mesh == "mesh2" && *p == publisher && x.channel == "backbone" => Some(*snapshot_id), _ => None }).max().unwrap();
         all.iter().filter(|x| matches!(x.frame.data(), Frame::TopologyFull { mesh, snapshot_id, forwarded_by: None, .. } if mesh == "mesh2" && *snapshot_id == newest && x.channel == "backbone")).map(|x| x.bytes).sum()
     };
-    // The member holds mesh2 before anything changes.
+    // The member holds mesh2 before anything changes: by its first differential, from 0, or by a read.
     let member_installed: Vec<Value> = wait_for("the member holds mesh2's projection", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        let v: Vec<Value> = spans_of(&spans, "rdm.mesh.topology.update.via-snapshot-installed", &member_id, 0).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
+        let v: Vec<Value> = ["rdm.mesh.topology.update.via-snapshot-installed", "rdm.mesh.topology.update.via-delta"].iter().flat_map(|n| spans_of(&spans, n, &member_id, 0)).filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
         (!v.is_empty()).then_some(v)
     })
     .await;
@@ -360,7 +356,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     .await;
     assert_eq!(num(&applied_c, "base_version"), latest);
 
-    // ---- a member cut off from every other process hears the full when it is heard again
+    // ---- a member cut off from every other process hears the last differential when it is heard again
     let nodes_json: Vec<Value> = nodes.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
     let ports_of = |names: &[(&str, &str)]| udp_ports(&nodes_json, &names.iter().map(|(path, name)| Estate::path(path, name)).collect::<Vec<_>>());
     let mut others = ports_of(&[("mesh1.node-admin", "1"), ("mesh2.node-admin", "1"), ("mesh2.node", "1"), ("mesh2.node", "2")]);
@@ -382,7 +378,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The member's connections are gone, not delayed: its own neighbour-down on mesh1's channel after
     // the cut (the idle timeout is the staleness floor). The cut is dropped then, before node recovery's
     // investigation of the member (half a floor after its stale mark, node-recovery.md) can re-create
-    // it: a re-created member is a new birth and installs every source as a new revision.
+    // it: a re-created member is a new birth and installs every source anew.
     wait_for("the member's connections to mesh1 are gone under the cut", Duration::from_secs(30), || async {
         let spans = estate.spans();
         spans_of(&spans, "rdm.mesh.connection.update.via-neighbour-down", &member_id, cut_at).into_iter().find(|sp| attr(sp, "channel") == "mesh:mesh1" && attr(sp, "neighbours") == "0").map(|_| ())
@@ -390,28 +386,27 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     .await;
     drop(cut);
     let healed_at = now_ns();
-    let full_after_heal = wait_for("the member holds the version the source reached while it was cut", Duration::from_secs(60), || async {
+    let delta_after_heal = wait_for("the member holds the version the source reached while it was cut", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-snapshot-installed", &member_id, healed_at).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") >= delta_e.2).cloned()
+        spans_of(&spans, "rdm.mesh.topology.update.via-delta", &member_id, healed_at).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") >= delta_e.2).cloned()
     })
     .await;
-    assert_eq!(attr(&full_after_heal, "new_revision"), "false", "the same source publisher: the member resumes inside its revision");
-    assert_eq!(attr(&full_after_heal, "channel"), "mesh-channel");
-    let version_now = num(&full_after_heal, "topology_version");
-    // Heard again after the cut, the member needed no top-up and saw no gap: mesh1's primary said
-    // what it holds when the member came up as its neighbour.
+    assert_eq!(num(&delta_after_heal, "base_version"), member_latest, "the replayed differential is from the version the member held");
+    let version_now = num(&delta_after_heal, "topology_version");
+    // Heard again after the cut, the member needed no top-up and saw no gap: mesh1's primary replayed
+    // its last differential of mesh2 when the member came up as its neighbour (gossip.md §3.3).
     let spans = estate.spans();
-    assert!(spans_of(&spans, "rdm.mesh.topology.update.via-gap", &member_id, cut_at).is_empty(), "the full the primary replays on a heal repaired the member: no gap");
+    assert!(spans_of(&spans, "rdm.mesh.topology.update.via-gap", &member_id, cut_at).is_empty(), "the differential the primary replays on a heal repaired the member: no gap");
     let member_peer = nodes.iter().find(|n| n.location() == member_at()).and_then(|n| n.endpoint_id.clone()).unwrap();
     // The primary's replay row is in the primary's evidence file, appended by its export thread:
     // it lands after the member's install row that the wait above read, not with it (at `5a220a6a`
     // the replay, 2 ms before the install, was read once and was not there yet). Waited for, as
     // every row of another process is.
-    let replays: Vec<Value> = vec![wait_for("mesh1's primary replayed its forwarded fulls to the member when it came back as a neighbour", Duration::from_secs(30), || async {
+    let replays: Vec<Value> = vec![wait_for("mesh1's primary replayed its last differentials to the member when it came back as a neighbour", Duration::from_secs(30), || async {
         let spans = estate.spans();
         spans_of(&spans, "rdm.mesh.topology.update.via-neighbour-replay", &primary_id, healed_at)
             .into_iter()
-            .find(|sp| attr(sp, "channel") == "mesh:mesh1" && member_peer.starts_with(&attr(sp, "peer")) && num(sp, "full_chunks") >= 1)
+            .find(|sp| attr(sp, "channel") == "mesh:mesh1" && member_peer.starts_with(&attr(sp, "peer")) && num(sp, "deltas") >= 1)
             .cloned()
     })
     .await];
@@ -449,9 +444,9 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert!(by_member.is_empty(), "the remote Mesh's primary is never queried by the member: {by_member:?}");
     let topup_install = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().find(|sp| attr(sp, "node") == member_id && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
     assert_eq!((attr(topup_install, "mesh"), num(topup_install, "topology_version")), ("mesh2".to_string(), latest));
-    // The primary's evidence: the full it put in on a join, and its bytes.
-    let admin_fulls: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-full").into_iter().filter(|sp| attr(sp, "node") == primary_id).collect();
-    assert!(!admin_fulls.is_empty(), "mesh1's primary put forwarded fulls into its Mesh");
+    // The primary's evidence: its first differential of mesh2 is from 0; nothing full goes on the mesh channel.
+    let first_from_zero = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().any(|sp| attr(sp, "node") == primary_id && attr(sp, "mesh") == "mesh2" && num(sp, "base_version") == 0);
+    assert!(first_from_zero, "mesh1's primary put mesh2 into its Mesh as a differential from 0");
     let deltas_forwarded: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|sp| attr(sp, "node") == primary_id && attr(sp, "mesh") == "mesh2" && at(sp) >= t_change_a && at(sp) < t_stop).collect();
     // The real changes in mesh2: held; released, at which the held node re-enters through node.mesh.join
     // and is published Pending and then Ready (node-mesh-join.md step 10, Q87); held again. The
@@ -470,7 +465,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         "publisher": publisher.to_string(),
         "baseline_version_at_member": baseline_version,
         "healthy_control": { "delta": { "base": delta_a.1, "to": delta_a.2, "changed": delta_a.3, "removed": delta_a.4 }, "deltas_heard_in_window": after_a.len() - deltas_before, "member_applied_span": { "trace_id": applied_a["trace_id"], "span_id": applied_a["span_id"] } },
-        "cut": { "changed_during_cut": { "base": delta_e.1, "to": delta_e.2 }, "cut_ms": (healed_at - cut_at) / 1_000_000, "replays": replays.iter().map(|sp| json!({ "frames": attr(sp, "frames"), "full_chunks": attr(sp, "full_chunks"), "bytes": attr(sp, "bytes") })).collect::<Vec<_>>(), "member_full_span": { "trace_id": full_after_heal["trace_id"], "span_id": full_after_heal["span_id"], "topology_version": version_now } },
+        "cut": { "changed_during_cut": { "base": delta_e.1, "to": delta_e.2 }, "cut_ms": (healed_at - cut_at) / 1_000_000, "replays": replays.iter().map(|sp| json!({ "frames": attr(sp, "frames"), "deltas": attr(sp, "deltas"), "bytes": attr(sp, "bytes") })).collect::<Vec<_>>(), "member_delta_span": { "trace_id": delta_after_heal["trace_id"], "span_id": delta_after_heal["span_id"], "topology_version": version_now } },
         "gap": {
             "injected": { "base": latest + 1, "to": latest + 2, "source_publisher": publisher.to_string() },
             "member_gap_span": { "trace_id": gap["trace_id"], "span_id": gap["span_id"], "held_version": num(&gap, "held_version") },
@@ -482,7 +477,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         "top_up_install_span": { "trace_id": topup_install["trace_id"], "span_id": topup_install["span_id"], "topology_version": num(topup_install, "topology_version") },
         "forwarded_deltas_by_mesh1_primary": deltas_forwarded.len(),
         "topology_version_bumps_by_mesh2_primary": bumps,
-        "measured_bytes": { "stripped_full_of_mesh2_on_mesh1_channel": stripped_full_bytes, "backbone_aggregate_of_mesh2_with_loads": backbone_full_bytes, "mesh2_members": 3, "forwarded_full_spans": admin_fulls.iter().map(|sp| json!({ "reason": attr(sp, "reason"), "chunks": attr(sp, "chunks"), "bytes": attr(sp, "bytes") })).collect::<Vec<_>>() },
+        "measured_bytes": { "largest_differential_of_mesh2_on_mesh1_channel": differential_bytes, "backbone_aggregate_of_mesh2_with_loads": backbone_full_bytes, "mesh2_members": 3 },
         "loads_on_forwarded_full": loads_forwarded,
         "loads_on_backbone_aggregate": loads_on_backbone,
         "spans_read": spans.len(),
