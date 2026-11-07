@@ -292,7 +292,7 @@ fn start_ns(sp: &&Value) -> u64 {
 /// M3 from the spans, all at or after `since`: the mesh-primary's write of `member`'s `status` (a stop: its
 /// admission of the stop command, `from-command-admitted` leaving; a start: its `from-node-started`) to the
 /// last node-admin of
-/// `admins` applying it to its own topology (`via-member-state`, `via-digest`, or that write itself). A
+/// `admins` applying it to its own topology (`via-member-state`, `via-digest-status`, or that write itself). A
 /// stop reaches the nodes of the stopping node's mesh as `stopping`, from that node's own last Digest
 /// (gossip.md §3.1, Q387), and the mesh-primary's own view as `leaving`. `Err` names the node-admins no span shows applying it.
 fn spread_from_spans(spans: &[Value], admins: &[rdm_core::NodeId], member: &rdm_core::framing::Birth, status: &str, since: u64) -> Result<f64, Vec<String>> {
@@ -304,7 +304,7 @@ fn spread_from_spans(spans: &[Value], admins: &[rdm_core::NodeId], member: &rdm_
         _ => false,
     };
     let received = |sp: &Value| is(sp) || (status == "leaving" && a(sp, "status").eq_ignore_ascii_case("stopping"));
-    let applies = |sp: &Value| writes(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-digest") && a(sp, "member_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && received(sp));
+    let applies = |sp: &Value| writes(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-digest-status") && a(sp, "member_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && received(sp));
     let after: Vec<&Value> = spans.iter().filter(|sp| start_ns(sp) >= since).collect();
     let origin = after.iter().filter(|sp| writes(sp)).map(start_ns).min().ok_or_else(|| vec![format!("the mesh-primary's write of {member} {status}")])?;
     let mut last = origin;
@@ -1102,7 +1102,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
                     "rdm.mesh.topology.update.from-command-admitted",
                     "rdm.mesh.topology.update.from-node-started",
                     "rdm.mesh.topology.update.via-member-state",
-                    "rdm.mesh.topology.update.via-digest",
+                    "rdm.mesh.topology.update.via-digest-status",
                 ]);
                 match spread_from_spans(&spans, &admin_ids, &member, status, since) {
                     Ok(ms) => break Ok(ms),

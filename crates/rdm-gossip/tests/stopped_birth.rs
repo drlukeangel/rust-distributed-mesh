@@ -323,7 +323,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let delta: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1" && attr(s, "topology_version") == v3.to_string()).collect();
         assert_eq!(delta.len(), 1, "the primary published the projection that clears the stop on its own channel: {delta:#?}");
         assert_eq!((attr(delta[0], "base_version"), attr(delta[0], "changed"), attr(delta[0], "in_flight")), (v2.to_string(), "1".to_string(), "0".to_string()), "the clear travels as the birth's own changed entry");
-        let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-digest").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.node.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "digest_seq"))).collect();
+        let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-digest-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.node.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "digest_seq"))).collect();
         assert_eq!(statuses, vec!["Ready@1".to_string(), "Ready@4".to_string()], "the member's statuses of the birth come from its own Digests alone (Q387): {v4}");
         let mut lines = String::new();
         for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {

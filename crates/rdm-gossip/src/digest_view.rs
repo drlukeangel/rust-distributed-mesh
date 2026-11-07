@@ -968,7 +968,7 @@ impl DigestView {
             return;
         }
         tracing::info_span!(
-            "rdm.mesh.topology.update.via-digest",
+            "rdm.mesh.topology.update.via-digest-status",
             node = %self.observer_name.lock().unwrap(),
             member_path = %d.node.path, member_name = %d.node.name,
             member_id = %d.node.node_id,
@@ -1408,6 +1408,14 @@ impl DigestView {
         }
 
         let mut inner = self.inner.lock().unwrap();
+        // A stop taken between the refusal above and this hold refuses it here, under the hold: a
+        // stopped birth is never held again by a digest checked before its stop.
+        if self.is_stopped(&d) {
+            drop(inner);
+            // Refused by name, as above; its latest digest is kept for when the stop ends.
+            let _ = self.stopped_refuses(&d, "heartbeat", now);
+            return false;
+        }
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             if !crate::receive_order::admit_digest(held, &d, node, channel) {
                 return false;
@@ -1488,6 +1496,14 @@ impl DigestView {
         }
         let own_mesh = self.own_mesh_member(&d);
         let mut inner = self.inner.lock().unwrap();
+        // A stop taken between the refusal above and this hold refuses it here, under the hold: a
+        // stopped birth is never held again by a digest checked before its stop.
+        if self.is_stopped(&d) {
+            drop(inner);
+            // Refused by name, as above; its latest digest is kept for when the stop ends.
+            let _ = self.stopped_refuses(&d, "topology", now);
+            return false;
+        }
         let mut held_entry = None;
         if let Some((held, at, heard)) = inner.get(d.node.node_id.as_str()) {
             if runtime_changed(held, &d) {
@@ -1550,6 +1566,14 @@ impl DigestView {
         let own_mesh = self.own_mesh_member(&d);
 
         let mut inner = self.inner.lock().unwrap();
+        // A stop taken between the refusal above and this hold refuses it here, under the hold: a
+        // stopped birth is never held again by a digest checked before its stop.
+        if self.is_stopped(&d) {
+            drop(inner);
+            // Refused by name, as above; its latest digest is kept for when the stop ends.
+            let _ = self.stopped_refuses(&d, if carried == Carried::Status { "forwarded" } else { "join" }, now);
+            return false;
+        }
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             if runtime_changed(held, &d) {
                 return false;

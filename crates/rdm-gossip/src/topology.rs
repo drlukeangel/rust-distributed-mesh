@@ -2494,7 +2494,7 @@ mod tests {
             assert!(hears(&v5), "{mesh}: the backbone's v5 is not older than what is held");
             assert_eq!(status_of(&ready), Some(NodeStatus::Ready), "{mesh}: the member never leaves Ready");
         }
-        let left_ready: Vec<_> = spans.named("rdm.mesh.topology.update.via-digest").into_iter().chain(spans.named("rdm.mesh.topology.update.via-member-state")).filter(|f| f.get("status").is_some_and(|s| s != "Ready")).collect();
+        let left_ready: Vec<_> = spans.named("rdm.mesh.topology.update.via-digest-status").into_iter().chain(spans.named("rdm.mesh.topology.update.via-member-state")).filter(|f| f.get("status").is_some_and(|s| s != "Ready")).collect();
         assert!(left_ready.is_empty(), "no member status moves off Ready: {left_ready:#?}");
     }
 
