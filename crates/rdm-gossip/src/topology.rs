@@ -418,7 +418,7 @@ pub struct TopUpDone {
 /// Reads the topology of `meshes` from a mesh primary and installs it into the given topology view
 /// (the topology read, over Node RPC): the topology view holds no Node RPC client, the process
 /// composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, Primary, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+pub type TopUpFetch = std::sync::Arc<dyn Fn(crate::channel::Channels, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -766,53 +766,6 @@ mod tests {
         assert!(!digest_view.hold_runtime(&id, &birth, of(fact(11, "process:a:1"), Some("/data/a"))), "and so is its runtime");
         assert_eq!(digest_view.runtime_of(&id, &next), Some(of(fact(13, "process:a:1"), None)));
         assert_eq!(digest_view.runtime_of(&id, &birth), None, "the old birth's runtime is not held");
-    }
-
-    /// CONTRACT (gossip.md §3.1 `Digest`: "peers retain them, and a receiver that hears a birth whose
-    /// details it does not hold tops up by a read (`via-unknown-birth`)"; §3.3): a Digest of a birth
-    /// this node holds no details of is taken as nothing, names the gap `unknown-birth` on its own mesh
-    /// with one span, and signals the top-up; each further such Digest signals it again (a pull refused
-    /// while the node holds no primary record yet is attempted at the next one) and opens no second
-    /// span; the primary roles it carries are held, a record naming only the exact birth. The birth's
-    /// first publication, its details, supplies it, and its later heartbeats are named from the details
-    /// retained. Must NOT happen: an unknown birth's Digest held with details it never carried, its
-    /// primary record dropped, or the gap signalled once and never again (cert_renewal: a first top-up
-    /// refused `no-primary-record-held` left mesh1.node.1 never holding mesh1.node.2, and the
-    /// mesh-primary's later Digests, of a birth it held no details of, never gave it the record).
-    #[test]
-    fn an_unknown_births_digest_signals_the_top_up_at_every_heartbeat_until_its_details_are_held() {
-        let spans = OpenedSpans::default();
-        let _capture = rdm_transport::test_span_capture::install(spans.clone());
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let view = test_view("mesh1", "mesh1.node.1");
-        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-        let signalled = || rt.block_on(async { tokio::time::timeout(Duration::from_millis(20), view.desync.notified()).await.is_ok() });
-        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let at = |seq: u64| {
-            let mut d = digest(&id, &inc, None, NodeStatus::Ready, seq);
-            d.node.name = "2".into();
-            d
-        };
-        for seq in [2, 3] {
-            // The second carries the node-type primary role it holds: a record names only the exact birth.
-            let mut d = at(seq);
-            if seq == 3 {
-                d.set_primary(Some(4));
-            }
-            assert!(view.take(&Frame::digest(&d, false), &fabric, "mesh-channel").is_empty(), "heartbeat {seq} of an unknown birth is taken as nothing");
-            assert!(signalled(), "heartbeat {seq} signals the top-up");
-        }
-        assert!(view.digest_view.get(id.as_str()).is_none(), "no birth is held from a Digest without its details");
-        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", "node"), Some(Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision: 4 }), "the primary record its Digest carries is held: the node tops up from the primary it names");
-        assert_eq!(view.mesh_rx.lock().unwrap().desynced(), vec![("mesh1".to_string(), Gap::UnknownBirth)], "the gap is named on its own mesh");
-        let raised = spans.named("rdm.mesh.topology.update.via-unknown-birth");
-        assert_eq!(raised.len(), 1, "one span per gap: {raised:?}");
-        assert_eq!((raised[0]["node_id"].as_str(), raised[0]["digest_seq"].as_str()), (id.as_str(), "2"));
-        // Its first publication supplies the birth; a later heartbeat is named from the details retained.
-        assert_eq!(view.take(&Frame::digest(&at(4), true), &fabric, "mesh-channel").len(), 1, "the details supply the birth");
-        assert_eq!(view.take(&Frame::digest(&at(5), false), &fabric, "mesh-channel").len(), 1, "a heartbeat of a held birth is named from its details");
-        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.node.clone(), d.digest_seq)), Some((at(5).node, 5)));
-        assert!(!signalled(), "a held birth's heartbeat signals nothing");
     }
 
     #[test]

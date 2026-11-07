@@ -1309,29 +1309,18 @@ impl Channels {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
         let node = self.topology_view.view.current_name();
-        let mesh = self.topology_view.view.mesh.clone();
-        // The primary read from: its record, and its birth's path and name when this node holds its
-        // digest. A record of a birth this node holds no digest of (it missed the primary's first Digest,
-        // and its own start read came before the primary took the role) is addressed by the record: the
-        // node reaches it by its node id (its launcher, held from its launch), and the read supplies it.
-        let addressed = match self.topology_view.mesh_primary() {
-            Ok(d) => self.topology_view.digest_view.primaries.mesh(&mesh).filter(|r| r.node_id == d.node.node_id && r.incarnation == d.node.incarnation).map(|r| (r, d.node.path.clone(), d.node.name.clone())),
-            Err(crate::topology::NoMeshPrimary::PrimaryNotHeld { primary, held_incarnation: None, deleted: false }) => Some((primary, String::new(), String::new())),
+        let primary = match self.topology_view.mesh_primary() {
+            Ok(primary) => primary,
             Err(no) => {
                 tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), primary = %no.primary().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
                     .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
                 return false;
             }
         };
-        let Some((primary, path, name)) = addressed else {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = "no-primary-record-held")
-                .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
-            return false;
-        };
         // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
         // publishes and every peer mesh from the backbone, never from its mesh-channel sources.
-        if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node_id.as_str()) {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name, reason = "this-node-is-the-mesh-primary")
+        if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node.node_id.as_str()) {
+            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = "this-node-is-the-mesh-primary")
                 .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
             return false;
         }
@@ -1345,8 +1334,8 @@ impl Channels {
                     node = %node,
                     meshes = %meshes,
                     reasons = %reasons,
-                    mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name,
-                    served_by_path = %path, served_by_name = %name,
+                    mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name,
+                    served_by_path = %primary.node.path, served_by_name = %primary.node.name,
                     installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
                     pulls_again = behind,
@@ -1355,7 +1344,7 @@ impl Channels {
                 behind
             }
             Err(e) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_id = %primary.node_id, mesh_primary_path = %path, mesh_primary_name = %name, reason = "pull-refused", error = %e)
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = "pull-refused", error = %e)
                     .in_scope(|| tracing::info!("the Mesh's primary did not answer the top-up"));
                 false
             }
