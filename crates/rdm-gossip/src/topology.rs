@@ -3315,10 +3315,10 @@ mod tests {
         assert_eq!(ended.iter().map(|f| (f["stop_carried_at"].clone(), f["held_again"].clone(), f["held_digest_seq"].clone())).collect::<Vec<_>>(), vec![("11".to_string(), "true".to_string(), "6".to_string())], "ended once: {ended:#?}");
     }
 
-    /// CONTRACT (gossip.md §3.1: "`TopologyFull` and `TopologyDelta`: `published_at_rafka_ms`, then
-    /// `topology_version`, per mesh; the publisher reads `published_at_rafka_ms` in the same critical
-    /// section that assigns `topology_version` and `aggregate_id`, so a version's stamp is never earlier
-    /// than the one before it"; rejoin_commander trace 75adf49598edd1c7d4a975013f554216): `Backbone::publish`
+    /// CONTRACT (gossip.md §3.1, the order keys: "`TopologyFull`: its envelope's `sequence`, the mesh's
+    /// version, per mesh, whichever mesh-primary sent it (Q389); the publisher reads its envelope `time`
+    /// in the same critical section that assigns the version, so a version's time is never earlier than
+    /// the one before it"; rejoin_commander trace 75adf49598edd1c7d4a975013f554216): `Backbone::publish`
     /// reads `published_at_rafka_ms` and queues the forwarder's decision under `self.version.lock()` and
     /// `self.forwarder.lock()`, and `Backbone::publish_deleted_meshes` reads `published_at_rafka_ms` under
     /// `self.deleted_versions.lock()`. A concurrent publish or neighbour-up `replay` racing with `now_rafka_ms()`

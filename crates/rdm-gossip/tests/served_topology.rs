@@ -1,6 +1,7 @@
 //! The topology a mesh-primary serves a read of its own mesh (node-rpc-envelope.md, Topology op
-//! `0x1E`: "Aggregate uses gossip TopologyFull's shape"; "A matching held source version answers
-//! Unchanged"; "Read-only: the target changes no state because of the read").
+//! `0x1E`: "Aggregate carries the mesh's one list of nodes, chunked as gossip TopologyFull is"; "A
+//! matching held source version answers Unchanged"; "Read-only: the target changes no state because
+//! of the read").
 //!
 //! gossip.md §3.1, `TopologyFull`: "the version bumps on a material change of the normalized projection
 //! below and not on an unchanged republish"; the receiver rule: "A frame equal in revision to the
