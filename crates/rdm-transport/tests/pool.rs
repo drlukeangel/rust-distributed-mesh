@@ -104,7 +104,7 @@ impl Rig {
 
 /// The caller found the target stale: `RejectedStale`, never `NotSent`.
 fn superseded(out: &RpcOutcome<PingReply>) -> bool {
-    matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched()
+    matches!(out, RpcOutcome::RejectedStale(_)) && out.not_dispatched()
 }
 
 /// A `Send` whose time limit the `slow` and `hang` handlers outlast.

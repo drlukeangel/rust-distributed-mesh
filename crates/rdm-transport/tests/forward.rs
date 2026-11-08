@@ -52,7 +52,7 @@ async fn a_carrier_that_is_gone_before_commit_is_not_sent() {
     r.carrier.router.shutdown().await.unwrap();
     let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(2)), ..CallOptions::default() };
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
-    assert!(out.proves_not_dispatched(), "{out:?}");
+    assert!(out.not_dispatched(), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 

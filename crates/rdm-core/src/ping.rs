@@ -141,7 +141,7 @@ mod tests {
     use crate::protocol::DecodeFailure;
 
     #[test]
-    fn request_codec_round_trips_through_the_frame() {
+    fn the_request_codec_encodes_and_decodes_through_the_frame() {
         let req = PingRequest::Ping { payload: b"ping".to_vec() };
         let header = crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x01 });
         let frame = encode_request(&header, &Ping::encode_request(&req).unwrap());
@@ -154,7 +154,7 @@ mod tests {
     /// node-rpc.md §25: every shared constructor survives constructor -> encode
     /// -> decode -> classify with the same class.
     #[test]
-    fn every_shared_constructor_classifies_the_same_after_a_round_trip() {
+    fn every_shared_constructor_classifies_the_same_once_encoded_and_decoded() {
         let cases = [
             (Ping::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Ping::not_ready("n".into()), ReplyKind::NotReady),

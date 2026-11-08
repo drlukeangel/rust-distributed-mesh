@@ -342,7 +342,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     let (out, ev) = client.call::<BrokerData>(&target, &append("c1"), &opts).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent), "{out:?}");
     assert!(!ev.unwrap().committed);
-    assert!(out.proves_not_dispatched());
+    assert!(out.not_dispatched());
     let (read, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "c1".into() }, &CallOptions::default()).await;
     assert!(matches!(read.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Value { value: None, .. })), "nothing was applied: {read:?}");
     assert_eq!(ServerStats::get(&stats.dropped_unfinished), 1, "the broker dropped the unfinished request");
@@ -352,7 +352,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     let (out, ev) = client.call::<BrokerData>(&target, &append(PROOF_HANG), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut");
-    assert!(!out.proves_not_dispatched());
+    assert!(!out.not_dispatched());
 
     // 3. A handler fault after dispatch: Indeterminate, reset 423.
     let (out, _) = client.call::<BrokerData>(&target, &append(PROOF_FAULT), &CallOptions::default()).await;

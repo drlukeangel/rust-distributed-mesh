@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_round_trips_through_the_data_dir() {
+    fn a_record_is_written_and_read_back_through_the_data_dir() {
         let dir = std::env::temp_dir().join(format!("rafka-runtime-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(RuntimeFact::read_record(&dir).is_none());
@@ -447,11 +447,11 @@ impl ExitRecord {
         std::fs::rename(&tmp, dir.join(EXIT_FILE)).map_err(|e| format!("{EXIT_FILE}: {e}"))
     }
 
-    /// The exit code `dir` proves for exactly this `deployment_id` and `incarnation`: `None` when
+    /// The exit code `dir` records for exactly this `deployment_id` and `incarnation`: `None` when
     /// no record is written or the record is another birth's.
     /// `Ok(None)` when no record is written, or it is another birth's; a record that cannot be
     /// read or parsed is an error naming the file, never an unknown code.
-    pub fn proven_code(dir: &Path, deployment_id: &str, incarnation: &str) -> Result<Option<i32>, String> {
+    pub fn exit_code_of(dir: &Path, deployment_id: &str, incarnation: &str) -> Result<Option<i32>, String> {
         let path = dir.join(EXIT_FILE);
         let raw = match std::fs::read(&path) {
             Ok(raw) => raw,
@@ -513,16 +513,16 @@ mod exit_record_tests {
     use super::*;
 
     #[test]
-    fn an_exit_record_proves_its_own_birth_and_no_other() {
+    fn an_exit_record_names_its_own_birth_and_no_other() {
         let dir = std::env::temp_dir().join(format!("rafka-exit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(None));
+        assert_eq!(ExitRecord::exit_code_of(&dir, "dep-a", "inc-a"), Ok(None));
         ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "gossip refused".into() }.write(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(Some(4)));
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-b", "inc-a"), Ok(None), "another deployment's record proves nothing");
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-b"), Ok(None), "another incarnation's record proves nothing");
+        assert_eq!(ExitRecord::exit_code_of(&dir, "dep-a", "inc-a"), Ok(Some(4)));
+        assert_eq!(ExitRecord::exit_code_of(&dir, "dep-b", "inc-a"), Ok(None), "another deployment's record proves nothing");
+        assert_eq!(ExitRecord::exit_code_of(&dir, "dep-a", "inc-b"), Ok(None), "another incarnation's record proves nothing");
         ExitRecord::clear(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(None));
+        assert_eq!(ExitRecord::exit_code_of(&dir, "dep-a", "inc-a"), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

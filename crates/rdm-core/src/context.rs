@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn a_well_formed_context_is_kept_whole_and_round_trips() {
+    fn a_well_formed_context_is_kept_whole_once_encoded_and_decoded() {
         let (c, dropped) = full().sanitized();
         assert_eq!(c, full());
         assert!(dropped.is_empty());

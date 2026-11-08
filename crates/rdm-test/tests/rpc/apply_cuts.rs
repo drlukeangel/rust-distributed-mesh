@@ -350,7 +350,7 @@ fn failpoint_explorer_before_apply_answers_not_sent_or_unapplied() {
                     let before = r.counters();
                     let (out, ev) = r.put(b"k-unfinished", &[7u8; 4096], &CallOptions { cut_before_finish: true, ..Default::default() }).await;
                     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent), "{out:?}");
-                    assert!(out.proves_not_dispatched());
+                    assert!(out.not_dispatched());
                     assert!(!ev.expect("evidence").committed, "the request never crossed the commit cut");
                     // The receiver saw the partial request and dropped it: the positive control for "absent".
                     eventually("the receiver dropped the unfinished request", || ServerStats::get(&r.stats.dropped_unfinished) == 1).await;
@@ -361,7 +361,7 @@ fn failpoint_explorer_before_apply_answers_not_sent_or_unapplied() {
                     assert_eq!(r.held(b"k-unfinished"), None, "no effect");
                     rows.push(json!({
                         "cut": cut.name(), "send_complete": false, "request_finished": false, "outcome": out.name(), "reason": format!("{:?}", NotSentReason::FrameNotSent),
-                        "proves_not_dispatched": true, "committed": false, "counters_before": before, "counters_after": after, "effect_on_store": null,
+                        "not_dispatched": true, "committed": false, "counters_before": before, "counters_after": after, "effect_on_store": null,
                     }));
                 }
                 Cut::HandlerBeforeApply => {
@@ -369,7 +369,7 @@ fn failpoint_explorer_before_apply_answers_not_sent_or_unapplied() {
                     r.cuts.before_apply.arm();
                     let (out, ev) = r.put(b"k-held", b"v-held", &split(Duration::from_millis(300))).await;
                     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
-                    assert!(!out.proves_not_dispatched(), "a post-commit timeout is never NotSent");
+                    assert!(!out.not_dispatched(), "a post-commit timeout is never NotSent");
                     assert!(ev.expect("evidence").committed, "the request was complete and finished");
                     r.cuts.before_apply.reached().await;
                     let at_timeout = r.counters();
@@ -385,7 +385,7 @@ fn failpoint_explorer_before_apply_answers_not_sent_or_unapplied() {
                     assert_eq!(r.held(b"k-held"), Some(b"v-held".to_vec()));
                     rows.push(json!({
                         "cut": cut.name(), "send_complete": true, "request_finished": true, "outcome": out.name(), "reason": format!("{:?}", IndeterminateReason::ReplyDeadline),
-                        "proves_not_dispatched": false, "committed": true, "counters_before": before, "counters_at_indeterminate": at_timeout, "counters_after_release": released,
+                        "not_dispatched": false, "committed": true, "counters_before": before, "counters_at_indeterminate": at_timeout, "counters_after_release": released,
                         "effect_at_indeterminate": null, "effect_after_release": "v-held", "holds": r.cuts.before_apply.holds(),
                     }));
                 }
@@ -430,7 +430,7 @@ fn failpoint_explorer_after_apply_lost_reply_answers_indeterminate() {
             r.cuts.after_apply.arm();
             let (out, ev) = r.put(b"k-lost", b"v-lost", &split(Duration::from_millis(300))).await;
             assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
-            assert!(!out.proves_not_dispatched(), "a lost reply after an apply is never NotSent");
+            assert!(!out.not_dispatched(), "a lost reply after an apply is never NotSent");
             assert!(ev.expect("evidence").committed);
             r.cuts.after_apply.reached().await;
             let at_timeout = r.counters();
@@ -454,7 +454,7 @@ fn failpoint_explorer_after_apply_lost_reply_answers_indeterminate() {
             assert_eq!(r.held(b"k-lost"), Some(b"v-lost".to_vec()), "the idempotent retry leaves the same value");
             rows.push(json!({
                 "cut": cut.name(), "send_complete": true, "request_finished": true, "outcome": out.name(), "reason": format!("{:?}", IndeterminateReason::ReplyDeadline),
-                "proves_not_dispatched": false, "committed": true, "counters_before": before, "counters_at_indeterminate": at_timeout, "counters_after_release": released,
+                "not_dispatched": false, "committed": true, "counters_before": before, "counters_at_indeterminate": at_timeout, "counters_after_release": released,
                 "effect_at_indeterminate": "v-lost", "effect_after_release": "v-lost", "holds": r.cuts.after_apply.holds(),
                 "terminal_recovery_get": "v-lost", "explicit_retry": {"outcome": retry.name(), "counters_after": retried},
             }));

@@ -318,7 +318,7 @@ pub async fn with_exit_code(status: DeploymentStatus, fact: &RuntimeFact, data_d
         (DeploymentStatus::Exited { code: None }, RuntimeProvider::Process, Some(dir)) => {
             // Read on the blocking pool (`blocking::blocking_io`).
             let (dir, deployment, incarnation) = (dir.to_path_buf(), fact.deployment_id.clone(), incarnation.to_string());
-            let code = crate::blocking::blocking_io(move || rdm_core::runtime::ExitRecord::proven_code(&dir, &deployment, &incarnation)).await?;
+            let code = crate::blocking::blocking_io(move || rdm_core::runtime::ExitRecord::exit_code_of(&dir, &deployment, &incarnation)).await?;
             Ok(DeploymentStatus::Exited { code })
         }
         (other, _, _) => Ok(other),

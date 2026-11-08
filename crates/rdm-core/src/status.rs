@@ -2398,7 +2398,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip() {
+    fn every_reply_variant_classifies_the_same_once_encoded_and_decoded() {
         let all = [
             (StatusReply::Applied, ReplyKind::Success),
             (StatusReply::AlreadyApplied, ReplyKind::new(crate::outcome::Code::AlreadyExists)),

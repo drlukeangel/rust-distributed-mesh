@@ -1670,7 +1670,7 @@ async fn owed_dial_superseded(ended_birth: bool) {
     if ended_birth {
         let out = tokio::time::timeout(FLOOR * 2, call).await.expect("the resolver's typed change ends the call").unwrap();
         assert_eq!(get(&s.stats.dispatched), 0, "no request went through the stale slot");
-        assert!(matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched(), "the superseded dial is the caller's stale-target refusal: {out:?}");
+        assert!(matches!(out, RpcOutcome::RejectedStale(_)) && out.not_dispatched(), "the superseded dial is the caller's stale-target refusal: {out:?}");
     } else {
         eventually("the superseded attempt is resent, the call still owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 1).await;
         assert!(!call.is_finished(), "a moved slot of a living birth ends nothing");

@@ -959,7 +959,7 @@ fn status_route_loss_never_synthesizes_dead() {
         let again = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: None };
         let (out, _) = routeless.call::<Status>(&to, &again, &CallOptions::default()).await;
         assert!(matches!(out, RpcOutcome::NotSent(_)), "no route is NotSent, nothing dispatched: {out:?}");
-        assert!(out.proves_not_dispatched());
+        assert!(out.not_dispatched());
         let t = rig.service.topology.read().await;
         assert!(t.nodes.iter().all(|n| n.status == NodeStatus::Ready), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.clone(), n.status)).collect::<Vec<_>>());
         drop(t);

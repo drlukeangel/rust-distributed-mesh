@@ -115,7 +115,7 @@ impl LifecycleOp {
 
 /// How long a process holds a departure after it accepted it (its own local
 /// age, never another machine's clock). It covers the topology repair
-/// horizon: a process cut off for less than this still learns the departure
+/// horizon: a process out of reach for less than this still learns the departure
 /// once it rejoins.
 pub const DELETED_RETENTION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -124,7 +124,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_op_round_trips_and_its_key_is_the_operation_not_a_step() {
+    fn an_op_encodes_and_decodes_and_its_key_is_the_operation_not_a_step() {
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh2".into(),
             build_id: "b1".into(),
             operation: crate::OperationId::node("node.delete", &crate::fixture_node_id(&crate::PathName::new("mesh2.node", "2").unwrap())),

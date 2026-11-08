@@ -87,8 +87,8 @@ pub(crate) struct View {
     /// Whether this node is on the backbone (a node-admin, set when it joins it): its copy of each peer
     /// mesh follows the backbone's complete fulls alone (gossip.md §3.3).
     pub(crate) on_backbone: Arc<AtomicBool>,
-    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
-    /// the topology view; `None` while the birth holds its launch name (`node`).
+    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), the same cell as its
+    /// digest view's (`DigestView.held_name`); `None` while the birth holds its launch name (`node`).
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// The highest version of this node's own mesh a topology read wrote while this node was its
     /// mesh's primary, with that topology: its next publication continues the mesh's version from it

@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn every_reply_variant_round_trips() {
+    fn every_reply_variant_encodes_and_decodes() {
         let replies = [
             ForwardReply::Forwarded { inner: vec![1] },
             ForwardReply::InnerNotSent { reason: "r".into(), cause: NotSentCause::Connection },

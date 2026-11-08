@@ -19,9 +19,9 @@ pub enum ResetCode {
 
 /// Historical codes: reserved forever, never emitted, never reassigned. `425` was the receiver's
 /// refusal of a target naming another node; no receiver refuses a call for the node id it names
-/// (R-UC1a), so a `425` a caller reads proves nothing.
+/// (R-UC1a), so a `425` a caller reads tells it nothing.
 #[cfg(test)]
-pub(crate) const RETIRED_CODES: [u32; 4] = [413, 425, 501, 503];
+pub(crate) const RESERVED_CODES: [u32; 4] = [413, 425, 501, 503];
 
 impl ResetCode {
     /// Every code Node RPC emits.
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn reserved_codes_are_never_current() {
-        for r in RETIRED_CODES {
+        for r in RESERVED_CODES {
             assert_eq!(ResetCode::from_code(r.into()), None);
             assert!(!ResetCode::ALL.iter().any(|c| c.code() == r));
         }

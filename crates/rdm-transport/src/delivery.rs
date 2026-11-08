@@ -19,7 +19,7 @@
 use crate::resolve::{NodeResolver, NodeTarget};
 use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream, VarInt};
 use rdm_core::codes::ResetCode;
-use rdm_core::delivery::{resend_after, Admitted, Arrival, RecvWindow, ResponseOrder, SendWindow};
+use rdm_core::delivery::{send_delay, Admitted, Arrival, RecvWindow, ResponseOrder, SendWindow};
 use rdm_core::framing::{decode_header, decode_varint, encode_ack_frame, encode_response_frame, Birth, DeliveryId, HeaderRead, TransportHeader, Varint};
 use rdm_core::{IncarnationId, NodeId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -54,7 +54,7 @@ impl Pacing {
     /// The delay before resend `attempt` (1 is the first).
     pub fn after(&self, attempt: u32) -> Duration {
         let jitter = if self.jitter { rand_jitter() } else { 0.0 };
-        resend_after(attempt, self.cadence, self.floor, jitter)
+        send_delay(attempt, self.cadence, self.floor, jitter)
     }
 }
 

@@ -34,7 +34,7 @@ fn digest() -> rdm_core::MeshDigest {
 /// The request is variant 0 followed by the digest in its positional wire shape: a digest with
 /// every optional field absent still decodes to itself (no `skip_serializing_if` shifts a field).
 #[test]
-fn a_join_request_and_its_digest_round_trip_through_postcard_with_every_field_present() {
+fn a_join_request_and_its_digest_encode_and_decode_through_postcard_with_every_field_present() {
     let d = digest();
     let q = JoinRequest::JoinNode { digest: WireDigest::from(&d), runtime: None, data_dir: None, listeners: Vec::new() };
     let bytes = Join::encode_request(&q).unwrap();
@@ -84,7 +84,7 @@ fn a_join_request_carries_the_listeners_the_node_bound_after_its_digest() {
 /// The listeners round-trip in order, none and three alike (Q151): an empty list is one `00` count byte;
 /// three named listeners come back with their names and addresses.
 #[test]
-fn a_join_request_round_trips_no_listeners_and_three() {
+fn a_join_request_encodes_and_decodes_with_no_listeners_and_three() {
     let d = digest();
     let none = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d), runtime: None, data_dir: None, listeners: Vec::new() }).unwrap();
     assert_eq!(none.last(), Some(&0u8), "no listeners is a zero count");

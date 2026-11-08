@@ -249,7 +249,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip() {
+    fn every_reply_variant_classifies_the_same_once_encoded_and_decoded() {
         let all = [
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),

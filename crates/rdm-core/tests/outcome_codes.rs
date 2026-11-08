@@ -124,12 +124,12 @@ fn deadlines_keep_the_commit_cut_and_receiver_gone_is_unavailable() {
     use rdm_core::outcome::{PreCommit, RequestFinished, NotSentReason, IndeterminateReason, RpcOutcome};
     let before: RpcOutcome<()> = PreCommit::begin(1).not_sent(NotSentReason::Deadline);
     assert_eq!(before.code(), Code::DeadlineExceeded);
-    assert!(before.proves_not_dispatched());
+    assert!(before.not_dispatched());
     let committed = || PreCommit::begin(1).commit(RequestFinished::after_complete_write(1, 1).unwrap());
     for (reason, code) in [(IndeterminateReason::ReplyDeadline, Code::DeadlineExceeded), (IndeterminateReason::ReplyLost("lost".into()), Code::Unknown), (IndeterminateReason::ReceiverGone("exited verdict".into()), Code::Unavailable)] {
         let out: RpcOutcome<()> = committed().indeterminate(reason);
         assert_eq!(out.code(), code);
-        assert!(!out.proves_not_dispatched());
+        assert!(!out.not_dispatched());
     }
     let unserved: RpcOutcome<()> = committed().reset(421);
     assert_eq!(unserved.code(), Code::Unimplemented);
@@ -192,7 +192,7 @@ fn resolver_unknown_is_not_found_and_gone_is_unavailable_with_its_typed_detail()
     for (reason, code) in [(ResolveFailure::Unknown, Code::NotFound), (ResolveFailure::Gone, Code::Unavailable), (ResolveFailure::Unavailable, Code::Unavailable)] {
         let out: RpcOutcome<()> = PreCommit::begin(1).not_sent(NotSentReason::Resolve(reason));
         assert_eq!(out.code(), code);
-        assert!(out.proves_not_dispatched());
+        assert!(out.not_dispatched());
         match out {
             RpcOutcome::NotSent(n) => assert_eq!(n.reason(), &NotSentReason::Resolve(reason)),
             other => panic!("resolver refusal before dispatch: {other:?}"),

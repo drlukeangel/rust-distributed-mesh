@@ -257,8 +257,8 @@ pub struct DigestView {
     pub(crate) ended_overlays: Arc<Mutex<HashMap<crate::receive_order::LifecycleIdentity, Instant>>>,
     /// The path name of the node holding this view, named by the refusals it writes.
     pub(crate) observer_name: Arc<Mutex<String>>,
-    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
-    /// the topology view; `None` while the birth holds its launch name.
+    /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), the same cell as its
+    /// topology view's (`View.held_name`); `None` while the birth holds its launch name.
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
     /// which meshes the fabric has.
@@ -1950,11 +1950,11 @@ impl DigestView {
     }
 
     /// The members of `own_mesh`, other than `me`, this view holds and does not hear within the
-    /// staleness floor, whose silence no lifecycle event it applied explains (gossip.md §6, "A cut-off
-    /// view", Q58): `(node_id, name, silent_ms)`. Expected silence is left out: a member held `Leaving`
+    /// staleness floor, whose silence no lifecycle event it applied explains (gossip.md §6, Q58):
+    /// `(node_id, name, silent_ms)`. Expected silence is left out: a member held `Leaving`
     /// (its stop admitted), a deleted birth; a stopped birth left the
     /// digest view with `NodeStopped` and is not here either. A view hearing no other member and holding one of
-    /// these is cut off; a view holding none is not, however many members it stopped.
+    /// these hears none of its mesh; a view holding none does, however many members it stopped.
     pub fn unheard_unexplained(&self, own_mesh: &str, me: &str) -> Vec<(String, String, u64)> {
         self.woken();
         let now = Instant::now();

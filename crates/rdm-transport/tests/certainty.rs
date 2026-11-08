@@ -120,7 +120,7 @@ async fn reply_loss_after_a_complete_send_is_indeterminate() {
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut");
     eventually("the handler ran", || r.handled.load(Ordering::SeqCst) == 1).await;
-    assert!(!out.proves_not_dispatched());
+    assert!(!out.not_dispatched());
 }
 
 #[tokio::test]

@@ -30,6 +30,11 @@ use crate::{frame::*, status::*, primary::*, view::*, digest_view::*};
 /// every gossip interval).
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
+/// How often the pruner's sweep runs ([`TopologyView::watch_meshes`]): it marks the births held silent
+/// past the staleness floor, the one clock of a held birth's silence (Q254), and expires departures
+/// held past the deleted retention, so both are measured to within one sweep.
+pub(crate) const SILENCE_SWEEP: Duration = Duration::from_millis(250);
+
 /// A node's topology view: the cache of the fabric's topology every node holds (gossip.md §3),
 /// filled by the channels it joins ([`crate::channel::Channels`]) and its topology read.
 #[derive(Clone)]
@@ -148,7 +153,7 @@ impl TopologyView {
                     via.lock().unwrap().remove(m);
                 }
                 held = now;
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::time::sleep(SILENCE_SWEEP).await;
             }
         });
     }

@@ -323,7 +323,7 @@ mod tests {
     fn a_stale_target_is_the_callers_verdict_before_the_request_and_a_425_after_commit_proves_nothing() {
         let early: RpcOutcome<PingReply> = PreCommit::begin(0x01).stale_before_finish(&a_request().target);
         assert!(matches!(&early, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{early:?}");
-        assert!(early.proves_not_dispatched());
+        assert!(early.not_dispatched());
         let late = committed().reset::<PingReply>(425);
         assert!(matches!(&late, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(425)), "{late:?}");
     }

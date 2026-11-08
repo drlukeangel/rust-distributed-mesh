@@ -495,9 +495,9 @@ impl<R> RpcOutcome<R> {
         }
     }
 
-    /// True only when the request provably never reached a protocol handler,
+    /// True only when the request never reached a protocol handler,
     /// so a new attempt cannot double-apply it. `Indeterminate` is never safe.
-    pub fn proves_not_dispatched(&self) -> bool {
+    pub fn not_dispatched(&self) -> bool {
         matches!(self, Self::NotSent(_) | Self::Unserved(_) | Self::RejectedStale(_))
     }
 
@@ -751,7 +751,7 @@ mod tests {
     fn not_sent_comes_only_from_pre_commit() {
         let o: RpcOutcome<PingReply> = PreCommit::begin(0x01).not_sent(NotSentReason::Deadline);
         assert_eq!(o.name(), "NotSent");
-        assert!(o.proves_not_dispatched());
+        assert!(o.not_dispatched());
         let (code, cut): (_, RpcOutcome<PingReply>) = PreCommit::begin(0x01).cut_before_finish();
         assert_eq!(code.code(), 499);
         assert!(matches!(&cut, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
@@ -770,12 +770,12 @@ mod tests {
     fn unserved_comes_only_from_a_421_after_commit() {
         let o: RpcOutcome<PingReply> = committed().reset(421);
         assert!(matches!(&o, RpcOutcome::Unserved(u) if u.op() == 0x01));
-        assert!(o.proves_not_dispatched());
+        assert!(o.not_dispatched());
         // 425 included: no receiver sends it (R-UC1a), so it proves nothing.
         for code in [422u64, 423, 424, 425, 499, 0, 501] {
             let o: RpcOutcome<PingReply> = committed().reset(code);
             assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(code)), "{code}");
-            assert!(!o.proves_not_dispatched());
+            assert!(!o.not_dispatched());
         }
     }
 
@@ -797,7 +797,7 @@ mod tests {
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::UnsupportedReplyVariant));
         let o = committed().reply::<Ping>(&[0, 0xff, 0xff]);
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::CorruptReply));
-        assert!(!o.proves_not_dispatched(), "Indeterminate is never safe to replay");
+        assert!(!o.not_dispatched(), "Indeterminate is never safe to replay");
         let _ = PingRequest::Ping { payload: vec![] };
     }
 }

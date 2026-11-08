@@ -345,7 +345,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn path_name_round_trips() {
+    fn a_path_name_encodes_and_decodes() {
         for (path, name) in [("mesh1.node", "2"), ("mesh1.node-admin", "1"), ("m-2.node", "17")] {
             let p = PathName::new(path, name).unwrap();
             assert_eq!((&*p.path, &*p.name), (path, name));

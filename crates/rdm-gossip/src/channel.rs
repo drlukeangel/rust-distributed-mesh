@@ -85,11 +85,9 @@ pub async fn until_transport_stopped() -> String {
     }
 }
 
-/// The peers of the live list `live` to join now: those not joined while
-/// they stayed live. `joined` forgets a peer that left the list, so one that
-/// returns is joined again (`gossip.md` §6).
 /// The wait before the next refeed of a channel that is still alone, after waiting `prev`:
-/// doubled, never more than one staleness floor (PRD §6.2). A failed rejoin is retried on this
+/// doubled, never more than one staleness floor (gossip.md §6: "one failed rejoin per peer/window or
+/// equivalent bounded backoff"; "failed rejoin never marks Dead"). A failed rejoin is retried on this
 /// bounded schedule forever and decides nothing about any member: the refeed hands peers to
 /// iroh-gossip and holds no view, so silence is never death proof.
 pub fn refeed_backoff(prev: Duration) -> Duration {
@@ -561,7 +559,7 @@ impl Channel {
 
     /// While the channel has no neighbour, hand it every peer it knows again: a bounded
     /// join attempt one gossip interval after it was left alone, then backed off (doubling, at
-    /// most one staleness floor apart) while that holds (PRD §6.2). A neighbour coming up resets
+    /// most one staleness floor apart) while that holds (gossip.md §6). A neighbour coming up resets
     /// it. A node whose connections all timed out (a wedge, a network gap longer than the idle
     /// timeout) is otherwise heard again only a whole floor later.
     pub(crate) fn refeed(&self, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>, targets: Arc<dyn Fn() -> Held + Send + Sync>) {

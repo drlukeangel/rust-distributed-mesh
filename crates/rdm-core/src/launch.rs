@@ -582,7 +582,7 @@ mod tests {
     /// nothing at all round-trips through a launch unchanged; a document that does not parse, names an
     /// unknown version or repeats a name is refused by name, echoing none of it.
     #[test]
-    fn the_custody_document_round_trips_every_value_and_refuses_a_malformed_one_by_name() {
+    fn the_custody_document_encodes_and_decodes_every_value_and_refuses_a_malformed_one_by_name() {
         let values = [("APP_SEPARATED", "a,b=c\nd=,"), ("APP_EMPTY", ""), ("APP_PLAIN", "plain-value")];
         let doc = serde_json::json!({ "v": 1, "declared": values.iter().map(|(n, v)| serde_json::json!({ "name": n, "types": ["broker", "gateway"], "value": v })).collect::<Vec<_>>() }).to_string();
         let env = admin_env_with_custody(&doc);
@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_round_trips_through_the_environment() {
+    fn a_launch_encodes_and_decodes_through_the_environment() {
         let l = Launch { initial_properties: Default::default(), topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
@@ -677,7 +677,7 @@ mod tests {
         half.remove(ENV_ISSUING_CERT);
         assert!(Launch::from_env(|k| half.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY is set without RDM_ISSUING_CERT"));
         // A launch that carries no declared value writes no custody variable (a malformed one:
-        // `the_custody_document_round_trips_every_value_and_refuses_a_malformed_one_by_name`).
+        // `the_custody_document_encodes_and_decodes_every_value_and_refuses_a_malformed_one_by_name`).
         assert!(!Launch { declared: Vec::new(), ..l.clone() }.to_env().contains_key(ENV_DECLARED_SECRETS));
         // A launch that carries no issuing material sets no variable.
         let none = Launch { issuing: None, ..l.clone() }.to_env();

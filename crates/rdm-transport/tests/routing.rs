@@ -56,7 +56,7 @@ async fn no_route_means_no_send() {
     let target = select(&r, "B");
     let (out, ev, leg) = routed(&r, target, RouteChoice::NoActiveRoute, b"never").await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::NoActiveRoute), "the named outcome: {out:?}");
-    assert!(out.proves_not_dispatched());
+    assert!(out.not_dispatched());
     assert_eq!(leg, RouteLeg::None);
     assert!(ev.is_none(), "no leg: nothing resolved, dialled or sent");
     assert!(r.origin.pooled().is_empty(), "no connection was opened");

@@ -1,5 +1,5 @@
 //! The delivery layer's rules, with no clock and no transport (node-rpc.md §43, §33;
-//! node-rpc-envelope.md "Transport frames"): the resend schedule, the sending birth's window, the
+//! node-rpc-envelope.md "Transport frames"): the send schedule, the sending birth's window, the
 //! receiver's duplicate window and the order of one invocation's response frames. The runtime
 //! (`rdm_transport::delivery`) drives them.
 
@@ -10,9 +10,9 @@ use std::time::Duration;
 /// How far past the next expected position a response frame may arrive and be held.
 pub const MAX_REORDER_POSITIONS: u32 = 64;
 
-/// The delay before resend `attempt` (1 is the first resend): the publish cadence, doubling with each
+/// The delay before send `attempt` after the first (1 is the second send): the publish cadence, doubling with each
 /// attempt, scaled by `jitter` (clamped to ±25 %), never past the staleness floor.
-pub fn resend_after(attempt: u32, cadence: Duration, floor: Duration, jitter: f64) -> Duration {
+pub fn send_delay(attempt: u32, cadence: Duration, floor: Duration, jitter: f64) -> Duration {
     let factor = 1u32.checked_shl(attempt.saturating_sub(1)).unwrap_or(u32::MAX);
     let base = cadence.saturating_mul(factor).min(floor);
     base.mul_f64(1.0 + jitter.clamp(-0.25, 0.25)).min(floor)
@@ -50,7 +50,7 @@ impl<R: Eq + Hash + Clone> SendWindow<R> {
         seq
     }
 
-    /// The frame `seq` is owed no longer (acked, its receiver gone, or cancelled by its owner).
+    /// The frame `seq` is sent no longer (acked, its receiver gone, or cancelled by its owner).
     /// Returns whether any receiver still held it.
     pub fn settle(&mut self, seq: u64) -> bool {
         let mut held = false;
@@ -85,7 +85,7 @@ pub enum Arrival<'a, S> {
     New,
     /// Seen and still held: its state.
     Held(&'a mut S),
-    /// Below the sender's watermark: seen, finished and forgotten. The sender promised never to resend
+    /// Below the sender's watermark: seen, finished and forgotten. The sender promised never to send again
     /// it, so this is a repeat of something long acknowledged.
     BelowWatermark,
 }
@@ -131,7 +131,7 @@ impl<S> RecvWindow<S> {
         self.held.insert(seq, state);
     }
 
-    /// Forget `seq` (a request that was never dispatched): its sender's next resend is a first
+    /// Forget `seq` (a request that was never dispatched): its sender's next send is a first
     /// arrival.
     pub fn remove(&mut self, seq: u64) -> Option<S> {
         self.held.remove(&seq)
@@ -262,19 +262,19 @@ impl ResponseOrder {
 mod tests {
     use super::*;
 
-    /// Cell 8: the resend schedule is the publish cadence, then doubling with jitter, capped at the
+    /// Cell 8: the send schedule is the publish cadence, then doubling with jitter, capped at the
     /// staleness floor.
     #[test]
-    fn the_resend_schedule_starts_at_the_publish_cadence_doubles_with_jitter_and_stops_at_the_floor() {
+    fn the_send_schedule_starts_at_the_publish_cadence_doubles_with_jitter_and_stops_at_the_floor() {
         let (cadence, floor) = (Duration::from_secs(2), Duration::from_secs(30));
-        let plain: Vec<u64> = (1..=6).map(|a| resend_after(a, cadence, floor, 0.0).as_millis() as u64).collect();
+        let plain: Vec<u64> = (1..=6).map(|a| send_delay(a, cadence, floor, 0.0).as_millis() as u64).collect();
         assert_eq!(plain, [2_000, 4_000, 8_000, 16_000, 30_000, 30_000], "cadence, doubling, the floor");
-        assert_eq!(resend_after(1, cadence, floor, 0.25), Duration::from_millis(2_500), "+25 % jitter");
-        assert_eq!(resend_after(1, cadence, floor, -0.25), Duration::from_millis(1_500), "-25 % jitter");
-        assert_eq!(resend_after(1, cadence, floor, 9.0), Duration::from_millis(2_500), "jitter is clamped to 25 %");
-        assert_eq!(resend_after(4, cadence, floor, 0.25), Duration::from_secs(20));
-        assert_eq!(resend_after(5, cadence, floor, 0.25), floor, "never past the floor, jitter included");
-        assert_eq!(resend_after(200, cadence, floor, 0.0), floor, "no overflow however long the message is owed");
+        assert_eq!(send_delay(1, cadence, floor, 0.25), Duration::from_millis(2_500), "+25 % jitter");
+        assert_eq!(send_delay(1, cadence, floor, -0.25), Duration::from_millis(1_500), "-25 % jitter");
+        assert_eq!(send_delay(1, cadence, floor, 9.0), Duration::from_millis(2_500), "jitter is clamped to 25 %");
+        assert_eq!(send_delay(4, cadence, floor, 0.25), Duration::from_secs(20));
+        assert_eq!(send_delay(5, cadence, floor, 0.25), floor, "never past the floor, jitter included");
+        assert_eq!(send_delay(200, cadence, floor, 0.0), floor, "no overflow however many times the message is sent");
     }
 
     /// Cell 21 (the sender's half): a new birth's counter starts at 1; one counter for every receiver.
@@ -299,7 +299,7 @@ mod tests {
         let mut w: RecvWindow<&str> = RecvWindow::new();
         assert_eq!(w.arrive(5, 5), Arrival::New);
         w.insert(5, "accepted");
-        assert_eq!(w.arrive(5, 5), Arrival::Held(&mut "accepted"), "a resend finds its state, however long after");
+        assert_eq!(w.arrive(5, 5), Arrival::Held(&mut "accepted"), "a second send finds its state, however long after");
         assert_eq!(w.arrive(6, 5), Arrival::New);
         w.insert(6, "pending");
         assert_eq!(w.arrive(7, 6), Arrival::New, "the watermark passed 5");
@@ -320,7 +320,7 @@ mod tests {
             Ok(Admitted::Deliver(vec![(1, 11, b"data".to_vec()), (2, 12, b"terminal".to_vec())])),
             "the held terminal follows the position it waited for"
         );
-        assert_eq!(o.admit(1, 11, b"data".to_vec()), Ok(Admitted::Duplicate), "a resend of a delivered frame");
+        assert_eq!(o.admit(1, 11, b"data".to_vec()), Ok(Admitted::Duplicate), "a second send of a delivered frame");
         assert_eq!(o.next(), 3);
     }
 

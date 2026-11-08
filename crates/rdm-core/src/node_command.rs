@@ -704,7 +704,7 @@ mod tests {
     /// reply bound.
     // @feature: node-lifecycle
     #[test]
-    fn every_node_command_frame_round_trips_under_its_bounds() {
+    fn every_node_command_frame_encodes_and_decodes_under_its_bounds() {
         let req = NodeCommandRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections((0..MAX_CONNECTION_IDS).map(|_| ConnectionId::mint()).collect()) };
         let bytes = NodeCommand::encode_request(&req).unwrap();
         assert!(bytes.len() <= NodeCommand::MAX_REQUEST_FRAME_BYTES, "{} bytes", bytes.len());

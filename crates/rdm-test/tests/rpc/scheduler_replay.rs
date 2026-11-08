@@ -333,7 +333,7 @@ async fn incomplete_send(seed: u64) -> Report {
                 let (o, ev) = p.call(b"partitioned", &opts).await;
                 assert_eq!(r.saw("partitioned_dial", &o), "NotSent(Deadline)");
                 assert!(ev.is_none_or(|e| !e.committed));
-                assert!(o.proves_not_dispatched());
+                assert!(o.not_dispatched());
                 tap.set_to_server(Mode::Pass);
                 r.s.record("tap", "to_server=pass");
                 let (o, _) = p.call(b"healed", &CallOptions::default()).await;
@@ -410,7 +410,7 @@ async fn reply_cut(seed: u64) -> Report {
         assert_eq!(r.saw("put", &o), "Indeterminate(ReplyDeadline)");
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline));
         assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was cut");
-        assert!(!o.proves_not_dispatched());
+        assert!(!o.not_dispatched());
         // The reply crossed the tap and was cut there: nothing reached the caller another way.
         let (_, held, dropped) = tap.stats().to_client.counts();
         assert!(if cut == Cut::ReplyLost { dropped > 0 } else { held > 0 }, "the cut reply datagrams were seen by the tap: held {held}, dropped {dropped}");
@@ -490,7 +490,7 @@ async fn supersession(seed: u64) -> Report {
     };
     let ((o, ev), third) = tokio::join!(stale, drive);
     assert_eq!(r.saw("stale_dial", &o), "RejectedStale");
-    assert!(o.proves_not_dispatched());
+    assert!(o.not_dispatched());
     assert!(ev.is_none_or(|e| !e.committed));
     assert!(c.client.pooled().is_empty(), "nothing of a superseded birth is pooled: {:?}", c.client.pooled());
     assert_eq!(ServerStats::get(&n.stats.dispatched), 2, "the superseded call never dispatched (control and slow only)");

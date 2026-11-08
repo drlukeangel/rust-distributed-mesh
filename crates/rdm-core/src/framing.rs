@@ -490,7 +490,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn varint_round_trips_at_every_width() {
+    fn a_varint_encodes_and_decodes_at_every_width() {
         for v in [0u64, 1, 127, 128, 300, 16_383, 16_384, u32::MAX as u64, u64::MAX] {
             let mut b = Vec::new();
             encode_varint(v, &mut b);
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_frames_round_trip_and_name_their_failures() {
+    fn reply_frames_encode_and_decode_and_name_their_failures() {
         let f = encode_frame(b"reply");
         assert_eq!(decode_single_frame(&f, 64), Ok(&b"reply"[..]));
         assert_eq!(decode_single_frame(&f[..3], 64), Err(FrameError::Truncated));

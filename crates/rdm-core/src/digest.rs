@@ -182,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_birth_round_trips_as_json_for_gossip() {
+    fn a_birth_encodes_and_decodes_as_json_for_gossip() {
         let a = MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
             path: "mesh1.node".into(), name: "1".into(),
