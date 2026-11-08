@@ -2128,12 +2128,13 @@ impl StatusService {
         end
     }
 
-    /// A command naming this admin, served on the target and the exact birth it names (node-rpc.md
-    /// §14): the commander is the caller as the view holds it, where its completion goes; the
-    /// connection spared is the call's own (`peer`).
+    /// `node.mesh.join` commanded of this admin (`JoinMesh` on 0x1B), served on the target and the exact
+    /// birth it names (node-rpc.md §14): the commander is the caller as the view holds it, where its
+    /// completion goes; the connection spared is the call's own (`peer`). Any other request is refused
+    /// `not_ready` by name, never served here.
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::JoinMesh { incarnation, .. }) = req else {
-            unreachable!("serve_command is called for commands only")
+        let StatusRequest::JoinMesh { incarnation, .. } = req else {
+            return rdm_core::reply::status::not_ready(format!("{}: {} is not a command this admin's status service serves", self.node_id, req.op()));
         };
         let me_name = self.held_name_in(view);
         // The exact birth the call names is checked.
@@ -2146,7 +2147,10 @@ impl StatusService {
         let reply = match (me, self.own.get()) {
             _ if elected.is_some() => elected.expect("checked"),
             (Some(me), _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => rdm_core::reply::stale(me.incarnation_id.clone().expect("checked")),
-            (_, Some(own)) => own.serve(sender.map(|n| &n.node_id), peer, req).await.expect("a command"),
+            (_, Some(own)) => match own.serve(sender.map(|n| &n.node_id), peer, req).await {
+                Some(reply) => reply,
+                None => rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: its node surface serves no {}", me_name.path, me_name.name, req.op())),
+            },
             (_, None) => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has not yet joined its mesh; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name)),
         };
         tracing::info_span!("rdm.node_admin.status.update.via-command", node_path = %me_name.path, node_name = %me_name.name, op = req.op(), sender = %sender.map(|n| n.node_id.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
