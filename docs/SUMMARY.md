@@ -9,6 +9,7 @@
 
 - [Building an application on RDM](eng/consumer-guide.md)
 - [Your own ops on Node RPC](eng/consumer-guide-ops.md)
+- [Getting started with application channels](eng/application-channels.md)
 
 # Architecture
 

@@ -14,6 +14,7 @@ the linked page before asking: every answer here was already on one.
 | hand a node a secret | `RDM_DECLARED_SECRETS` in [build-deployment.md §3](../architecture/build-deployment.md) and [Configuration](../reference/rdm/config.md) (Q150): declared by name with the kinds it is set on; never in a row, a span or a record |
 | pass a variable through to every node (`RUST_LOG`, `RUST_BACKTRACE`, …) | RDM's fixed pass-through list (`crates/rdm-admin/src/admin/records.rs` `PASSTHROUGH`); under the process provider the host environment also reaches the child, minus `RDM_*`, the trace context and declared names |
 | bind my listeners (REST, Kafka, …) | `RDM_LISTENERS` in [Configuration](../reference/rdm/config.md): one per listener my wiring declares on the kind, port 0, the bound port reported at the join and published on the node row. Each listener is a named port binding, whatever my application serves on it (a gateway's Kafka port, a REST API); a peer reads them with `node.get` (`listeners`). RDM carries no other contact field. |
+| join an application channel, subscribe to it and publish on it | [Getting started with application channels](application-channels.md); the contract is [gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth) |
 | run on processes or containers | `MESH_SPAWN_TYPE`; [deployment-provider.md §2.6–2.7](../architecture/deployment-provider.md#26-the-process-provider) |
 
 ## Changing the topology

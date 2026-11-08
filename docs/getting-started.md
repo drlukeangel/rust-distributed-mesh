@@ -209,4 +209,5 @@ estate at target/demo-estate-20261106T172300 stopped; left: 0
 - **Your node's data dir.** A node keeps its data under `RDM_DATA_DIR`. A node re-created at the same `path` and `name` gets its predecessor's directory when its storage is `persistent` and the directory is still there (`inherited = true` in `pre_node_ready`), a new one otherwise; RDM never looks inside it. Your `pre_node_ready` decides whether the data is usable and answers `Ok`, `Pending` or `Failed` ([consumer guide, Where my data goes](eng/consumer-guide.md#where-my-data-goes)).
 - Read the [Glossary](glossary.md) for definitions of every RDM term, or [Fabric, mesh and node lifecycles](architecture/fabric-mesh-node-lifecycles.md) for the index of architecture pages and workflows.
 - Read [Building an application on RDM](eng/consumer-guide.md) and [Your own ops on Node RPC](eng/consumer-guide-ops.md) to wire your own node types and protocols.
+- Read [Getting started with application channels](eng/application-channels.md) to join a channel, subscribe to it and publish on it.
 - Browse the runnable examples in `demo/examples/README.md`.
