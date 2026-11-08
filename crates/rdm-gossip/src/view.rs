@@ -479,6 +479,7 @@ impl View {
                 let moved = rx.take_delta_chunk_against(chunk, order.installed_snapshot(mesh));
                 match moved {
                     Moved::Applied { delta, moved, .. } => {
+                        let held_full = rx.held_full(mesh);
                         tracing::info_span!(
                             "rdm.mesh.topology.update.via-delta",
                             node = %self.current_name(),
@@ -490,10 +491,10 @@ impl View {
                             added = delta.added.len(),
                             changed = delta.changed.len(),
                             removed = delta.removed.len(),
+                            deleted = held_full.map_or(0, |held| held.digests().iter().filter(|d| d.status == rdm_core::model::NodeStatus::Deleted).count()),
                         )
                         .in_scope(|| tracing::info!("a differential applied at exactly its base version, every chunk of it held"));
                         let full = Full::new(moved, Vec::new(), Vec::new());
-                        let held_full = rx.held_full(mesh);
                         let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
                         let installed_full = held_full.expect("applied delta has a full").clone();

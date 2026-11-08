@@ -629,8 +629,8 @@ mod tests {
         assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
     }
 
-    /// CONTRACT (gossip.md "A primary change on gossip": "the mesh-primary records it on the node's row
-    /// and its next `TopologyFull` projection carries it, its normal publication"; lifecycles/node-primary-update.md
+    /// CONTRACT (gossip.md "A primary change on gossip": "the node records it on its own row, and the
+    /// mesh-primary's next `TopologyFull` projection carries it, its normal publication"; lifecycles/node-primary-update.md
     /// step 5; Q387: a member's own mesh reaches it by a read): a member of mesh1 holds the primary records
     /// its mesh-primary's read carries, its own birth's among them, though the read's copy of its own
     /// digest is older than the one it holds.
@@ -3194,6 +3194,41 @@ mod tests {
         assert!(hear(&mut channel, &member, &event_by(StatusEvent::Deleting, deleting.clone(), &publisher_of(&mp2), 6), &fabric, Side::MeshChannel), "mesh2's mesh-primary's fact at v6 is taken");
         assert!(member.digest_view.in_flight().contains(&deleting));
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty());
+    }
+
+    /// CONTRACT (gossip.md "A node that missed a lifecycle event recovers it from `TopologyFull.in_flight`
+    /// or `TopologyFull.deleted`, through the next delta, full or top-up"; Q390: a deletion is the node's
+    /// status in a differential's `changed`): `rdm.mesh.topology.update.via-delta` records `deleted`, the
+    /// count of that mesh's nodes the receiver holds listed deleted after the apply, as
+    /// `via-snapshot-installed` and `via-topology-version` record it. A mesh9 node holds mesh2 from its
+    /// forwarder's differentials: v5 lists three nodes, v6 and v7 each list one more deleted, and v8 no
+    /// longer lists the first. Must NOT happen: a node that recovered a peer mesh's deletions through
+    /// differentials alone, with no span saying it holds them (fabric_primary_handover, gate
+    /// 2163cb745: mesh2.node.2 took mesh1's last deletions by deltas only).
+    #[test]
+    fn a_differential_records_the_deleted_nodes_the_receiver_holds_after_it_applies() {
+        let spans = OpenedSpans::default();
+        let _capture = rdm_transport::test_span_capture::install(spans.clone());
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let member = test_view("mesh9", "mesh9.node.1");
+        let mut channel = crate::receive_order::ReceiveOrder::default();
+        let (forwarder, mp2) = (birth_at(rdm_core::PathName::new("mesh9.node-admin", "1").unwrap(), "mesh9", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 1));
+        let (n1, n2) = (birth_at(rdm_core::PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", 1), birth_at(rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", 1));
+        let deleted = |d: &MeshDigest| MeshDigest { status: NodeStatus::Deleted, ..d.clone() };
+        let by = publisher_of(&forwarder);
+        assert!(hear(&mut channel, &member, &delta_of("mesh2", &by, 0, 5, 1, vec![mp2.clone(), n1.clone(), n2.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &delta_of("mesh2", &by, 5, 6, 2, vec![], vec![deleted(&n1)], vec![]), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &delta_of("mesh2", &by, 6, 7, 3, vec![], vec![deleted(&n2)], vec![]), &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &delta_of("mesh2", &by, 7, 8, 4, vec![], vec![], vec![n1.clone()]), &fabric, Side::MeshChannel));
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh2").map(|(_, v)| v), Some(8));
+        let applied: Vec<(String, String, String, String)> = spans
+            .named("rdm.mesh.topology.update.via-delta")
+            .into_iter()
+            .filter(|f| f["node"] == "mesh9.node.1" && f["mesh"] == "mesh2")
+            .map(|f| (f["topology_version"].clone(), f["changed"].clone(), f["removed"].clone(), f["deleted"].clone()))
+            .collect();
+        let row = |v: &str, changed: &str, removed: &str, deleted: &str| (v.to_string(), changed.to_string(), removed.to_string(), deleted.to_string());
+        assert_eq!(applied, vec![row("5", "0", "0", "0"), row("6", "1", "0", "1"), row("7", "1", "0", "2"), row("8", "0", "1", "1")], "each differential records the deleted nodes held after it: {applied:#?}");
     }
 
     /// Two receive paths of one node (its backbone and its mesh channel) applying a projection of
