@@ -1,5 +1,18 @@
 # CLAUDE.md — RDM agent instructions
 
+## Nothing lands without these two (Luke, 2026-11-08)
+
+1. **An adversarial code review of the work.** Before `lane-land.sh`, the lead reads the unit's diff against what
+   its ruling says must be true when it is done, and checks that in the code itself. For example, for a "one copy"
+   ruling, every copy of that state is shown gone or shown to be the one. The lead also runs the `code-review` skill
+   on the lane's branch against origin/main and reads every finding. Each finding is fixed in the lane or answered
+   before the landing. A green gate is not the review, and neither is a seat's report or a diff summary.
+2. **Jaeger flames that prove it works.** Every behaviour fix carries a flame: the trace link from an exported run
+   (http://192.168.68.99:16687/trace/<id>) and the span lines that show the fix working. The lead reads it before
+   the landing. Local span files and a green cell are not the proof. A gossip or mesh change carries a flame from
+   before the change and one from after it. When telemetry is down, the unit waits; it does not land without its
+   flames.
+
 RDM (rust-distributed-mesh) is the generic Mesh product: the fabric, mesh and node runtime
 (node-admin, Node RPC, gossip, Build, deployment providers) that rafka-v2 pins as a dependency and
 consumes. Everything rafka-specific (gateways, brokers, orgs, topics, ACLs) lives in rafka-v2 and
