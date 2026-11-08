@@ -116,20 +116,11 @@ impl rdm_admin::storage_backend::StorageBackend for RefusesFirstReady {
 /// one refused write, its gate ended.
 #[test]
 fn a_day0_admin_whose_first_ready_write_is_refused_becomes_ready_on_the_gates_next_pass() {
-    let capture = Capture::new("a_day0_admin_whose_first_ready_write_is_refused_becomes_ready_on_the_gates_next_pass");
-    let dispatch = capture.dispatch.clone();
-    let d = dispatch.clone();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
-        .build()
-        .unwrap();
-    let _guard = tracing::dispatcher::set_default(&dispatch);
     let dir = std::env::temp_dir().join(format!("rdm-fabric-create-{}", rdm_core::NodeId::mint()));
     let (data_dir, store_dir) = (dir.join("admin"), dir.join("store"));
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::create_dir_all(&store_dir).unwrap();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-admin-day0-ready-refused").expect("the cell's evidence file can be created");
     let cfg = AdminConfig::from_env(|k| match k {
         "RDM_DATA_DIR" => Some(data_dir.display().to_string()),
         "RDM_STORE_DIR" => Some(store_dir.display().to_string()),
@@ -142,7 +133,7 @@ fn a_day0_admin_whose_first_ready_write_is_refused_becomes_ready_on_the_gates_ne
     let certs = rdm_admin::certs::CertChoice::from_material(&data_dir, &cfg.mesh, true, |_| None).expect("Day-0 mints the fabric root");
     let refused = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let backend = RefusesFirstReady { refused: refused.clone() };
-    rt.block_on(async move {
+    capture.run(4, async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
         let hooks = FabricHooks {
             on_fabric_ready: Some(Arc::new(move |ctx| {
@@ -164,14 +155,14 @@ fn a_day0_admin_whose_first_ready_write_is_refused_becomes_ready_on_the_gates_ne
         drop(running);
     });
     assert!(refused.load(std::sync::atomic::Ordering::SeqCst) >= 2, "its first Ready write was refused and a later one written");
-    let unwritten: Vec<Captured> = capture
-        .named("rdm.node_admin.runtime.reject.via-not-ready")
-        .into_iter()
-        .filter(|s| s.attributes.get("detail").is_some_and(|d| d.contains("its own record's Ready is not written")))
-        .collect();
-    assert_eq!(unwritten.len(), 1, "the refused write is named once, as that pass's blocker");
-    let ready = capture.named("rdm.mesh.node.update.via-ready");
-    assert_eq!(ready.len(), 1, "the admin becomes Ready once");
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let unwritten = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node_admin.runtime.reject.via-not-ready" && s["attributes"]["detail"].as_str().is_some_and(|d| d.contains("its own record's Ready is not written")))
+        .count();
+    assert_eq!(unwritten, 1, "the refused write is named once, as that pass's blocker");
+    let ready = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-ready").count();
+    assert_eq!(ready, 1, "the admin becomes Ready once");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

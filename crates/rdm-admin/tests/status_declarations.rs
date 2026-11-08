@@ -2330,10 +2330,14 @@ async fn status_stop_and_start_positions_are_refused_by_name_without_execution()
 /// mid-stream (its pipeline step cancelled) is over: its command closes with it, and a later
 /// `mesh.block` resolves. Must NOT happen: a cancelled carry that holds its command open forever, so
 /// every later `mesh.block` of a storage change never answers.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_cancelled_lifecycle_carry_closes_its_command_and_a_later_block_resolves() {
+#[test]
+fn a_cancelled_lifecycle_carry_closes_its_command_and_a_later_block_resolves() {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
     use rdm_admin::deployment::pipeline::CommandContext;
+    let dir = std::env::temp_dir().join(format!("rdm-cancelled-carry-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-admin-cancelled-carry").expect("the cell's evidence file can be created");
+    capture.run(4, async {
     for start in [false, true] {
         let (rig, births) = rig().await;
         let subject = births["rpc2"].node.clone();
@@ -2372,6 +2376,10 @@ async fn a_cancelled_lifecycle_carry_closes_its_command_and_a_later_block_resolv
         assert_eq!(in_flight, 0, "the cancelled carry left no command in flight");
         finish.notify_one();
     }
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    assert!(spans.iter().any(|s| s["name"] == "rdm.node_rpc.request.update.via-call"), "each carry's call is spanned");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Q47: the stream owner records only the node's frames, before recovery; the start's Ready

@@ -1179,9 +1179,13 @@ mod tests {
     /// installed the cert (`CertRenewed`). A cert it refused, or a birth still starting (`NotReady`), writes
     /// nothing. Must NOT happen: a record carrying the new dates while its connections present the old
     /// cert, its `renew_at` then read as not passed and the old cert expiring unrenewed.
-    #[tokio::test]
-    async fn the_fabric_primarys_own_renewal_writes_its_dates_only_once_the_cert_is_installed() {
+    #[test]
+    fn the_fabric_primarys_own_renewal_writes_its_dates_only_once_the_cert_is_installed() {
         use crate::storage::NodesStorage as _;
+        let dir = std::env::temp_dir().join(format!("rdm-own-renewal-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-admin-own-renewal").expect("the cell's evidence file can be created");
+        capture.run(2, async {
         let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
         admin.incarnation_id = Some(IncarnationId::mint());
         admin.endpoint_id = Some(crate::model::EndpointId("0".repeat(64)));
@@ -1203,5 +1207,10 @@ mod tests {
         assert!(write_own_renewal(installed, Some(configs.clone()), dates.clone()).await);
         assert_eq!(held().await, Some(dates), "the installed cert's dates are on its own record");
         ep.close().await;
+        });
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        let not_installed = spans.iter().filter(|s| s["name"] == "rdm.node_admin.cert.update.via-own-record" && s["attributes"]["outcome"] == "not-installed").count();
+        assert_eq!(not_installed, 2, "each renewal not installed is named, and writes nothing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

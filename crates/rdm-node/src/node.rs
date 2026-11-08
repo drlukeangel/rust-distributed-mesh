@@ -2368,6 +2368,9 @@ mod primary_tests {
             assert!(owed.is_empty(), "no Ready is owed its mesh-primary");
             endpoint.close().await;
         });
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        assert!(spans.iter().any(|s| s["name"] == "rdm.node.record.update.via-status" && s["attributes"]["status"] == "Ready" && s["attributes"]["outcome"] == "refused"), "the refused Ready is named on its via-status span");
+        assert!(!spans.iter().any(|s| s["name"] == "rdm.mesh.node.update.via-ready"), "no via-ready follows a Ready the record refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

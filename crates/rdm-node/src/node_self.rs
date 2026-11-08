@@ -2239,9 +2239,13 @@ mod tests {
     /// connections-deleting when it reports it, then connections-deleted from its `Established`
     /// completion. Must NOT happen: a record at connections-deleting while the Digest still says Ready,
     /// or a Digest that goes from Ready to connections-deleted with nothing between.
-    #[tokio::test]
-    async fn a_standalone_connections_delete_moves_the_digest_with_the_record() {
+    #[test]
+    fn a_standalone_connections_delete_moves_the_digest_with_the_record() {
         use crate::nodes_storage::NodesStorage as _;
+        let dir = std::env::temp_dir().join(format!("rdm-connections-delete-digest-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-connections-delete-digest").expect("the cell's evidence file can be created");
+        capture.run(2, async {
         let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let ep_id = EndpointId(endpoint.secret_key().public().to_string());
         let (node_id, incarnation, name) = (NodeId::mint(), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
@@ -2292,5 +2296,10 @@ mod tests {
             "the Digest moved with the record: connections-deleting when it was reported, then connections-deleted"
         );
         endpoint.close().await;
+        });
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        let written: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node.record.update.via-status" && s["attributes"]["outcome"] == "written").filter_map(|s| s["attributes"]["held"].as_str().map(String::from)).collect();
+        assert_eq!(written, ["ConnectionsDeleting", "ConnectionsDeleted"], "each status is on the record, written, before the Digest carries it: {written:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
