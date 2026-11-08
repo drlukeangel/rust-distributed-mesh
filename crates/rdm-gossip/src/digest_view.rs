@@ -1691,7 +1691,7 @@ impl DigestView {
     /// The exact birth `removed` names is no longer listed by `mesh`'s topology (the `removed` of a
     /// full's delta or of a differential, gossip.md §3.1 `TopologyDelta`: "`removed` a node's
     /// identity"), heard on `channel` at `topology_version`: a birth of that mesh this view holds from
-    /// its topology at that incarnation leaves the view. It is removed, not departed: nothing holds it
+    /// its topology at that incarnation leaves the view. It is removed, never held deleted: nothing holds it
     /// deleted, and a later topology listing it holds it again. A birth this view holds from its own
     /// Digest heard here (`Heard::Direct`) is not its topology's to remove. `false` when nothing left.
     pub(crate) fn remove_unlisted(&self, mesh: &str, removed: &rdm_core::framing::Birth, channel: &str, topology_version: u64) -> bool {
@@ -1713,7 +1713,7 @@ impl DigestView {
             channel,
             topology_version,
         )
-        .in_scope(|| tracing::info!("the mesh's topology no longer lists the exact birth: it leaves the view, removed, not departed"));
+        .in_scope(|| tracing::info!("the mesh's topology no longer lists the exact birth: it leaves the view, removed, never held deleted"));
         self.heard.send_modify(|v| *v += 1);
         self.births.send_modify(|v| *v += 1);
         true

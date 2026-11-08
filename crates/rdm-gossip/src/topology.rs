@@ -3408,7 +3408,7 @@ mod tests {
 
     /// CONTRACT (gossip.md §3.1 `TopologyDelta`: "`removed` a node's identity"; `TopologyFull`: "each
     /// later full only its delta"; Q409 A: one held copy per peer mesh): a birth its peer mesh's topology
-    /// no longer lists leaves the view at its exact incarnation, removed and not departed, whichever path
+    /// no longer lists leaves the view at its exact incarnation, removed and never held deleted, whichever path
     /// wrote the move. A mesh9 node holds mesh2 from its forwarder's differentials: v5 lists mesh2.node.1
     /// and mesh2.node.2, v6 removes mesh2.node.2. A mesh9 node-admin holds mesh2 from the backbone: v5
     /// lists both, v6 only mesh2.node.1. A third mesh9 node reads mesh2 at v5, then at v6. At each,
@@ -3416,7 +3416,7 @@ mod tests {
     /// happen: a birth the copy dropped still held in the digest view, and routable there, until a
     /// `deleted` listing of it (code audit 2026-11-08 round 2, G1).
     #[test]
-    fn a_birth_its_peer_meshs_topology_no_longer_lists_leaves_the_view_removed_and_not_departed() {
+    fn a_birth_its_peer_meshs_topology_no_longer_lists_leaves_the_view_and_is_never_held_deleted() {
         let spans = OpenedSpans::default();
         let _capture = rdm_transport::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
@@ -3441,7 +3441,7 @@ mod tests {
         for (path, view) in [("delta", &delta_path), ("backbone", &backbone), ("read", &read)] {
             assert_eq!(view.copies.lock().unwrap().held_version("mesh2").map(|(_, v)| v), Some(6), "{path}: the copy is at v6");
             assert!(!holds(view, &n2), "{path}: the birth v6 no longer lists has left the view");
-            assert!(!view.digest_view.is_deleted(n2.node.node_id.as_str()), "{path}: removed, not departed");
+            assert!(!view.digest_view.is_deleted(n2.node.node_id.as_str()), "{path}: removed, never held deleted");
             assert!(holds(view, &n1), "{path}: the birth v6 still lists stays held");
         }
         let removed = spans.named("rdm.mesh.topology.remove.via-topology-removed");
@@ -3459,8 +3459,8 @@ mod tests {
     /// mesh1.node.1 stopped by its mesh-primary's NodeStopped at v5, and mesh1.node.2 and mesh1.node.3
     /// from their own Digests. Its mesh-primary's backbone full at v6 lists mesh1.node.1 ready,
     /// mesh1.node.2 deleted and mesh1.node.3 stopped: the stop of mesh1.node.1 stands, and mesh1.node.2 and
-    /// mesh1.node.3 stay held, neither departed nor stopped. Must NOT happen: an own-mesh birth's stop
-    /// ended, or a birth departed or stopped, by its mesh's backbone full (code audit 2026-11-08
+    /// mesh1.node.3 stay held, neither held deleted nor stopped. Must NOT happen: an own-mesh birth's stop
+    /// ended, or a birth held deleted or stopped, by its mesh's backbone full (code audit 2026-11-08
     /// round 2, G4).
     #[test]
     fn a_non_primary_admins_own_mesh_backbone_full_opens_and_ends_no_lifecycle_of_its_own_mesh() {
