@@ -81,7 +81,9 @@ pub enum Accepted {
 /// `AdminConfig::connections_delete_deadline`, which every birth it launches carries).
 pub struct CommandView {
     /// Each open command: what resolves its completion, and the instant it was first sent.
-    open: Mutex<HashMap<CommandKey, (watch::Sender<bool>, Instant)>>,
+    /// Each open command: its completion, when it opened, and how many callers hold it open. A key two
+    /// callers track (a carry and the wait for its completion) closes only when the last of them ends.
+    open: Mutex<HashMap<CommandKey, (watch::Sender<bool>, Instant, usize)>>,
     /// How many commands are open, moved under `open`'s lock each time one opens or closes: what
     /// [`Self::block`] waits on to see every command in flight complete.
     open_count: watch::Sender<usize>,
@@ -229,10 +231,13 @@ impl CommandView {
     }
 
     /// Open `key` before the command is sent (so a completion that races the reply finds it) and
-    /// return what resolves when the completion is accepted. Opening again is the same command.
+    /// return what resolves when the completion is accepted. Opening again is the same command, held
+    /// open once more: each open is ended by one [`Self::close`].
     pub fn open(&self, key: CommandKey) -> watch::Receiver<bool> {
         let mut open = self.open.lock().unwrap();
-        let done = open.entry(key).or_insert_with(|| (watch::channel(false).0, Instant::now())).0.subscribe();
+        let entry = open.entry(key).or_insert_with(|| (watch::channel(false).0, Instant::now(), 0));
+        entry.2 += 1;
+        let done = entry.0.subscribe();
         self.open_count.send_replace(open.len());
         done
     }
@@ -241,7 +246,7 @@ impl CommandView {
     pub fn complete(&self, key: &CommandKey) -> Accepted {
         let open = self.open.lock().unwrap();
         match open.get(key) {
-            Some((tx, _)) => {
+            Some((tx, _, _)) => {
                 if tx.send_replace(true) {
                     Accepted::Again
                 } else {
@@ -282,7 +287,12 @@ impl CommandView {
     /// Q332, Q338), never this view's.
     pub fn close(&self, key: &CommandKey) {
         let mut open = self.open.lock().unwrap();
-        open.remove(key);
+        if let Some(entry) = open.get_mut(key) {
+            entry.2 = entry.2.saturating_sub(1);
+            if entry.2 == 0 {
+                open.remove(key);
+            }
+        }
         self.open_count.send_replace(open.len());
     }
 }
@@ -387,6 +397,25 @@ mod tests {
         for local in [R::Connection("request does not encode: too long".into()), R::StreamBudget, R::FrameNotSent, R::AdmissionBlocked("all".into()), R::NotForwardable { op: 0x1b }, R::ConnectionNoBudget { remaining_ms: 1, reserve_ms: 2 }] {
             assert_eq!(unreachable_of(&local), None, "{local:?} is local to the sender");
         }
+    }
+
+    /// CONTRACT: a command key two callers hold open (a carry and the wait for its completion) stays
+    /// open until the last of them closes it: the first close leaves it open, its completion is still
+    /// taken, and `mesh.block`'s open count stays at one until the second close. Must NOT happen: one
+    /// caller's close removing the key under the other, a completion answered `NoOpenCommand`.
+    #[tokio::test]
+    async fn a_key_two_callers_hold_open_closes_only_when_the_last_closes() {
+        let commands = CommandView::default();
+        let k = key("node.stop");
+        let first = commands.track(k.clone());
+        let second = commands.track(k.clone());
+        drop(first);
+        assert!(commands.is_open(&k), "one caller still holds the key open");
+        assert_eq!(*commands.open_count.borrow(), 1);
+        assert_eq!(commands.complete(&k), Accepted::First, "the completion still finds its command");
+        drop(second);
+        assert!(!commands.is_open(&k), "the last close closes it");
+        assert_eq!(*commands.open_count.borrow(), 0);
     }
 
     /// CONTRACT: a completion resolves its open command once; a repeat is a repeat; a completion

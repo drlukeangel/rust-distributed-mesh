@@ -996,7 +996,7 @@ impl NodeSelf {
     /// node-tickle.md "What follows"; Q87): the whole start sequence runs again on it, from the join
     /// back over the commanding call to its hook, its Build floor, then its one topology read and the
     /// rafka-time of that read (node-start.md steps 2 to 5), the way a start after a stop does. The birth leaves
-    /// its channels first and says Pending; the command is answered `MeshJoined` once the join is
+    /// its channels first; it writes Pending at its accepted join (node-mesh-join.md step 10); the command is answered `MeshJoined` once the join is
     /// accepted and the channel entered (node.mesh.joined), while the rest of the start runs on, and a
     /// start that ends before that answers how it ended. A stopped birth is started by `node.start`,
     /// never by this.
@@ -1238,7 +1238,7 @@ impl NodeSelf {
         let mesh_deleted = self.topology_view.digest_view.statuses.mesh(self.topology_view.mesh_name()).is_some_and(|h| h.status == "deleted" || h.status == "dead");
         // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
         let final_delete = op.filter(|_| by_command && mesh_deleted);
-        if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
+        let leaving_recorded = if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
             let del_op = if op.is_stop() { LifecycleOp { operation: op.operation.command("node.delete", &self.node_id), ..op.clone() } } else { op.clone() };
             self.topology_view.digest_view.deleting(del_op);
             // Its leaving on its own record first (Q356); the aggregate carries the status the record
@@ -1258,14 +1258,20 @@ impl NodeSelf {
             let published = if backbone.withholds("stopping-aggregate", "backbone") { "withheld" } else if backbone.publish(&self.topology_view, members).await { "true" } else { "false" };
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.node_id, mesh = %self.topology_view.mesh_name(), operation = %operation, status = ?me.status, members = count, published)
                 .in_scope(|| tracing::info!("the last mesh topology before the stop carries this node Leaving"));
-        }
+            true
+        } else {
+            false
+        };
         // 5. node.mesh.leave, called after its connections are deleted (node-stop.md step 3;
         // node-mesh-leave.md): leave the mesh and cut its transport, its gossip neighbours and its
         // Node RPC pool, sparing the commander's connection the stop call rides and the connection to
         // its mesh-primary its owed declarations ride (Q206). Never its endpoint.
         // A command's stop streams its acknowledgement, `Leaving`, and its completion, `StopMeshLeft`
         // (Q205). A birth already left since it last started leaves nothing again and answers both.
-        self.write_state(crate::model::NodeStatus::Leaving).await;
+        // Leaving is on its record once: the final delete's aggregate above wrote it already.
+        if !leaving_recorded {
+            self.write_state(crate::model::NodeStatus::Leaving).await;
+        }
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::Leaving { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await;
         }

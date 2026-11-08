@@ -1372,8 +1372,9 @@ impl Becoming {
             .await
             .map_err(|end| crate::node_self::StartFailed { step: "node.started", reason: format!("{}: Ready not recorded on its own record: {end}", self.node_id) })?;
         if d.status != rdm_core::model::NodeStatus::Ready {
-            // Its record moved past Ready while the steps ran (a stop admitted, a delete): not made Ready.
-            return Ok(());
+            // Its record moved past Ready while the steps ran (a stop admitted, a delete): the start ends
+            // naming the status its record holds, never answered Started.
+            return Err(crate::node_self::StartFailed { step: "node.started", reason: format!("{}: its record holds {:?}, not Ready", self.node_id, d.status) });
         }
         tracing::info_span!(
             parent: &self.boot,
@@ -1398,7 +1399,10 @@ impl Becoming {
         // declaration apply once (Q49). Owed before anything that follows it can be (Q210): a stop's
         // declarations queue behind it.
         drop(self.owed.owe((rdm_core::status::NodeState::Ready, self.operation.clone())));
-        let _ = self.channels.publish(&d).await;
+        // Best-effort dissemination (R-NS2): a refused publish is named, and its heartbeats carry the Ready.
+        if let Err(e) = self.channels.publish(&d).await {
+            tracing::info!(error = %e, "the Ready digest was not published: its heartbeats carry it");
+        }
         Ok(())
     }
 }

@@ -418,8 +418,8 @@ impl AdminSession {
                     record.cert = Some(dates.clone());
                 }
             };
-            let writer = s.configs.get().and_then(|c| c.own_writer());
-            crate::node_self::write_own_status(writer.as_ref(), crate::model::NodeStatus::Pending, also, |st| set_own_status(&s.digest, st))
+            let writer = s.configs.get().and_then(|c| c.own_writer()).ok_or_else(|| crate::node_self::StartFailed { step: "node.join", reason: format!("{}: its own property writer is not bound: its accepted join's pending is not written", s.node_id) })?;
+            crate::node_self::write_own_status(Some(&writer), crate::model::NodeStatus::Pending, also, |st| set_own_status(&s.digest, st))
                 .await
                 .map_err(|end| crate::node_self::StartFailed { step: "node.join", reason: format!("{}: its accepted join's pending is not written on its own record: {end}", s.node_id) })?;
             // Only now are its connections recorded: the join's names the handed name.
@@ -655,16 +655,23 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
         if self.digest.lock().unwrap().status != rdm_core::model::NodeStatus::Pending {
             return Ok(());
         }
-        let writer = self.configs.get().and_then(|c| c.own_writer());
-        let d = crate::node_self::write_own_status(writer.as_ref(), crate::model::NodeStatus::Ready, |_| {}, |st| set_own_status(&self.digest, st))
+        let writer = self.configs.get().and_then(|c| c.own_writer()).ok_or_else(|| crate::node_self::StartFailed { step: "node.started", reason: format!("{}: its own property writer is not bound: Ready is not written", self.node_id) })?;
+        let d = crate::node_self::write_own_status(Some(&writer), crate::model::NodeStatus::Ready, |_| {}, |st| set_own_status(&self.digest, st))
             .await
             .map_err(|end| crate::node_self::StartFailed { step: "node.started", reason: format!("{}: Ready not recorded on its own record: {end}", self.node_id) })?;
-        if d.status == rdm_core::model::NodeStatus::Ready {
+        if d.status != rdm_core::model::NodeStatus::Ready {
+            // Its record holds another status (a stop admitted while it started): the start ends naming it.
+            return Err(crate::node_self::StartFailed { step: "node.started", reason: format!("{}: its record holds {:?}, not Ready", self.node_id, d.status) });
+        }
+        {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
             self.wake.wake.poke();
             tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node_path = %self.path, node_name = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
-            let _ = self.channels.publish(&d).await;
+            // Best-effort dissemination (R-NS2): a refused publish is named, and its heartbeats carry the Ready.
+            if let Err(e) = self.channels.publish(&d).await {
+                tracing::info!(parent: &self.root, error = %e, "the Ready digest was not published: its heartbeats carry it");
+            }
         }
         Ok(())
     }

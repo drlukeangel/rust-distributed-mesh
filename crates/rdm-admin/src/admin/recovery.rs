@@ -463,7 +463,9 @@ pub(crate) async fn write_dead(records: &Records, reasons: &Mutex<HashMap<(NodeI
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let written = match rows {
-        None => Err((DeadWrite::Refused, "no-rows-writer", "this admin holds no writer of node records: the dead state is not written".to_string())),
+        // No writer bound yet (an admin's first ticks): not a refusal of the write, so the birth is
+        // investigated again once the writer is bound, as a spent `Send`'s is.
+        None => Err((DeadWrite::Spent, "no-rows-writer", "this admin holds no writer of node records yet: the dead state is not written".to_string())),
         Some(rows) => {
             let send = rdm_transport::client::Send::default();
             let ran = tracing::Instrument::instrument(send.run(|e: &RowRefused| !matches!(e, RowRefused::Unwritten(_)), || rows.investigated(n, NodeStatus::Dead)), span.clone()).await;

@@ -345,7 +345,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             primary_commands: Default::default(),
-            storage_changes: Default::default(), 
+            storage_changes: Default::default(),
             wake: Default::default(),
             fabric_states: Default::default(),
             atlas: Default::default(),

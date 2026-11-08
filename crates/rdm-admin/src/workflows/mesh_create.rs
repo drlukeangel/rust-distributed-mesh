@@ -553,7 +553,7 @@ mod tests {
                 own: Arc::new(OnceLock::new()),
                 mesh_deleter: Arc::new(OnceLock::new()),
                 primary_commands: Default::default(),
-                storage_changes: Default::default(), 
+                storage_changes: Default::default(),
                 wake: Default::default(),
                 fabric_states: Default::default(),
                 atlas: Default::default(),

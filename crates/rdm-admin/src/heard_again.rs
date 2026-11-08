@@ -343,8 +343,8 @@ async fn command_mesh_join(
         if let Err(why) = runner.stopped_birth_or_live(node).await.map(|(_, _, deployed)| runner.joins.expect(deployed)) {
             return (format!("join-not-registered: {why}"), None);
         }
-        // The command back is this authority's command to the birth, open from the send to the answer
-        // as every command of the authority is, a cancelled caller's included: the birth's lifecycle is
+        // The command back is this mesh-primary's command to the birth, open from the send to the answer
+        // as every command it sends is, a cancelled caller's included: the birth's lifecycle is
         // the command's until then.
         let command = crate::node_commands::CommandKey { operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let call = status_service.commands.track(command);

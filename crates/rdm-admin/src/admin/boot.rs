@@ -1860,9 +1860,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 };
                                 let configs = configs_slot.get().expect("configs bound before digest");
                                 configs.bound_own(&subject, initial, runtime.clone(), own_cert_dates.clone()).await?;
-                                // Pending until it can take authority at once, as its digest is: on its record first,
-                                // through the one status move (Q356).
-                                crate::node_self::write_own_status(configs.own_writer().as_ref(), crate::model::NodeStatus::Pending, |_| {}, |st| super::session::set_own_status(&digest, st))
+                                // Pending until it can take the mesh-primary role at once, as its digest is: on its record
+                                // first, through the one status move (Q356). No writer bound is a refused start, never a
+                                // status published with nothing recorded.
+                                let own_writer = configs.own_writer().ok_or_else(|| format!("refusing to start: {node_id}: its own property writer is not bound: its pending state is not written"))?;
+                                crate::node_self::write_own_status(Some(&own_writer), crate::model::NodeStatus::Pending, |_| {}, |st| super::session::set_own_status(&digest, st))
                                     .await
                                     .map_err(|end| format!("refusing to start: {node_id}: its own record's pending state is not written: {end}"))?;
                                 // A role this admin takes or gives up is on its own record from its start on (Q356).
@@ -2229,13 +2231,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // its end named as this pass's blocker, and the gate is tried again.
                                                 let ready = match blocked.is_empty() {
                                                     true => {
-                                                        let writer = configs_slot.get().and_then(|c| c.own_writer());
-                                                        match crate::node_self::write_own_status(writer.as_ref(), crate::model::NodeStatus::Ready, |_| {}, |st| super::session::set_own_status(&digest, st)).await {
-                                                            Ok(d) => Some(d),
-                                                            Err(end) => {
-                                                                blocked.push(format!("{me_id}: its own record's Ready is not written: {end}"));
+                                                        match configs_slot.get().and_then(|c| c.own_writer()) {
+                                                            None => {
+                                                                blocked.push(format!("{me_id}: its own property writer is not bound: its Ready is not written"));
                                                                 None
                                                             }
+                                                            Some(writer) => match crate::node_self::write_own_status(Some(&writer), crate::model::NodeStatus::Ready, |_| {}, |st| super::session::set_own_status(&digest, st)).await {
+                                                                Ok(d) => Some(d),
+                                                                Err(end) => {
+                                                                    blocked.push(format!("{me_id}: its own record's Ready is not written: {end}"));
+                                                                    None
+                                                                }
+                                                            },
                                                         }
                                                     }
                                                     false => None,
