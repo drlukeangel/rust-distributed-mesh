@@ -152,70 +152,93 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
 /// that primary. `Connections([an id it never opened])` completes naming the id not open, carried
 /// in-process (`carried=in-process`: an endpoint does not dial itself, so no op 0x22 call leaves it)
 /// through the birth's own command path (`via-delete-connections` on the primary). `All`, last, first
-/// moves the primary's role (node-connections-delete.md step 0, D40): the new mesh-primary carries it to
-/// the old primary's birth (`carried=dialled`), which reports connections-deleting, then the new
-/// primary records it (`reported_by=node`), then holds the completion with its `Established` receipt.
+/// moves the primary's role (node-connections-delete.md step 0, D40). The old primary answers the
+/// caller `PrimaryUpdated` naming the new mesh-primary (`outcome=primary-updated`, `new_primary`), and
+/// the caller sends the `All` there once that call ended (Q413). The new mesh-primary carries it to the
+/// old primary's birth (`carried=dialled`), which reports connections-deleting, then the new primary
+/// records it (`reported_by=node`), then holds the completion with its `Established` receipt.
 /// Must NOT happen: a refusal because the request names the receiver, a record before its own report,
-/// a `Deadline` receipt because the caller's call the old primary holds was counted as eligible work.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames() {
+/// the old primary holding the caller's call while its successor carries the command back (one call
+/// held across both hops), or a `Deadline` receipt.
+#[test]
+fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames() {
     let test = "a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames";
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
-    estate.settled_views(&[("mesh1", 2, 3)]).await;
-    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    // The caller's calls run in a capture: its op span carries one trace through the old primary's
+    // `PrimaryUpdated` and the call it then sends to the new mesh-primary.
+    let cap = crate::common::capture(test);
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+        estate.resize_shape("fabric1", &[("mesh1", 2, 3)]).await;
+        estate.settled_views(&[("mesh1", 2, 3)]).await;
+        estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    let nodes = estate.nodes_obj().await;
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let primary = mesh.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("node.get names mesh1's primary");
-    let successor = mesh.iter().find(|n| rdm_core::is_node_admin(&n.r#type) && !n.is_primary).cloned().expect("mesh1's other node-admin");
-    let me = primary.node_id.to_string();
-    // The one connections-delete call, streamed: its completion is the `NodeCommandService`'s `ConnectionsDeleted`.
-    let completed = |scope: rdm_core::status::ConnectionScope| {
-        let (nodes, name) = (&nodes, primary.location());
-        async move {
-            let mut stream = nodes.delete_connections(&name, &scope).await.unwrap_or_else(|e| panic!("node.connection.delete of {name:?} refused: {e}"));
-            let frames = Estate::frames_of(&mut stream).await;
-            assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
-            stream.completion().cloned().expect("the `NodeCommandService`'s terminal frame")
-        }
-    };
+        let nodes = estate.nodes_obj().await;
+        let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
+        let primary = mesh.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("node.get names mesh1's primary");
+        let successor = mesh.iter().find(|n| rdm_core::is_node_admin(&n.r#type) && !n.is_primary).cloned().expect("mesh1's other node-admin");
+        let me = primary.node_id.to_string();
+        // The one connections-delete call, streamed: its completion is the `NodeCommandService`'s `ConnectionsDeleted`.
+        let completed = |scope: rdm_core::status::ConnectionScope| {
+            let (nodes, name) = (&nodes, primary.location());
+            async move {
+                let mut stream = nodes.delete_connections(&name, &scope).await.unwrap_or_else(|e| panic!("node.connection.delete of {name:?} refused: {e}"));
+                let frames = Estate::frames_of(&mut stream).await;
+                assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
+                stream.completion().cloned().expect("the `NodeCommandService`'s terminal frame")
+            }
+        };
 
-    let never = rdm_core::ConnectionId::mint();
-    let named_one = completed(rdm_core::status::ConnectionScope::Connections(vec![never.clone()])).await;
-    assert!(
-        matches!(&named_one, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { closed, not_open, receipt: None, .. } if closed.is_empty() && not_open == &vec![never.clone()]),
-        "the primary completes its own Connections([…]), naming the id it never opened: {named_one:?}"
-    );
-    let all = completed(rdm_core::status::ConnectionScope::All).await;
-    assert!(matches!(&all, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), .. }), "the primary completes its own All with an Established receipt: the caller's call it holds while its successor carries the command back is its own, not eligible work: {all:?}");
-    estate.stop().await;
+        let never = rdm_core::ConnectionId::mint();
+        let named_one = completed(rdm_core::status::ConnectionScope::Connections(vec![never.clone()])).await;
+        assert!(
+            matches!(&named_one, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { closed, not_open, receipt: None, .. } if closed.is_empty() && not_open == &vec![never.clone()]),
+            "the primary completes its own Connections([…]), naming the id it never opened: {named_one:?}"
+        );
+        let all = completed(rdm_core::status::ConnectionScope::All).await;
+        assert!(matches!(&all, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), .. }), "the primary completes its own All with an Established receipt: it holds no caller's call while its successor carries the command back: {all:?}");
+        estate.stop().await;
 
-    let spans = estate.spans();
-    let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
-    for (scope, by, how) in [("connections", &primary, "in-process"), ("all", &successor, "dialled")] {
-        let carried = named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary")
-            .into_iter()
-            .find(|sp| sp["attributes"]["node_path"] == by.path && sp["attributes"]["node_name"] == by.name && s(&sp["attributes"]["subject_id"]) == me && s(&sp["attributes"]["scope"]) == scope)
-            .cloned()
-            .unwrap_or_else(|| panic!("{:?} carries {me}'s {scope} node.connection.delete", by.name));
-        assert_eq!((s(&carried["attributes"]["carried"]).as_str(), s(&carried["attributes"]["outcome"]).as_str()), (how, "connections-deleted"), "{carried}");
-        let trace = s(&carried["trace_id"]);
-        let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
-        let executed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-delete-connections" && s(&sp["attributes"]["node"]) == me).unwrap_or_else(|| panic!("{me}'s own birth runs the {scope} command: trace {trace}"));
-        assert_eq!(s(&executed["attributes"]["scope"]), scope, "{executed}");
-        let dialled: Vec<&&Value> = run.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && s(&sp["attributes"]["op"]) == "34").collect();
-        if scope == "connections" {
-            assert!(dialled.is_empty(), "no op 0x22 call leaves {me} for its own birth: {dialled:#?}");
+        let spans = estate.spans();
+        let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+        let end = |sp: &Value| sp["end_unix_nano"].as_u64().unwrap_or(0);
+        // One call per command at a node (Q413): the old primary answers the caller's All
+        // `PrimaryUpdated` naming its successor, and the successor runs the All the caller sent it after.
+        let command_at = |by: &rdm_client::NodeView, outcome: &str| {
+            named(&spans, "rdm.node_admin.node.update.via-node-command")
+                .into_iter()
+                .find(|sp| sp["attributes"]["node_path"] == by.path && sp["attributes"]["node_name"] == by.name && s(&sp["attributes"]["subject_id"]) == me && s(&sp["attributes"]["command"]) == "delete-connections" && s(&sp["attributes"]["outcome"]) == outcome)
+                .cloned()
+                .unwrap_or_else(|| panic!("{:?}'s delete-connections of {me} ended {outcome}", by.name))
+        };
+        let answered = command_at(&primary, "primary-updated");
+        assert_eq!(s(&answered["attributes"]["new_primary"]), successor.node_id.to_string(), "the old primary names its successor: {answered}");
+        let ran = command_at(&successor, "connections-deleted");
+        assert!(end(&answered) <= start(&ran), "the caller sends the All to the new mesh-primary once the old primary's call ended, never one call held across both: {answered} {ran}");
+        assert_eq!(s(&answered["trace_id"]), s(&ran["trace_id"]), "the caller's one All: the old primary's PrimaryUpdated and the new mesh-primary's run are its two calls, in its trace: {answered} {ran}");
+        for (scope, by, how) in [("connections", &primary, "in-process"), ("all", &successor, "dialled")] {
+            let carried = named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary")
+                .into_iter()
+                .find(|sp| sp["attributes"]["node_path"] == by.path && sp["attributes"]["node_name"] == by.name && s(&sp["attributes"]["subject_id"]) == me && s(&sp["attributes"]["scope"]) == scope)
+                .cloned()
+                .unwrap_or_else(|| panic!("{:?} carries {me}'s {scope} node.connection.delete", by.name));
+            assert_eq!((s(&carried["attributes"]["carried"]).as_str(), s(&carried["attributes"]["outcome"]).as_str()), (how, "connections-deleted"), "{carried}");
+            let trace = s(&carried["trace_id"]);
+            let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
+            let executed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-delete-connections" && s(&sp["attributes"]["node"]) == me).unwrap_or_else(|| panic!("{me}'s own birth runs the {scope} command: trace {trace}"));
+            assert_eq!(s(&executed["attributes"]["scope"]), scope, "{executed}");
+            let dialled: Vec<&&Value> = run.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && s(&sp["attributes"]["op"]) == "34").collect();
+            if scope == "connections" {
+                assert!(dialled.is_empty(), "no op 0x22 call leaves {me} for its own birth: {dialled:#?}");
+            }
+            if scope == "all" {
+                let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary's own birth reports its admission");
+                let recorded = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node_id"]) == me).expect("the primary records its own connections-deleting");
+                assert_eq!((s(&recorded["attributes"]["recorder_node_id"]), s(&recorded["attributes"]["reported_by"])), (successor.node_id.to_string(), "node".to_string()), "the new mesh-primary records it: {recorded}");
+                let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node_id"]) == me).expect("the new mesh-primary holds the completion");
+                assert!(start(admitted) <= start(recorded) && start(recorded) <= start(completed), "its own report, then its record, then the completion: {admitted} {recorded} {completed}");
+                println!("the old mesh-primary's node.connection.delete All, after its role moved: http://192.168.68.99:16687/trace/{trace}");
+                estate.record_trace_url(&trace);
+            }
         }
-        if scope == "all" {
-            let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary's own birth reports its admission");
-            let recorded = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node_id"]) == me).expect("the primary records its own connections-deleting");
-            assert_eq!((s(&recorded["attributes"]["recorder_node_id"]), s(&recorded["attributes"]["reported_by"])), (successor.node_id.to_string(), "node".to_string()), "the new mesh-primary records it: {recorded}");
-            let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node_id"]) == me).expect("the new mesh-primary holds the completion");
-            assert!(start(admitted) <= start(recorded) && start(recorded) <= start(completed), "its own report, then its record, then the completion: {admitted} {recorded} {completed}");
-            println!("the old mesh-primary's node.connection.delete All, after its role moved: http://192.168.68.99:16687/trace/{trace}");
-            estate.record_trace_url(&trace);
-        }
-    }
+    });
 }

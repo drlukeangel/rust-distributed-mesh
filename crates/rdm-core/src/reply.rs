@@ -169,6 +169,8 @@ pub fn malformed(kind: MalformedKind) -> NodeCommandReply { NodeCommandReply::Ma
 pub fn property_updated(reply: crate::status::StatusReply) -> NodeCommandReply { NodeCommandReply::PropertyUpdated { reply } }
 /// A node's property command refused before anything was accepted, by name.
 pub fn property_refused(reply: crate::status::StatusReply) -> NodeCommandReply { NodeCommandReply::PropertyRefused { reply } }
+/// A caller's command whose subject's roles moved, answered naming the new mesh-primary `node_id` that node.primary.updated named (Q413): the caller sends the command there.
+pub fn primary_updated(node_id: NodeId) -> NodeCommandReply { NodeCommandReply::PrimaryUpdated { node_id } }
 }
 
 /// Constructors for the BuildReply family.

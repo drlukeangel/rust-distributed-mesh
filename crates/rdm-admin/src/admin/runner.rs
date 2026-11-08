@@ -868,6 +868,15 @@ impl AdminRunner {
         turn.lock_owned().await
     }
 
+    /// The work turn of the node `node_id` at this primary if no other work holds it, never waiting
+    /// ([`Self::node_work`]'s turn): a caller's command naming a node its primary already runs a
+    /// command or step on is refused `Busy` at once (Q413; node-recovery.md step 1), and the caller's
+    /// `Send` sends it again. `None` while the turn is held.
+    pub(crate) fn try_node_work(&self, node_id: &crate::model::NodeId) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let turn = self.node_work.lock().unwrap().entry(node_id.clone()).or_default().clone();
+        turn.try_lock_owned().ok()
+    }
+
     /// The termination of the deleted birth `(node_id, from_incarnation)` at `node`, heard again (Q128): its
     /// runtime adopted from its durable runtime row (its digest is refused), then the pipeline's
     /// `TerminateRuntime` on it.

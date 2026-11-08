@@ -972,9 +972,10 @@ async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeVie
 ///    `held`, the mesh-primary entry P -> NA2, under P's update).
 /// 5. NA2 records `is_primary` on its own record (Q356; "The write records the role; it does not grant
 ///    it").
-/// 6. The fabric-primary installs NA2's answer and hands the caller's node command on to NA2, which runs
-///    it as mesh2's primary, a node command and never a Build (Q342); every admin still answering names
-///    NA2 mesh2's primary (`node.get`).
+/// 6. The fabric-primary installs NA2's answer and answers the caller's stop `PrimaryUpdated` naming NA2
+///    (Q413: `outcome=primary-updated`, `new_primary` NA2); the caller sends the stop to NA2 once that call
+///    ended, and NA2 runs it as mesh2's primary, a node command and never a Build (Q342); every admin
+///    still answering names NA2 mesh2's primary (`node.get`).
 /// Must NOT happen: a refusal of node.primary.update, a 0x21 call to P the fabric-primary did not make
 /// or one to NA2 P did not make, a stop step before NA2 answered, or a view still naming P.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1025,9 +1026,13 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     assert!(named(&spans, "rdm.node_admin.primary.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
     // The order of the sequence (steps 3, 4, 6).
     assert!(end_ns(&finished) <= start_ns(&installed_at_na2), "P finished its issued writes before NA2 installed");
-    // The stop ran after NA2 answered, run by NA2 as mesh2's primary: the node command handed on to it.
+    // The stop ran after NA2 answered, run by NA2 as mesh2's primary: the caller sent it there on the
+    // fabric-primary's `PrimaryUpdated` naming NA2, once that call ended (Q413).
+    let answered = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| at_location(sp, &fp) && attr(sp, "subject_id") == p_id).unwrap_or_else(|| panic!("the fabric-primary answered the caller's stop"));
+    assert_eq!((attr(answered, "outcome"), attr(answered, "new_primary")), ("primary-updated".to_string(), na2_id.clone()), "the fabric-primary answers the caller's stop PrimaryUpdated naming NA2: {answered:#?}");
     let stop_run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| at_location(sp, &na2.location()) && attr(sp, "subject_id") == p_id).unwrap_or_else(|| panic!("NA2 ran the stop"));
-    assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before it handed the stop on");
+    assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before the caller sent NA2 the stop");
+    assert!(end_ns(answered) <= start_ns(stop_run), "the caller sends the stop to NA2 once the fabric-primary's call ended, never one call held across both: {answered:#?} {stop_run:#?}");
     // The stop belongs to no Build: its steps run under no build_id.
     let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &p.location()) && attr(sp, "build_id") == rdm_core::LifecycleOp::NO_BUILD.to_string()).collect();
     assert!(steps.iter().any(|sp| attr(sp, "step") == "StopNode"), "the stop's steps are read: {steps:#?}");

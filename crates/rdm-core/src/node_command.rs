@@ -27,7 +27,11 @@
 //! is a step of the stop only, never a command of its own (Q345): request position 4 and reply
 //! positions 21 and 22 are reserved. Start reports `CommandAccepted`,
 //! `NodeJoined` (Data), then `NodeStarted` (Terminal), or a typed `Failed` terminal after acceptance.
-//! A lifecycle state refusal before acceptance is `RejectedInvalidNodeTransition`.
+//! A lifecycle state refusal before acceptance is `RejectedInvalidNodeTransition`. A caller's command
+//! whose subject's roles moved is answered `PrimaryUpdated { node_id }`, the call's one frame, code
+//! `OK`, by the primary above the node once node.primary.updated is answered; the caller sends the
+//! command to that mesh-primary itself (Q413). A caller's command naming a node its primary already
+//! runs a command or step on is refused `Busy` at once, and the caller's `Send` sends it again.
 //! `CommandAccepted` carries no lifecycle state: on a stop, its admission records stopping.
 //! `ConnectionsDeleting`, `StopConnectionsDeleted`, `Leaving`, `StopMeshLeft`, `NodeJoined`,
 //! `NodeStopped` and `NodeStarted` record their own effects. A stream that breaks after
@@ -459,6 +463,18 @@ pub enum NodeCommandReply {
         /// The refusal.
         reply: crate::status::StatusReply,
     },
+    /// A caller's command whose subject's roles moved (Q413; node-primary-update.md step 6): the
+    /// primary above the node ran node.primary.update first and answers the caller's call here, once
+    /// node.primary.updated is answered, naming the new mesh-primary `node_id`. The caller sends the
+    /// command to that mesh-primary itself, which runs it as for any node of its mesh: two one-hop
+    /// calls, never one held across both. The call's one frame before acceptance, its code `OK`: never
+    /// a refusal. Appended: no variant before it moves.
+    ///
+    /// Position 29 on the wire.
+    PrimaryUpdated {
+        /// The new mesh-primary node.primary.updated names, the primary above the node from here on.
+        node_id: NodeId,
+    },
 }
 
 impl NodeCommandReply {
@@ -513,6 +529,7 @@ impl NodeCommandReply {
             Self::Rejected { .. } => "rejected",
             Self::PropertyUpdated { .. } => "property-updated",
             Self::PropertyRefused { .. } => "property-refused",
+            Self::PrimaryUpdated { .. } => "primary-updated",
         }
     }
 }
@@ -541,7 +558,7 @@ impl NodeProtocol for NodeCommand {
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 10;
-    const REPLY_VARIANTS: u32 = 29;
+    const REPLY_VARIANTS: u32 = 30;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -577,12 +594,13 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::Rejected { .. } => "rejected",
             NodeCommandReply::PropertyUpdated { .. } => "property-updated",
             NodeCommandReply::PropertyRefused { .. } => "property-refused",
+            NodeCommandReply::PrimaryUpdated { .. } => "primary-updated",
         }
     }
 
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
-            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => ReplyKind::Success,
+            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } | NodeCommandReply::PrimaryUpdated { .. } => ReplyKind::Success,
             // The reserved positions keep the codes their frozen positions carry.
             NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::Reserved21 { .. } => ReplyKind::Success,
             NodeCommandReply::Reserved22 { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
@@ -632,6 +650,9 @@ impl StreamingProtocol for NodeCommand {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
             NodeCommandReply::PropertyUpdated { .. } => FrameKind::Terminal,
+            // The call's one frame before acceptance, as a refusal is, its code `OK` (Q413): the caller
+            // tells it from a refusal by its variant and sends the command to the mesh-primary it names.
+            NodeCommandReply::PrimaryUpdated { .. } => FrameKind::Refusal(ReplyKind::Success),
             NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::Reserved21 { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked | NodeCommandReply::MeshBlocked | NodeCommandReply::MeshUnblocked { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
@@ -679,6 +700,26 @@ mod tests {
         let mut late = FrameOrder::new();
         late.admit(NodeCommand::frame_kind(&accepted())).unwrap();
         assert!(late.admit(NodeCommand::frame_kind(&NodeCommandReply::RejectedConnectionScope { reason: "late".into() })).is_err(), "no refusal after acceptance");
+    }
+
+    /// CONTRACT (Q413; node-primary-update.md step 6: "the primary above answers the caller's call
+    /// `PrimaryUpdated { node_id }` and the caller sends the command to that mesh-primary itself"):
+    /// `PrimaryUpdated` is the call's one frame before acceptance, its code `OK`, appended at position
+    /// 29; nothing follows it. Must NOT happen: a code that reads as a refusal, an acceptance before it,
+    /// or a frame after it.
+    // @feature: node-lifecycle
+    #[test]
+    fn primary_updated_is_the_calls_one_frame_its_code_ok() {
+        let reply = crate::reply::node_command::primary_updated(NodeId::mint());
+        assert_eq!(NodeCommand::classify_reply(&reply).code(), crate::outcome::Code::Ok, "{reply:?}");
+        assert_eq!(NodeCommand::encode_reply(&reply).unwrap()[0], 29, "appended at position 29");
+        assert_eq!(NodeCommand::decode_reply(&NodeCommand::encode_reply(&reply).unwrap()).unwrap(), reply);
+        let mut one = FrameOrder::new();
+        one.admit(NodeCommand::frame_kind(&reply)).unwrap_or_else(|e| panic!("PrimaryUpdated alone: {e}"));
+        assert!(one.admit(NodeCommand::frame_kind(&accepted())).is_err(), "nothing follows PrimaryUpdated");
+        let mut late = FrameOrder::new();
+        late.admit(NodeCommand::frame_kind(&accepted())).unwrap();
+        assert!(late.admit(NodeCommand::frame_kind(&reply)).is_err(), "never after an acceptance");
     }
 
     /// CONTRACT (Q205; node-stop.md steps 1-4): a stop streams each of its primitives' acknowledgement

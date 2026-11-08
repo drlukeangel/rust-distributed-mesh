@@ -287,6 +287,26 @@ impl HeldView {
     }
 }
 
+/// The first answer of a caller's node command at the primary above the node
+/// ([`NodeRpc::primary_command`]): neither `Busy` nor `PrimaryUpdated`.
+pub struct PrimaryAnswer {
+    /// The stream the call opened; `None` for an answer the receiver gave before the request was whole.
+    pub stream: Option<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>>,
+    /// Its first frame: the command's acceptance, its one terminal, or a refusal.
+    pub first: rdm_core::node_command::NodeCommandReply,
+    /// The primary that answered: the one the caller named, or the new mesh-primary a
+    /// `PrimaryUpdated` named.
+    pub primary: NodeId,
+}
+
+/// Why one attempt of a caller's node command opened no command at the primary above the node.
+enum NotOpened {
+    /// The primary runs another command or step on the node: sent again under the call's `Send`.
+    Busy(String),
+    /// The call ended: an answer, never sent again.
+    Ended(CallEnd),
+}
+
 /// The node-RPC half of the `node` objects: single calls to one exact birth.
 pub struct NodeRpc<'a> {
     client: &'a NodeRpcClient,
@@ -315,7 +335,9 @@ impl<'a> NodeRpc<'a> {
     /// the birth itself, from its mesh-primary, or the node's mesh-primary (the fabric-primary for a
     /// mesh-primary), from a caller (D40). `operation` is the stop's identity, keyed on the node.id. The
     /// command stream reports acceptance, the All closure's receipt as Data, then NodeStopped. A birth
-    /// already stopped reports its held closure and completion on the new invocation.
+    /// already stopped reports its held closure and completion on the new invocation. The primary above
+    /// the node may answer first `Busy` or `PrimaryUpdated` (Q413): [`Self::primary_command`] sends a
+    /// caller's command again on either.
     pub async fn stop(&self, birth: &ExactBirth, operation: &rdm_core::OperationId, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
         let req = rdm_core::node_command::NodeCommandRequest::StopNode {
             node_id: birth.node_id.clone(),
@@ -331,7 +353,8 @@ impl<'a> NodeRpc<'a> {
     /// `node.start` (NodeCommand 0x22 `StartNode`) of the stopped exact birth `birth`, sent to
     /// `birth.target` as [`Self::stop`]: the birth rejoins as itself. The call is held until the birth
     /// reports NodeJoined after joining, then NodeStarted after every gate, or Failed with its step,
-    /// reason and code.
+    /// reason and code. The primary above the node may answer first `Busy` (Q413), as for
+    /// [`Self::stop`].
     pub async fn start(&self, birth: &ExactBirth, operation: &rdm_core::OperationId, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
         let req = rdm_core::node_command::NodeCommandRequest::StartNode {
             node_id: birth.node_id.clone(),
@@ -435,21 +458,85 @@ impl<'a> NodeRpc<'a> {
         self.property_call(NodeOp::NameUpdate, receiver, &req, opts).await
     }
 
+    /// A caller's node command `req` (`StopNode`, `StartNode`, `DeleteConnections`) to the primary
+    /// above the node, `primary`, read up to its first frame (D40; Q413): one call per command at a node.
+    /// - `Busy`: the primary runs another command or step on the node. The call is sent again under
+    ///   `opts.send` (Q344: the one send-again mechanism, its attempts and its delays); once its attempts
+    ///   are spent the call ends `Rejected { reason: "busy" }` with the busy reason.
+    /// - `PrimaryUpdated { node_id }`: the node's roles moved. The same request, its operation and
+    ///   occurrence unchanged, is sent once to the new mesh-primary `node_id`, which runs it; a second
+    ///   `PrimaryUpdated` ends the call `Rejected { reason: "primary-updated-again" }`, never a loop.
+    /// - Every other first frame, a refusal included, is the answer, with the stream it opened (`None`
+    ///   for an answer the receiver gave before the request was whole) and the primary that gave it.
+    pub async fn primary_command(&self, primary: &NodeId, req: &rdm_core::node_command::NodeCommandRequest, opts: &CallOptions) -> Result<PrimaryAnswer, CallEnd> {
+        use rdm_core::node_command::NodeCommandReply as R;
+        // The primary above the node as its answers so far name it, and whether a `PrimaryUpdated`
+        // already named it: every attempt after a `Busy` goes where the last answer named.
+        let to = std::sync::Mutex::new((primary.clone(), false));
+        let (this, to) = (self, &to);
+        let attempt = move || async move {
+            loop {
+                let (target, updated) = to.lock().unwrap().clone();
+                let answer = this.first_frame(&target, req, opts).await.map_err(NotOpened::Ended)?;
+                match answer.first {
+                    R::Busy { reason } => {
+                        tracing::info!(primary = %target, op = req.op(), reason = %reason, "the primary above the node runs another command or step on it: Busy; the call's Send sends it again");
+                        return Err(NotOpened::Busy(reason));
+                    }
+                    R::PrimaryUpdated { node_id } if updated => {
+                        return Err(NotOpened::Ended(CallEnd::Rejected { reason: "primary-updated-again".into(), detail: format!("the mesh-primary {target} that node.primary.updated named answered PrimaryUpdated again, naming {node_id}: {} is not sent a third time", req.op()) }));
+                    }
+                    R::PrimaryUpdated { node_id } => {
+                        tracing::info!(primary = %target, new_primary = %node_id, op = req.op(), "the node's roles moved: PrimaryUpdated; the command is sent to the new mesh-primary");
+                        *to.lock().unwrap() = (node_id, true);
+                    }
+                    _ => return Ok(answer),
+                }
+            }
+        };
+        match opts.send.run(|e: &NotOpened| matches!(e, NotOpened::Ended(_)), attempt).await {
+            Ok(answer) => Ok(answer),
+            Err(rdm_transport::SendEnd::Answered(NotOpened::Ended(end)) | rdm_transport::SendEnd::Spent { last: Some(NotOpened::Ended(end)), .. }) => Err(end),
+            Err(rdm_transport::SendEnd::Answered(NotOpened::Busy(reason)) | rdm_transport::SendEnd::Spent { last: Some(NotOpened::Busy(reason)), .. }) => {
+                let at = to.lock().unwrap().0.clone();
+                Err(CallEnd::Rejected { reason: "busy".into(), detail: format!("{reason} (the primary {at} answered Busy to each of its Send's {} attempts)", opts.send.attempts.max(1)) })
+            }
+            Err(rdm_transport::SendEnd::Spent { attempts, time_limit, last: None }) => Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DeadlineExceeded, reason: format!("{}: its last attempt passed its time limit of {} ms before the primary's first frame (its Send spent: {attempts} attempts)", req.op(), time_limit.0.as_millis()) }),
+        }
+    }
+
+    /// One call of the node command `req` to `primary`, read to its first frame and that frame acked.
+    async fn first_frame(&self, primary: &NodeId, req: &rdm_core::node_command::NodeCommandRequest, opts: &CallOptions) -> Result<PrimaryAnswer, CallEnd> {
+        use rdm_core::node_command::NodeCommand;
+        let mut stream = match self.client.call_stream::<NodeCommand>(&NodeTarget::ExactNode(primary.clone()), req, opts).await {
+            Ok((stream, _)) => stream,
+            Err((out, _)) => return ended(out).map(|first| PrimaryAnswer { stream: None, first, primary: primary.clone() }),
+        };
+        let first = match stream.next().await {
+            Some(StreamItem::Frame(_, f)) => f,
+            Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the {} stream to {primary} broke before its first frame: {f:?}", req.op()) }),
+            None => return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("the {} stream to {primary} ended before its first frame", req.op()) }),
+        };
+        stream.accepted().await;
+        Ok(PrimaryAnswer { stream: Some(stream), first, primary: primary.clone() })
+    }
+
     /// `node.connection.delete` of the exact birth's connections named by `scope`, the caller's single
     /// call to the node's mesh-primary `mesh_primary`, directly (R-CR2, R-CR3; D18): NodeCommand 0x22
     /// `DeleteConnections` at the primary's `NodeCommandService`, which carries the cut to the exact birth and holds the
     /// birth's `node.connections.deleted` for its rename precondition. The answer is the stream's
     /// terminal frame (`ConnectionsDeleted`) or its refusal, by name (`RejectedConnectionScope`,
-    /// `Rejected { reason }`).
+    /// `Rejected { reason }`). A `Busy` is sent again and a `PrimaryUpdated` sent on to the mesh-primary
+    /// it names ([`Self::primary_command`], Q413).
     pub async fn connections_delete(&self, mesh_primary: &NodeId, birth: &ExactBirth, scope: &rdm_core::status::ConnectionScope, opts: &CallOptions) -> Result<rdm_core::node_command::NodeCommandReply, CallEnd> {
         use rdm_core::node_command::{NodeCommand, NodeCommandRequest};
         use rdm_core::streaming::StreamingProtocol as _;
         let req = NodeCommandRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
         let span = NodeOp::ConnectionsDelete.span();
         let call = async {
-            let mut stream = match self.client.call_stream::<NodeCommand>(&NodeTarget::ExactNode(mesh_primary.clone()), &req, opts).await {
-                Ok((stream, _)) => stream,
-                Err((out, _)) => return ended(out),
+            let PrimaryAnswer { stream, first, primary: mesh_primary } = self.primary_command(mesh_primary, &req, opts).await?;
+            let (Some(mut stream), false) = (stream, matches!(NodeCommand::frame_kind(&first), FrameKind::Terminal | FrameKind::Refusal(_))) else {
+                return Ok(first);
             };
             while let Some(item) = stream.next().await {
                 match item {

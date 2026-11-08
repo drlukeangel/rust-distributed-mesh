@@ -219,6 +219,8 @@ mod non_primary_reads;
 mod node_delete;
 #[path = "node/node_commands_beside_a_build.rs"]
 mod node_commands_beside_a_build;
+#[path = "node/node_commands_one_at_a_time.rs"]
+mod node_commands_one_at_a_time;
 #[path = "node/node_connections_delete.rs"]
 mod node_connections_delete;
 #[path = "connections/acceptance.rs"]

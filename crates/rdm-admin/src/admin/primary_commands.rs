@@ -1,8 +1,11 @@
 //! The node commands the primary above a node runs for a caller (node-stop.md, node-start.md,
 //! node-connections-delete.md; Q342, D40). A caller sends NodeCommand 0x22
-//! `StopNode`, `StartNode` or `DeleteConnections { scope }` to the node's mesh-primary (the fabric-primary for a mesh-primary). The primary admits it from its atlas (`ControlPlane::
-//! admit_node_command`), takes the node's work turn (one node command, repair or Build step on a node
-//! at a time), moves a primary's roles first by node.primary.update (R-MT1), and runs the same stop or
+//! `StopNode`, `StartNode` or `DeleteConnections { scope }` to the node's mesh-primary (the fabric-primary for a mesh-primary). The primary takes the node's work turn (one node command, repair or
+//! Build step on a node at a time), refusing the call `Busy` at once while another holds it (Q413),
+//! admits it from its atlas (`ControlPlane::admit_node_command`), and moves a primary's roles first
+//! by node.primary.update (R-MT1). A node-admin's command whose roles moved is answered
+//! `PrimaryUpdated`, naming the new mesh-primary, and the caller sends it there (Q413). Otherwise the
+//! primary runs the same stop or
 //! start body a Build's step runs (`AdminRunner::standalone`, `AdminRunner::start_stopped`), with no
 //! Build: nothing is opened, read or receipted, and each step is recorded on the node record from the
 //! node's frames. Those frames go on to the caller as the primary records them: two one-hop streams,
@@ -49,7 +52,7 @@ impl crate::node_commands::PrimaryCommands for NodeCommandService {
             subject_path = tracing::field::Empty, subject_name = tracing::field::Empty,
             caller = %caller.as_ref().map(|c| c.to_string()).unwrap_or_default(),
             operation = %operation.action, operation_occurrence = ?operation.occurrence,
-            handed_to = tracing::field::Empty,
+            new_primary = tracing::field::Empty,
             outcome = tracing::field::Empty, detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
@@ -113,9 +116,14 @@ async fn forward<T>(mut recorded: tokio::sync::mpsc::UnboundedReceiver<NodeComma
 
 impl NodeCommandService {
     async fn run_command(&self, req: &NodeCommandRequest, node_id: &NodeId, incarnation: &IncarnationId, operation: &rdm_core::OperationId, kind: ActionKind, frames: &mut Box<dyn CommandFrames>) -> NodeCommandReply {
-        // Work on one node is serialized at its primary (node-recovery.md "Execution"): this command runs
-        // before or after a repair or a Build's step on the node, never beside it.
-        let _turn = self.runner.node_work(node_id).await;
+        // Work on one node is serialized at its primary (node-recovery.md step 1): this command runs
+        // before or after another command, a repair or a Build's step on the node, never beside it. A
+        // caller's command naming a node whose turn is held is refused `Busy` at once, before anything
+        // is admitted or any role moves, and the caller's `Send` sends it again (Q413): never a second
+        // live call waiting beside the first.
+        let Some(_turn) = self.runner.try_node_work(node_id) else {
+            return rdm_core::reply::node_command::busy(format!("node {node_id}: its primary {} runs another command or step on it; {} is refused, and its caller's Send sends it again", self.runner.node_id, req.op()));
+        };
         let start = kind == ActionKind::Start;
         let named = match req {
             NodeCommandRequest::DeleteConnections { scope: scope @ rdm_core::status::ConnectionScope::Connections(_), .. } => Some(scope),
@@ -128,9 +136,10 @@ impl NodeCommandService {
         };
         tracing::Span::current().record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
         // A primary's roles move first by node.primary.update (R-MT1; node-primary-update.md §1,
-        // node-connections-delete.md step 0). A node-admin's command then goes on to its mesh-primary as it
-        // stands after the update, the new primary the update's node.primary.updated names (step 6). A
-        // delete of named connections moves no role: step 0 is `All`'s alone.
+        // node-connections-delete.md step 0). A node-admin's command is then answered `PrimaryUpdated`,
+        // naming its mesh-primary as it stands after the update, the new primary the update's
+        // node.primary.updated names, and the caller sends it there (step 6; Q413). A delete of named
+        // connections moves no role: step 0 is `All`'s alone.
         if !start && named.is_none() {
             // The roles the node holds as this admin's atlas holds them (Q355): an update this admin
             // commanded is answered before gossip carries it here.
@@ -142,7 +151,7 @@ impl NodeCommandService {
                     Err(end) => return rdm_core::reply::node_command::rejected("primary-not-updated", format!("node {node_id}: node.primary.update before its {} did not complete: {end:?}", req.op())),
                 };
                 if m.mesh_role || m.fabric_role {
-                    return self.hand_on(req, &pin.mesh, node_id, successor, frames).await;
+                    return self.primary_updated(req, &pin.mesh, node_id, successor).await;
                 }
             }
         }
@@ -223,14 +232,13 @@ impl NodeCommandService {
         Ok(Some(primary_update.update_own_primaries(moving, build, &update_operation(role, operation), m.successor.as_ref()).await?))
     }
 
-    /// The caller's command `req` on the node-admin `node_id`, its roles moved, sent on to its
-    /// commander as it stands after the update (commands go down: the primary above the node runs it),
-    /// whose frames go on to the caller as they arrive: the new primary the update's
-    /// node.primary.updated names (`successor`), by which it is stopped (node-stop.md "Primary",
-    /// node-primary-update.md step 6); the mesh-primary of `mesh` this admin's atlas holds (Q355), when
-    /// the answer names none.
-    async fn hand_on(&self, req: &NodeCommandRequest, mesh: &str, node_id: &NodeId, successor: Option<NodeId>, frames: &mut Box<dyn CommandFrames>) -> NodeCommandReply {
-        use rdm_transport::stream::StreamItem;
+    /// The caller's command `req` on the node-admin `node_id`, its roles moved, answered
+    /// `PrimaryUpdated` naming its commander as it stands after the update (commands go down: the
+    /// primary above the node runs it): the new primary the update's node.primary.updated names
+    /// (`successor`), by which it is stopped (node-stop.md "Primary", node-primary-update.md step 6);
+    /// the mesh-primary of `mesh` this admin's atlas holds (Q355), when the answer names none. The
+    /// caller sends the command there itself: two one-hop calls, never one held across both (Q413).
+    async fn primary_updated(&self, req: &NodeCommandRequest, mesh: &str, node_id: &NodeId, successor: Option<NodeId>) -> NodeCommandReply {
         self.runner.refresh_view().await;
         let to = match successor {
             Some(s) => Some(s),
@@ -242,31 +250,9 @@ impl NodeCommandService {
         }
         .filter(|p| p != node_id);
         let Some(to) = to else {
-            return rdm_core::reply::node_command::rejected("no-secondary", format!("node {node_id}: its roles moved, and this view names no mesh-primary of mesh {mesh} to run its stop"));
+            return rdm_core::reply::node_command::rejected("no-secondary", format!("node {node_id}: its roles moved, and this view names no mesh-primary of mesh {mesh} to run its {}", req.op()));
         };
-        tracing::Span::current().record("handed_to", to.to_string().as_str());
-        // The command names this admin's own birth: the successor carries it back here, where the
-        // caller's call this handler holds is the asker's own, not eligible work (node-connections-delete.md step 3).
-        let _held = (node_id == &self.runner.node_id).then(|| self.runner.observer.status_service.get().and_then(|s| s.own.get().cloned())).flatten().map(|own| own.hand_on());
-        let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(self.runner.observer.commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
-        let mut stream = match self.runner.node_rpc.client.call_stream::<NodeCommand>(&rdm_transport::NodeTarget::ExactNode(to.clone()), req, &opts).await {
-            Ok((stream, _)) => stream,
-            Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => return r.into_value(),
-            Err((other, _)) => return rdm_core::reply::node_command::rejected("not-sent", format!("node {node_id}: its stop could not reach its mesh's mesh-primary {to}: {}", other.name())),
-        };
-        let mut sent = Sent::default();
-        while let Some(item) = stream.next().await {
-            let frame = match item {
-                StreamItem::Frame(_, frame) => frame,
-                StreamItem::Failed(f) if sent.accepted => return rdm_core::reply::node_command::failed(req.op().into(), format!("the stream from mesh-primary {to} broke: {f:?}"), f.code()),
-                StreamItem::Failed(f) => return rdm_core::reply::node_command::rejected("not-sent", format!("the stream from mesh-primary {to} broke before acceptance: {f:?}")),
-            };
-            stream.accepted().await;
-            sent.take(frame, frames).await;
-            if let Some(end) = sent.terminal.take().or_else(|| sent.refusal.take()) {
-                return end;
-            }
-        }
-        rdm_core::reply::node_command::failed(req.op().into(), format!("the stream from mesh-primary {to} ended without its terminal"), rdm_core::outcome::Code::Unknown)
+        tracing::Span::current().record("new_primary", to.to_string().as_str());
+        rdm_core::reply::node_command::primary_updated(to)
     }
 }

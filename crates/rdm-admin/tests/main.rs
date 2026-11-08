@@ -330,6 +330,7 @@ mod node_objects;
 mod node_rows;
 mod node_get_reads;
 mod node_rpc_objects;
+mod node_command_caller;
 #[cfg(feature = "file-backend")]
 mod stop_gate_quiesce;
 #[cfg(feature = "file-backend")]

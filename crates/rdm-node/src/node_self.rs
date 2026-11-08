@@ -325,21 +325,6 @@ pub struct NodeSelf {
     /// The process's writer of its own record (Q356): each state a command moves this birth to is
     /// written there before the frame that reports it; filled once the process holds it.
     records: Mutex<Option<crate::node_records::NodePropertyWriter>>,
-    /// The commands naming this birth that its primary handed on to its successor
-    /// (`NodeCommandService::hand_on`) while their caller's call is in flight here. Each comes back
-    /// to this birth as its commander's command, so each held call is the asker's own, never
-    /// eligible work (node-connections-delete.md step 3).
-    handed_on: Arc<std::sync::atomic::AtomicU64>,
-}
-
-/// One command naming this birth handed on to its successor, counted as the asker's own while held.
-#[must_use]
-pub struct HandedOn(Arc<std::sync::atomic::AtomicU64>);
-
-impl Drop for HandedOn {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
 }
 
 impl NodeSelf {
@@ -366,7 +351,7 @@ impl NodeSelf {
     ) -> Self {
         channels.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
         let topology_view = channels.topology_view().clone();
-        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, channels, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None), records: Mutex::new(None), handed_on: Default::default() }
+        Self { r#type, node_id, incarnation, path: name.path.clone(), name: name.name.clone(), server, client, resolver, topology_view, channels, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None), records: Mutex::new(None) }
     }
 
     /// Hold `records`, this process's writer of its own record.
@@ -702,19 +687,10 @@ impl NodeSelf {
     /// zero, bounded by the birth's `connections_delete_deadline`. The `asking` calls that asked are in
     /// flight while it waits and are not eligible work. The node refuses new non-status calls with typed
     /// `ConnectionsDeleting` from here on (Node RPC §35); control streams stay usable.
-    /// Count one command naming this birth as handed on to its successor until the guard drops: the
-    /// caller's call this birth holds while the successor runs the command is the asker's own.
-    pub fn hand_on(&self) -> HandedOn {
-        self.handed_on.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        HandedOn(self.handed_on.clone())
-    }
-
     async fn await_in_flight(&self, asking: u64) -> InFlight {
         self.server.begin_connections_delete();
         let stats = self.server.stats();
-        // The asker's own calls are not eligible work: the command's own call, and the caller's call
-        // each command this birth handed on holds here (`NodeSelf::hand_on`).
-        let eligible = || rdm_transport::ServerStats::get(&stats.in_flight).saturating_sub(asking + self.handed_on.load(std::sync::atomic::Ordering::SeqCst));
+        let eligible = || rdm_transport::ServerStats::get(&stats.in_flight).saturating_sub(asking);
         let began = eligible();
         let until = tokio::time::Instant::now() + self.connections_delete_deadline;
         // Woken by each handler's end, never on a timer; the bound is the one deadline.

@@ -3298,7 +3298,8 @@ fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
     let (id, inc) = (s(&rec["node_id"]), s(&rec["incarnation_id"]));
     let _ = ev;
     // Each command is the primary above the node's (`node.update.via-node-command`, Q342), its pipeline
-    // under it; a command a role move handed on runs at the new primary under its own command span.
+    // under it; a command whose subject's roles moved is answered `PrimaryUpdated` and sent by its caller
+    // to the new primary, which runs it under its own command span (Q413).
     let chain = |op: &str| -> (Value, Value, Vec<String>) {
         let commands: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-node-command").into_iter().filter(|sp| sp["attributes"]["subject_id"] == id.as_str() && sp["attributes"]["command"] == op).collect();
         assert!(!commands.is_empty(), "{node:?}: no {op} command was run by the primary above it");

@@ -263,54 +263,44 @@ impl Nodes {
 
     /// The node command `kind` of the node at `node`, sent to the primary above it (D40): its exact
     /// birth and that primary read with `node.get` from the node the carrier starts at, then one direct
-    /// NodeCommand 0x22 call, `scope` a connections delete's. A command the primary refuses before it
-    /// runs ends here, by name.
+    /// NodeCommand 0x22 call, `scope` a connections delete's. A `Busy` is sent again under the call's
+    /// `Send`, and a `PrimaryUpdated` sent once to the new mesh-primary it names
+    /// ([`crate::NodeRpc::primary_command`], Q413). A command the primary refuses before it runs ends
+    /// here, by name.
     async fn node_command(&self, kind: WorkflowKind, node: &PathName, scope: Option<&rdm_core::status::ConnectionScope>) -> Result<WorkflowStream, CallEnd> {
         let span = kind.span();
         let call = async {
             let (birth, primary) = self.primary_above(node).await?;
-            let target = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary.clone()), ..birth };
             let rpc = crate::NodeRpc::new(self.carrier.client());
             let opts = rdm_transport::CallOptions::default();
             // The command's identity: its operation, keyed on the node.id, with an occurrence minted once
-            // for this command (every resend of it carries it): each stop and each start of one node is
-            // its own command, never a repeat of the last.
+            // for this command (every resend of it carries it, to the new mesh-primary too): each stop and
+            // each start of one node is its own command, never a repeat of the last.
             let step = match kind {
                 WorkflowKind::Start(_) => rdm_core::names::NodeStep::Start,
                 _ => rdm_core::names::NodeStep::Stop,
             };
-            let operation = rdm_core::OperationId::node(step.name(), &target.node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint());
-            let sent = match &kind {
-                WorkflowKind::Start(_) => rpc.start(&target, &operation, &opts).await,
-                WorkflowKind::DeleteConnections(_) => {
-                    let scope = scope.cloned().unwrap_or(rdm_core::status::ConnectionScope::All);
-                    let req = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: target.node_id.clone(), incarnation: target.incarnation.clone(), scope };
-                    self.carrier.client().call_stream::<rdm_core::node_command::NodeCommand>(&target.target, &req, &opts).await.map(|(stream, _)| stream).map_err(|(out, _)| out)
-                }
-                _ => rpc.stop(&target, &operation, &opts).await,
+            let operation = rdm_core::OperationId::node(step.name(), &birth.node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint());
+            use rdm_core::node_command::NodeCommandRequest as Q;
+            let (node_id, incarnation) = (birth.node_id.clone(), birth.incarnation.clone());
+            let req = match &kind {
+                WorkflowKind::Start(_) => Q::StartNode { node_id, incarnation, operation },
+                WorkflowKind::DeleteConnections(_) => Q::DeleteConnections { node_id, incarnation, scope: scope.cloned().unwrap_or(rdm_core::status::ConnectionScope::All) },
+                _ => Q::StopNode { node_id, incarnation, operation },
             };
+            let crate::PrimaryAnswer { stream, first, primary } = rpc.primary_command(&primary, &req, &opts).await?;
             // A refusal, as the Build carrier names it: the reason before the refusal's own text.
             let refused = |reply: rdm_core::node_command::NodeCommandReply| match reply {
                 rdm_core::node_command::NodeCommandReply::Rejected { reason, detail } => CallEnd::Rejected { detail: format!("{reason}: {detail}"), reason },
-                other => CallEnd::Rejected { reason: other.name().into(), detail: format!("node {primary} refused {} of node {}: {other:?}", kind.name(), target.node_id) },
+                other => CallEnd::Rejected { reason: other.name().into(), detail: format!("node {primary} refused {} of node {}: {other:?}", kind.name(), birth.node_id) },
             };
-            let mut stream = sent.map_err(|out| match crate::calls::ended(out) {
-                Ok(reply) => refused(reply),
-                Err(end) => end,
-            })?;
             // The primary's answer is the stream's first frame: a refusal before the command ran is the
             // call's end, by name; anything else is the stream's first frame.
             use rdm_core::streaming::StreamingProtocol as _;
-            let first = match stream.next().await {
-                Some(rdm_transport::stream::StreamItem::Frame(_, f)) => f,
-                Some(rdm_transport::stream::StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the node command's stream to {primary} broke before its first frame: {f:?}") }),
-                None => return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("the node command's stream to {primary} ended before its first frame") }),
-            };
-            stream.accepted().await;
-            if matches!(rdm_core::node_command::NodeCommand::frame_kind(&first), rdm_core::streaming::FrameKind::Refusal(_)) {
-                return Err(refused(first));
+            match stream {
+                Some(stream) if !matches!(rdm_core::node_command::NodeCommand::frame_kind(&first), rdm_core::streaming::FrameKind::Refusal(_)) => Ok((stream, first)),
+                _ => Err(refused(first)),
             }
-            Ok((stream, first))
         };
         match tracing::Instrument::instrument(call, span.clone()).await {
             Ok((inner, first)) => Ok(WorkflowStream::of_command(inner, first, kind, span)),
