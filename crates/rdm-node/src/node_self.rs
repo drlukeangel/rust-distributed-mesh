@@ -693,15 +693,19 @@ impl NodeSelf {
         let eligible = || rdm_transport::ServerStats::get(&stats.in_flight).saturating_sub(asking);
         let began = eligible();
         let until = tokio::time::Instant::now() + self.connections_delete_deadline;
+        // Woken by each handler's end, never on a timer; the bound is the one deadline.
         loop {
+            let ended = stats.in_flight_ended.notified();
+            tokio::pin!(ended);
+            ended.as_mut().enable();
             let n = eligible();
             if n == 0 {
                 return InFlight::Zero { began };
             }
-            if tokio::time::Instant::now() >= until {
-                return InFlight::Deadline { last: n };
+            tokio::select! {
+                () = ended => {}
+                () = tokio::time::sleep_until(until) => return InFlight::Deadline { last: eligible() },
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 

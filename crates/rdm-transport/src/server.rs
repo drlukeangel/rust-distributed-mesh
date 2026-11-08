@@ -207,6 +207,8 @@ pub struct ServerStats {
     pub faults: AtomicU64,
     /// Handlers dispatched and not yet finished (a connections-deleted node waits for it to reach zero).
     pub in_flight: AtomicU64,
+    /// Notified each time a dispatched handler finishes: what a wait for `in_flight` to fall is woken by.
+    pub in_flight_ended: tokio::sync::Notify,
 }
 
 /// Counts one dispatched handler for as long as it lives, however its
@@ -223,6 +225,7 @@ impl InFlight {
 impl Drop for InFlight {
     fn drop(&mut self) {
         self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.0.in_flight_ended.notify_waiters();
     }
 }
 
