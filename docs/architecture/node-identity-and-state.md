@@ -493,7 +493,7 @@ counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-
 | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after the provider's inspect answer | on receipt |
 | **Re-born** | the same `path` and `name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by node recovery, so the projection holds one entry per `path` and `name` | on receipt |
 
-The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license a destructive recovery. A retained Gone deletion is produced only by canonical the provider's `Exited` of the exact runtime, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `TopologyFull.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
+The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license a destructive recovery. A retained Gone deletion is produced only by canonical the provider's `Exited` of the exact runtime, published as `NodeDeleted` by the Mesh executor that holds the operation and retained as the node listed deleted in its mesh's `TopologyFull`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
 
 A removal by [node.delete](lifecycles/node-delete.md), [mesh.delete](lifecycles/mesh-delete.md)
 or [fabric.delete](lifecycles/fabric-delete.md) is its workflow's.

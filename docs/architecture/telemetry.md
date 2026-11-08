@@ -82,7 +82,7 @@ These start a root of their own today:
 | A Build from request to Complete | the `build.create` trace for acceptance; each mesh's `build.section.run` by `build_id` and `mesh`; each step's span and `rdm.build.step` event by `operation` and `step` |
 | The fabric's change a Build caused | the `via-change` root whose `build_id` is the Build's |
 | A node's birth | the `DeployRuntime` step's trace, through the node's boot span, to its join and `pre_node_ready` |
-| A gossip fact | the receive span's parent (the publishing span), and the frame's `publisher`, `topology_version`, `snapshot_id` and identity fields |
+| A gossip fact | the receive span's parent (the publishing span), and the envelope's `source`, `sequence`, `time` and `id`, and a lifecycle fact's `topology_version` |
 | A connection | `rdm.node_admin.connection.update.via-observed` by `entry`, `source`, `destination` and `alpn`; a Proxy's tunnel span under the opener's trace |
 
 The per-operation chains are on their pages:

@@ -1122,7 +1122,6 @@ pub struct StoredNode {
 }
 
 pub struct SourceVersion {
-    pub publisher: PublisherId,
     pub topology_version: u64,
 }
 
@@ -1134,16 +1133,12 @@ pub enum TopologyReply {
     Snapshot {
         mesh: String,
         mesh_id: Option<MeshId>,
-        publisher: PublisherId,
         topology_version: u64,
-        snapshot_id: u64,
         chunk_index: u32,
         chunk_count: u32,
         nodes: Vec<ReadNode>,
-        in_flight: Vec<LifecycleOp>,
-        deleted: Vec<LifecycleOp>,
     },
-    Unchanged { mesh: String, publisher: PublisherId, topology_version: u64 },
+    Unchanged { mesh: String, topology_version: u64 },
     End { meshes: u32 },
     NotReady { reason: String },
     UnknownMesh { mesh: String },
@@ -1178,9 +1173,9 @@ Each `ReadNode` is a node's identity, endpoint and lineage, its status and prima
 
 `mesh=None` asks for every held or eligible stored mesh; Some(m) asks for one mesh.
 A matching held source version answers Unchanged. Accepted reads stream Started, then
-Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip TopologyFull's shape and
-chunking; a mesh is installed atomically only after every chunk of the same snapshot_id,
-publisher and topology_version is present. End.meshes counts each answered mesh once.
+Snapshot, Unchanged or Stored frames, then End. Snapshot carries the mesh's one list of nodes,
+chunked as gossip TopologyFull is; a mesh is installed atomically only after every chunk of the
+answer at its topology_version is present. End.meshes counts each answered mesh once.
 A mesh with no published snapshot is absent unless the answerer writes its records or holds its
 births (Stored). NotReady means the readiness gate is closed, with the cause named. No answer reads the
 store on the reader's behalf at its start (Q227); OwnRow is served from the node's

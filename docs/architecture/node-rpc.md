@@ -150,7 +150,7 @@ A connections-deleting, connections-deleted, stopping or stopped current birth m
 
 A known deletion comes only from canonical deletion facts. A stopped status, silence, a failed RPC or dial, or a peer mesh that goes unheard does not produce Gone.
 
-A deletion arrives as a `NodeDeleted` status frame and is retained in `TopologyFull.deleted`; when a deletion exists and how long it is held are [gossip.md §6.1](gossip.md#61-deletions-a-status-frame-for-promptness-topologyfull-for-retention). The resolver reads no lifecycle overlay, so a lifecycle op still reaches the node it is deleting. Gone is resolver knowledge, never a current node row.
+A deletion arrives as a `NodeDeleted` status frame and is retained as the node listed deleted in its mesh's `TopologyFull`; when a deletion exists and how long it is held are [gossip.md §6.1](gossip.md#61-deletions-a-status-frame-for-promptness-topologyfull-for-retention). The resolver reads no lifecycle overlay, so a lifecycle op still reaches the node it is deleting. Gone is resolver knowledge, never a current node row.
 
 The resolver exposes a change signal. A slot/freshness move while a dial/call is being prepared invalidates that pinned target before dispatch.
 

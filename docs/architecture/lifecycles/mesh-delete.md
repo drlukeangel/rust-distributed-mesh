@@ -214,7 +214,7 @@ sequenceDiagram
             M->>P: stop and inspect the exact runtime
             P-->>M: exact Exited
             M->>M: member row deleted, node.deleted
-            M->>B: mesh topology: NodeDeleted in TopologyFull.deleted
+            M->>B: mesh topology: the node listed deleted
         end
     end
     Note over M: writes mesh deleted
