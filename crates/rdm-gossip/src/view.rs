@@ -128,8 +128,6 @@ impl View {
         // One flag: the view replays as its mesh's primary while the digest view authors its members' statuses.
         view.primary = view.digest_view.primary.clone();
         view.forwarder.lock().unwrap().set_own_mesh(mesh);
-        // Each mesh's topology is ordered by the version its one copy holds, read from the copy.
-        *view.order.lock().unwrap() = crate::receive_order::ReceiveOrder::of(view.copies.clone());
         // The MeshLeft receipt is the end of that mesh: the forwarder forgets what it forwarded of it, and
         // the one copy of it is forgotten, so no read is served a mesh that left (gossip.md "External
         // topology when a mesh is deleted": "they hold the mesh for the deleted retention and then nothing").
@@ -437,6 +435,7 @@ impl View {
                         TopologyFrameTaken::default()
                     }
                     Taken::Written(w) => {
+                        order.hold(&w.mesh, w.topology_version, rx.held_full(&w.mesh).and_then(Full::mesh_id));
                         let written = self.written(&w, fabric, side, prior);
                         drop(rx);
                         written
@@ -484,6 +483,7 @@ impl View {
                         let full = Full::new(moved);
                         let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
+                        order.hold(mesh, *topology_version, held_full.and_then(Full::mesh_id));
                         drop(rx);
                         TopologyFrameTaken { carried, ..TopologyFrameTaken::default() }
                     }
@@ -585,6 +585,7 @@ impl View {
         let prior = Prior::of(&rx, &chunk.mesh);
         let taken = rx.take_read_chunk(chunk);
         if let Taken::Written(w) = &taken {
+            order.hold(&w.mesh, w.topology_version, rx.held_full(&w.mesh).and_then(Full::mesh_id));
             self.written(w, fabric, side, prior);
             drop(rx);
             drop(order);
@@ -680,22 +681,16 @@ impl View {
         }
         self.digest_view.hold_mesh_id(mesh, complete.and_then(Full::mesh_id).as_ref());
         let listed: Vec<MeshDigest> = full.digests().into_iter().filter(|d| &d.fabric_id == fabric).collect();
-        // This node's own mesh on the backbone, its mesh-primary's full: an own-mesh birth's stop, removal
-        // and departure are its immediate events and its own Digest (gossip.md `TopologyFull`: "For an
-        // own-mesh birth, all of it comes from its own Digest ...; NodeStopped and NodeDeleting stay
-        // immediate events"), so the full's listing opens and ends none of them here.
-        let own_on_backbone = mesh == self.mesh && side == Side::Backbone;
-        let lifecycle_listed: Vec<&MeshDigest> = listed.iter().filter(|_| !own_on_backbone).collect();
-        for d in lifecycle_listed.iter().filter(|d| d.status == S::Deleted) {
+        for d in listed.iter().filter(|d| d.status == S::Deleted) {
             self.digest_view.depart_listed(d, at_rafka_ms);
         }
-        for d in lifecycle_listed.iter().filter(|d| d.status == S::Stopped) {
+        for d in listed.iter().filter(|d| d.status == S::Stopped) {
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             if self.digest_view.stopped_listed(d, at_rafka_ms, Some((target.publisher.clone(), target.version))) {
                 self.note_member_stopped(&DigestView::listed_op(d, "node.stop", at_rafka_ms), prior, side.name());
             }
         }
-        for d in lifecycle_listed.iter().filter(|d| d.status == S::Deleting) {
+        for d in listed.iter().filter(|d| d.status == S::Deleting) {
             self.digest_view.deleting_listed(d, at_rafka_ms);
         }
         self.digest_view.note_stops_carried(target);
@@ -720,16 +715,15 @@ impl View {
             if own && authors && matches!(side, Side::MeshChannel | Side::Backbone) {
                 continue;
             }
-            if !(own && authors) && !own_on_backbone && self.digest_view.stopped_entry(&d, target) == Some(false) {
+            if !(own && authors) && self.digest_view.stopped_entry(&d, target) == Some(false) {
                 continue;
             }
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
                 // An own-mesh node's status comes only from its own Digest (gossip.md §3.1 `Digest`): its
                 // primary's projection gives nothing of a node this view hears, and holds one it does not.
-                // A birth held stopped is held by its stop, never from the projection.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
-                    if self.digest_view.own_mesh_member(&d) && !self.digest_view.is_stopped(&d) {
+                    if self.digest_view.own_mesh_member(&d) {
                         self.digest_view.hold_projected_at(&d, std::time::Instant::now());
                     }
                     continue;

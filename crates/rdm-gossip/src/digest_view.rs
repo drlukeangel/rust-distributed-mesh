@@ -248,11 +248,10 @@ pub struct DigestView {
     /// entry of the same birth moves nothing of it, and a version that no longer lists it is no
     /// departure. The member's own digest supersedes it; its departure or stop removes it.
     pub(crate) projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
-    /// The lifecycle overlays that ended here, by complete operation identity and exact birth, with
-    /// when each ended: a later copy of the same overlay (an aggregate built before the rejoin, the
-    /// primary's publication re-applying an operation whose `Complete` is not receipted yet) opens
-    /// nothing. Each is held for `retention` of local age, as a departure is, then forgotten.
-    pub(crate) ended_overlays: Arc<Mutex<HashMap<crate::receive_order::LifecycleIdentity, Instant>>>,
+    /// The lifecycle overlays that ended here, by complete operation identity and exact birth: a
+    /// later copy of the same overlay (an aggregate built before the rejoin, the primary's publication
+    /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
+    pub(crate) ended_overlays: Arc<Mutex<std::collections::HashSet<crate::receive_order::LifecycleIdentity>>>,
     /// The stops that ended here, by exact birth, with the version of the birth's mesh at which a
     /// projection or a `NodeStopped` carried each: a `NodeStopped` of that birth stamped at or below it
     /// is the same stop under another identity (an aggregate or a read lists a stop with no operation
@@ -467,7 +466,6 @@ impl DigestView {
             let before = deleted.len();
             deleted.retain(|_, (_, at, _)| now.duration_since(*at) < self.retention);
             self.refused_departures.lock().unwrap().retain(|id, _| deleted.contains_key(id));
-            self.ended_overlays.lock().unwrap().retain(|_, at| now.duration_since(*at) < self.retention);
             deleted.len() < before
         };
         if expired {
@@ -589,7 +587,7 @@ impl DigestView {
                 } else {
                     return true;
                 };
-                ended.insert(crate::receive_order::LifecycleIdentity::of(o), Instant::now());
+                ended.insert(crate::receive_order::LifecycleIdentity::of(o));
                 cleared.push((o.clone(), by));
                 false
             });
@@ -688,7 +686,7 @@ impl DigestView {
         let held_stopped = self.holds_stopped(op.node_id.as_str(), &op.incarnation);
         let new = {
             let mut held = self.in_flight.lock().unwrap();
-            let ended = self.ended_overlays.lock().unwrap().contains_key(&crate::receive_order::LifecycleIdentity::of(&op))
+            let ended = self.ended_overlays.lock().unwrap().contains(&crate::receive_order::LifecycleIdentity::of(&op))
                 || self.same_stop_ended(&op, carried.as_ref());
             if crate::receive_order::admit_overlay("node-stopped", &op, held.get(&op.key()), ended) {
                 held.insert(op.key(), op.clone());
@@ -1295,7 +1293,7 @@ impl DigestView {
             in_flight.retain(|_, o| {
                 let gone = o.is_stop() && o.node_id.as_str() == node_id;
                 if gone {
-                    ended.insert(crate::receive_order::LifecycleIdentity::of(o), Instant::now());
+                    ended.insert(crate::receive_order::LifecycleIdentity::of(o));
                 }
                 !gone
             });
@@ -1330,7 +1328,7 @@ impl DigestView {
         // the Build facts ended opens nothing again.
         let new = {
             let mut held = self.in_flight.lock().unwrap();
-            let ended = self.ended_overlays.lock().unwrap().contains_key(&crate::receive_order::LifecycleIdentity::of(&op));
+            let ended = self.ended_overlays.lock().unwrap().contains(&crate::receive_order::LifecycleIdentity::of(&op));
             if !crate::receive_order::admit_overlay("node-deleting", &op, held.get(&op.key()), ended) { return false; }
             held.insert(op.key(), op.clone()).is_none()
         };
