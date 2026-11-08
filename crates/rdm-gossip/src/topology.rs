@@ -2384,28 +2384,6 @@ mod tests {
         assert_eq!(primary.forwarder.lock().unwrap().published_version("mesh1"), None, "at MeshLeft the forwarder forgets what it published of mesh1");
     }
 
-    /// CONTRACT (gossip.md, "Aggregate, delta and top-up agreement": after mesh-left the mesh is absent
-    /// from the projection): a node of a peer mesh that joins after `mesh-left` installs nothing of
-    /// the deleted mesh from its primary's topology read or neighbour-up replay, so it can route
-    /// nothing to the mesh's births.
-
-    /// CONTRACT (gossip.md, aggregate, delta and top-up agreement): a Leaving mesh is still updated
-    /// by the source projection this node holds; after `mesh-left` the source projection is gone,
-    /// the accepted Build does not name the mesh, and an older mesh topology of it, the same version
-    /// again or a newer one, installs nothing.
-
-    /// CONTRACT (R-MD1 item 3: "MeshLeft applies Gone and the terminal topology removal"): a
-    /// receiver that applied mesh-left for a MeshId refuses every later `TopologyFull` and
-    /// `TopologyDelta` of that MeshId by name, for its deleted retention, whether or not it holds the
-    /// accepted Build. A late mesh topology of the deleted mesh (no digests, the final birth in
-    /// `deleted`) installs nothing on the backbone, nor forwarded on the mesh channel. A mesh created again at that (path, name) has a new MeshId and is
-    /// taken. That holds when the projection held at mesh-left is already a mesh topology with no
-    /// digests (no digest states the MeshId any more): the MeshId names the mesh from what this
-    /// node learned of it. Must NOT happen: the re-install the s49 acceptance cell saw at
-    /// mesh2.node-admin.2, mesh3.node-admin.2 and mesh2.node.1/.2 after mesh-left (traces
-    /// fad0ff1bad18289a2c9e7734417dd456, 646ff8a73db798989f1208931f0fff1c,
-    /// 379b4094c48d8b852890734790b7b222).
-
     /// Two node-admins of mesh1, both Ready: `(lower NodeId, higher NodeId)`, named admin.2 and
     /// admin.1 so the role can sit on either.
     fn two_admins(digest_view: &DigestView, at: Instant) -> (MeshDigest, MeshDigest) {
