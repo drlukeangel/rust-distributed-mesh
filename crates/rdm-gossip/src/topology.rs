@@ -3343,6 +3343,46 @@ mod tests {
         assert_eq!(refused.iter().map(|f| (f["node"].clone(), f["topology_version"].clone(), f["held_version"].clone())).collect::<Vec<_>>(), vec![("mesh1.node.7".to_string(), "4".to_string(), "5".to_string())], "{refused:#?}");
     }
 
+    /// CONTRACT (node-status-heartbeat-connections.md §C "late stopped after starting"; gossip.md receive
+    /// rules, an operation fact's "effect is reconciled against the same operation's completion and the
+    /// exact birth"; Q390): mesh2.node-admin.2 holds mesh2 from its predecessor's aggregate v10, which lists
+    /// mesh2.node.2 stopped. The start's `node.joined` ends that stop. The predecessor's `NodeStopped` of
+    /// the same birth, stamped v10, then arrives late under its own operation identity: it is the same
+    /// stop, so it opens nothing (`via-lifecycle-reconciled`) and the birth stays held. A stop of the birth
+    /// stamped v11, a later stop, is taken. Must NOT happen: the late stop taken, and every later Digest of
+    /// the started birth refused as a stopped birth's (node_stop
+    /// `a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_primary`, red at 397f3848c).
+    #[test]
+    fn a_stop_listed_in_an_aggregate_and_ended_at_the_start_is_not_reopened_by_its_late_node_stopped() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let predecessor = birth_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 1);
+        let mut stopped = birth_at(rdm_core::PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", 3);
+        stopped.status = NodeStatus::Stopped;
+        let at = rdm_core::PathName::new("mesh2.node", "2").unwrap();
+        let stop = op_at(at.clone(), "mesh2", "node", &stopped.node.node_id, &stopped.node.incarnation, "node.stop");
+        let start = op_at(at.clone(), "mesh2", "node", &stopped.node.node_id, &stopped.node.incarnation, "node.start");
+        let admin = || {
+            let v = test_view("mesh2", "mesh2.node-admin.2");
+            v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&predecessor, 1));
+            v.take_topology_frame(&aggregate_of("mesh2", &publisher_of(&predecessor), 10, vec![predecessor.clone(), stopped.clone()]), &fabric, Side::Backbone, &mut v.order.lock().unwrap());
+            assert!(v.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation), "the aggregate's listing holds the birth stopped");
+            assert!(v.digest_view.joined(&start), "the start's node.joined ends the stop");
+            assert!(!v.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation));
+            v
+        };
+        let late = admin();
+        late.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&predecessor), 10), &fabric, "mesh-channel");
+        assert!(!late.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation) && late.digest_view.in_flight().is_empty(), "the late NodeStopped of the ended stop opens nothing");
+        let later = admin();
+        later.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&predecessor), 11), &fabric, "mesh-channel");
+        assert!(later.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation), "a stop stamped after the ended one is a later stop: taken");
+        let reconciled = spans.named("rdm.mesh.topology.update.via-lifecycle-reconciled");
+        assert_eq!(reconciled.iter().filter(|f| f["node_id"] == stopped.node.node_id.as_str() && f["evidence"] == "operation-ended").count(), 1, "{reconciled:#?}");
+    }
+
     /// CONTRACT (gossip.md `NodeStopped`: "`topology_version` the version of the subject's mesh at which
     /// the subject changed"; Q389: a mesh's version is not keyed on who published it): a
     /// mesh9 node holds mesh2 at v5 from its forwarder. The fabric-primary, executing mesh2.node.1's stop,

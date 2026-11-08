@@ -691,7 +691,7 @@ impl View {
         }
         for d in listed.iter().filter(|d| d.status == S::Stopped) {
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
-            if self.digest_view.stopped_listed(d, at_rafka_ms) {
+            if self.digest_view.stopped_listed(d, at_rafka_ms, Some((target.publisher.clone(), target.version))) {
                 self.note_member_stopped(&DigestView::listed_op(d, "node.stop", at_rafka_ms), prior, side.name());
             }
         }
