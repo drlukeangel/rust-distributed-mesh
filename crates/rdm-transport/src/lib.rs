@@ -78,12 +78,6 @@ pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};
 pub use route::{ConnectedCall, RouteChoice, RouteLeg};
 pub use server::{HandlerFault, LateReply, NodeRpcServer, PeerContext, ReplyWithhold, ServedBirth, ServerBuilder, ServerStats};
 
-// mesh-ops modules & re-exports
-pub mod framer;
-pub mod ops;
-pub use framer::{decode as framer_decode, encode as framer_encode, FramerError, TAG_LEGACY_FRAME};
-pub use ops::{InternalMeshFrame, TraceContext, TracedFrame};
-
 // telemetry modules & re-exports
 pub mod export;
 pub mod logs;

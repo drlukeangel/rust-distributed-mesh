@@ -207,13 +207,6 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
     })
 }
 
-impl GossipLifecycle {
-    #[allow(dead_code)]
-    pub(crate) fn held_name(&self) -> PathName {
-        self.channels.topology_view().digest_view.held_path_name().unwrap_or_else(|| self.me())
-    }
-}
-
 #[async_trait::async_trait]
 impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     fn now_rafka_ms(&self) -> u64 {

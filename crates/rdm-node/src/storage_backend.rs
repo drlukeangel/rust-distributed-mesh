@@ -1,5 +1,5 @@
 //! The storage backend a node runs on: its own connections rows (`connections.storage`) and its point
-//! reads of other nodes' records and its own record (`nodes.storage`, query.md §1, Q237, Q356). A node-admin's backend opens the admin's five boundaries (`rdm_admin::storage_backend`);
+//! reads of other nodes' records and its own record (`nodes.storage`, query.md §1, Q237, Q356). A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
 //! a node opens this one at its boot. RDM standalone's is [`FileNodeBackend`] (the `file-backend`
 //! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
 //! one process's rows.

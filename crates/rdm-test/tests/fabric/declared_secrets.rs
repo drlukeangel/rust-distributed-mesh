@@ -524,7 +524,7 @@ mod container {
     /// inherited arm), which in a container fabric is the lost container's address on the fabric
     /// network: the host cannot bind it ("mesh address 172.20.255.254:0: Failed to bind sockets").
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "a host-process node-admin started again on a container fabric's data dir cannot bind the inherited container address (admin/boot.rs inherited arm)"]
+    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/353"]
     async fn an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_types_with_the_value_containers() {
         if !container_opted_in("declared secrets") {
             return;

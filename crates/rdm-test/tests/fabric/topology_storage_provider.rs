@@ -1430,7 +1430,7 @@ mod container {
     /// CONTRACT (i149 R13, R15; container provider): every serving node keeps its birth and
     /// ready through a change, as the process provider's cell states it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "i149 e5 (R15): the testkit registers test-target beside RDM_STORE_DIR, a place no role node container mounts; a role node refuses its move, and each birth its mesh-primary re-creates on test-target refuses to start (store-test-target not in its container), so the unblock re-creates it without end (storage_change.rs move_until)"]
+    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/354"]
     async fn every_serving_node_keeps_its_birth_and_ready_through_a_change_containers() {
         if !opted_in("topology storage provider") {
             return;
@@ -1441,7 +1441,7 @@ mod container {
     /// CONTRACT (i149 R14, R15; container provider): a later Build naming the previous provider returns
     /// the fabric to it, as the process provider's cell states it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "i149 e5 (R15): the testkit registers test-target beside RDM_STORE_DIR, a place no role node container mounts; a role node refuses its move, and each birth its mesh-primary re-creates on test-target refuses to start (store-test-target not in its container), so the unblock re-creates it without end (storage_change.rs move_until)"]
+    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/354"]
     async fn a_customer_returns_to_a_previous_topology_provider_containers() {
         if !opted_in("topology storage provider") {
             return;

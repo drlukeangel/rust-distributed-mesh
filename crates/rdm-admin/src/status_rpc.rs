@@ -18,7 +18,7 @@ use rdm_transport::{PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::status::{transition, DeclaredOperation, FabricEvent, MeshState, NodeState, NotPrimary, Status, StatusReply, StatusRequest, Transition};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn request_name(start: bool) -> &'static str { if start { "node.start" } else { "node.stop" } }
 
@@ -2735,12 +2735,11 @@ pub type StatusServiceSlot = Arc<OnceLock<Arc<StatusService>>>;
 /// Publishes NodeStopped for the birth of `row` stopped by `operation` (i146 Q29, Q36).
 pub type StoppedPublisher = Arc<dyn Fn(crate::status_rpc::Declaration, DeclaredOperation) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
-#[allow(dead_code)]
-fn _assert_send_sync() {
+/// `StatusService` is `Send + Sync`: it is served from every task.
+const _: fn() = || {
     fn f<T: Send + Sync>() {}
     f::<StatusService>();
-    let _ = RwLock::new(());
-}
+};
 
 /// A plural read's refusal as Status answers it (the retained `GetFabric`).
 fn status_of_read_refusal(refusal: rdm_core::read::ReadReply) -> StatusReply {

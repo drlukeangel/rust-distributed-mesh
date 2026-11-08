@@ -1,7 +1,6 @@
 //! Shared outcome constructors. Handlers choose a named outcome; codecs own its wire variant.
 
 /// Constructors for the StatusReply family.
-#[allow(unused_imports)]
 pub mod status {
 use crate::status::*;
 use crate::outcome::{MalformedKind, ReplyKind};
@@ -123,7 +122,6 @@ pub fn bounded_incomplete_manifest(without_exit: &[String], reason: &str) -> Sta
 }
 
 /// Constructors for the NodeCommandReply family.
-#[allow(unused_imports)]
 pub mod node_command {
 use crate::node_command::*;
 use crate::outcome::{MalformedKind, ReplyKind};
@@ -174,7 +172,6 @@ pub fn property_refused(reply: crate::status::StatusReply) -> NodeCommandReply {
 }
 
 /// Constructors for the BuildReply family.
-#[allow(unused_imports)]
 pub mod build {
 use crate::build::*;
 use crate::context::CallContext;
@@ -216,7 +213,6 @@ pub fn rejected_filter(reason: String) -> BuildReply { BuildReply::RejectedFilte
 }
 
 /// Constructors for the JoinReply family.
-#[allow(unused_imports)]
 pub mod join {
 use crate::join::*;
 use crate::outcome::{MalformedKind, ReplyKind};
@@ -245,7 +241,6 @@ pub fn cert_refused(name: String, detail: String) -> JoinReply { JoinReply::Cert
 }
 
 /// Constructors for the NodePrimaryUpdateReply family.
-#[allow(unused_imports)]
 pub mod handover {
 use crate::handover::*;
 use crate::outcome::{MalformedKind, ReplyKind};
@@ -278,7 +273,6 @@ pub fn bounded_not_primary(reason: &str) -> NodePrimaryUpdateReply { NodePrimary
 }
 
 /// Constructors for the TopologyReply family.
-#[allow(unused_imports)]
 pub mod topology {
 use crate::topology::*;
 use crate::outcome::{MalformedKind, ReplyKind};
@@ -302,7 +296,6 @@ pub fn malformed(kind: MalformedKind) -> TopologyReply { TopologyReply::Malforme
 }
 
 /// Constructors for the ForwardReply family.
-#[allow(unused_imports)]
 pub mod forward {
 use crate::forward::*;
 use crate::outcome::{MalformedKind, ReplyKind};
@@ -337,7 +330,6 @@ pub fn no_inner_budget(remaining_ms: u64, reserve_ms: u64) -> ForwardReply { For
 }
 
 /// Constructors for the PingReply family.
-#[allow(unused_imports)]
 pub mod ping {
 use crate::ping::*;
 use crate::outcome::{MalformedKind, ReplyKind};
