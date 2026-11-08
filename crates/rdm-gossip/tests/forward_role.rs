@@ -2,10 +2,14 @@
 //! receiving peer mesh primaries forward remote mesh topologies locally").
 //!
 //! CONTRACT: a node-admin of mesh1 that is not its primary hears a peer mesh's topology on the
-//! backbone and holds each new version of it, and puts nothing of it onto mesh1's channel: no
-//! forwarded full, no forwarded delta, and a member reached only through it holds no version of
-//! that source. The same admin given the role forwards at its next publication, and the member installs
-//! the source: the channel carried nothing before because the admin held no role.
+//! backbone and holds each new version of it in its one copy, and puts nothing of it onto mesh1's
+//! channel: no forwarded full, no forwarded delta, and a member reached only through it holds no
+//! version of that source. The same admin given the role puts nothing into mesh1 at the takeover
+//! (gossip.md §3.3, Q409: a takeover tops up nothing); at the peer mesh's next move it forwards the
+//! delta its full wrote, from the version its copy held. The member, given nothing of the peer mesh
+//! by any primary, holds no base: it desynchronizes the source, and its top-up read of its primary
+//! holds what the primary's copy holds. The channel carried nothing before because the admin held no
+//! role.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -126,19 +130,37 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         }
         assert_eq!(rpc_m.held_source_version("mesh2"), None, "a member reached only through a non-primary admin holds no version of mesh2 (it holds v{v2})");
 
-        // The same admin given the role forwards at its next publication: the member installs mesh2.
+        // The same admin given the role puts nothing into mesh1 at the takeover: a republication of the
+        // version its copy holds moves nothing (Q409).
         admin_bb.set_mesh_primary(true);
-        let installed = loop {
+        for _ in 0..5 {
             seq += 1;
             src_bb.publish(&src_m, at(seq, true)).await;
             admin_bb.publish(&admin_m, vec![]).await;
-            if let Some((_, v)) = rpc_m.held_source_version("mesh2") {
-                break v;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(rpc_m.held_source_version("mesh2"), None, "the takeover tops up nothing: the member still holds no version of mesh2");
+        // mesh2 moves: the new primary forwards the delta its full wrote, from v2, the version its copy
+        // held. The member holds no base: it desynchronizes mesh2.
+        let v3 = loop {
+            seq += 1;
+            src_bb.publish(&src_m, at(seq, false)).await;
+            admin_bb.publish(&admin_m, vec![]).await;
+            if rpc_m.desynced_sources().iter().any(|(m, _)| m == "mesh2") {
+                break admin_bb.held_source("mesh2").map(|(_, v)| v).expect("the primary's copy of mesh2");
             }
-            assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.node-admin.2 held the role");
+            assert!(std::time::Instant::now() < deadline, "the member never took mesh2's next move once mesh1.node-admin.2 held the role");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        assert_eq!(installed, v2);
+        assert!(v3 > v2, "mesh2 moved past v{v2}: v{v3}");
+        // Its top-up: a topology read of its primary (op 0x1E), which serves mesh2 from its copy.
+        let served = admin_m.held_topology_of(&at(seq, false)[0], Some("mesh2"));
+        for s in &served {
+            let chunk = rdm_gossip::aggregate::Chunk { mesh: s.mesh.clone(), mesh_id: s.mesh_id.clone(), author: None, topology_version: s.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() };
+            let _ = rpc_m_channels.take_read_chunk(chunk, "mesh1");
+        }
+        assert_eq!(rpc_m.held_source_version("mesh2").map(|(_, v)| v), Some(v3), "the member's read holds what its primary's copy holds");
+        assert!(rpc_m.desynced_sources().is_empty(), "the read resumed the source");
 
         for n in [&src, &admin, &rpc] {
             n.ep.close().await;
@@ -154,6 +176,12 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             .collect();
         assert!(!forwards.is_empty(), "the mesh-primary forwarded");
         assert!(forwards.iter().all(|(t, _)| *t >= started), "nothing was forwarded before the role: {forwards:?}");
+        let first: Vec<(String, String)> = all
+            .iter()
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-forwarded-delta" && attr(s, "node") == "mesh1.node-admin.2" && attr(s, "mesh") == "mesh2")
+            .map(|s| (attr(s, "base_version"), attr(s, "topology_version")))
+            .collect();
+        assert_eq!(first.first(), Some(&(v2.to_string(), v3.to_string())), "the new primary's first differential of mesh2 is from the version its copy held: {first:?}");
         eprintln!("forward-role: trace of the role start {} span {}; forwards {:?}", role[0]["trace_id"], role[0]["span_id"], forwards.iter().map(|(_, n)| n).collect::<Vec<_>>());
     });
 }
