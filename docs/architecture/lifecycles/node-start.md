@@ -48,9 +48,9 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    a successful storage read alone does not satisfy the floor. This check must not depend on
    fetching topology early.
    Then obtain topology once through [node.topology.get](node-topology-get.md), as the final
-   startup read. Request it without a conditional source version and install only complete
-   aggregates. The same reply supplies the recorded primaries, startup context and current
-   Rafka-time; adopt the time after installing topology and before reporting started.
+   startup read. Request it without a conditional source version and write only complete
+   aggregates to the topology view. The same reply supplies the recorded primaries, startup context and current
+   Rafka-time; adopt the time after writing topology to the topology view and before reporting started.
    Preserve retained own properties. Do not fetch topology before
    the Build-floor check and do not issue a second topology request just to refresh time.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial aggregate nor a

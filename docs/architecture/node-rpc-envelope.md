@@ -1174,7 +1174,7 @@ Each `ReadNode` is a node's identity, endpoint and lineage, its status and prima
 `mesh=None` asks for every held or eligible stored mesh; Some(m) asks for one mesh.
 A matching held source version answers Unchanged. Accepted reads stream Started, then
 Aggregate, Unchanged or Stored frames, then End. Aggregate carries the mesh's one list of nodes,
-chunked as gossip TopologyFull is; a mesh is installed atomically only after every chunk of the
+chunked as gossip TopologyFull is; a mesh is written to the topology view atomically only after every chunk of the
 answer at its topology_version is present. End.meshes counts each answered mesh once.
 A mesh with no published aggregate is absent unless the answerer writes its records or holds its
 births (Stored). NotReady means the readiness gate is closed, with the cause named. No answer reads the
@@ -1187,8 +1187,8 @@ births the answerer's view holds (its durable topology included), never
 from the store,
 and carries up to 24 nodes per frame; End.meshes counts a stored mesh once across frames.
 It serves only a mesh the maker holds no aggregate of, never the maker's own mesh. A held
-aggregate wins. The reader never installs Stored as topology: it uses the map only to reach
-a live node of its own mesh. A read from a node of another mesh installs topology only for
+aggregate wins. The reader never writes Stored to its topology view: it uses the map only to reach
+a live node of its own mesh. A read from a node of another mesh writes topology to the topology view only for
 other meshes and holds none of the reader's own mesh as heard.
 
 Primaries is reply position 12: one per recorded primary the answerer holds (the fabric-primary

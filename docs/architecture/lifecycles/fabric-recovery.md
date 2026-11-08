@@ -90,7 +90,7 @@ the same order starts the workflow again, resuming from the progress recorded on
 
 1. Load the durable topology and the accepted Build's topology; bind port 0 and retain the OS-assigned
    endpoint. The first GetTopology targets a node from that durable map: OWN MESH first,
-   install only complete source aggregates. Stabilize the own mesh before investigating peers.
+   write only complete source aggregates to the topology view. Stabilize the own mesh before investigating peers.
 2. Obtain current own-mesh topology, join the mesh channel from its member addresses, recover
    control and become ready under the ordinary election.
 3. Run the single bounded own-mesh Ping sweep

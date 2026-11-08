@@ -7,7 +7,7 @@
 An already-held member requests [node.topology.get](../node-rpc-envelope.md#topology-op-0x1e-rdm)
 from its own current mesh-primary when a differential cannot be applied to the state it holds.
 For this repair it requests the affected mesh with `since: None`: no publisher or version is
-sent. It installs a complete aggregate from the reply, then resumes applicable differentials. The answer also carries the node's own
+sent. It writes a complete aggregate from the reply to its topology view, then resumes applicable differentials. The answer also carries the node's own
 node record at its node.id (Q323), read from
 the shared backend. This startup context is not a second property owner; the node's writer
 preserves retained properties (Q234).
@@ -42,10 +42,10 @@ node.topology.get { mesh: affected mesh, since: None }     exact member → own 
   ← RafkaTime
   ← OwnRow (the reader's own whole row)
   ← End
-install complete source aggregates, then resume deltas
+write complete source aggregates to the topology view, then resume deltas
 ```
 
-The request, reply variants, install rules and spans are the
+The request, reply variants, write rules and spans are the
 [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm). The node's own Digest and
 its mesh-primary's mesh topologies follow the [frame catalog](../gossip.md#31-frame-catalog) and
 the [cross-mesh projection](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-aggregates-and-the-top-up).
@@ -61,7 +61,7 @@ sequenceDiagram
     M-->>N: Started
     M-->>N: complete Aggregate chunks for the affected mesh
     M-->>N: End
-    Note over N: Install complete source aggregates, then resume deltas
+    Note over N: Write complete source aggregates to the topology view, then resume deltas
 ```
 
 ## Running node reconnect
@@ -76,12 +76,12 @@ Reconnect is not an op. It opens no Build and emits no join receipt.
    a recovered node (a new node over the inherited data dir) binds port 0 through
    [node.create](node-create.md).
 2. When source versions reveal a delta gap, the node calls node.topology.get on its own
-   exact current mesh-primary, installs the complete aggregate, then applies further deltas
+   exact current mesh-primary, writes the complete aggregate to its topology view, then applies further deltas
    against that source version. A fresher digest alone does not fill a gap.
 3. The node publishes its current digest. Transient connection markers clear only on
    connection or readiness evidence for the same exact birth.
 
-A topology refusal or an incomplete stream installs no partial aggregate. Transport
+A topology refusal or an incomplete stream writes no partial aggregate to the topology view. Transport
 uncertainty is neither a successful read nor a sign of death. Reconnect needs no restart
 and changes no identity.
 
@@ -99,7 +99,7 @@ sequenceDiagram
 | Actor | Channel/op | Payload / evidence | Span |
 |---|---|---|---|
 | Held member → own mesh-primary | node.topology.get on delta gap | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm) | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read` |
-| Held member | complete topology install | complete source aggregate; no partial install | `rdm.mesh.topology.update.via-read-install` |
+| Held member | complete topology write | complete source aggregate; no partial write | `rdm.mesh.topology.update.via-read` |
 
 ## States written
 

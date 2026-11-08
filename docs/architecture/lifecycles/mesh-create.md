@@ -128,8 +128,8 @@ at revision 1):
 
 And the mesh's first backbone `TopologyFull`, one member, itself; the shape is the
 [catalog's example](../gossip.md#examples) with `mesh2`, `publisher` the node-admin's exact
-birth, `topology_version` 1 and that one digest in `digests`. Peer mesh primaries install it into
-their held external topology and forward it on their own channels under the rules in
+birth, `topology_version` 1 and that one digest in `digests`. Peer mesh primaries write it to
+their topology view and forward it on their own channels under the rules in
 [gossip.md §3.3](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-aggregates-and-the-top-up).
 
 ## Mermaid sequence diagram
@@ -155,7 +155,7 @@ sequenceDiagram
     Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; writes ready on its own record
     Note over A: 7. election names it mesh-primary, writes mesh row
     A->>G: 7. Digest (is_primary), MeshStatus pending, first mesh topology
-    G-->>R: install mesh2 into external topology
+    G-->>R: write mesh2 to the topology view
     F-->>C: node.created
     Note over A: 8. creates mesh2's other nodes under the same Build
     A->>F: 8. every planned birth ready

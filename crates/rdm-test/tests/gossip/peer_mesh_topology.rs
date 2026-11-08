@@ -21,14 +21,33 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const CELL: &str = "ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut";
 
 fn owner() -> Owner {
+    owner_of(CELL)
+}
+
+fn owner_of(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "i143-rg2".into(),
         subfeature: "forwarded-topology".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: CELL.into(),
+        test: test.into(),
     }
+}
+
+/// A complete full of a peer mesh a node wrote to its topology view: its base, its version and the
+/// delta it wrote (gossip.md §3.3, Q409).
+const FULL_WRITTEN: &str = "rdm.mesh.topology.update.via-full";
+const DELTA_FORWARDED: &str = "rdm.mesh.topology.update.via-forwarded-delta";
+const DELTA_APPLIED: &str = "rdm.mesh.topology.update.via-delta";
+
+fn num(sp: &Value, k: &str) -> u64 {
+    attr(sp, k).parse().unwrap_or(0)
+}
+
+/// `(base_version, topology_version, added, changed, removed)` of a full's write or a delta.
+fn moved(sp: &Value) -> (u64, u64, u64, u64, u64) {
+    (num(sp, "base_version"), num(sp, "topology_version"), num(sp, "added"), num(sp, "changed"), num(sp, "removed"))
 }
 
 fn acceptance_dir() -> PathBuf {
@@ -127,4 +146,66 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     estate.enter_fabric_primary().await;
     estate.stop().await;
+}
+
+/// CONTRACT (gossip.md §3.3 "A node-admin holds one copy of each peer Mesh and writes only the delta",
+/// Q409, Q410): one change of mesh2, a node added by a Build on a running MM fabric, reaches mesh1's
+/// ordinary node as deltas only. Each complete full of mesh2 that mesh1's mesh-primary takes from the
+/// backbone after the change writes its delta to that node-admin's topology view (`via-full`: the
+/// version its copy held before, the full's version, and what it added, changed and removed); the
+/// differential it puts into mesh1 (`via-forwarded-delta`) is that same delta from that same base; and
+/// mesh1's node applies each at exactly its base (`via-delta`). The node then holds the added node,
+/// never desynchronizes mesh2 and never reads it. Must NOT happen: a forwarded differential whose base or
+/// counts are not the copy's write; a gap or a topology read of mesh2 at the ordinary node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_mesh_change_reaches_an_ordinary_node_as_the_delta_its_mesh_primary_wrote() {
+    const TEST: &str = "a_peer_mesh_change_reaches_an_ordinary_node_as_the_delta_its_mesh_primary_wrote";
+    let mut estate = Estate::bootstrap(owner_of(TEST), "fabric1", "mesh1").await;
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
+    estate.resize_shape("fabric1", &shape).await;
+    let views = estate.settled_views(&shape).await;
+    let at = |views: &[rdm_client::NodeView], path: &str, name: &str| views.iter().find(|n| n.location() == Estate::path(path, name)).cloned().unwrap_or_else(|| panic!("{path}.{name} in the settled views: {views:?}"));
+    let (primary, member) = (at(&views, "mesh1.node-admin", "1"), at(&views, "mesh1.node", "1"));
+    let (primary_id, member_id) = (primary.node_id.to_string(), member.node_id.to_string());
+    let peers = estate.peers().await;
+    peers.fact(&member, "mesh2", "mesh1.node.1 holds mesh2's node", |held| held.members.iter().any(|b| b.node.path == "mesh2.node")).await;
+
+    // The change: mesh2 grows by one node.
+    let changed_at = now_ns();
+    let grown = [("mesh1", 1, 1), ("mesh2", 1, 2)];
+    estate.resize_shape("fabric1", &grown).await;
+    let after = estate.settled_views(&grown).await;
+    let added = at(&after, "mesh2.node", "2");
+    peers.fact(&member, "mesh2", "mesh1.node.1 holds mesh2.node.2 ready", |held| held.birth(&added.node_id).is_some_and(|b| b.status == rdm_core::model::NodeStatus::Ready)).await;
+    // The last differential mesh1's primary put into mesh1 is applied by the member before the spans are read.
+    let spans = wait_for("mesh1.node.1 applied every differential of mesh2 its mesh-primary sent since the change", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        let sent: BTreeSet<u64> = named(&spans, DELTA_FORWARDED).into_iter().filter(|sp| attr(sp, "node") == primary_id && attr(sp, "mesh") == "mesh2" && at_ns(sp) >= changed_at).map(|sp| num(sp, "topology_version")).collect();
+        let applied: BTreeSet<u64> = named(&spans, DELTA_APPLIED).into_iter().filter(|sp| attr(sp, "node") == member_id && attr(sp, "mesh") == "mesh2" && at_ns(sp) >= changed_at).map(|sp| num(sp, "topology_version")).collect();
+        (!sent.is_empty() && sent.is_subset(&applied)).then_some(spans)
+    })
+    .await;
+    let of = |name: &str, node: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "mesh") == "mesh2" && at_ns(sp) >= changed_at).cloned().collect() };
+    let written: Vec<Value> = of(FULL_WRITTEN, &primary_id).into_iter().filter(|sp| attr(sp, "channel") == "backbone").collect();
+    let (forwarded, applied) = (of(DELTA_FORWARDED, &primary_id), of(DELTA_APPLIED, &member_id));
+    for (what, sp) in written.iter().map(|sp| ("full written", sp)).chain(forwarded.iter().map(|sp| ("delta forwarded", sp))).chain(applied.iter().map(|sp| ("delta applied", sp))) {
+        println!("{TEST}: {what} {} {:?} trace {} span {}", s(&sp["name"]), moved(sp), s(&sp["trace_id"]), s(&sp["span_id"]));
+    }
+    assert!(!forwarded.is_empty(), "mesh1's mesh-primary forwarded mesh2's change");
+    for d in &forwarded {
+        let (base, to, ..) = moved(d);
+        let full = written.iter().find(|w| num(w, "topology_version") == to).unwrap_or_else(|| panic!("the differential {base} -> {to} is a full mesh1's mesh-primary wrote from the backbone: {written:#?}"));
+        assert_eq!(moved(full), moved(d), "the differential put into mesh1 is the delta the full wrote to the node-admin's copy, from the version that copy held");
+        assert!(applied.iter().any(|a| (num(a, "base_version"), num(a, "topology_version")) == (base, to)), "mesh1.node.1 applies {base} -> {to} at its base: {applied:#?}");
+    }
+    let gaps: Vec<Value> = of("rdm.mesh.topology.update.via-gap", &member_id);
+    assert!(gaps.is_empty(), "mesh1.node.1 never desynchronizes mesh2: {gaps:#?}");
+    let reads: Vec<Value> = named(&spans, "rdm.mesh.topology.update.via-read").into_iter().filter(|sp| attr(sp, "node") == member_id && attr(sp, "mesh") == "mesh2" && at_ns(sp) >= changed_at).cloned().collect();
+    assert!(reads.is_empty(), "mesh1.node.1 never reads mesh2: the change reaches it as deltas: {reads:#?}");
+    estate.enter_fabric_primary().await;
+    estate.stop().await;
+}
+
+fn at_ns(sp: &Value) -> u64 {
+    sp["start_unix_nano"].as_u64().unwrap_or(0)
 }

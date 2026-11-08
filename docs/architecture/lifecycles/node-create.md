@@ -119,9 +119,9 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    first node-admin (its MeshId, seed and mesh-primary launch mode). It records the deployed birth;
    the node-admin binds port 0 and the OS assigns the port.
 2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
-   maker. It installs complete topology aggregates and obtains its control/status context.
+   maker. It writes complete topology aggregates to its topology view and obtains its control/status context.
 3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
-   can exit while the mesh has no node-admin. It installs complete aggregates and joins its mesh
+   can exit while the mesh has no node-admin. It writes complete aggregates to its topology view and joins its mesh
    channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module).
    A mesh with no live node has no local node to read, so there is no local topology read, and no
    member address to join from: its mesh channel is created again under the mesh's MeshId by its first
@@ -160,7 +160,7 @@ sequenceDiagram
     FP-->>A: streamed maker topology
     A->>L: 0x1E GetTopology
     L-->>A: streamed current local topology
-    A->>A: install complete aggregates; join mesh channel; ready / mesh-primary
+    A->>A: write complete aggregates to the topology view; join mesh channel; ready / mesh-primary
     A->>L: one bounded 0x01 Ping
     L-->>A: reply from live exact birth
     A->>D: one bounded 0x01 Ping
@@ -182,7 +182,7 @@ sequenceDiagram
 |---|---|---|---|
 | Fabric-primary | node recovery / node.create | its own workflow; the mesh's MeshId | `rdm.node_admin.deployment.update.via-pipeline` |
 | Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |
-| Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes installed | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
+| Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes written to the topology view | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |
 | Mesh-primary / provider | node recovery | node investigation, one recovery on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
 
