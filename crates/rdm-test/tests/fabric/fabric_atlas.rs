@@ -52,9 +52,15 @@ async fn two_meshes(estate: &mut Estate) -> Vec<Value> {
     estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;
-    let views = estate.node_values().await;
-    let pick = |kind: &str, primary: bool| views.iter().find(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == kind && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds a {kind} with is_primary={primary}: {views:#?}"));
-    vec![pick("node", false), pick("node", true), pick("node-admin", false), pick("node-admin", true)]
+    // Each type's primary is elected once its nodes are Ready and reaches the views by gossip, after
+    // the fabric is ready: wait, bounded, until the views name mesh2's node and node-admin primaries.
+    let pick = |views: &[Value], kind: &str, primary: bool| views.iter().find(|n| rdm_test::estate::mesh_of(n) == "mesh2" && n["type"] == kind && (n["is_primary"] == true) == primary).cloned();
+    let estate: &Estate = estate;
+    rdm_test::estate::wait_for("mesh2's views name its node and node-admin primaries", std::time::Duration::from_secs(60), || async move {
+        let views = estate.node_values().await;
+        Some(vec![pick(&views, "node", false)?, pick(&views, "node", true)?, pick(&views, "node-admin", false)?, pick(&views, "node-admin", true)?])
+    })
+    .await
 }
 
 fn path_of(n: &Value) -> PathName {

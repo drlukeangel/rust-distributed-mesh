@@ -508,7 +508,7 @@ impl<'a> NodeRpc<'a> {
                 Ok(answer) => answer,
                 // A `Busy` past the Send's attempts and a second `PrimaryUpdated` are refusals by name, the
                 // answer's own shape, as every other refusal of the primary is.
-                Err(CallEnd::Rejected { reason, detail }) => return Ok(rdm_core::node_command::NodeCommandReply::Rejected { reason, detail }),
+                Err(CallEnd::Rejected { reason, detail }) => return Ok(rdm_core::reply::node_command::rejected(&reason, detail)),
                 Err(end) => return Err(end),
             };
             let (Some(mut stream), false) = (stream, matches!(NodeCommand::frame_kind(&first), FrameKind::Terminal | FrameKind::Refusal(_))) else {
