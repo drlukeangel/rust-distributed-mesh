@@ -84,6 +84,9 @@ pub(crate) struct View {
     pub(crate) forwarder: Arc<Mutex<Forwarder>>,
     /// Wakes the top-up when a source of the Mesh channel desynchronizes.
     pub(crate) desync: Arc<tokio::sync::Notify>,
+    /// Whether this node is on the backbone (a node-admin, set when it joins it): its copy of each peer
+    /// mesh follows the backbone's complete fulls alone (gossip.md §3.3).
+    pub(crate) on_backbone: Arc<AtomicBool>,
     /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), shared with its
     /// the topology view; `None` while the birth holds its launch name (`node`).
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
@@ -459,6 +462,10 @@ impl View {
                 if self.outside_build(mesh, side) {
                     return TopologyFrameTaken::default();
                 }
+                if self.on_backbone.load(Ordering::Relaxed) {
+                    self.backbone_copy_delta(mesh, &source, *base_version, *topology_version);
+                    return TopologyFrameTaken::default();
+                }
                 let mut rx = self.copies.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
                 let moved = rx.take_delta_chunk(chunk);
@@ -479,6 +486,7 @@ impl View {
                             deleted = held_full.map_or(0, |held| held.digests().iter().filter(|d| d.status == rdm_core::model::NodeStatus::Deleted).count()),
                         )
                         .in_scope(|| tracing::info!("a differential applied at exactly its base version, every chunk of it held"));
+                        self.remove_unlisted(mesh, &delta.removed, side, *topology_version);
                         let full = Full::new(moved, Vec::new(), Vec::new());
                         let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
@@ -518,6 +526,29 @@ impl View {
             }
             _ => TopologyFrameTaken::default(),
         }
+    }
+
+    /// A differential of the peer mesh `mesh` from `source`, on the mesh channel of a node on the backbone.
+    /// A node-admin holds every source Mesh from the backbone's complete `TopologyFull` aggregates (gossip.md
+    /// §3.3), so its copy follows the backbone alone: the differential is a copy of the version the
+    /// backbone wrote here (`via-duplicate`) or ahead of it. Either way it writes nothing, is never a
+    /// gap and starts no top-up: the backbone's next full writes the copy.
+    fn backbone_copy_delta(&self, mesh: &str, source: &str, base_version: u64, topology_version: u64) {
+        let held = self.copies.lock().unwrap().held_version(mesh).map(|(_, v)| v);
+        if held == Some(topology_version) {
+            crate::receive_order::publication_duplicate("mesh-topology-delta", &format!("{mesh} {source} base_version={base_version} topology_version={topology_version}"));
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.topology.reject.via-copy-follows-backbone",
+            node = %self.current_name(),
+            mesh,
+            source,
+            base_version,
+            topology_version,
+            held_version = held.map_or(-1, |v| v as i64),
+        )
+        .in_scope(|| tracing::info!("a node-admin's copy of a peer mesh follows the backbone alone: a differential ahead of it writes nothing and starts no top-up"));
     }
 
     /// Whether a full or delta of the peer mesh `mesh` writes nothing: the accepted Build is the
@@ -633,6 +664,7 @@ impl View {
         )
         .in_scope(|| tracing::debug!("a complete full written to the topology view: a mesh's first full adds it, a later one writes only its delta from the copy held"));
         let target = prior.target(&w.publisher.as_ref().map(ToString::to_string).unwrap_or_default(), side, w.topology_version, Some(&w.full));
+        self.remove_unlisted(&w.mesh, &w.delta.removed, side, w.topology_version);
         let carried = self.apply_full(&w.mesh, &w.full, Some(&w.full), fabric, side, &target, w.time_ms);
         let source = (side == Side::Backbone && w.mesh != self.mesh).then(|| Box::new(w.clone()));
         // A full with no nodes lists no birth of its author: it carries no rafka-time sample.
@@ -683,19 +715,25 @@ impl View {
         }
         self.digest_view.hold_mesh_id(mesh, complete.and_then(Full::mesh_id).as_ref());
         let listed: Vec<MeshDigest> = full.digests().into_iter().filter(|d| &d.fabric_id == fabric).collect();
-        for d in listed.iter().filter(|d| d.status == S::Deleted) {
+        // This node's own mesh on the backbone, its mesh-primary's full: an own-mesh birth's stop, removal
+        // and departure are its immediate events and its own Digest (gossip.md `TopologyFull`: "For an
+        // own-mesh birth, all of it comes from its own Digest ...; NodeStopped and NodeDeleting stay
+        // immediate events"), so the full's listing opens and ends none of them here.
+        let own_on_backbone = mesh == self.mesh && side == Side::Backbone;
+        let lifecycle_listed: Vec<&MeshDigest> = listed.iter().filter(|_| !own_on_backbone).collect();
+        for d in lifecycle_listed.iter().filter(|d| d.status == S::Deleted) {
             self.digest_view.depart_listed(d, at_rafka_ms);
         }
         for op in full.deleted() {
             self.digest_view.depart(op);
         }
-        for d in listed.iter().filter(|d| d.status == S::Stopped) {
+        for d in lifecycle_listed.iter().filter(|d| d.status == S::Stopped) {
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             if self.digest_view.stopped_listed(d, at_rafka_ms, Some((target.publisher.clone(), target.version))) {
                 self.note_member_stopped(&DigestView::listed_op(d, "node.stop", at_rafka_ms), prior, side.name());
             }
         }
-        for d in listed.iter().filter(|d| d.status == S::Deleting) {
+        for d in lifecycle_listed.iter().filter(|d| d.status == S::Deleting) {
             self.digest_view.deleting_listed(d, at_rafka_ms);
         }
         for op in full.in_flight() {
@@ -730,15 +768,16 @@ impl View {
             if own && authors && matches!(side, Side::MeshChannel | Side::Backbone) {
                 continue;
             }
-            if !(own && authors) && self.digest_view.stopped_entry(&d, target) == Some(false) {
+            if !(own && authors) && !own_on_backbone && self.digest_view.stopped_entry(&d, target) == Some(false) {
                 continue;
             }
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
                 // An own-mesh node's status comes only from its own Digest (gossip.md §3.1 `Digest`): its
                 // primary's projection gives nothing of a node this view hears, and holds one it does not.
+                // A birth held stopped is held by its stop, never from the projection.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
-                    if self.digest_view.own_mesh_member(&d) {
+                    if self.digest_view.own_mesh_member(&d) && !self.digest_view.is_stopped(&d) {
                         self.digest_view.hold_projected_at(&d, std::time::Instant::now());
                     }
                     continue;
@@ -777,6 +816,20 @@ impl View {
             self.digest_view.depart_mesh_births(&mesh, &build_id, at_rafka_ms);
         }
         carried
+    }
+
+    /// The births a full or a differential of `mesh` wrote as `removed`, heard on `side` at
+    /// `topology_version`: each a peer mesh's topology no longer lists leaves the digest view at its
+    /// exact incarnation (gossip.md §3.1 `TopologyDelta`), as it left the one copy. An own-mesh birth's
+    /// liveness and status come from its own Digest (gossip.md §3.1 `Digest`): a copy of its mesh
+    /// removes nothing of it.
+    pub(crate) fn remove_unlisted(&self, mesh: &str, removed: &[rdm_core::framing::Birth], side: Side, topology_version: u64) {
+        if mesh == self.mesh {
+            return;
+        }
+        for b in removed {
+            self.digest_view.remove_unlisted(mesh, b, side.name(), topology_version);
+        }
     }
 
     /// A peer mesh's member whose own state this node now holds changed (or was first held saying

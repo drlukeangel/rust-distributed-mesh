@@ -147,6 +147,8 @@ impl Backbone {
         // The node is named by its node id on its channel and status spans (no name rides with the author, Q309).
         let node = author.node_id.as_str();
         let birth = crate::envelope::Birth::publisher(&channels.topology_view.fabric, &author);
+        // On the backbone, this node's copy of each peer mesh follows the backbone's fulls alone (gossip.md §3.3).
+        channels.topology_view.view.on_backbone.store(true, Ordering::Relaxed);
         *channels.author.lock().unwrap() = Some(birth.clone());
         channels.topology_view.view.forwarder.lock().unwrap().set_author(birth);
         let (m, own) = (channels.clone(), mesh.to_string());
