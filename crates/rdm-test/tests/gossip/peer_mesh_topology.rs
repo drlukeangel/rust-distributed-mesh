@@ -168,7 +168,7 @@ async fn a_peer_mesh_change_reaches_an_ordinary_node_as_the_delta_its_mesh_prima
     let (primary, member) = (at(&views, "mesh1.node-admin", "1"), at(&views, "mesh1.node", "1"));
     let (primary_id, member_id) = (primary.node_id.to_string(), member.node_id.to_string());
     let peers = estate.peers().await;
-    peers.fact(&member, "mesh2", "mesh1.node.1 holds mesh2's node", |held| held.members.iter().any(|b| b.node.path == "mesh2.node")).await;
+    rdm_test::typed::peer_holds(&*peers, &member, "mesh2", "mesh1.node.1 holds mesh2's node", |held| held.members.iter().any(|b| b.node.path == "mesh2.node")).await;
 
     // The change: mesh2 grows by one node.
     let changed_at = now_ns();
@@ -176,7 +176,7 @@ async fn a_peer_mesh_change_reaches_an_ordinary_node_as_the_delta_its_mesh_prima
     estate.resize_shape("fabric1", &grown).await;
     let after = estate.settled_views(&grown).await;
     let added = at(&after, "mesh2.node", "2");
-    peers.fact(&member, "mesh2", "mesh1.node.1 holds mesh2.node.2 ready", |held| held.birth(&added.node_id).is_some_and(|b| b.status == rdm_core::model::NodeStatus::Ready)).await;
+    rdm_test::typed::peer_holds(&*peers, &member, "mesh2", "mesh1.node.1 holds mesh2.node.2 ready", |held| held.birth(&added.node_id).is_some_and(|b| b.status == rdm_core::model::NodeStatus::Ready)).await;
     // The last differential mesh1's primary put into mesh1 is applied by the member before the spans are read.
     let spans = wait_for("mesh1.node.1 applied every differential of mesh2 its mesh-primary sent since the change", Duration::from_secs(30), || async {
         let spans = estate.spans();
