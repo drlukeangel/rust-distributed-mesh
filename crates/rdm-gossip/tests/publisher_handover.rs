@@ -170,6 +170,10 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         // A read names no author: the member holds the version it served.
         until("the member to hold mesh1.node-admin.1's projection", || held_at_member() == Some((None, served))).await;
         let (_, pred_version) = held_at_member().unwrap();
+        // The successor holds that version of its mesh from the backbone before it takes the role, so it
+        // continues the mesh's version from it (Q391). Gate 32b4231c7: mesh1.node-admin.2 took the role
+        // holding none and published v1 again; the late delta at the version then held was not earlier.
+        until("mesh1.node-admin.2 to hold mesh1's aggregate from the backbone", || bb2.held_source("mesh1").is_some_and(|(_, v)| v == pred_version)).await;
         // The instant mesh1.node-admin.1's late frames are stamped with: before the successor publishes.
         let pred_stamp = m1.clock().now_rafka_ms();
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -184,6 +188,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         for c in read {
             let _ = m_channels.take_read_chunk(c, "mesh1");
         }
+        assert!(served > pred_version, "the successor continues the mesh's version (Q391): v{served} after v{pred_version}");
         until("the member to install the successor's full", || held_at_member() == Some((None, served))).await;
         let (_, v1) = held_at_member().unwrap();
         m2.digest_view.record(rpc2.clone());
