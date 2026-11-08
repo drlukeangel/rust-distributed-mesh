@@ -78,15 +78,12 @@ struct Owed {
     parent: tracing::Span,
 }
 
-/// Where the process holds the name this node publishes (R12): read, never copied.
-type HeldName = Arc<dyn Fn() -> PathName + Send + Sync>;
-
 struct Inner {
     /// This node at its birth: its node id and process birth, and the name it was born with.
     own: ConnectionEnd,
-    /// The name this node holds, read at every row ([`ConnectionsWriter::follow_held_name`]);
-    /// unset, the birth's.
-    held_name: std::sync::OnceLock<HeldName>,
+    /// The name this node holds, read at every row from where the process holds it (R12: read, never
+    /// copied; [`ConnectionsWriter::follow_held_name`]); unset, the birth's.
+    held_name: std::sync::OnceLock<Arc<dyn Fn() -> PathName + Send + Sync>>,
     storage: Arc<dyn ConnectionsStorage>,
     held: Arc<Mutex<ConnectionsHeld>>,
     runtime: tokio::runtime::Handle,
