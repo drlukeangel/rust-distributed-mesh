@@ -196,8 +196,9 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
         .unwrap_or_else(|| panic!("the resubmitted B's section call to mesh2 was served"));
     assert_eq!(attr(&section, "node_path"), "mesh2.node-admin", "mesh2's section runs on mesh2's own mesh-primary: {section}");
 
-    // Each created admin held every surviving member's runtime before it
-    // committed Ready (i143.e4.s16): mesh1's five births at least.
+    // Each created admin held the runtime of every surviving node of its own mesh before it committed
+    // Ready (i143.e4.s16). Runtime left gossip (Q394, #340): a node-admin's take-over waits on its own
+    // mesh's births only, and another mesh's runtime is read from that birth's node record (Q404).
     for admin in after.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin") {
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
@@ -205,7 +206,15 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
             .unwrap_or_else(|| panic!("{} reports ready", admin["name"]))
             .clone();
         let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
-        assert!(held >= 5, "{} held {held} runtime facts before Ready: {ready}", admin["name"]);
+        // The other nodes of its mesh that were Ready before it: the births it must hold at its Ready.
+        let own = after
+            .iter()
+            .filter(|n| rdm_test::estate::mesh_of(n) == "mesh2" && n["node_id"] != admin["node_id"])
+            .filter(|n| {
+                named(&spans, "rdm.mesh.node.update.via-ready").into_iter().any(|sp| rdm_test::estate::of_node(sp, &location(n), n["node_id"].as_str().unwrap_or_default()) && sp["attributes"]["incarnation_id"] == n["incarnation"] && at(sp) < at(&ready))
+            })
+            .count();
+        assert!(held >= own as u64, "{} held {held} runtime facts before Ready, of {own} other nodes of its mesh Ready before it: {ready}", admin["name"]);
     }
     eprintln!("admins_lost_mid_build: investigation trace {} | recovery trace {} | unfinished trace {} | resubmitted section trace {}", s(&look["trace_id"]), s(&create["trace_id"]), s(&unfinished["trace_id"]), s(&section["trace_id"]));
     estate.record_trace_url(section["trace_id"].as_str().unwrap_or(""));

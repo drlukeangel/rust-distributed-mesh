@@ -2689,8 +2689,9 @@ async fn mock_primary_handoffs_preserve_one_effective_writer() {
 }
 
 /// One imported implementation of the planner, the authority and the death detector: every span of
-/// the families that decide who executes, who is primary and which birth is proven gone comes from the
-/// consumer's `rshape-node-admin`, and its source path is the pinned RDM checkout of the candidate
+/// the families that decide who executes, who is mesh-primary and fabric-primary, and which birth is
+/// proven gone comes from the consumer's `rshape-node-admin`, and a node type's election from that
+/// type's own process (Q406). The source path of each is the pinned RDM checkout of the candidate
 /// (never a file of the consumer's own).
 fn check_imported_mechanism(f: &Formed, spans: &[Value], inv: &mut Invariants) -> Value {
     let short = &f.candidate[..7];
@@ -2700,7 +2701,6 @@ fn check_imported_mechanism(f: &Formed, spans: &[Value], inv: &mut Invariants) -
         "rdm.node_admin.node.create.via-build",
         "rdm.node_admin.node.update.via-build",
         "rdm.node_admin.node.delete.via-build",
-        "rdm.mesh.election.resolve.via-recompute",
         "rdm.mesh.election.resolve.via-mesh-primary",
         "rdm.mesh.election.resolve.via-fabric-recompute",
         "rdm.node_admin.build.create.via-node-rpc",
@@ -2716,6 +2716,17 @@ fn check_imported_mechanism(f: &Formed, spans: &[Value], inv: &mut Invariants) -
         }
         seen.insert(fam.to_string(), rows.len());
     }
+    // A node type's election is held by the nodes of that type (Q406): its span comes from that type's own
+    // process, from the pinned RDM checkout, never from the node-admin.
+    let fam = "rdm.mesh.election.resolve.via-recompute";
+    let rows = named(spans, fam);
+    for sp in &rows {
+        let path = s(&sp["attributes"]["code.file.path"]);
+        let kind = s(&sp["attributes"]["type"]);
+        assert_eq!(s(&sp["service"]), format!("rshape-{kind}"), "{fam}: a {kind} election emitted by a process other than a {kind}: {sp}");
+        assert!(path.contains("/rust-distributed-mesh-") && path.contains(&format!("/{short}/crates/")), "{fam}: its source is {path}, not the pinned RDM checkout of {short}");
+    }
+    seen.insert(fam.to_string(), rows.len());
     for must in ["rdm.node_admin.build.update.via-reconcile", "rdm.mesh.election.resolve.via-fabric-recompute", "rdm.mesh.election.resolve.via-mesh-primary"] {
         assert!(seen[must] > 0, "no `{must}` span: the imported mechanism never ran");
     }
