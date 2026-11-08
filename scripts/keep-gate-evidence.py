@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep one immutable scenario snapshot after the gate's concurrent test barrier."""
+"""Keep one immutable scenario copy after the gate's concurrent test barrier."""
 
 import json
 import os
@@ -43,7 +43,7 @@ def keep(log: Path, artifacts: Path, destination: Path, testkit: Path) -> None:
         return
     cells = list(dict.fromkeys(c for job in jobs for c in failed_cells(Path(str(log) + ".d") / (job + ".log"))))
     destination.mkdir(parents=True, exist_ok=True)
-    # A second run at the same SHA keeps its own snapshot beside the first: never overwritten.
+    # A second run at the same SHA keeps its own copy beside the first: never overwritten.
     name = "gate-" + log.stem
     run = 1
     while (destination / name).exists():
@@ -89,7 +89,7 @@ def keep(log: Path, artifacts: Path, destination: Path, testkit: Path) -> None:
         job_log = Path(str(log) + ".d") / (job + ".log")
         if job_log.is_file():
             shutil.copy2(job_log, view / "gate.log")
-    print(f"kept one evidence snapshot for {len(jobs)} refused jobs: {shared}")
+    print(f"kept one evidence copy for {len(jobs)} refused jobs: {shared}")
 
 
 if __name__ == "__main__":

@@ -39,9 +39,9 @@ async fn born(cell: &str) -> Estate {
     estate
 }
 
-fn snapshot(estate: &Estate, node: &NodeId) -> Value {
-    let out = estate.probe(&["snapshot", "--target", &format!("exact:{node}"), "--key", "x"]);
-    assert_eq!(out["outcome"], "Reply", "{node} answers the originate service's snapshot: {out}");
+fn connections_copy(estate: &Estate, node: &NodeId) -> Value {
+    let out = estate.probe(&["copy", "--target", &format!("exact:{node}"), "--key", "x"]);
+    assert_eq!(out["outcome"], "Reply", "{node} answers the originate service's copy: {out}");
     out
 }
 
@@ -84,10 +84,10 @@ async fn a_recovered_source_holds_no_connection_and_reads_none_back() {
 
     let after = recovered(&estate, &source()).await;
     let recovered_id: NodeId = serde_json::from_value(after["node_id"].clone()).expect("recovered ID");
-    let held = snapshot(&estate, &recovered_id);
+    let held = connections_copy(&estate, &recovered_id);
     assert_eq!((&held["by"], held["by_node_id"].as_str()), (&serde_json::json!(source()), Some(recovered_id.as_str())), "the recovered node answers: {held}");
-    assert!(held["own_latest_directs"].as_array().expect("snapshot includes Direct array").is_empty(), "the recovered source holds no Direct: {held}");
-    assert!(held["own_active_proxies"].as_array().expect("snapshot includes Proxy array").is_empty(), "nor any Proxy: {held}");
+    assert!(held["own_latest_directs"].as_array().expect("copy includes Direct array").is_empty(), "the recovered source holds no Direct: {held}");
+    assert!(held["own_active_proxies"].as_array().expect("copy includes Proxy array").is_empty(), "nor any Proxy: {held}");
     assert!(estate.connection_history(&source_id).iter().any(|r| r["id"] == fifth["id"]), "the store keeps the first birth's rows as written");
 
     estate.stop().await;

@@ -39,7 +39,7 @@ pub struct ControlPlane {
     pub absence: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> String + Send + Sync>>,
     /// This admin's view projected now, from the same inputs the periodic refresh projects
     /// from (the node rows of the births that do not publish read with it): what a decision on one
-    /// node reads, so it never acts on a snapshot up to one refresh old (set once by the admin that
+    /// node reads, so it never acts on a copy up to one refresh old (set once by the admin that
     /// owns the inputs).
     pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Topology> + Send>> + Send + Sync>>,
     /// Fabric recovery in a view (Q122): its executor opens the re-create of the node-admin at the

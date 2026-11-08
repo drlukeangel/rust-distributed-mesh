@@ -75,7 +75,7 @@ fn file_lines(root: &Path, file: &str) -> Vec<Read> {
 
 /// The bytes of every file under `store_dir`: the fabric's root, its store files and locks, and the
 /// fabrics' name index.
-fn snapshot(store_dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+fn copy_of(store_dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(at: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
         let Ok(entries) = std::fs::read_dir(at) else { return };
         for e in entries.flatten() {
@@ -293,7 +293,7 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         let dest_root = StoreRoot::open(&dest_dir, &fabric).unwrap().dir().to_path_buf();
         std::fs::write(dest_root.join(NODES_FILE), [raw(&src[0]), raw(&src[2])].concat()).unwrap();
         let destination = FileProviderLines::open(DESTINATION, &dest_dir, &fabric).await.unwrap();
-        let before = snapshot(&dest_dir);
+        let before = copy_of(&dest_dir);
         let change = run();
         let refused = match copy(&change, &source, &destination).await {
             Err(CopyError::Refused(why)) => why,
@@ -302,7 +302,7 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         let (want, found) = (named(&src[1]), named(&src[2]));
         assert!(refused.contains("nodes") && refused.contains("node-k") && refused.contains(&want) && refused.contains(&found), "the refusal names the store, the subject and the two ids that differ ({want}, {found}): {refused}");
         assert!(!refused.contains(APP_SETTING), "the refusal carries no record's application setting: {refused}");
-        assert_eq!(snapshot(&dest_dir), before, "nothing is appended to any store of the new provider");
+        assert_eq!(copy_of(&dest_dir), before, "nothing is appended to any store of the new provider");
         let now = store_log::latest_in(&dest_root.join(NODES_FILE)).unwrap();
         assert_eq!(now.values().next().map(|l| l.data["v"].clone()), Some(json!(3)), "the key's current value on the new provider is not replayed to line 2");
 
@@ -312,14 +312,14 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
         let stray = Line::new(Attributes::of(&w, "node-record", "node-record/1", "node-k"), json!({"v": 4}));
         std::fs::write(extra_root.join(NODES_FILE), [raw(&src[0]), raw(&src[1]), raw(&src[2]), raw(&stray)].concat()).unwrap();
         let destination = FileProviderLines::open(DESTINATION, &extra_dir, &fabric).await.unwrap();
-        let before = snapshot(&extra_dir);
+        let before = copy_of(&extra_dir);
         let extra_change = run();
         let refused = match copy(&extra_change, &source, &destination).await {
             Err(CopyError::Refused(why)) => why,
             other => panic!("a new provider holding a line the old one does not is refused by name: {:?}", other.map_err(|e| e.to_string())),
         };
         assert!(refused.contains("nodes") && refused.contains("node-k") && refused.contains(&named(&stray)), "the refusal names the store, the subject and the stray id: {refused}");
-        assert_eq!(snapshot(&extra_dir), before, "nothing is appended to the new provider");
+        assert_eq!(copy_of(&extra_dir), before, "nothing is appended to the new provider");
         (change, extra_change)
     });
     let spans = capture.spans().expect("the cell's spans");

@@ -314,7 +314,7 @@ impl TestPreNodeReady {
     }
 
     /// The topology view the first attempt was handed: what the app subscribes to before it
-    /// takes its snapshot.
+    /// takes its copy.
     pub fn digest_view(&self) -> Option<rdm_gossip::digest_view::DigestView> {
         self.digest_view.get().cloned()
     }

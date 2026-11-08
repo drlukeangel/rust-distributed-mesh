@@ -103,7 +103,7 @@ It is four steps:
    gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
    all six stores on the old provider to the new one in source order, including both node-record
-   kinds, immutable launch snapshots and unresolved property obligations. A copy resumed after a lost answer
+   kinds, immutable launch copies and unresolved property obligations. A copy resumed after a lost answer
    appends nothing twice; a new provider holding lines the old one does not is refused by name, and
    nothing switches.
 3. **Switch.** The fabric-primary appends the change's `rdm.storage.committed` event for

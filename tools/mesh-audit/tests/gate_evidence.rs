@@ -1,4 +1,4 @@
-//! Failed jobs share one immutable evidence snapshot after every live test has ended.
+//! Failed jobs share one immutable evidence copy after every live test has ended.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,7 +19,7 @@ fn evidence_preservation_runs_after_the_concurrent_test_barrier() {
 }
 
 #[test]
-fn refused_jobs_share_one_snapshot_that_later_source_writes_cannot_change() {
+fn refused_jobs_share_one_copy_that_later_source_writes_cannot_change() {
     let dir = std::env::temp_dir().join(format!("rdm-gate-evidence-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let artifacts = dir.join("source");
@@ -42,7 +42,7 @@ fn refused_jobs_share_one_snapshot_that_later_source_writes_cannot_change() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let first = kept.join("gate-gates-fixture-first/artifacts");
     let second = kept.join("gate-gates-fixture-second/artifacts");
-    assert_eq!(first.canonicalize().unwrap(), second.canonicalize().unwrap(), "one shared snapshot for every refused job");
+    assert_eq!(first.canonicalize().unwrap(), second.canonicalize().unwrap(), "one shared copy for every refused job");
     assert!(!kept.join("gate-gates-fixture-green").exists());
     std::fs::write(artifacts.join("evidence.jsonl"), "later\n").unwrap();
     assert_eq!(std::fs::read_to_string(first.join("evidence.jsonl")).unwrap(), "original\n");
@@ -56,7 +56,7 @@ fn refused_jobs_share_one_snapshot_that_later_source_writes_cannot_change() {
 }
 
 /// A refused acceptance job's cell directories (`target/i143-rshape/<job>/<cell>`, from the acceptance
-/// registry; the gate names an rshape job without its `i143-` prefix) are kept in the gate's snapshot:
+/// registry; the gate names an rshape job without its `i143-` prefix) are kept in the gate's copy:
 /// the export run after the release writes the same directories, so a release red's spans would
 /// otherwise be the export's. Must NOT happen: a release red read from a later passing run's evidence
 /// (rshape-authority-chaos-process at 257156168).

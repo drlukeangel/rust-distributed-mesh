@@ -556,7 +556,7 @@ impl StatusView {
     }
 
     /// Every mesh status entry held, copied out under one short lock.
-    pub(crate) fn held_meshes_snapshot(&self) -> HashMap<String, HeldStatus<MeshStatus>> {
+    pub(crate) fn held_meshes_copy(&self) -> HashMap<String, HeldStatus<MeshStatus>> {
         self.meshes.lock().unwrap().iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
@@ -587,7 +587,7 @@ impl StatusView {
     /// frame replaces it when sent.
     pub fn held_frames(&self, fabric: &FabricId, me: &str) -> Vec<Frame> {
         let by = |publisher: &str| (publisher != me).then(|| me.to_string());
-        let held_meshes = self.held_meshes_snapshot();
+        let held_meshes = self.held_meshes_copy();
         let held_fabric = self.fabric.lock().unwrap().clone();
         let mut out: Vec<Frame> = held_meshes
             .into_iter()

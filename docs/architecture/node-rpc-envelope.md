@@ -256,7 +256,7 @@ sees only the catalog.
 | `0x70` | testkit-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
 | `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
-| `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Snapshot`, `RecordProxy`, `Dial`, `StopTransport` |
+| `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Copy`, `RecordProxy`, `Dial`, `StopTransport` |
 | `0x74` | pre-node-ready-pull | testkit | live | canonical | `Pull` |
 | `0x75` | fault | testkit | live | canonical | `Arm`, `Release`, `State` |
 
@@ -1201,7 +1201,7 @@ OwnRow is reply position 14. A read by a node of its own mesh-primary answers it
 lifecycle/topology context before End; this is not a mesh and End.meshes does not count it.
 The serving primary reads the node's record (Q323) rather than an atlas-held
 row. There is no row revision to compare. The node's property writer preserves its retained own
-properties; a startup snapshot cannot overwrite later local changes.
+properties; a startup copy cannot overwrite later local changes.
 A reply beyond the existing frame bound is not silently truncated: the read span records
 `own_row=too-large` and the read ends without installing partial context.
 Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
@@ -1747,7 +1747,7 @@ pub enum OriginateRequest {
     Call { destination: String, op: OriginateStoreOp },
     ArmFault { refuse_index: u32, refuse_history: u32, pass_history: u32 },
     ReleaseFault,
-    Snapshot,
+    Copy,
     RecordProxy { destination: String, carrier: String, failed_attempts: u32 },
     Dial { destination: String },
     Stream { destination: String, payload: Vec<u8> },
@@ -1775,7 +1775,7 @@ pub enum OriginateReply {
     },
     FaultArmed { by: AnsweredBy, refuse_index: u32, refuse_history: u32 },
     FaultReleased { by: AnsweredBy, refused: u32 },
-    Snapshot { by: AnsweredBy, own_active_proxies: Vec<NodeConnection>, own_latest_directs: Vec<NodeConnection>, active_len: usize, active_directs: Vec<NodeConnection>, owed: Vec<NodeConnection>, fault_refused: u32 },
+    Copy { by: AnsweredBy, own_active_proxies: Vec<NodeConnection>, own_latest_directs: Vec<NodeConnection>, active_len: usize, active_directs: Vec<NodeConnection>, owed: Vec<NodeConnection>, fault_refused: u32 },
     BadDestination { by: AnsweredBy, reason: String },
     PeerUnresolved { reason: String },
     NotReady { reason: String },

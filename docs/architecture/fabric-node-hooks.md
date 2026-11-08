@@ -77,7 +77,7 @@ supplied by its spec.
 - the Node RPC client the app uses for its own calls;
 - the topology view handle, the topology the node holds;
 - the channels handle (`Channels`), so the app joins its gossip kind channels (`Channels::join`,
-  [gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)) before it takes a snapshot;
+  [gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)) before it takes a copy;
 - the member cert issued at JoinNode ([fabric certs](fabric-certs.md));
 - the [rafka-time](#rafka-time) handle;
 - a cancellation token.

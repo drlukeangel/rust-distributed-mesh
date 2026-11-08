@@ -346,7 +346,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     assert!(!named(&spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| sp["attributes"]["pipeline"] == "recover"), "no recovery pipeline of its own");
     assert!(
         !named(&run, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| at_location(sp, node) && sp["attributes"]["pipeline"] == "update"),
-        "no node.update after the create: the new node writes what the recovery keeps from its launch snapshot"
+        "no node.update after the create: the new node writes what the recovery keeps from its launch copy"
     );
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
@@ -871,12 +871,12 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
 
 /// CONTRACT: a recovered node keeps the config and the tags its mesh-primary told its predecessor
 /// (node-recovery.md "Retained: ... config"; Q356: a node writes its own record, its mesh-primary only
-/// a lost, killed or deleted node's; a recovery's launch snapshot is the predecessor's record). The
+/// a lost, killed or deleted node's; a recovery's launch copy is the predecessor's record). The
 /// caller puts `<mesh>.rpc.1`'s config and the tag `rabbit` through its mesh-primary (not the
 /// fabric-primary), the node writes them on its own record and carries them, then its runtime is
 /// killed: the mesh-primary's recovery writes the exited birth's record Deleted from its latest line,
 /// config and tag kept, and creates the new node (new node.id, same (path, name)) with the exited
-/// record's config and tag as its launch snapshot; the new node writes them on its own record, carries
+/// record's config and tag as its launch copy; the new node writes them on its own record, carries
 /// them, and `node.get` by the tag names the new node and not the exited one. Nothing copies them
 /// after the create: no node.update runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -925,7 +925,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     assert_eq!((exited.state, exited.config.clone(), exited.tags.clone()), (rdm_core::model::NodeStatus::Deleted, told.clone(), labels.clone()), "the exited node's record keeps its config and tag: {exited:?}");
     let (deleted_by, _) = estate.record_lines(&exited_id).pop().expect("the exited node's record");
     assert_eq!(deleted_by, s(&mesh_primary["node_id"]), "its Deleted line is its mesh-primary's");
-    // The new node writes its own record from its launch snapshot, the exited birth's acknowledged
+    // The new node writes its own record from its launch copy, the exited birth's acknowledged
     // config and tags (node-recovery.md; its join answer is not where config lives).
     let own = wait_for("the new node's own record", Duration::from_secs(30), || async { estate.record(&s(&after["node_id"]).parse().unwrap()) }).await;
     assert_eq!((own.config.clone(), own.tags.clone()), (told.clone(), labels.clone()), "the new node's own record holds the exited birth's config and tag: {own:?}");

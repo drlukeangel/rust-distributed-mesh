@@ -237,7 +237,7 @@ impl ConnectionsWriter {
         ConnectionEnd { path: name.path.clone(), name: name.name.clone(), ..self.inner.own.clone() }
     }
 
-    /// Snapshot the current descriptive name. The held route projection stays keyed by
+    /// Copy the current descriptive name. The held route projection stays keyed by
     /// this node's ID across rename, preserving its connection facts.
     fn own_now(&self) -> ConnectionEnd {
         self.own()

@@ -64,7 +64,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
     let span = writer_span(me, req);
     let reply = tracing::Instrument::instrument(
         async {
-            // A snapshot of the view: no read lock is held across the row write's I/O.
+            // A copy of the view: no read lock is held across the row write's I/O.
             let now = view.read().await.clone();
             write(me, me_id, &now, storage, configs, node_id, incarnation, &change, &span).await
         },
@@ -254,8 +254,8 @@ mod tests {
         use crate::storage::NodesStorage as _;
         let records = Arc::new(crate::storage::MemoryNodesStorage::default());
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-        let snapshot = view.read().await.clone();
-        let topology_view = rdm_gossip::topology::TopologyView::new(&snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
+        let copy = view.read().await.clone();
+        let topology_view = rdm_gossip::topology::TopologyView::new(&copy.fabric.id, "mesh1", copy.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &ep, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         configs.uses_records(records.clone(), || "memory".into(), || None);

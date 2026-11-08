@@ -144,7 +144,7 @@ pub struct DirStats {
 
 impl DirStats {
     /// `(forwarded, held, dropped)`.
-    pub fn snapshot(&self) -> (u64, u64, u64) {
+    pub fn counts(&self) -> (u64, u64, u64) {
         use std::sync::atomic::Ordering::Relaxed;
         (self.forwarded.load(Relaxed), self.held.load(Relaxed), self.dropped.load(Relaxed))
     }

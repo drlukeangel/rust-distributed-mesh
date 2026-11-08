@@ -433,7 +433,7 @@ impl JoinService {
                 // The join is reconciled to the node records as this admin, running, point-reads them
                 // (Q237 A): the joiner's own record at its node id, then the record at the admitted name;
                 // the joiner reads nothing (Q227). The joiner is handed no config: its properties are its
-                // own record, initialized from its launch snapshot (node-config-update.md "Deferred
+                // own record, initialized from its launch copy (node-config-update.md "Deferred
                 // application and startup"). Another node's record at a first start's name (a
                 // predecessor's) refuses nothing; a held birth's join is reconciled to its record, and
                 // another node's live record there is refused by name.
@@ -794,7 +794,7 @@ mod tests {
     /// - `docs/architecture/lifecycles/node-mesh-join.md:42-48`: "3. The primary verifies the digest against the deployment it recorded: exact birth, deployment id, path, mesh, name. A first start's name is checked against the create spec; a held birth's name must be the row's or the one last accepted for that birth (R-JN1), and the digest is installed under the row's name. A difference is `JoinMismatch`; nothing is installed and no wait is released. A join for a deployment that ended before it arrived is `DeploymentAbandoned`. A primary that is not this birth's answers `NotPrimary { primary }` and the node reports to the one named."
     /// - `docs/architecture/lifecycles/node-mesh-join.md:49-50`: "4. On acceptance the primary installs the reported address for that exact birth and drops pooled connections and pending work aimed at the birth's old address."
     /// - `docs/architecture/lifecycles/node-mesh-join.md:51-56`: "5. At a first start the primary completes the deployment's WaitForBind / WaitForMeshJoin from the validated report. At every join, a first start, a start after a stop and a commanded re-entry alike (Q87), it issues the birth's member cert (`node.cert.create`: signed for the exact birth with the mesh's issuing key, 24 h, and its cert row written; a refused issuance refuses the join by name, fabric certs). A start of a stopped node or a standalone rejoin has no deployment wait."
-    /// - `docs/architecture/lifecycles/node-mesh-join.md:57-60`: "6. The primary answers `Joined`: who served it, the control snapshot (provider, fabric identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name, the row's config) and the statuses it holds with their original authors and instants. An primary that holds no rafka-time answers `NotReady` naming why and builds no answer."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:57-60`: "6. The primary answers `Joined`: who served it, the control copy (provider, fabric identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name, the row's config) and the statuses it holds with their original authors and instants. An primary that holds no rafka-time answers `NotReady` naming why and builds no answer."
     /// - `docs/architecture/lifecycles/node-mesh-join.md:276`: "| Report served | primary | `rdm.node_rpc.request.serve.via-direct`, then `rdm.node_admin.node.update.via-join`; a mismatch `rdm.node_admin.node.reject.via-join-mismatch` naming the field | exact birth, field |"
     #[test]
     fn join_service_serve_verifies_digest_installs_address_issues_cert_and_answers_joined_or_refusal() {

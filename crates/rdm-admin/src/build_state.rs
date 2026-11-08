@@ -590,7 +590,7 @@ pub trait BuildStateAdapter: Send + Sync {
 
 #[derive(Debug, Default)]
 struct FactLog {
-    /// The facts readers see, one immutable snapshot: a reader takes it with one `Arc` clone and
+    /// The facts readers see, one immutable copy: a reader takes it with one `Arc` clone and
     /// folds it outside this lock; a writer replaces it whole once the derivation ran over the facts
     /// it adds ([`publish`]).
     facts: Arc<Vec<BuildFact>>,
@@ -670,20 +670,20 @@ impl FactLog {
 }
 
 /// What readers see of `log` now: one `Arc` clone under its lock.
-fn snapshot(log: &Mutex<FactLog>) -> Arc<Vec<BuildFact>> {
+fn copy_of(log: &Mutex<FactLog>) -> Arc<Vec<BuildFact>> {
     log.lock().unwrap().facts.clone()
 }
 
 /// Publish `new` (facts the log does not hold yet) to readers. The derivation runs first, over the
 /// log with them, while readers keep reading the log as it stood: no reader sees a fact before what
 /// is derived from it reflects it, and no reader waits on the derivation. Then the indexes take the
-/// facts and the snapshot is swapped, under one brief hold of the readers' lock. The caller holds the
+/// facts and the copy is swapped, under one brief hold of the readers' lock. The caller holds the
 /// writer's turn, so nothing else publishes between the read and the swap.
 fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<BuildFact>) {
     if new.is_empty() {
         return;
     }
-    let held = snapshot(log);
+    let held = copy_of(log);
     let mut next = Vec::with_capacity(held.len() + new.len());
     next.extend(held.iter().cloned());
     next.extend(new.iter().cloned());
@@ -709,7 +709,7 @@ fn take_stored_acceptances(log: &Mutex<FactLog>, derive: Option<&FactDerivation>
     if stored.is_empty() {
         return;
     }
-    let held = snapshot(log);
+    let held = copy_of(log);
     let next: Vec<BuildFact> = held
         .iter()
         .map(|f| match f {
@@ -755,7 +755,7 @@ fn read(facts: &[BuildFact], build_id: &BuildId) -> Result<BuildAccepted, BuildS
     fold(facts).remove(build_id).ok_or_else(|| BuildStateError::UnknownBuild(build_id.clone()))
 }
 
-/// The folded view of `build_id`, from its own facts alone: its positions and the snapshot are taken
+/// The folded view of `build_id`, from its own facts alone: its positions and the copy are taken
 /// together under the readers' lock (one `Arc` clone and one small point read), and the Build's facts
 /// are folded outside it.
 fn read_own(log: &Mutex<FactLog>, build_id: &BuildId) -> Result<BuildAccepted, BuildStateError> {
@@ -837,7 +837,7 @@ impl MemoryBuildStateAdapter {
     /// Merge records received from storage (append the unseen ones; a record is insert-and-fail).
     pub async fn absorb(&self, facts: &[BuildFact]) {
         let w = self.writer.lock().await;
-        let held = snapshot(&self.log);
+        let held = copy_of(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
         for f in facts {
             if is_new(&held, f) && is_new(&new, f) {
@@ -917,12 +917,12 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
 
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
         let mut w = self.writer.lock().await;
-        derive.run(&self.log, &snapshot(&self.log), &[]);
+        derive.run(&self.log, &copy_of(&self.log), &[]);
         w.0 = Some(derive);
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        Ok(snapshot(&self.log).as_ref().clone())
+        Ok(copy_of(&self.log).as_ref().clone())
     }
 
     /// A log held in one process persists nowhere: its committed records are the ones it holds, or the
@@ -939,7 +939,7 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
 impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
-        if !accepted_conflict(&snapshot(&self.log), accepted)? {
+        if !accepted_conflict(&copy_of(&self.log), accepted)? {
             self.put(&w, BuildFact::Accepted(accepted.clone()));
         }
         Ok(())
@@ -977,7 +977,7 @@ impl LocalBuildLog for FileJournal {
         let mut w = self.turn("derive_on_every_fact").await;
         // Over the facts the log holds now, reading no store (Q227): every fact a later read of the
         // store root takes is derived as it is published, as an own append's is.
-        derive.run(&self.log, &snapshot(&self.log), &[]);
+        derive.run(&self.log, &copy_of(&self.log), &[]);
         w.0 = Some(derive);
     }
 
@@ -985,7 +985,7 @@ impl LocalBuildLog for FileJournal {
         // Under the writer's turn; the store root is not read (Q227): a fact a later read of the store
         // takes again is deduplicated there.
         let w = self.turn("absorb_facts").await;
-        let held = snapshot(&self.log);
+        let held = copy_of(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
         for f in facts {
             if is_new(&held, f) && is_new(&new, f) {
@@ -999,7 +999,7 @@ impl LocalBuildLog for FileJournal {
     async fn absorb_build(&self, facts: &[BuildFact]) {
         // Under the writer's turn, which the derivation runs under; the store root is not read.
         let w = self.turn("absorb_build").await;
-        let held = snapshot(&self.log);
+        let held = copy_of(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
         for f in facts {
             if is_new(&held, f) && is_new(&new, f) {
@@ -1022,7 +1022,7 @@ impl LocalBuildLog for FileJournal {
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.sync_for_read("facts").await?;
-        Ok(snapshot(&self.log).as_ref().clone())
+        Ok(copy_of(&self.log).as_ref().clone())
     }
 
     /// A fresh read of `builds.jsonl` whole (Q292), on the blocking pool: neither the shared cursor
@@ -1123,10 +1123,10 @@ pub struct FileJournal {
     /// The events store the Builds' events are in.
     events: Arc<dyn EventsStorage>,
     root_dir: PathBuf,
-    /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
+    /// The replayed facts and their indexes. Held only for a copy, a point read or a
     /// publication's swap, never across the disk, a fold or the derivation.
     log: Mutex<FactLog>,
-    /// The writer's turn: decide on a snapshot, write the fact's record on the blocking pool, then
+    /// The writer's turn: decide on a copy, write the fact's record on the blocking pool, then
     /// publish, holding the derivation each publication runs. An async lock, so a writer waiting on
     /// another's write or derivation yields its worker. A reader takes it only when no turn holds it,
     /// to take what it read from the store root, and holds it across no disk.
@@ -1342,7 +1342,7 @@ impl FileJournal {
             return;
         }
         read.sort_by_key(|(_, s)| s.seq);
-        let held = snapshot(&self.log);
+        let held = copy_of(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
         let mut stored: Vec<BuildAccepted> = Vec::new();
         {
@@ -1469,7 +1469,7 @@ impl FileJournal {
     /// Append `fact` at its Build's id and publish it, under the writer's turn `w` that has read the store
     /// root. Nothing is written when the log holds the fact already: a record is written once.
     async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
-        if !is_new(&snapshot(&self.log), &fact) {
+        if !is_new(&copy_of(&self.log), &fact) {
             return Ok(());
         }
         let stored = StoredFact { seq: self.next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed), fact };
@@ -1488,7 +1488,7 @@ impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let w = self.turn("publish_accepted").await;
         self.sync(&w).await?;
-        if accepted_conflict(&snapshot(&self.log), accepted)? {
+        if accepted_conflict(&copy_of(&self.log), accepted)? {
             return Ok(());
         }
         self.append(&w, BuildFact::Accepted(accepted.clone())).await

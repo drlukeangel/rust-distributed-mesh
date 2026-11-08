@@ -12,7 +12,7 @@ struct WireFabricIdentity {
 
 // ---- the join answer -----------------------------------------------------------------------
 
-/// What a join's `Joined` reply carries (`JoinNode`, op `0x1D`): the admin's control snapshot and
+/// What a join's `Joined` reply carries (`JoinNode`, op `0x1D`): the admin's control copy and
 /// the statuses it holds, as one postcard frame. The topology is not in it: the joiner reads it
 /// with `GetTopology` (op `0x1E`, [`crate::topology_read`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]

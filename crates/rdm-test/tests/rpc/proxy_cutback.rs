@@ -83,9 +83,9 @@ fn probe(estate: &Estate, args: &[&str]) -> (Value, u64, u64) {
     (out, t0, now_ns())
 }
 
-fn snapshot(estate: &Estate, node: &NodeId) -> Value {
-    let (out, _, _) = probe(estate, &["snapshot", "--target", &format!("exact:{node}"), "--key", "x"]);
-    assert_eq!(out["outcome"], "Reply", "{node} answers the originate service's snapshot: {out}");
+fn connections_copy(estate: &Estate, node: &NodeId) -> Value {
+    let (out, _, _) = probe(estate, &["copy", "--target", &format!("exact:{node}"), "--key", "x"]);
+    assert_eq!(out["outcome"], "Reply", "{node} answers the originate service's copy: {out}");
     assert_eq!(out["by_node_id"], node.as_str(), "the exact node answered: {out}");
     out
 }
@@ -158,9 +158,9 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     // 4. The source's own dial connected and its deletion is owed and refused by name; the Proxy
     // stays effective.
     let owed_refused = wait_for("the source's dial connected, it owes the deletion and its write was refused", Duration::from_secs(40), || async {
-        let snap = snapshot(&estate, &source_id);
-        let owed = snap["owed"].as_array().map(Vec::len).unwrap_or(0);
-        (owed == 1 && snap["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(snap)
+        let copy = connections_copy(&estate, &source_id);
+        let owed = copy["owed"].as_array().map(Vec::len).unwrap_or(0);
+        (owed == 1 && copy["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(copy)
     })
     .await;
     assert_eq!(owed_refused["own_active_proxies"].as_array().map(Vec::len), Some(1), "the Proxy is still held: {owed_refused}");
@@ -180,8 +180,8 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let (released, ..) = probe(&estate, &["fault", "--target", &format!("exact:{source_id}"), "--release", "--key", "x"]);
     assert_eq!(released["fault"], "released", "{released}");
     let landed = wait_for("the owed deletion landed", Duration::from_secs(15), || async {
-        let snap = snapshot(&estate, &source_id);
-        (snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(snap)
+        let copy = connections_copy(&estate, &source_id);
+        (copy["owed"].as_array().map(Vec::len) == Some(0) && copy["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(copy)
     })
     .await;
     let durable_after = history(&estate, &source_id).await;
@@ -253,11 +253,11 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
         "healthy_call_over_proxy": healthy,
         "fault_armed": armed,
         "inbound_call_from_destination": inbound,
-        "owed_and_refused_snapshot": owed_refused,
+        "owed_and_refused_copy": owed_refused,
         "call_while_refused": during,
         "durable_rows_while_refused": durable_during.len(),
         "fault_released": released,
-        "landed_snapshot": landed,
+        "landed_copy": landed,
         "durable_delete": deleted[0],
         "call_after_delete": cut,
         "spans": {

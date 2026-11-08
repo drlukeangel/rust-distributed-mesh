@@ -24,7 +24,7 @@ Those pages link here and restate nothing.
 | Commander | Inside a start: the workflow itself. Standalone: the node's mesh-primary, after a tickle that reached the exact birth or a node.name.update the live node applied; the fabric-primary for a mesh-primary. Commands go down |
 | Executor | The node itself: it makes the report and joins the mesh |
 | Entry | The exact `(node.id, incarnation)` with its endpoint bound; its full `MeshDigest` for the report |
-| Report | `JoinNode { digest, runtime, data_dir }` to the node-admin it reports to: an ordinary node's mesh-primary; a node-admin's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control snapshot, or refuses by field name |
+| Report | `JoinNode { digest, runtime, data_dir }` to the node-admin it reports to: an ordinary node's mesh-primary; a node-admin's maker; the fabric-primary while the mesh has no primary. Not forwardable. The primary verifies exact birth, deployment, path, mesh and name, installs the reported address, completes the deployment's waits, and answers `Joined` with its control copy, or refuses by field name |
 | Mesh | Join `f(FabricId, MeshId)`; a node-admin also joins the backbone. A mesh with no live listener is created again under its own MeshId by this first listener |
 | Order | Report accepted first, then the mesh; the handed name, rafka-time and cert installed before anything is published |
 | Progress | `joining` from the report until the mesh holds, and the backbone too for a node-admin; the node publishes nothing in that state |
@@ -56,7 +56,7 @@ Those pages link here and restate nothing.
    mesh's issuing key, 24 h, and its cert row written; a refused issuance refuses the join by name,
    [fabric certs](../fabric-certs.md#when-a-cert-is-issued)). A start of a stopped node or a standalone rejoin has no
    deployment wait.
-6. The primary answers `Joined`: who served it, the control snapshot (provider, fabric
+6. The primary answers `Joined`: who served it, the control copy (provider, fabric
    identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name,
    the row's config) and the statuses it holds with their original authors and instants. An
    primary that holds no rafka-time answers `NotReady` naming why and builds no answer.

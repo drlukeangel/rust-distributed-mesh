@@ -116,7 +116,7 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     );
     let reply = tracing::Instrument::instrument(
         async {
-            // A snapshot of the view: no read lock is held across the store reads and the node's call.
+            // A copy of the view: no read lock is held across the store reads and the node's call.
             let now = view.read().await.clone();
             rename(me, me_id, &now, storage, service, deleted, req, node_id, incarnation, name, frames, &span).await
         },

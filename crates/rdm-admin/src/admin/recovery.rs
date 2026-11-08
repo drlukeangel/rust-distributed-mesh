@@ -438,7 +438,7 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
 /// `view`'s members and of every birth the tick watches (`watched_births`), the births only durable rows
 /// name included, none whose departure the view holds. A birth this admin knew only from durable rows
 /// (one born while it was silent) enters the view once its digest is installed, after the tick's
-/// snapshot: heard again, it is returned, never gone. A node id in neither is gone.
+/// copy: heard again, it is returned, never gone. A node id in neither is gone.
 pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashSet<String> {
     view.births().map(|n| n.node_id.to_string()).chain(watched.keys().cloned()).collect()
 }

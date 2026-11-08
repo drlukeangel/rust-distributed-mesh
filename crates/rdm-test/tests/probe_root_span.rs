@@ -14,7 +14,7 @@ use crate::common::admin_view::{self, node};
 use std::sync::Arc;
 use crate::common::named_loss;
 
-/// Snapshot the child's result and files on the failing run, before a later run or cleanup can
+/// Copy the child's result and files on the failing run, before a later run or cleanup can
 /// replace them. File lengths distinguish no file from an opened but unwritten file.
 fn failure_context(out: &std::process::Output, evidence: &std::path::Path, run: &str) -> String {
     let mut listing = Vec::new();

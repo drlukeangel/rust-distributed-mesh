@@ -296,7 +296,7 @@ impl NodesStorage for LostAcknowledgement {
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R8): an uncertain put invalidates the pre-write snapshot. The next command
+/// CONTRACT (i150 R8): an uncertain put invalidates the pre-write copy. The next command
 /// resolves the durable record before changing any property.
 #[tokio::test]
 async fn a_lost_storage_acknowledgement_is_resolved_before_the_next_change() {

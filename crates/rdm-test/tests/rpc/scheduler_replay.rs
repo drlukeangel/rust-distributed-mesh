@@ -412,7 +412,7 @@ async fn reply_cut(seed: u64) -> Report {
         assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was cut");
         assert!(!o.proves_not_dispatched());
         // The reply crossed the tap and was cut there: nothing reached the caller another way.
-        let (_, held, dropped) = tap.stats().to_client.snapshot();
+        let (_, held, dropped) = tap.stats().to_client.counts();
         assert!(if cut == Cut::ReplyLost { dropped > 0 } else { held > 0 }, "the cut reply datagrams were seen by the tap: held {held}, dropped {dropped}");
         tap.set_to_client(Mode::Pass);
         r.s.record("tap", "to_client=pass");

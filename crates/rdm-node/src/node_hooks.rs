@@ -141,7 +141,7 @@ pub struct NodeReadyCtx {
     /// The node's topology view: the cache of the fabric's topology its channels fill.
     pub topology_view: TopologyView,
     /// The node's channels: the app joins its application channels through them
-    /// (`Channels::join`, `ChannelId::app`) before it takes its snapshot, so what changes during the
+    /// (`Channels::join`, `ChannelId::app`) before it takes its copy, so what changes during the
     /// pull arrives by gossip.
     pub channels: rdm_gossip::channel::Channels,
     /// Cancelled when the node is stopped or deleted: the hook and any pull it has in flight end.

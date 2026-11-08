@@ -212,7 +212,7 @@ impl NodeConfigs {
 
     /// The record this admin's own commands hand its writer: the record its start wrote, with the config
     /// it holds.
-    fn own_snapshot(&self) -> Option<rdm_node::nodes_storage::NodeRecord> {
+    fn own_copy(&self) -> Option<rdm_node::nodes_storage::NodeRecord> {
         self.own_properties.get()?.start_record()
     }
 
@@ -289,7 +289,7 @@ impl NodeConfigs {
 
     /// An admin writes its own map locally through the same writer as downward commands.
     pub async fn own_config(&self, _subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
-        let initial = self.own_snapshot()?;
+        let initial = self.own_copy()?;
         let writer = self.own_properties.get()?;
         Some(writer.update(initial, move |record| record.config = config, |_| {}).await.map(|written| StatusReply::ConfigUpdated {
                 node_id: written.record.node_id, incarnation: written.record.incarnation,
@@ -299,13 +299,13 @@ impl NodeConfigs {
 
     /// A Build's complete entry uses this admin's ordinary property writer.
     pub async fn own_entry(&self, _subject: &crate::model::Node, entry: rdm_core::properties::EntryProperties) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
-        let initial = self.own_snapshot()?;
+        let initial = self.own_copy()?;
         Some(self.own_properties.get()?.entry(initial, entry, |_| {}).await.map(|_| rdm_core::reply::applied()))
     }
 
     /// A downward tag command to this admin is a local write, with no command to its primary.
     pub async fn own_tags(&self, _subject: &crate::model::Node, change: rdm_node::node_records::TagChange) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
-        let initial = self.own_snapshot()?;
+        let initial = self.own_copy()?;
         Some(self.own_properties.get()?.tags(initial, change, |_| {}).await)
     }
 

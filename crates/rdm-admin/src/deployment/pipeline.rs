@@ -871,7 +871,7 @@ impl LaunchTemplate {
 
 }
 
-/// Whose launch snapshot a create's node starts from ([`DeploymentPipeline::initial_properties`]).
+/// Whose launch copy a create's node starts from ([`DeploymentPipeline::initial_properties`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchOf {
     /// A `node.create`: its create spec's tags and config (Q166, Q305).
@@ -1477,7 +1477,7 @@ impl DeploymentPipeline<'_> {
         r.map_err(|f| PipelineError { step, reason: f.reason, code: f.code })
     }
 
-    /// The launch snapshot of `req` (`RDM_NODE_PROPERTIES`; the node writes it on its own record, its
+    /// The launch copy of `req` (`RDM_NODE_PROPERTIES`; the node writes it on its own record, its
     /// first line, Q356): a create's from its entry and its create spec, the path's entry the
     /// fabric-primary put on the create (Q166, Q305) and the accepted Build's `NodeSpec` for its storage
     /// persistence, the executable this admin launches; a recovery's from its predecessor's record, read
@@ -1486,8 +1486,8 @@ impl DeploymentPipeline<'_> {
         let refused = |reason: String| PipelineError { step: CreateStep::PrepareStorage.name(), reason, code: rdm_core::outcome::Code::FailedPrecondition };
         match (of, rows, &req.predecessor) {
             (LaunchOf::Recovery, Some(rows), Some(predecessor)) => {
-                let record = rows.storage().node(&predecessor.node_id).await.map_err(|e| refused(format!("path {:?}, name {:?}: the record of the predecessor {} could not be read for the launch snapshot; nothing is launched: {e}", &req.path, &req.name, predecessor.node_id)))?;
-                let record = record.map(|l| l.record).ok_or_else(|| refused(format!("path {:?}, name {:?}: the predecessor {} wrote no record to take the launch snapshot from; nothing is launched", &req.path, &req.name, predecessor.node_id)))?;
+                let record = rows.storage().node(&predecessor.node_id).await.map_err(|e| refused(format!("path {:?}, name {:?}: the record of the predecessor {} could not be read for the launch copy; nothing is launched: {e}", &req.path, &req.name, predecessor.node_id)))?;
+                let record = record.map(|l| l.record).ok_or_else(|| refused(format!("path {:?}, name {:?}: the predecessor {} wrote no record to take the launch copy from; nothing is launched", &req.path, &req.name, predecessor.node_id)))?;
                 Ok(rdm_core::launch::InitialProperties { config: record.config, tags: record.tags, executable: record.executable.or_else(|| self.template.binding.clone()), persistence: record.storage.persistence })
             }
             _ => {

@@ -936,7 +936,7 @@ impl AdminRunner {
         let pre_node_ready = None;
         // A recovery's create names no executable: the launch runs the one the exited birth's record
         // records, on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's
-        // config and executable are its launch snapshot, taken from that record
+        // config and executable are its launch copy, taken from that record
         // (`DeploymentPipeline::initial_properties`), which the node writes on its own record at its start.
         // A Build's create over an unreached birth launches the executable its step names.
         let mut template = self.create_template(node, &mesh, &r#type, executable, Some(&crate::storage::BirthRef { node_id: from.node_id.clone(), incarnation_id: from.incarnation.clone() })).await?;

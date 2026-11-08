@@ -102,7 +102,7 @@ recovery Build's run, computed from the cadence in force.
 3. Read a node's data dir: `deployment.json` (its pid, process provider) and `transport-diag.log`
    (its handshake and path lines, written only in an evidence run;
    `crates/rdm-transport/src/transport_diag.rs`).
-4. After a red, the gate keeps one snapshot of the scenario artifacts under
+4. After a red, the gate keeps one copy of the scenario artifacts under
    `$HOME/rust-distributed-mesh-deploy/kept/` (`scripts/keep-gate-evidence.py`).
 
 A cause is stated with its span lines; without them it is unattributed.

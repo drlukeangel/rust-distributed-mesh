@@ -193,7 +193,7 @@ The gate builds once and runs every check and stem in parallel, each from a preb
 | release-only jobs | the `RELEASE_ONLY` pattern (containers, the long stems, doctests, the no-default-features check, the R-shape jobs) is removed from the fast gate | lines 449-450 |
 | the job bound | a job past `GATE_JOB_SECS` (300 s; release-only jobs `GATE_HEAVY_JOB_SECS`, 900 s) is killed with its whole process group and named `FAIL(timed-out)` | lines 431-442, 490 |
 | leaked processes | a node process of this lane's build adopted by `systemd`/`init` after the jobs end is named `FAIL leaked-processes` and killed | lines 494-498 |
-| evidence | on any `FAIL`, one snapshot of the scenario artifacts is kept under `$HOME/rust-distributed-mesh-deploy/kept/` (`scripts/keep-gate-evidence.py`) | lines 502-504 |
+| evidence | on any `FAIL`, one copy of the scenario artifacts is kept under `$HOME/rust-distributed-mesh-deploy/kept/` (`scripts/keep-gate-evidence.py`) | lines 502-504 |
 | green record | a fast gate with no `FAIL` appends the commit's content hash to `green-trees` | line 506 |
 
 A red gate is read, never run again (CLAUDE.md). A landing runs the fast gate only; the release

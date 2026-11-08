@@ -87,7 +87,7 @@ pub fn status_announcements(
     now: Instant,
     now_ms: u64,
 ) -> (Vec<Frame>, Announced) {
-    let held_meshes = digest_view.statuses.held_meshes_snapshot();
+    let held_meshes = digest_view.statuses.held_meshes_copy();
     let heard_mesh = held_meshes.get(own_mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
     let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
     let author = crate::envelope::Birth::publisher(fabric, me);
@@ -290,7 +290,7 @@ impl Backbone {
         let (now, now_ms) = (Instant::now(), self.channels.topology_view.clock.now_rafka_ms());
         let me = self.current_publisher();
         let digest_view = &self.channels.topology_view.view.digest_view;
-        let held_meshes = digest_view.statuses.held_meshes_snapshot();
+        let held_meshes = digest_view.statuses.held_meshes_copy();
         let heard_mesh = held_meshes.get(&self.mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
         let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
         let author = crate::envelope::Birth::publisher(&self.fabric, &me);

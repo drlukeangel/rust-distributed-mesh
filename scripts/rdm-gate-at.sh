@@ -570,7 +570,7 @@ leaked=$(ps -eo pid,ppid,args | awk -v r="$LANE_ROOT/target/debug/" '$2!=0 && in
 if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" | tee -a $O; for p in $leaked; do echo "leaked: $(ps -o pid=,etimes=,args= -p $p | cut -c1-160)" >> $O.detail; kill -9 $p 2>/dev/null; done; fi
 # Preserve once after all live tests and their runtimes ended. Per-job copies during the
 # concurrent batch multiply every artifact by every red and perform disk work inside other
-# cells' bounds. Each refused job instead points at this gate's one immutable snapshot.
+# cells' bounds. Each refused job instead points at this gate's one immutable copy.
 if grep -q '^FAIL' "$O"; then
     step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept" "$TMPDIR/i143-testkit"'
 fi

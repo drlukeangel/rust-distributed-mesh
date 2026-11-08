@@ -146,7 +146,7 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
 /// recovery, a new birth at its path and name). The new birth's config is the changed map, read from
 /// the lost birth's record in nodes.jsonl (the lone fabric-primary's read, Q227), and the new birth
 /// writes that map on its own record. Must NOT happen: the new birth starting from an empty launch
-/// snapshot, the change made before the loss gone.
+/// copy, the change made before the loss gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
     let cell = "a_lone_fabric_primary_keeps_its_own_config_across_its_restart";

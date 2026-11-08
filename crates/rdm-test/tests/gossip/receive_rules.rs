@@ -67,7 +67,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
     assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-inconsistent" && s["attributes"]["frame"] == "mesh-status" && s["attributes"]["subject"] == "mesh1 mesh1.node-admin.1" && s["attributes"]["revision"] == "100"), "equal revision with different content must be refused by name, never silently treated as a duplicate; evidence {}", capture.path().display());
 }
 
-/// Deliver one more MeshStatus after revision 100 over a live channel, preserving a snapshot of
+/// Deliver one more MeshStatus after revision 100 over a live channel, preserving a copy of
 /// the held projection and counting its actual receipt before checking the outcome span.
 fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_json::Value> {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");

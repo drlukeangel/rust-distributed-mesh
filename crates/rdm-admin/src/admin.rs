@@ -2093,18 +2093,18 @@ mod tests {
     /// durable runtime row at a planned path (born while this admin was silent), is in that set, so the
     /// ladder reports it returned once it leaves the silent set; a node id neither the view nor the watched
     /// births hold is not, and stays gone. Must NOT happen: the re-born admin's tick deciding from its view
-    /// snapshot alone, reporting such a member `via-offline-gone` and keeping its mark and its hold
+    /// copy alone, reporting such a member `via-offline-gone` and keeping its mark and its hold
     /// (kept/e6s7-i144-e4-re-born-admin-third-defect).
     #[tokio::test(start_paused = true)]
     async fn a_member_watched_only_through_durable_rows_is_heard_again_not_gone() {
         let me = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready);
         let member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
-        let snapshot = view(&[me.clone()]);
-        assert!(snapshot.births().all(|n| n.node_id != member.node.node_id), "the view does not hold the member");
+        let copy = view(&[me.clone()]);
+        assert!(copy.births().all(|n| n.node_id != member.node.node_id), "the view does not hold the member");
         let row = crate::storage::NodeRecord { runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("q7-heard-against")).unwrap(), ..record_of(&member) };
-        let durable = durable_births(&snapshot, &[row], &|_| true, &|_| false);
-        let watched = watched_births(&snapshot, &me.node.node_id, "mesh2", &durable);
-        let heard = heard_against(&snapshot, &watched);
+        let durable = durable_births(&copy, &[row], &|_| true, &|_| false);
+        let watched = watched_births(&copy, &me.node.node_id, "mesh2", &durable);
+        let heard = heard_against(&copy, &watched);
         let id = member.node.node_id.to_string();
         assert!(heard.contains(&id), "a birth named only by durable rows is heard against: {heard:?}");
         let unknown = NodeId::mint().to_string();

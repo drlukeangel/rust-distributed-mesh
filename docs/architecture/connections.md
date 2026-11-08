@@ -358,7 +358,7 @@ Proxy until `Proxy Disconnected(reason=direct-restored)` lands. Only then does D
 If the proxy-delete write fails, continuing on the working proxy is safe. Node-base must retry the
 delete write until it lands.
 
-### 5.2 Invocation snapshot
+### 5.2 Invocation copy
 
 A route change affects only new invocations. An invocation that already selected and sent on a Proxy remains
 on that Proxy. A sent request is never retransmitted merely because another connection later becomes

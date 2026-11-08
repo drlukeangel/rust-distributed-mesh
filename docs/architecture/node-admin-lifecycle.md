@@ -31,7 +31,7 @@ workflow node-admin drives, its events and its gossip),
    node is [node investigation](lifecycles/node-investigation.md)'s verdict (Q111): reached, it is commanded
    back; anything else, it is re-created. A member whose node-admins are lost is never re-created
    because of that loss alone.
-5. **Stored topology is a recovery contact map.** The attached snapshot is the last ready
+5. **Stored topology is a recovery contact map.** The attached copy is the last ready
    fabric, not the latest state. It locates live nodes; current topology comes from those nodes.
    A stored member may not answer, and the stored map is not current birth or a sign of liveness.
 6. **A node-admin acts on its own view.** Silence is receipt age on the node's own clock, so a node held
@@ -56,7 +56,7 @@ The fabric's store root (`RDM_STORE_DIR`) is required: every node of the fabric 
 root, laid out `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl}` (R-SR1; a birth's runtime row is a `node-runtime` line in `nodes.jsonl`),
 and a missing or unreadable root fails the boot by name; nothing falls back to the data dir.
 The node-admin's own data dir (`RDM_DATA_DIR`) holds only its runtime material (endpoint key,
-identity, runtime record) and the recovery copy (§7): its attached last-ready snapshot, a
+identity, runtime record) and the recovery copy (§7): its attached last-ready copy, a
 recovery contact map. Only a person-started recovery reads that copy. Without attached storage,
 a recovery starts from a seed: any live node serves
 [GetTopology](node-rpc-envelope.md#topology-op-0x1e-rdm).
@@ -158,12 +158,12 @@ Inside Rafka, RDM's records live in the store Rafka's storage backend opens. RDM
 the same records in the fabric's one store root (`store_dir`, §2): each writer writes its rows
 there from Day 0 (Q171).
 Every node-admin also keeps an on-disk copy of its fabric, meshes, nodes, connections,
-status and Build records. That copy is a snapshot taken when the fabric last reaches
+status and Build records. That copy is taken when the fabric last reaches
 ready, not a continuously overwritten latest-state copy: the latest state
 can contain the change that brought the system down, so a recovery from it can loop.
-The next ready state replaces the on-disk snapshot.
+The next ready state replaces the on-disk copy.
 
-Only a person-started recovery with that storage attached reads the snapshot.
+Only a person-started recovery with that storage attached reads the copy.
 An election or live hand-over uses held current records, not this recovery copy.
 Without attached storage, recovery contacts a seed node and reads GetTopology; any live
 node serves that read. A node-admin joining a live mesh calls its maker for join admission and topology

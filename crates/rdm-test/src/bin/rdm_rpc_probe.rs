@@ -113,7 +113,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
             "--streams" => streams = take("--streams")?.parse().map_err(|e| format!("--streams: {e}"))?,
             "--bytes" => bytes = take("--bytes")?.parse().map_err(|e| format!("--bytes: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "throughput" | "block-direct" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" | "own-config" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "copy" | "record-proxy" | "dial" | "stream" | "throughput" | "block-direct" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" | "own-config" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -329,7 +329,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     if a.op == "topology" {
         return run_topology(&a, &target).await.map(|value| (value, None));
     }
-    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "throughput" | "block-direct" | "stop-transport" | "own-config") {
+    if matches!(a.op.as_str(), "originate" | "fault" | "copy" | "record-proxy" | "dial" | "stream" | "throughput" | "block-direct" | "stop-transport" | "own-config") {
         return run_originate(&a, &target).await.map(|value| (value, None));
     }
     let req = request(&a)?;
@@ -480,7 +480,7 @@ fn probe_bind() -> std::net::SocketAddr {
 
 /// `originate --target <source> --destination exact:<node_id> get|put --key k [--value v]`,
 /// `fault --target <source> --refuse-index N --refuse-history M | --release`, and
-/// `snapshot --target <source>`: the testkit's originate service on the source node (op 0x73).
+/// `copy --target <source>`: the testkit's originate service on the source node (op 0x73).
 async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_test::originate::{Originate, OriginateReply, OriginateRequest, OriginateStoreOp};
     // A destination or carrier is a node id: `exact:<node_id>` as given, or `path:<JSON>` read as the
@@ -543,7 +543,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         },
         "fault" if a.release => OriginateRequest::ReleaseFault,
         "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history, pass_history: a.pass_history },
-        _ => OriginateRequest::Snapshot,
+        _ => OriginateRequest::Copy,
     };
     let (client, _) = enter(&a.admin_birth).await?;
     // The node answers an originate once its own call ends, under its own `Send` (node-rpc.md §34,
@@ -562,7 +562,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             }),
             OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
             OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "fault": "released", "refused": refused}),
-            OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, active_directs, owed, fault_refused } => json!({
+            OriginateReply::Copy { by, own_active_proxies, own_latest_directs, active_len, active_directs, owed, fault_refused } => json!({
                 "outcome": "Reply", "by": by.location(), "by_node_id": by.node_id, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
                 "active_len": active_len, "active_directs": active_directs, "owed": owed, "fault_refused": fault_refused,
             }),

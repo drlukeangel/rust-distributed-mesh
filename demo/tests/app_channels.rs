@@ -70,7 +70,7 @@ async fn pull(client: &rdm_transport::NodeRpcClient, root: &NodeId) -> Vec<Row> 
         )
         .await;
     let Some(reply) = out.reply() else {
-        panic!("snapshot: {out:?}")
+        panic!("copy: {out:?}")
     };
     let PullReply::Rows { rows } = reply.value() else {
         panic!("{reply:?}")
@@ -143,18 +143,18 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-app-channels").unwrap();
     capture.run(4, async {
-        let snapshot = Arc::new(Mutex::new(vec![Row {
+        let copy = Arc::new(Mutex::new(vec![Row {
             version: 100,
-            value: "1:snapshot".into(),
+            value: "1:copy".into(),
         }]));
         let (entered, mut entered_rx) = tokio::sync::watch::channel(0u64);
         let (release, _) = tokio::sync::watch::channel(false);
         let serve = {
-            let snapshot = snapshot.clone();
+            let copy = copy.clone();
             let release = release.clone();
             Box::new(move |b: rdm_transport::ServerBuilder| {
                 b.serve::<PreNodeReadyPull, _, _>(OpOwner::Testkit, move |_, _| {
-                    let rows = snapshot.clone();
+                    let rows = copy.clone();
                     let release = release.clone();
                     let entered = entered.clone();
                     async move {
@@ -242,7 +242,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
             "one comparator reconciles pull and live; order beats the higher sequence"
         );
         let mut reversed = None;
-        for row in snapshot.lock().unwrap().clone() {
+        for row in copy.lock().unwrap().clone() {
             apply(&mut reversed, row);
         }
         apply(&mut reversed, live);
@@ -279,7 +279,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
             version: 1,
             value: "3:after-incomplete".into(),
         };
-        *snapshot.lock().unwrap() = vec![repaired.clone()];
+        *copy.lock().unwrap() = vec![repaired.clone()];
         for row in pull(&node.node_rpc.client, &root_id).await {
             apply(&mut held, row);
         }
@@ -316,7 +316,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes() {
             version: 1,
             value: "4:after-overflow".into(),
         };
-        *snapshot.lock().unwrap() = vec![healed.clone()];
+        *copy.lock().unwrap() = vec![healed.clone()];
         tokio::time::timeout(BOUND, async {
             loop {
                 let generation = *lost.borrow_and_update();

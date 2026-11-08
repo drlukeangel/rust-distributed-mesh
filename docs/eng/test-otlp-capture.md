@@ -114,5 +114,5 @@ reads that line, so a cell can account for every span a process handed to its ex
   report must resolve.
 - `scripts/cells.sh` exports no `OTEL_EXPORTER_OTLP_ENDPOINT`; set it in the caller's
   environment when a cell's trace should reach the collector. The gate exports it for every job.
-- The gate keeps one snapshot of the scenario artifacts after a red, under
+- The gate keeps one copy of the scenario artifacts after a red, under
   `$HOME/rust-distributed-mesh-deploy/kept/` (`scripts/keep-gate-evidence.py`).

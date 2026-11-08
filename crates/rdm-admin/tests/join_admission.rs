@@ -387,7 +387,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
 /// path.name"; node-create.md step 1: the claim is written before anything is launched;
 /// node-config-update.md "Launch properties initialize an absent own record"): a first start whose row
 /// at its create spec's name is its own (the create's claim) is installed once; its properties are its
-/// own record, initialized from its launch snapshot. No digest carries the
+/// own record, initialized from its launch copy. No digest carries the
 /// config (Q203).
 #[test]
 fn a_first_start_whose_row_its_own_create_wrote_is_installed_once() {

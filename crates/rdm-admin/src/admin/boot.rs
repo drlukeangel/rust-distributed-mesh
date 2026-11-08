@@ -613,7 +613,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The adoption launch's own runtime, adopted at its claim (deployment-provider.md §3, the externally
     // started Day-0 adoption): its last step, the publication, runs with the bootstrap's digest below.
     let mut adopted_at_claim: Option<CurrentRuntimeAdoption> = None;
-    // The launch snapshot of an admin no launcher started (Day 0's executable, a lost birth's config and
+    // The launch copy of an admin no launcher started (Day 0's executable, a lost birth's config and
     // tags): what its own record's first line starts from (Q356).
     let mut own_initial = rdm_core::launch::InitialProperties::default();
     // The launch on an inherited data dir, its step and the inherited birth, until its check before its
@@ -1851,7 +1851,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 subject.data_dir = Some(cfg.data_dir.display().to_string());
                                 // Its own record's first line (Q356), with this birth's exact runtime (node-recovery.md
                                 // "Detection and proof" step 3: "the exact runtime recorded at launch") and the dates of
-                                // the cert it holds. Its launch snapshot: a launched admin's is its launch's; an admin no
+                                // the cert it holds. Its launch copy: a launched admin's is its launch's; an admin no
                                 // launcher started takes the one this boot built (Day 0's executable; fabric recovery's
                                 // and the adoption launch's, the lost birth's record's config, tags and storage
                                 // persistence, read from the nodes store at the lost birth's node id: Q227's

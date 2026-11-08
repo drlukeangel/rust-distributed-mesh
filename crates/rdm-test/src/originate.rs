@@ -1,7 +1,7 @@
 //! The originate service: a testkit-only protocol on op `0x73` that asks the executing node to
 //! make a testkit-store call of its own to a destination over its own held connections projection
 //! (`NodeRpcClient::call_connected`, connections.md §5), to arm or release its storage fault
-//! ([`crate::faults`]), and to answer a snapshot of what it holds and owes. A scenario thereby
+//! ([`crate::faults`]), and to answer a copy of what it holds and owes. A scenario thereby
 //! proves CONN-B, CONN-D and CONN-G on a real, restartable node: the node is the source, its
 //! writer records the facts, its storage is the one hydrated after a restart. Testkit range only
 //! ([`TESTKIT_OPS`]); never a product binary.
@@ -79,10 +79,10 @@ pub enum OriginateRequest {
     ///
     /// Position 2 on the wire.
     ReleaseFault,
-    /// Answer a snapshot of what the node holds and owes.
+    /// Answer a copy of what the node holds and owes.
     ///
     /// Position 3 on the wire.
-    Snapshot,
+    Copy,
     /// Seed this node's own durable facts toward `destination` as a proven carried path leaves
     /// them (connections.md section 7): `failed_attempts` Direct Failed observations through the
     /// writer's own observer path, then `Proxy Connected` through `carrier`, both naming the
@@ -257,7 +257,7 @@ pub enum OriginateReply {
     /// What the node holds and owes.
     ///
     /// Position 3 on the wire.
-    Snapshot {
+    Copy {
         /// Who answered.
         by: AnsweredBy,
         /// The node's active Proxy entries.
@@ -461,12 +461,12 @@ impl NodeProtocol for Originate {
     type Reply = OriginateReply;
 
     rdm_core::protocol_variants! {
-        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput, Publish, PublishBurst }
+        request OriginateRequest { Call, ArmFault, ReleaseFault, Copy, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput, Publish, PublishBurst }
         reply OriginateReply {
             Called = "called" => ReplyKind::Success,
             FaultArmed = "fault-armed" => ReplyKind::Success,
             FaultReleased = "fault-released" => ReplyKind::Success,
-            Snapshot = "snapshot" => ReplyKind::Success,
+            Copy = "copy" => ReplyKind::Success,
             BadDestination = "bad-destination" => ReplyKind::new(rdm_core::outcome::Code::InvalidArgument),
             @reserved,
             ProxyRecorded = "proxy-recorded" => ReplyKind::Success,
@@ -593,10 +593,10 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                     });
                     OriginateReply::TransportStopMarked { by, reason }
                 }
-                OriginateRequest::Snapshot => {
+                OriginateRequest::Copy => {
                     let held = seams.connections.held();
                     let held = held.lock().unwrap();
-                    OriginateReply::Snapshot {
+                    OriginateReply::Copy {
                         by,
                         own_active_proxies: held.own_active_proxies().into_iter().cloned().collect(),
                         own_latest_directs: held.own_latest_directs().into_iter().cloned().collect(),
@@ -863,7 +863,7 @@ mod tests {
             (OriginateRequest::Call { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), op: OriginateStoreOp::Put { key: vec![1], value: vec![2] } }, "000c6464646464646464646464640101010102"),
             (OriginateRequest::ArmFault { refuse_index: 1, refuse_history: 2, pass_history: 3 }, "01010203"),
             (OriginateRequest::ReleaseFault, "02"),
-            (OriginateRequest::Snapshot, "03"),
+            (OriginateRequest::Copy, "03"),
             (OriginateRequest::RecordProxy { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), carrier: rdm_core::NodeId::parse("cccccccccccc").unwrap(), failed_attempts: 2 }, "040c6464646464646464646464640c63636363636363636363636302"),
             (OriginateRequest::Dial { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap() }, "050c646464646464646464646464"),
             (OriginateRequest::Stream { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), payload: vec![9] }, "060c6464646464646464646464640109"),
@@ -878,7 +878,7 @@ mod tests {
             (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "0001690170016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
             (OriginateReply::FaultArmed { by: by(), refuse_index: 1, refuse_history: 2 }, "0101690170016e01630102", "fault-armed", Code::Ok),
             (OriginateReply::FaultReleased { by: by(), refused: 4 }, "0201690170016e016304", "fault-released", Code::Ok),
-            (OriginateReply::Snapshot { by: by(), own_active_proxies: vec![], own_latest_directs: vec![], active_len: 5, active_directs: vec![], owed: vec![], fault_refused: 6 }, "0301690170016e0163000005000006", "snapshot", Code::Ok),
+            (OriginateReply::Copy { by: by(), own_active_proxies: vec![], own_latest_directs: vec![], active_len: 5, active_directs: vec![], owed: vec![], fault_refused: 6 }, "0301690170016e0163000005000006", "copy", Code::Ok),
             (OriginateReply::BadDestination { by: by(), reason: s() }, "0401690170016e01630172", "bad-destination", Code::InvalidArgument),
             (OriginateReply::PeerUnresolved { reason: s() }, "050172", "peer-unresolved", Code::NotFound),
             (OriginateReply::NotReady { reason: s() }, "060172", "not-ready", Code::Unavailable),

@@ -18,7 +18,7 @@
 //! command goes to the admins over Node RPC through the estate's typed objects.
 //!
 //! The controller is `rdm-rpc-probe`, the generic testkit-store caller of the testkit (op 0x70,
-//! with 0x73 originate and 0x72 snapshot on the roles that originate), so every observed outcome is
+//! with 0x73 originate and its connections copy on the roles that originate), so every observed outcome is
 //! the typed `RpcOutcome` of a real Node RPC call.
 
 use rdm_test::estate::{at_location, location, names_location, of_node};
@@ -484,14 +484,14 @@ fn action_row(c: &Call) -> Value {
     json!({"t_ms": c.started_ms, "finished_ms": c.finished_ms, "action": "rpc.call", "args": c.args, "trace_id": c.trace_id, "root_span_exported": c.root_exported})
 }
 
-/// The role nodes' connection snapshots (originate service, op 0x73), by node name.
-fn snapshot(estate: &Estate, node: &PathName) -> Value {
-    let c = probe_call(estate, &["snapshot", "--target", &rdm_test::estate::path_target(&node), "--key", "x"]);
+/// The role nodes' connection copies (originate service, op 0x73), by node name.
+fn connections_copy(estate: &Estate, node: &PathName) -> Value {
+    let c = probe_call(estate, &["copy", "--target", &rdm_test::estate::path_target(&node), "--key", "x"]);
     assert_eq!(c.out["outcome"], "Reply", "{node:?}: {}", c.out);
     c.out
 }
 
-/// Every role node (compute and gateway answer the originate service's snapshot) holds, with nothing owed, a
+/// Every role node (compute and gateway answer the originate service's copy) holds, with nothing owed, a
 /// Connected Direct connection to the exact current birth of its mesh's primary node-admin.
 async fn converge_connections(f: &Formed, inv: &mut Invariants) -> Value {
     converge_connections_with(f, inv, true).await
@@ -519,7 +519,7 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
     for node in roles {
         let mesh = node.path.split('.').next().unwrap().to_string();
         let until = Instant::now() + Duration::from_secs(30);
-        let snap = loop {
+        let copy = loop {
             let nodes = f.estate.node_values().await;
             // Under R-CR5 (connections.md "Two planes, two words"), Node RPC (join and status
             // declaration to the mesh's primary node-admin) is the control plane and writes no Direct
@@ -527,8 +527,8 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
             // activity names the current birth of its destination (no connection to a superseded process).
             let admins: Vec<&Value> = nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == mesh.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).collect();
             assert_eq!(admins.len(), 1, "{mesh} has one primary node-admin: {admins:?}");
-            let snap = snapshot(&f.estate, &node);
-            let directs = snap["own_latest_directs"].as_array().cloned().unwrap_or_default();
+            let copy = connections_copy(&f.estate, &node);
+            let directs = copy["own_latest_directs"].as_array().cloned().unwrap_or_default();
             let mut missing: Vec<String> = Vec::new();
             let mut stale = Vec::new();
             for d in directs.iter().filter(|d| d["state"] == "Connected") {
@@ -540,19 +540,19 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
                     }
                 }
             }
-            if missing.is_empty() && snap["owed"].as_array().is_some_and(|o| o.is_empty()) {
-                break (snap, stale);
+            if missing.is_empty() && copy["owed"].as_array().is_some_and(|o| o.is_empty()) {
+                break (copy, stale);
             }
             assert!(
                 Instant::now() < until,
                 "{node:?} never converged its connections (none to a superseded birth, nothing owed) within 30 s: stale {missing:?}; directs {}; owed {}",
                 serde_json::to_string(&directs.iter().map(|d| json!({"to": d["destination"]["name"], "state": d["state"], "kind": d["kind"], "inc": d["destination"]["incarnation"]})).collect::<Vec<_>>()).unwrap(),
-                snap["owed"]
+                copy["owed"]
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
-        let (snap, stale) = snap;
-        out.push(json!({"node": node, "active_len": snap["active_len"], "owed": snap["owed"], "directs": snap["own_latest_directs"], "stale_connected": stale}));
+        let (copy, stale) = copy;
+        out.push(json!({"node": node, "active_len": copy["active_len"], "owed": copy["owed"], "directs": copy["own_latest_directs"], "stale_connected": stale}));
     }
     let msg = if owed_no_connection_to.is_some() {
         "every compute and gateway owes no deletion after the restart (no Direct fact is owed to a restarted primary's new birth)"
@@ -964,8 +964,8 @@ impl RouteRun {
         // traffic may already have connected it (the consumer node-admin's day-zero produce goes through a
         // gateway to the broker primary, fabric-node-hooks.md `on_fabric_ready`). Carrying adds none.
         let held_directs = |e: &Estate| -> Vec<(String, Value)> {
-            let snap = snapshot(e, g1);
-            let mut held: Vec<(String, Value)> = snap["own_latest_directs"].as_array().into_iter().flatten()
+            let copy = connections_copy(e, g1);
+            let mut held: Vec<(String, Value)> = copy["own_latest_directs"].as_array().into_iter().flatten()
                 .filter(|x| x["destination"]["node_id"] == b1["node_id"] || x["destination"]["node_id"] == b2["node_id"])
                 .map(|x| (s(&x["destination"]["node_id"]), x["id"].clone()))
                 .collect();
@@ -1004,8 +1004,8 @@ impl RouteRun {
             let c = probe_call(e, &["originate", "--target", &rdm_test::estate::path_target(&g1), "--destination", &rdm_test::estate::path_target(&dest), "--key", &key, "--value", &value(&key)]);
             assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some(route), Some("reply")), "{g1:?}'s own call to {dest:?} follows the Direct fact it held before carrying ({held_before}): {}", c.out);
             wait_for(&format!("{g1:?} holds a Connected Direct connection to {dest:?}'s current birth"), Duration::from_secs(30), || async {
-                let snap = snapshot(e, g1);
-                snap["own_latest_directs"].as_array().into_iter().flatten().any(|x| x["state"] == "Connected" && x["destination"]["node_id"] == d["node_id"] && x["destination"]["incarnation"] == d["incarnation"]).then_some(())
+                let copy = connections_copy(e, g1);
+                copy["own_latest_directs"].as_array().into_iter().flatten().any(|x| x["state"] == "Connected" && x["destination"]["node_id"] == d["node_id"] && x["destination"]["incarnation"] == d["incarnation"]).then_some(())
             })
             .await;
             // The originate service's own `outcome` lowercases (`reply`); the probe prints the call's outcome as `call_outcome`.
@@ -2119,8 +2119,8 @@ async fn connection_report(f: &Formed, a: &mut Run) -> Value {
     for node in f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")) {
         let mesh = node.path.split('.').next().unwrap().to_string();
         let primary = nodes.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh.as_str() && n["type"] == "node-admin" && n["is_primary"] == true).cloned();
-        let snap = snapshot(&f.estate, &node);
-        let directs = snap["own_latest_directs"].as_array().cloned().unwrap_or_default();
+        let copy = connections_copy(&f.estate, &node);
+        let directs = copy["own_latest_directs"].as_array().cloned().unwrap_or_default();
         let to_primary = primary.as_ref().is_some_and(|p| directs.iter().any(|d| d["state"] == "Connected" && d["destination"]["node_id"] == p["node_id"] && d["destination"]["incarnation"] == p["incarnation"]));
         let stale: Vec<Value> = directs
             .iter()
@@ -2128,7 +2128,7 @@ async fn connection_report(f: &Formed, a: &mut Run) -> Value {
             .filter(|d| nodes.iter().find(|n| n["node_id"] == d["destination"]["node_id"]).is_none_or(|c| c["incarnation"] != d["destination"]["incarnation"]))
             .map(|d| json!({"to": d["destination"]["name"], "incarnation": d["destination"]["incarnation"]}))
             .collect();
-        out.push(json!({"node": node, "primary": primary.as_ref().map(|p| p["name"].clone()), "connected_direct_to_current_primary_birth": to_primary, "stale_connected": stale, "owed": snap["owed"]}));
+        out.push(json!({"node": node, "primary": primary.as_ref().map(|p| p["name"].clone()), "connected_direct_to_current_primary_birth": to_primary, "stale_connected": stale, "owed": copy["owed"]}));
     }
     json!(out)
 }
@@ -3000,7 +3000,7 @@ fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&PathName>, tag: &st
     t.ops.len() - 1
 }
 
-/// The connections `primary` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
+/// The connections `primary` (a gateway or compute) holds toward `node_id`, from its own connection copy.
 /// The node a cell's own record (a change, a restart, a removal) names in its `node`: the location the
 /// cell recorded, a separate path and name; a node view carries its location in `name` instead ([`location`]).
 fn node_of(rec: &Value) -> PathName {
@@ -3008,7 +3008,7 @@ fn node_of(rec: &Value) -> PathName {
 }
 
 fn directs_to(estate: &Estate, holder: &PathName, node_id: &str) -> Vec<Value> {
-    snapshot(estate, holder)["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["node_id"] == node_id).cloned().collect()
+    connections_copy(estate, holder)["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["node_id"] == node_id).cloned().collect()
 }
 
 /// `primary` holds a Connected Direct connection to the current birth of `node_id` and, when `old_inc` is
@@ -4494,9 +4494,9 @@ fn dial(f: &Formed, holder: &PathName, dest: &PathName) -> Call {
     c
 }
 
-/// `primary`'s latest Direct fact toward the node named `dest`, from its own snapshot.
-fn latest_direct(snap: &Value, dest: &PathName) -> Option<Value> {
-    snap["own_latest_directs"].as_array().into_iter().flatten().find(|d| rdm_test::estate::is_location(&d["destination"], &dest)).cloned()
+/// `primary`'s latest Direct fact toward the node named `dest`, from its own copy.
+fn latest_direct(copy: &Value, dest: &PathName) -> Option<Value> {
+    copy["own_latest_directs"].as_array().into_iter().flatten().find(|d| rdm_test::estate::is_location(&d["destination"], &dest)).cloned()
 }
 
 /// Wait (a bound that fires is the finding) until `primary`'s latest Direct toward `dest` satisfies `ok`.
@@ -4504,13 +4504,13 @@ async fn await_direct(estate: &Estate, holder: &PathName, dest: &PathName, what:
     let until = Instant::now() + bound;
     let t0 = Instant::now();
     loop {
-        let snap = snapshot(estate, holder);
-        if let Some(d) = latest_direct(&snap, dest) {
+        let copy = connections_copy(estate, holder);
+        if let Some(d) = latest_direct(&copy, dest) {
             if ok(&d) {
                 return json!({"holder": holder, "destination": dest, "waited_ms": t0.elapsed().as_millis() as u64, "direct": d});
             }
         }
-        assert!(Instant::now() < until, "{holder:?}'s Direct fact toward {dest:?} never became `{what}` within {bound:?}: {}", latest_direct(&snap, dest).map(|d| d.to_string()).unwrap_or_else(|| "no Direct fact".into()));
+        assert!(Instant::now() < until, "{holder:?}'s Direct fact toward {dest:?} never became `{what}` within {bound:?}: {}", latest_direct(&copy, dest).map(|d| d.to_string()).unwrap_or_else(|| "no Direct fact".into()));
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -4602,7 +4602,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let under = orig_get(&f, &src, &dst, "under-cut-established");
     let out1 = under.out["call_outcome"].clone();
     assert!(under.out["outcome"] == "Reply" && matches!(out1.as_str(), Some("Indeterminate" | "NotSent")), "a call on a connection the cut killed is Indeterminate or NotSent, never a reply: {}", under.out);
-    let fact_after = latest_direct(&snapshot(&f.estate, &src), &dst);
+    let fact_after = latest_direct(&connections_copy(&f.estate, &src), &dst);
     let still = originate_op(&f, &mut a, &other_src, &d0, "during-cut-other-source");
     f.actions.push(action_row(&under));
     drop(cut1);
@@ -4773,9 +4773,9 @@ async fn proxy_run(cell: &str, shape: Shape) {
     let mut owed_refused = Value::Null;
     let until = Instant::now() + Duration::from_secs(15);
     while Instant::now() < until {
-        let snap = snapshot(&f.estate, &src);
-        if snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 2 {
-            owed_refused = snap;
+        let copy = connections_copy(&f.estate, &src);
+        if copy["owed"].as_array().map(Vec::len) == Some(1) && copy["fault_refused"].as_u64().unwrap_or(0) >= 2 {
+            owed_refused = copy;
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -4794,11 +4794,11 @@ async fn proxy_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&released));
     let until = Instant::now() + Duration::from_secs(15);
     let landed = loop {
-        let snap = snapshot(&f.estate, &src);
-        if snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0) {
-            break snap;
+        let copy = connections_copy(&f.estate, &src);
+        if copy["owed"].as_array().map(Vec::len) == Some(0) && copy["own_active_proxies"].as_array().map(Vec::len) == Some(0) {
+            break copy;
         }
-        assert!(Instant::now() < until, "the owed deletion did not land within 15 s of the release: {snap}");
+        assert!(Instant::now() < until, "the owed deletion did not land within 15 s of the release: {copy}");
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     let durable_after = durable_history(&f, &src_id).await;
@@ -6254,7 +6254,7 @@ async fn direct_connection_run(cell: &str, shape: Shape) {
     }
     // What the gateway's own Direct fact says under the cut is the transport's idle timing (a pooled connection
     // that no packet reaches is dropped when its idle timer fires): recorded as observed, never asserted.
-    let fact_during = latest_direct(&snapshot(&f.estate, &gw), &pname);
+    let fact_during = latest_direct(&connections_copy(&f.estate, &gw), &pname);
     let steps_cut = build_of(&f.estate, &st, &formation).await["steps"].as_array().map_or(0, Vec::len);
     assert_eq!(steps_cut, steps0, "a lost connection ran no step of the formation Build");
     assert_eq!(fabric_at(&f.estate, &st.fp_name()).await.map(|v| s(&v["build_id"])), Some(formation.clone()), "a lost connection accepted no Build");
@@ -6379,8 +6379,8 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let inbound = dial(&f, &dst, &src);
     f.actions.push(action_row(&inbound));
     let owed = wait_for("the source owes the deletion", Duration::from_secs(15), || async {
-        let snap = snapshot(&f.estate, &src);
-        (snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(snap)
+        let copy = connections_copy(&f.estate, &src);
+        (copy["owed"].as_array().map(Vec::len) == Some(1) && copy["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(copy)
     })
     .await;
     let carrier_inc0 = s(&cn["incarnation"]);
@@ -6434,8 +6434,8 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     assert_eq!(released.out["fault"], "released", "{}", released.out);
     f.actions.push(action_row(&released));
     let landed = wait_for("the owed deletion lands", Duration::from_secs(30), || async {
-        let snap = snapshot(&f.estate, &src);
-        (snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(snap)
+        let copy = connections_copy(&f.estate, &src);
+        (copy["owed"].as_array().map(Vec::len) == Some(0) && copy["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(copy)
     })
     .await;
     let rows_c = proxy_disconnected_rows(&durable_history(&f, &src_id).await);
