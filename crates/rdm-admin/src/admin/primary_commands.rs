@@ -245,6 +245,9 @@ impl NodeCommandService {
             return rdm_core::reply::node_command::rejected("no-secondary", format!("node {node_id}: its roles moved, and this view names no mesh-primary of mesh {mesh} to run its stop"));
         };
         tracing::Span::current().record("handed_to", to.to_string().as_str());
+        // The command names this admin's own birth: the successor carries it back here, where the
+        // caller's call this handler holds is the asker's own, not eligible work (node-connections-delete.md step 3).
+        let _held = (node_id == &self.runner.node_id).then(|| self.runner.observer.status_service.get().and_then(|s| s.own.get().cloned())).flatten().map(|own| own.hand_on());
         let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(self.runner.observer.commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
         let mut stream = match self.runner.node_rpc.client.call_stream::<NodeCommand>(&rdm_transport::NodeTarget::ExactNode(to.clone()), req, &opts).await {
             Ok((stream, _)) => stream,

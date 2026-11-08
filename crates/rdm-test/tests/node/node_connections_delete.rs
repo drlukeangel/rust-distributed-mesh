@@ -154,8 +154,9 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
 /// through the birth's own command path (`via-delete-connections` on the primary). `All`, last, first
 /// moves the primary's role (node-connections-delete.md step 0, D40): the new mesh-primary carries it to
 /// the old primary's birth (`carried=dialled`), which reports connections-deleting, then the new
-/// primary records it (`reported_by=node`), then holds the completion with its receipt.
-/// Must NOT happen: a refusal because the request names the receiver, a record before its own report.
+/// primary records it (`reported_by=node`), then holds the completion with its `Established` receipt.
+/// Must NOT happen: a refusal because the request names the receiver, a record before its own report,
+/// a `Deadline` receipt because the caller's call the old primary holds was counted as eligible work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames() {
     let test = "a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames";
@@ -187,7 +188,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
         "the primary completes its own Connections([…]), naming the id it never opened: {named_one:?}"
     );
     let all = completed(rdm_core::status::ConnectionScope::All).await;
-    assert!(matches!(&all, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(_), .. }), "the primary completes its own All with its receipt: {all:?}");
+    assert!(matches!(&all, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), .. }), "the primary completes its own All with an Established receipt: the caller's call it holds while its successor carries the command back is its own, not eligible work: {all:?}");
     estate.stop().await;
 
     let spans = estate.spans();
