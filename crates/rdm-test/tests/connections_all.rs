@@ -480,6 +480,84 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
     })
 }
 
+/// CONTRACT (node-connections-delete.md: "Gossip neighbours and the Node RPC pool are not
+/// connections, and neither scope touches them"; node-rpc.md §34: "a stream that loses its
+/// connection is held for its time limit while the responder resends its frames", §43: "a resend
+/// uses ordinary dialing"): a node whose connections `All` deleted, its reply to a call whose
+/// connection was cut while the handler ran, dials its caller and sends the reply again, and the
+/// call answers. What must NOT happen: the resend's dial refused by the admission block of the
+/// node's data plane, so the call ends with no reply though the node answered it.
+#[test]
+fn a_connections_deleted_node_dials_its_caller_to_send_a_cut_reply_again() {
+    if crate::own_process::delegated(module_path!(), "a_connections_deleted_node_dials_its_caller_to_send_a_cut_reply_again") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("connections-all-resend-{}", NodeId::mint()));
+    std::fs::create_dir_all(dir.join("spans")).unwrap();
+    let capture = rdm_transport::EvidenceCapture::start(&dir.join("spans"), "connections-all-cell").expect("the cell's evidence file can be created");
+    let resent = capture.run(4, async {
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, NodeStatus::Ready, serve_ping).await;
+        // The node serves one op the cell can hold: a call into it stays in flight until released.
+        let pull = PullServer::new(vec![]);
+        pull.gate.open();
+        let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, {
+            let pull = pull.clone();
+            move |b| pull.serve(b)
+        })
+        .await;
+        let (d, _) = admin.observer.topology_view.digest_view.get(launch.node_id.as_str()).expect("the admin side holds the node");
+        let node = ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
+
+        // The caller: a process whose client and server share one delivery, as a node's do, which
+        // the node has never dialled; the node's view holds it.
+        let key = iroh::SecretKey::generate();
+        let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let me = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let delivery = rdm_transport::Delivery::new(me.clone());
+        let resolver = std::sync::Arc::new(rdm_transport::StaticResolver::new());
+        resolver.insert(node.clone());
+        let caller = rdm_transport::NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone());
+        let server = rdm_transport::ServerBuilder::new().with_delivery(delivery.clone()).build(rdm_transport::ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).expect("the caller's server is built");
+        let _router = iroh::protocol::Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        seams.resolver.apply(ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: me.node_id.clone(), path: "mesh1.node".into(), name: "8".into(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() }, None);
+
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
+        pull.hold();
+        let held_call = async { tokio::time::timeout(Duration::from_secs(45), caller.call::<PreNodeReadyPull>(&target, &PullRequest::Pull, &opts)).await.map(|o| o.0) };
+        let steps = async {
+            tokio::time::timeout(Duration::from_secs(10), pull.entered(1)).await.expect("the call is in flight at the node");
+            // `All` waits on the held call to its deadline, then closes and blocks new connections.
+            let all = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+            let deleted = tokio::time::timeout(Duration::from_secs(30), crate::common::node_command_completion(&admin.observer.client, &target, &all)).await.expect("All is answered");
+            assert!(matches!(deleted, NodeCommandReply::ConnectionsDeleted { .. }), "All closes the node's connections: {deleted:?}");
+            let _ = admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
+            // The call's connection is cut while the handler runs: its reply is written to no stream.
+            let _ = caller.close_connections_to(&node.endpoint_id, "the cell cuts the held call's connection");
+            pull.release();
+        };
+        let (out, ()) = tokio::join!(held_call, steps);
+        let out = out.expect("the held call ends within its time limit");
+        assert!(matches!(out, RpcOutcome::Reply(_)), "the reply is sent again on a connection the node dials: {out:?}");
+        // The node's resend span ends once the caller's ack reaches it, after the call answered.
+        let acked = |spans: &[serde_json::Value]| spans.iter().find(|s| s["name"] == "rdm.node_rpc.delivery.update.via-response-resend" && s["attributes"]["outcome"] == "acked").cloned();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(span) = acked(&capture.spans().expect("the cell's spans reached its evidence file")) {
+                    return span;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the node's resend of the cut reply ends acked")
+    });
+    println!("connections-deleted resend flame: trace {}", resent["trace_id"].as_str().unwrap_or("?"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// CONTRACT (node-mesh-join.md, Commander: "Standalone: the node's mesh-primary"; node-name-update.md
 /// step 6: a renamed node rejoins its mesh by node.mesh.join): a node joined at its start
 /// (`rdm.node.mesh.update.via-joined` with `which = "own"`) holding an open connection has it closed by
