@@ -1593,12 +1593,13 @@ impl DeploymentPipeline<'_> {
     ///
     /// A value with no durable source is not given, and its step fails by name ([`Self::step`]). The
     /// node's record is read at its node id (a runtime point read by this running admin, Q237 A; the node
-    /// itself reads nothing, Q227): the record the node wrote at its start (Q356).
-    async fn give_create_values(&self, run: &mut Run<'_>, req: &CreateRequest) {
+    /// itself reads nothing, Q227): the record the node wrote at its start (Q356). A record that cannot be
+    /// read is the run's end, naming the store's error, before any step runs.
+    async fn give_create_values(&self, run: &mut Run<'_>, req: &CreateRequest) -> Result<(), PipelineError> {
         if !run.is_done(CreateStep::AllocateIdentity.name()) {
-            return;
+            return Ok(());
         }
-        let Some(rows) = self.sink.node_rows() else { return };
+        let Some(rows) = self.sink.node_rows() else { return Ok(()) };
         let row = match rows.storage().node(&req.node_id).await.map(|l| l.map(|l| l.record)) {
             Ok(Some(row)) => row,
             // A birth that has not written its record (it never joined, Q356): its identity is the
@@ -1611,14 +1612,21 @@ impl DeploymentPipeline<'_> {
                         run.given(CreateStep::PrepareStorage.name(), &key);
                     }
                 }
-                return;
+                return Ok(());
             }
-            Err(_) => return,
+            // The record the done steps' values are read from cannot be read: the run stops before its
+            // first step, naming the store's error, as a Build that cannot be read does.
+            Err(e) => {
+                let reason = format!("{}: node {}'s record cannot be read from nodes.storage, so the values of {:?}'s completed steps have no source: {e}", self.template.executor(), req.node_id, run.operation);
+                tracing::info_span!("rdm.node_admin.deployment.reject.via-record-unreadable", node_id = %req.node_id, operation = %run.operation.action, operation_subject = ?run.operation.subject, detail = %reason)
+                    .in_scope(|| tracing::info!("the node's record cannot be read: the run stops before its first step"));
+                return Err(PipelineError { step: CreateStep::AllocateIdentity.name(), reason, code: rdm_core::outcome::Code::Unavailable });
+            }
         };
         let incarnation = row.incarnation.clone();
         let data_dir = row.storage.data_dir.as_deref().map(PathBuf::from).or_else(|| req.data_dir.clone()).unwrap_or_else(|| super::node_data_dir(&self.template.data_root, &req.node_id));
         let fact = Some(row.runtime.clone());
-        let Some(deployment_id) = fact.as_ref().and_then(|f| DeploymentId::parse(&f.deployment_id).ok()) else { return };
+        let Some(deployment_id) = fact.as_ref().and_then(|f| DeploymentId::parse(&f.deployment_id).ok()) else { return Ok(()) };
         run.given(CreateStep::AllocateIdentity.name(), &Identity { node_id: req.node_id.clone(), incarnation: incarnation.clone(), supersedes: None, deployment_id });
         if run.is_done(CreateStep::PrepareStorage.name()) {
             let dir = data_dir.clone();
@@ -1626,8 +1634,8 @@ impl DeploymentPipeline<'_> {
                 run.given(CreateStep::PrepareStorage.name(), &key);
             }
         }
-        let Some(fact) = fact else { return };
-        let Ok(handle) = super::provider::adopt(self.provider, &fact) else { return };
+        let Some(fact) = fact else { return Ok(()) };
+        let Ok(handle) = super::provider::adopt(self.provider, &fact) else { return Ok(()) };
         run.given(CreateStep::DeployRuntime.name(), &handle);
         for step in [CreateStep::RegisterExactRuntimeHandle, CreateStep::ResolveProviderControlDomain, CreateStep::MakeRuntimeFactAvailableToBirth] {
             run.given(step.name(), &RuntimeEvidence::of(&fact));
@@ -1636,6 +1644,7 @@ impl DeploymentPipeline<'_> {
             run.given(CreateStep::WaitForBind.name(), &Bound { transport: row.transport_addr, listeners: row.listeners.clone() });
         }
         run.given(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), &RuntimeEvidence { data_dir: Some(data_dir.display().to_string()), ..RuntimeEvidence::of(&fact) });
+        Ok(())
     }
 
     /// A runtime launched by an executor that is not this one and never joined this one (`recorded`:
@@ -1688,7 +1697,7 @@ impl DeploymentPipeline<'_> {
         // identity and the endpoints the current allocator hands out.
         let executor = self.template.executor_birth();
         let recorded_by_another = |run: &Run<'_>, step: CreateStep| run.owner.get(step.name()).is_some_and(|o| o.as_ref() != Some(&executor));
-        self.give_create_values(run, req).await;
+        self.give_create_values(run, req).await?;
         // A launch whose runtime no node record names (its birth never joined, so it wrote none, Q356)
         // runs again from DeployRuntime, whose find adopts the runtime by the launch's deployment id (a
         // function of this create's operation, [`identity_of`]). One another executor launched is a
@@ -3404,6 +3413,68 @@ mod tests {
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");
         assert!(steps.iter().any(|(s, o)| s == CreateStep::WaitForMeshJoin.name() && *o == StepOutcome::Complete), "WaitForMeshJoin's receipt is Complete: {steps:?}");
+        let _ = std::fs::remove_dir_all(&template.data_root);
+    }
+
+    /// A nodes store whose reads fail (`Io`): a store that cannot be read.
+    struct UnreadableNodes;
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for UnreadableNodes {
+        async fn node(&self, node_id: &NodeId) -> Result<Option<rdm_node::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("nodes/records/{node_id}"), reason: "the cell's disk cannot be read".into() })
+        }
+        async fn nodes(&self, _: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            Ok(Vec::new())
+        }
+        async fn put_node(&self, _: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            Ok(())
+        }
+        async fn records_at(&self, _: &PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// A sink whose nodes store is `rows`.
+    struct RowsSink(std::sync::Arc<crate::node_rows::NodeRows>);
+    impl TopologySink for RowsSink {
+        fn publish(&self, _: Node) {}
+        fn remove(&self, _: &PathName) {}
+        fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
+        fn node_rows(&self) -> Option<std::sync::Arc<crate::node_rows::NodeRows>> {
+            Some(self.0.clone())
+        }
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT (build.md §1, as `DeploymentPipeline::step` quotes it: a completed step "hands on the value
+    /// its call site read from what is durable (D67)"; process.md "An error state carries every
+    /// non-leaking detail"): a create run again after its AllocateIdentity completed reads the node's
+    /// record for the done steps' values; a nodes.storage that cannot be read ends the run before any
+    /// step, naming the store's error. Must NOT happen: the error dropped, and a later step failing
+    /// "unsourced" with nothing of the storage error in its reason.
+    #[tokio::test]
+    async fn a_create_whose_node_record_cannot_be_read_ends_naming_the_store_error() {
+        let provider = Suspended { terminated: Default::default(), modes: Default::default() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let template = cell_template("create-record-unreadable");
+        let joins = Joins::default();
+        let view = std::sync::Arc::new(tokio::sync::RwLock::new(crate::topology::Topology {
+            fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: Vec::new(),
+        }));
+        let rows = std::sync::Arc::new(crate::node_rows::NodeRows::new(PathName::new("mesh1.node-admin", "1").unwrap(), NodeId::mint(), view, std::sync::Arc::new(UnreadableNodes)));
+        let sink = RowsSink(rows);
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let path = PathName::new("mesh1.node", "3").unwrap();
+        let node_id = rdm_core::fixture_node_id(&path);
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: None, path: path.path.clone(), name: path.name.clone(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let mut run = Run { build_id: None, node: &path, operation: req.operation.clone(), done: HashMap::from([(CreateStep::AllocateIdentity.name().to_string(), None)]), owner: HashMap::new() };
+        let ended = pipeline.give_create_values(&mut run, &req).await.expect_err("an unreadable record ends the run");
+        assert_eq!(ended.step, CreateStep::AllocateIdentity.name(), "{ended:?}");
+        assert_eq!(ended.code, rdm_core::outcome::Code::Unavailable, "{ended:?}");
+        assert!(ended.reason.contains("the cell's disk cannot be read"), "the store's error is named: {ended:?}");
         let _ = std::fs::remove_dir_all(&template.data_root);
     }
 }
