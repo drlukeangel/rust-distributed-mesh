@@ -128,8 +128,14 @@ impl View {
         // One flag: the view replays as its mesh's primary while the digest view authors its members' statuses.
         view.primary = view.digest_view.primary.clone();
         view.forwarder.lock().unwrap().set_own_mesh(mesh);
-        let forwarder = view.forwarder.clone();
-        *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| forwarder.lock().unwrap().remove(m)));
+        // The MeshLeft receipt is the end of that mesh: the forwarder forgets what it forwarded of it, and
+        // the one copy of it is forgotten, so no read is served a mesh that left (gossip.md "External
+        // topology when a mesh is deleted": "they hold the mesh for the deleted retention and then nothing").
+        let (forwarder, copies) = (view.forwarder.clone(), view.copies.clone());
+        *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| {
+            forwarder.lock().unwrap().remove(m);
+            copies.lock().unwrap().remove(m);
+        }));
         view
     }
 

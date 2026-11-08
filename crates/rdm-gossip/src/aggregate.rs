@@ -210,6 +210,23 @@ impl Full {
         Ok(moved)
     }
 
+    /// Each birth `from` lists that this full holds at the same incarnation keeps the newer of the two
+    /// Digest sequences and stamps, and `from`'s lineage when it names one: what a full carries of a
+    /// birth besides its topology, which [`Self::delta_to`] leaves out (a read's entries carry them, a
+    /// backbone full's carry none). The digest view orders a peer mesh's member by that sequence, so the
+    /// one copy keeps the newest a full brought (gossip.md §3.1 "four orderings", Q409).
+    fn keep_order_of(&mut self, from: &Full) {
+        for (id, d) in &from.digests {
+            if let Some(held) = self.digests.get_mut(id).filter(|h| h.node.incarnation == d.node.incarnation) {
+                held.digest_seq = held.digest_seq.max(d.digest_seq);
+                held.emitted_at_rafka_ms = held.emitted_at_rafka_ms.max(d.emitted_at_rafka_ms);
+                if d.node.supersedes.is_some() {
+                    held.node.supersedes = d.node.supersedes.clone();
+                }
+            }
+        }
+    }
+
     /// Hold `d` as listed: its exact birth's stop overlay ends ([`Self::apply`]).
     fn listed(&mut self, d: MeshDigest) {
         self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
@@ -825,7 +842,8 @@ impl AggregateReceiver {
     }
 
     /// Write the complete `full` of `mesh` to the topology view (Q409, Q410): a mesh's first full adds
-    /// it; a later one is diffed against the copy held and only that delta is written into it.
+    /// it; a later one is diffed against the copy held and only that delta is written into it, each
+    /// birth it lists keeping the newer Digest order ([`Full::keep_order_of`]).
     fn write(&mut self, mesh: String, publication: Pending, full: Full, from_read: bool) -> Taken {
         let (version, time_ms) = (publication.version, publication.time_ms);
         // A later mesh of the same name is another mesh: what was held of the earlier one is dropped.
@@ -851,6 +869,7 @@ impl AggregateReceiver {
         let (base_version, refreshed) = (h.version, !first && h.version == version);
         let delta = h.full.delta_to(&full);
         h.full.apply(&delta).expect("a full's difference from the copy held applies to that copy");
+        h.full.keep_order_of(&full);
         // A gossip full settles only a gap in the copy; a read settles every gap (gossip.md §3.3).
         let prior = h.desynced.take();
         let kept = prior.clone().filter(|g| !from_read && !g.settled_by_a_full());

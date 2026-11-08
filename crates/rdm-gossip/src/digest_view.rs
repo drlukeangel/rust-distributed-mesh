@@ -2183,7 +2183,7 @@ impl DigestView {
 
     /// `mesh` left (its `MeshLeft` receipt): every remaining birth of it departs
     /// ([`Self::depart_mesh_births`]), then the mesh-left hook runs: the forwarder forgets what it
-    /// published of the mesh.
+    /// forwarded of the mesh, and the one copy of it in the topology view is forgotten (Q409).
     pub fn mesh_left(&self, mesh: &str, build_id: &str, at_rafka_ms: u64) {
         self.depart_mesh_births(mesh, build_id, at_rafka_ms);
         if let Some(cb) = self.on_mesh_deleted.0.lock().unwrap().clone() {

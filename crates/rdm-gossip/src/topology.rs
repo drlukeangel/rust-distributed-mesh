@@ -2379,9 +2379,14 @@ mod tests {
         assert_eq!(member.copies.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(2), "the member applied the final differential at its base");
         assert!(member.digest_view.is_deleted(admin.node.node_id.as_str()), "the member holds the last admin deleted");
 
-        // The MeshLeft receipt: the forwarder forgets the mesh.
+        // The MeshLeft receipt: the forwarder forgets the mesh, and so does the one copy of it, so no read
+        // is served a mesh that left (canonical_ids red at d8fdf110e: the fabric-primary served the removed
+        // mesh2 to the recreated mesh2's first admin, which swept its births).
+        assert_eq!(primary.copies.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(2), "before MeshLeft the copy holds the final full");
         primary.digest_view.mesh_left("mesh1", "b9", 9);
         assert_eq!(primary.forwarder.lock().unwrap().forwarded_version("mesh1"), None, "at MeshLeft the forwarder forgets what it forwarded of mesh1");
+        assert_eq!(primary.copies.lock().unwrap().held_version("mesh1"), None, "at MeshLeft the copy of mesh1 is forgotten");
+        assert!(primary.held_sources_of(Some("mesh1")).is_empty(), "a read of the primary is served nothing of mesh1");
     }
 
     /// mesh2's nodes at v41 (three, Ready) and at v43: the first connections-deleting, the second
@@ -2507,6 +2512,33 @@ mod tests {
         let copies = member.copies.lock().unwrap();
         assert_eq!(copies.held_version("mesh2").map(|(_, v)| v), Some(43), "the ordinary node at 41 writes the new primary's delta at its base");
         assert!(copies.held_full("mesh2").expect("the member's copy").same_topology(&Full::new(v43, vec![], vec![])));
+    }
+
+    /// CONTRACT (gossip.md §3.1 "four orderings": a peer mesh's member keeps the Digest sequence this view
+    /// accepted of it, a read's or a join's; §3.3, Q409: a full writes only its delta to the one copy):
+    /// a node-admin holds mesh2 at v10 from a backbone full, whose entries carry no Digest sequence; a
+    /// topology read of v10 carries the member's sequence (7), and the digest view holds it. The read's
+    /// delta from the copy is empty, and the copy keeps the read's Digest order of the birth; so mesh2's
+    /// next differential (10 -> 11, the member's new address) moves the member the digest view holds.
+    /// Must NOT happen: the copy keeping the backbone full's sequence 0, so the differential's moved
+    /// birth is older than the digest view's and the view keeps the old address (publication_readrepair
+    /// red at d8fdf110e).
+    #[test]
+    fn a_read_at_the_held_version_leaves_its_digest_order_in_the_copy_so_the_next_delta_moves_the_view() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = test_view("mesh1", "mesh1.node-admin.2");
+        let mesh2_primary = publisher_of(&born("mesh2", "node-admin", 1, 1));
+        let mut member = born("mesh2", "node", 1, 7);
+        member.digest_seq = 7;
+        assert!(hear(&mut view.order.lock().unwrap(), &view, &aggregate_of("mesh2", &mesh2_primary, 10, vec![member.clone()]), &fabric, Side::Backbone));
+        assert!(matches!(view.take_read_chunk(read_of("mesh2", 10, 10, vec![member.clone()]), Side::ReadPeer, &fabric), Taken::Written(w) if w.delta.is_empty()), "the read of the version held writes an empty delta");
+        assert_eq!(view.copies.lock().unwrap().held_full("mesh2").and_then(|f| f.digests().into_iter().find(|d| d.node.node_id == member.node.node_id)).map(|d| d.digest_seq), Some(7), "the copy keeps the read's Digest order of the birth");
+        let mut moved = member.clone();
+        moved.node.transport_addr = "127.0.0.1:12011".parse().unwrap();
+        let by = publisher_of(&born("mesh1", "node-admin", 1, 1));
+        assert!(hear(&mut view.order.lock().unwrap(), &view, &delta_of("mesh2", &by, 10, 11, 11, vec![moved.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
+        assert_eq!(view.copies.lock().unwrap().held_version("mesh2").map(|(_, v)| v), Some(11));
+        assert_eq!(view.digest_view.get(member.node.node_id.as_str()).map(|(d, _)| d.node.transport_addr), Some(moved.node.transport_addr), "the differential moves the member the digest view holds");
     }
 
     /// Two node-admins of mesh1, both Ready: `(lower NodeId, higher NodeId)`, named admin.2 and
