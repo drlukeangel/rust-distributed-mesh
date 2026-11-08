@@ -363,9 +363,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     }
     let handoff = named(&spans, "rdm.node_admin.mesh.update.via-handoff-validated").into_iter().find(|sp| sp["attributes"]["operation"] == "mesh.delete").cloned().expect("the handoff was validated");
     assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-deleted handoff: {handoff}");
-    // The completion follows the validated handoff, at the fabric-primary that owns the mesh.delete.
+    // The completion follows the validated handoff, at the fabric-primary that owns the mesh.delete
+    // (node-rpc-envelope.md: "The fabric-primary answers MeshDeleted Applied or AlreadyApplied after
+    // handoff validation"). The validation releases the owner's workflow once it has decided, inside its
+    // span, and nothing in the span marks the decision: the receipt starts after the validation started,
+    // and the validation's outcome is applied (above). The span ends when the call returns, which the
+    // released workflow may precede.
     let completion = named(&spans, "rdm.node_admin.mesh.update.via-mesh-deleted-receipt").into_iter().find(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).cloned().unwrap_or_else(|| panic!("the fabric-primary recorded mesh.deleted's completion receipt for mesh1"));
-    assert!(start_ns(&completion) >= end_ns(&handoff), "the MeshDeleted step event follows the validated handoff: {completion}");
+    assert!(start_ns(&completion) >= start_ns(&handoff), "the MeshDeleted step event follows the validated handoff: {completion}");
     assert_eq!((attr_u(&completion, "receipts"), attr_u(&completion, "roster"), s(&completion["attributes"]["final_primary_node_id"])), (3, 4, final_id.clone()), "{completion}");
     // The reconcile names the owner's birth (`<node id>/<incarnation>`); the completion its node id.
     assert_eq!(Some(s(&completion["attributes"]["executor"]).as_str()), owner_name.split('/').next(), "the mesh.delete's owner records its completion: {completion}");
