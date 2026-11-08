@@ -131,11 +131,15 @@ impl View {
         // One flag: the view replays as its mesh's primary while the digest view authors its members' statuses.
         view.primary = view.digest_view.primary.clone();
         view.forwarder.lock().unwrap().set_own_mesh(mesh);
+        // One floor per mesh, read from the one copy of it (gossip.md receive rules).
+        *view.order.lock().unwrap() = crate::receive_order::ReceiveOrder::of(view.copies.clone());
         // The MeshLeft receipt is the end of that mesh: the forwarder forgets what it forwarded of it, and
-        // the one copy of it is forgotten, so no read is served a mesh that left (gossip.md "External
-        // topology when a mesh is deleted": "they hold the mesh for the deleted retention and then nothing").
-        let (forwarder, copies) = (view.forwarder.clone(), view.copies.clone());
+        // the one copy of it and its floor are forgotten, so no read is served a mesh that left and nothing
+        // of it orders a frame (gossip.md "External topology when a mesh is deleted": "they hold the mesh
+        // for the deleted retention and then nothing"). Called with no gossip lock held.
+        let (order, forwarder, copies) = (view.order.clone(), view.forwarder.clone(), view.copies.clone());
         *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| {
+            order.lock().unwrap().forget(m);
             forwarder.lock().unwrap().remove(m);
             copies.lock().unwrap().remove(m);
         }));
@@ -268,11 +272,11 @@ impl View {
             (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) => {
                 let kind = if status.status() == "deleting" { StatusEvent::Deleting } else { StatusEvent::Stopped };
                 let op = &traced_by_envelope(f, op);
-                // The mesh-primary that published it, for spans: its envelope's source.
+                // The mesh-primary that published it, for spans: its envelope's source. Its carried
+                // version was checked against its mesh's floor once, in the receive path
+                // ([`crate::receive_order::ReceiveOrder::admit`]), before this handler reads it.
                 let publisher = f.context().map(|c| format!("{}@{}", c.source.node, c.source.incarnation)).unwrap_or_default();
-                if !self.refuses_status_event(kind, op, &publisher, *topology_version, via) {
-                    self.apply_status_event(kind, op, Some((publisher, *topology_version)), via);
-                }
+                self.apply_status_event(kind, op, Some((publisher, *topology_version)), via);
                 Vec::new()
             }
             (StatusSubject::Node(op), _) => {
@@ -299,52 +303,6 @@ impl View {
                 Vec::new()
             }
         }
-    }
-
-    /// Whether the status event `kind` of `op`'s birth, published by `publisher` at
-    /// `topology_version` and heard through `via`, is refused. Whoever published it, the event is
-    /// taken for what it carries (R-RX1): an event published before the newest of its mesh was
-    /// already ignored by the receive path (R-RX3, [`crate::receive_order`]). A `NodeStopped` older
-    /// than a held projection of its mesh that lists the exact birth without the stop is refused
-    /// (node-status-heartbeat-connections.md §C "late stopped after starting"): the projection is the
-    /// mesh's later word on the birth, and the mesh's version orders them, whichever of its
-    /// mesh-primaries or executors published either (Q389, Q391). Only a projection strictly newer than
-    /// the stop's version refuses it: an executor that is not the mesh's primary stamps the version it
-    /// holds of the mesh, which the projection at that version predates, and a mesh-primary's
-    /// projection at its stop's version already carries the stop.
-    pub(crate) fn refuses_status_event(&self, kind: StatusEvent, op: &LifecycleOp, publisher: &str, topology_version: u64, via: &'static str) -> bool {
-        let mesh = op.mesh.as_str();
-        if kind != StatusEvent::Stopped {
-            return false;
-        }
-        let key = (op.node_id.to_string(), op.incarnation.to_string());
-        let copies = self.copies.lock().unwrap();
-        let Some((_, held_version)) = copies.held_version(mesh) else { return false };
-        if held_version <= topology_version {
-            return false;
-        }
-        let Some(full) = copies.held_full(mesh) else { return false };
-        let listed = full.digests().iter().any(|d| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation);
-        if !listed || Target::stops_of(Some(full)).contains(&key) {
-            return false;
-        }
-        drop(copies);
-        crate::receive_order::reject_lifecycle_version(kind.name(), mesh, held_version, topology_version);
-        tracing::info_span!(
-            "rdm.mesh.topology.reject.via-stop-older-than-projection",
-            node = %self.current_name(),
-            subject_path = %op.path, subject_name = %op.name,
-            subject_id = %op.node_id,
-            incarnation_id = %op.incarnation.as_str(),
-            build_id = %op.build_id,
-            operation = %op.operation.action, operation_subject = ?op.operation.subject,
-            publisher = %publisher,
-            topology_version,
-            held_version,
-            via,
-        )
-        .in_scope(|| tracing::info!("a NodeStopped older than the held projection of its mesh, which lists the birth without the stop: refused, the birth started after it"));
-        true
     }
 
     /// Apply the status event `kind` of `op`'s birth to the view: the frame its publisher sent
@@ -438,7 +396,6 @@ impl View {
                         TopologyFrameTaken::default()
                     }
                     Taken::Written(w) => {
-                        order.hold(&w.mesh, w.topology_version, rx.held_full(&w.mesh).and_then(Full::mesh_id));
                         let written = self.written(&w, fabric, side, prior);
                         drop(rx);
                         written
@@ -487,10 +444,9 @@ impl View {
                         )
                         .in_scope(|| tracing::info!("a differential applied at exactly its base version, every chunk of it held"));
                         self.remove_unlisted(mesh, &delta.removed, side, *topology_version);
-                        let full = Full::new(moved, Vec::new(), Vec::new());
+                        let full = Full::new(moved);
                         let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
-                        order.hold(mesh, *topology_version, held_full.and_then(Full::mesh_id));
                         drop(rx);
                         TopologyFrameTaken { carried, ..TopologyFrameTaken::default() }
                     }
@@ -615,7 +571,6 @@ impl View {
         let prior = Prior::of(&rx, &chunk.mesh);
         let taken = rx.take_read_chunk(chunk);
         if let Taken::Written(w) = &taken {
-            order.hold(&w.mesh, w.topology_version, rx.held_full(&w.mesh).and_then(Full::mesh_id));
             self.written(w, fabric, side, prior);
             drop(rx);
             drop(order);
@@ -678,8 +633,7 @@ impl View {
 
     /// Apply the nodes of an aggregate, a read or a delta to the view, each by its status (Q390): a node
     /// listed `deleted` departs for the retention, one listed `stopped` is stopped, one listed
-    /// `deleting` is held under its removal; a differential's open operations and departures, while it
-    /// carries them, the same. Departures first: a digest of a deleted birth in the same list is
+    /// `deleting` is held under its removal. Departures first: a digest of a deleted birth in the same list is
     /// refused. A listed birth this view holds stopped ends its stop only when the source moved, in
     /// order, from a version listing it stopped to this one (`target`); any other entry of it is
     /// refused by name. An own-mesh birth's entry gives its status and nothing else (gossip.md §3.1:
@@ -706,9 +660,6 @@ impl View {
                 for d in full.digests().into_iter().filter(|d| d.status == S::Deleted && &d.fabric_id == fabric) {
                     self.digest_view.depart_listed(&d, at_rafka_ms);
                 }
-                for d in full.deleted() {
-                    self.digest_view.depart(d.clone());
-                }
                 self.digest_view.statuses.forget_mesh(mesh);
                 return Vec::new();
             }
@@ -724,9 +675,6 @@ impl View {
         for d in lifecycle_listed.iter().filter(|d| d.status == S::Deleted) {
             self.digest_view.depart_listed(d, at_rafka_ms);
         }
-        for op in full.deleted() {
-            self.digest_view.depart(op);
-        }
         for d in lifecycle_listed.iter().filter(|d| d.status == S::Stopped) {
             let prior = self.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             if self.digest_view.stopped_listed(d, at_rafka_ms, Some((target.publisher.clone(), target.version))) {
@@ -735,16 +683,6 @@ impl View {
         }
         for d in lifecycle_listed.iter().filter(|d| d.status == S::Deleting) {
             self.digest_view.deleting_listed(d, at_rafka_ms);
-        }
-        for op in full.in_flight() {
-            if op.is_stop() {
-                let prior = self.digest_view.get(op.node_id.as_str()).map(|(h, _)| h.status);
-                if self.digest_view.stopped(op.clone()) {
-                    self.note_member_stopped(&op, prior, side.name());
-                }
-            } else {
-                self.digest_view.deleting(op);
-            }
         }
         self.digest_view.note_stops_carried(target);
         let authors = self.primary.load(Ordering::Relaxed);

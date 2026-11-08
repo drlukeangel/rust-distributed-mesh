@@ -392,8 +392,8 @@ pub(crate) fn traced_by_envelope(f: &Frame, op: &LifecycleOp) -> LifecycleOp {
 
 /// What a peer mesh's primary puts on its own mesh channel for a lifecycle or status frame it
 /// heard on the backbone: the frame, unchanged but for `forwarded_by`, or nothing. A source Mesh's
-/// members are never forwarded as heard: the [`Forwarder`] derives the delta or the stripped full
-/// from the two aggregates the primary holds (gossip.md §3.3). `me` is the forwarding node, `own_mesh`
+/// members are never forwarded as heard: the [`Forwarder`] puts the delta a full wrote to the one copy
+/// of the mesh into its own mesh (gossip.md §3.3, Q409). `me` is the forwarding node, `own_mesh`
 /// its mesh. A status keeps its publisher and its instant: a forwarder never restates one as its
 /// own, and forwards only what its author sent (a replay by a holder is for the backbone only).
 pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
@@ -404,8 +404,6 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleting { op, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), topology_version }),
         Frame::NodeDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeStopped { op, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), topology_version }),
-        Frame::NodeConnectionsDeleting { op, .. } if op.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeConnectionsDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
@@ -438,7 +436,7 @@ pub(crate) fn pack<T: Clone>(items: Vec<T>, frame: impl Fn(Vec<T>) -> Frame) -> 
     });
     for len in refused {
         tracing::info_span!("rdm.mesh.topology.reject.via-item-too-large", frame_bytes = len, limit = MAX_FRAME)
-            .in_scope(|| tracing::warn!("a member, overlay or departure that fits no gossip message on its own: left out"));
+            .in_scope(|| tracing::warn!("an item that fits no gossip message on its own: left out"));
     }
     runs.into_iter().map(|(run, _)| run).collect()
 }

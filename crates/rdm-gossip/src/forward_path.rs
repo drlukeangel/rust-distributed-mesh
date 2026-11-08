@@ -101,14 +101,10 @@ impl ForwardPath {
         now_ms
     }
 
-    /// Hold this primary's publication of its own mesh at `version` for a topology read of it,
-    /// reading `now_ms` inside the forwarder lock as [`Self::source_with_clock`] does: its own nodes
-    /// publish themselves, so nothing is queued.
-    pub(crate) fn hold_own_with_clock(&self, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
-        let mut forwarder = self.forwarder.lock().unwrap();
-        let now_ms = now_ms();
-        forwarder.hold_own(version, full);
-        now_ms
+    /// Hold this primary's publication of its own mesh at `version` for a topology read of it: its own
+    /// nodes publish themselves, so nothing goes on its mesh channel (gossip.md §3.3).
+    pub(crate) fn hold_own(&self, version: u64, full: &Full) {
+        self.forwarder.lock().unwrap().hold_own(version, full);
     }
 
     /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. Under the forwarder's
@@ -333,7 +329,7 @@ mod tests {
         let mut d = digest(1, &ids[0].0, &ids[0].1, 1);
         d.status = if version % 2 == 0 { NodeStatus::Ready } else { NodeStatus::ConnectionsDeleting };
         d.node.transport_addr = format!("127.0.0.1:{}", 42_000 + version).parse().unwrap();
-        Full::new(vec![d], Vec::new(), Vec::new())
+        Full::new(vec![d])
     }
 
     /// The node-admin's one copy of each peer mesh in its topology view (Q409): what a complete full
@@ -649,7 +645,7 @@ mod tests {
         if version > 10 {
             digests[0].status = NodeStatus::ConnectionsDeleting;
         }
-        Full::new(digests, Vec::new(), Vec::new())
+        Full::new(digests)
     }
 
     /// CONTRACT (gossip.md §Size: "a differential that does not fit one message is sent in chunks"):
@@ -698,7 +694,7 @@ mod tests {
         let with_huge = |version: u64| {
             let mut full = source_at(&ids, version).digests();
             full.push(huge.clone());
-            Full::new(full, Vec::new(), Vec::new())
+            Full::new(full)
         };
         let rec = Recorder::default();
         let path = ForwardPath::new(Arc::default(), rec.sink());

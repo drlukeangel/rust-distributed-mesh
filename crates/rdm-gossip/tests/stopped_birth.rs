@@ -170,8 +170,8 @@ fn read_chunks(topology: &[rdm_gossip::aggregate::HeldAggregate], mesh: &str) ->
 /// CONTRACT (gossip.md §3.1 `Digest`, §3.3, Q387: inside its mesh a node's status comes from its own
 /// Digest; its mesh-primary puts nothing of its own mesh on the mesh channel): through real gossip,
 /// mesh1.node.2 holds mesh1.node.1 stopped by the mesh-primary's `NodeStopped`. A late Digest of the
-/// stopped cycle is refused by name, and so is a projection entry of the birth from a read built
-/// before the stop. The stopped node's own Digest of its next cycle, `Pending`, ends the stop, and the
+/// stopped cycle is refused by name, and a read built before the stop is ignored by the receive path,
+/// below the floor the stop raised. The stopped node's own Digest of its next cycle, `Pending`, ends the stop, and the
 /// member holds the birth from it, its status and liveness that Digest's; its later `Ready` moves it.
 /// The mesh-primary ends its own stop by `node.joined` and publishes nothing of mesh1 on mesh1's
 /// channel. Must NOT happen: a Digest of the stopped cycle, or a read from before the stop, ending the
@@ -232,8 +232,8 @@ fn an_own_mesh_node_holding_node_stopped_ends_the_stop_by_the_nodes_next_cycle_d
         until("the member to take NodeStopped", || m.digest_view.in_flight().contains(&stop)).await;
         assert!(m.digest_view.get(id.as_str()).is_none(), "the member dropped the stopped birth");
 
-        // A read built before the stop, delivered after it, at the version the member holds: it lists the
-        // stopped birth from a projection that never carried the stop. Refused by name; the stop stands.
+        // A read built before the stop, delivered after it: its version is below mesh1's floor, which the
+        // stop's NodeStopped raised, so the receive path ignores it by name (`via-stale`). The stop stands.
         for c in read_chunks(&before_stop, "mesh1") {
             let _ = m_channels.take_read_chunk(c, "mesh1");
         }
@@ -271,7 +271,8 @@ fn an_own_mesh_node_holding_node_stopped_ends_the_stop_by_the_nodes_next_cycle_d
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let refused: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
         assert!(refused.iter().any(|s| attr(s, "via") == "heartbeat" && attr(s, "digest_seq") == "2"), "the late heartbeat is refused by name: {refused:#?}");
-        assert!(refused.iter().any(|s| attr(s, "via") == "projection" && attr(s, "held_version") == v1.to_string() && attr(s, "topology_version") == v1.to_string()), "the projection entry from before the stop is refused naming both versions: {refused:#?}");
+        let stale: Vec<&Value> = named(&spans, "rdm.mesh.topology.reject.via-stale").into_iter().filter(|s| attr(s, "frame") == "topology-read").collect();
+        assert!(stale.iter().any(|s| attr(s, "frame_key") == format!("topology_version={v1}") && attr(s, "held_key") != attr(s, "frame_key")), "the read from before the stop is below the floor its NodeStopped raised, ignored naming both versions: {stale:#?}");
         let ended: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-next-cycle-digest").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
         assert_eq!(ended.len(), 1, "the member ended the stop once, by the node's own Digest: {ended:#?}");
         assert_eq!((attr(ended[0], "node"), attr(ended[0], "digest_seq"), attr(ended[0], "status")), ("mesh1.node.2".to_string(), "3".to_string(), "Pending".to_string()));

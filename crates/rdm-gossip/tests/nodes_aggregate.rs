@@ -105,7 +105,7 @@ fn with_removals(m: &Mesh, seq: u64) -> Full {
     for (k, d) in nodes.iter_mut().take(12).enumerate() {
         d.status = if k < 5 { NodeStatus::Deleted } else { NodeStatus::Deleting };
     }
-    Full::new(nodes, vec![], vec![])
+    Full::new(nodes)
 }
 
 /// The birth `p` names, of this cell's fabric: a differential's author.
@@ -183,34 +183,34 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
 
         // ---- 1. topology_version: a material change bumps it, nothing else does ----------------
         let mesh2 = Mesh::new("mesh2", 3);
-        let base = Full::new(mesh2.digests(1), vec![], vec![]);
+        let base = Full::new(mesh2.digests(1));
         let mut v = SourceVersion::default();
         let mut bumps = Vec::new();
         bumps.push(("first projection", v.observe(&base)));
         let mut heartbeat = mesh2.digests(900);
         heartbeat.iter_mut().for_each(|d| d.emitted_at_rafka_ms = 5_000_000);
-        bumps.push(("heartbeats: digest_seq and emitted_at_rafka_ms alone", v.observe(&Full::new(heartbeat.clone(), vec![], vec![]))));
+        bumps.push(("heartbeats: digest_seq and emitted_at_rafka_ms alone", v.observe(&Full::new(heartbeat.clone()))));
         bumps.push(("an unchanged republish", v.observe(&base)));
         let mut connections_deleting = mesh2.digests(2);
         connections_deleting[1].status = NodeStatus::ConnectionsDeleting;
-        bumps.push(("a status routing reads", v.observe(&Full::new(connections_deleting.clone(), vec![], vec![]))));
+        bumps.push(("a status routing reads", v.observe(&Full::new(connections_deleting.clone()))));
         let mut moved = connections_deleting.clone();
         moved[2].node.transport_addr = "127.0.0.1:49999".parse().unwrap();
-        bumps.push(("an endpoint moved", v.observe(&Full::new(moved.clone(), vec![], vec![]))));
+        bumps.push(("an endpoint moved", v.observe(&Full::new(moved.clone()))));
         let mut re_born = moved.clone();
         let next_birth = IncarnationId::mint();
         re_born[0].node.supersedes = Some(re_born[0].node.incarnation.clone());
         re_born[0].node.incarnation = next_birth;
-        bumps.push(("a birth's incarnation changed", v.observe(&Full::new(re_born.clone(), vec![], vec![]))));
+        bumps.push(("a birth's incarnation changed", v.observe(&Full::new(re_born.clone()))));
         // An open removal and a departure are the node's status (Q390).
         let mut deleting = re_born.clone();
         deleting[1].status = NodeStatus::Deleting;
-        bumps.push(("a node listed deleting", v.observe(&Full::new(deleting.clone(), vec![], vec![]))));
+        bumps.push(("a node listed deleting", v.observe(&Full::new(deleting.clone()))));
         let mut listed_deleted = deleting.clone();
         listed_deleted[1].status = NodeStatus::Deleted;
-        bumps.push(("the node listed deleted", v.observe(&Full::new(listed_deleted, vec![], vec![]))));
-        bumps.push(("the deleted node dropped after the retention", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()], vec![], vec![]))));
-        bumps.push(("a birth added", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)], vec![], vec![]))));
+        bumps.push(("the node listed deleted", v.observe(&Full::new(listed_deleted))));
+        bumps.push(("the deleted node dropped after the retention", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone()]))));
+        bumps.push(("a birth added", v.observe(&Full::new(vec![re_born[0].clone(), re_born[2].clone(), member("mesh2", 9, &NodeId::mint(), &IncarnationId::mint(), 1)]))));
         let versions: Vec<u64> = bumps.iter().map(|(_, n)| *n).collect();
         assert_eq!(versions, vec![1, 1, 1, 2, 3, 4, 5, 6, 7, 8], "only material changes bump: {bumps:?}");
         result.insert("topology_version_by_observation".into(), json!(bumps.iter().map(|(w, n)| json!({ "observation": w, "topology_version": n })).collect::<Vec<_>>()));
@@ -265,8 +265,8 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         assert!(rx.desynced().is_empty());
 
         // Interleaved aggregates of one source: the newer one wins, the stale partial never installs.
-        let newer = topology_full_chunks(&Full::new(big.digests(5), vec![], vec![]), &p, 7, 11);
-        let older = topology_full_chunks(&Full::new(big.digests(4), vec![], vec![]), &p, 6, 10);
+        let newer = topology_full_chunks(&Full::new(big.digests(5)), &p, 7, 11);
+        let older = topology_full_chunks(&Full::new(big.digests(4)), &p, 6, 10);
         assert!(older.len() > 1 && newer.len() > 1);
         assert!(matches!(rx.take_chunk(chunk_of(&older[0])), Taken::Waiting { .. }));
         assert!(matches!(rx.take_chunk(chunk_of(&newer[0])), Taken::Waiting { .. }), "a newer aggregate drops the stale partial");
@@ -286,7 +286,7 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         // A new aggregate publication at the held material version is fresh hearing evidence.
         // Its heartbeat sequence may advance without a topology change; only its exact repeat is
         // a duplicate. An equal version with different material content remains inconsistent.
-        let again = topology_full_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13);
+        let again = topology_full_chunks(&Full::new(big.digests(6)), &p, 7, 13);
         let mut refreshed = None;
         for c in &again {
             if let Taken::Written(i) = rx.take_chunk(chunk_of(c)) { refreshed = Some(*i); }
@@ -306,7 +306,7 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         let f7 = rx.held_full("mesh2").unwrap().clone();
         let mut changed_member = big.digests(7);
         changed_member[3].status = NodeStatus::ConnectionsDeleting;
-        let f8 = Full::new(changed_member.clone(), vec![], vec![]);
+        let f8 = Full::new(changed_member.clone());
         let d78 = f7.delta_to(&f8);
         assert_eq!((d78.added.len(), d78.changed.len(), d78.removed.len()), (0, 1, 0), "one remote change is one changed member");
         assert_eq!(d78.changed[0].node_id, changed_member[3].node.node_id);
@@ -328,14 +328,14 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 9)));
         let mut f10 = changed_member.clone();
         f10[0].status = NodeStatus::Pending;
-        let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10.clone(), vec![], vec![]));
+        let d9_11 = Full::new(f8.digests()).delta_to(&Full::new(f10.clone()));
         assert!(matches!(rx.take_delta("mesh2", &author_of(&p), 9, 11, &d9_11), Moved::Applied { topology_version: 11, .. }), "the primary's next delta continues from the baseline");
         // A new mesh-primary of mesh2 continues the mesh's version (Q389, Q391): its delta at the held
         // base applies, whoever sent the one before, and a full of it below the held version is refused.
         let successor = publisher("mesh2.node-admin.2");
         let mut f12 = f10.clone();
         f12[0].status = NodeStatus::Ready;
-        let d11_12 = Full::new(f10.clone(), vec![], vec![]).delta_to(&Full::new(f12, vec![], vec![]));
+        let d11_12 = Full::new(f10.clone()).delta_to(&Full::new(f12));
         assert!(matches!(rx.take_delta("mesh2", &author_of(&successor), 11, 12, &d11_12), Moved::Applied { topology_version: 12, .. }), "the mesh's version, whichever mesh-primary sent it");
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 12)));
         for c in &topology_full_chunks(&f8, &successor, 1, 1) {
@@ -345,7 +345,7 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
 
         // A chunk lost for good: the incomplete aggregate is never applied, and the top-up from the
         // Mesh's own primary completes the picture; the straggler chunks that follow install nothing.
-        let lossy = topology_full_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 18, 14);
+        let lossy = topology_full_chunks(&Full::new(big.digests(8)), &successor, 18, 14);
         assert!(lossy.len() > 2);
         for (k, c) in lossy.iter().enumerate() {
             if k != 1 {
@@ -361,9 +361,9 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         assert!(matches!(late, Taken::Waiting { .. } | Taken::Refused(_)), "the straggler installs nothing: {late:?}");
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 18)));
         // A newer aggregate supersedes an incomplete one.
-        let lossy2 = topology_full_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 19, 15);
+        let lossy2 = topology_full_chunks(&Full::new(big.digests(9)), &successor, 19, 15);
         assert!(matches!(rx.take_chunk(chunk_of(&lossy2[0])), Taken::Waiting { .. }));
-        let newest = topology_full_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 20, 16);
+        let newest = topology_full_chunks(&Full::new(big.digests(10)), &successor, 20, 16);
         let mut done = None;
         for c in &newest {
             if let Taken::Written(i) = rx.take_chunk(chunk_of(c)) {
@@ -376,10 +376,10 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 20)));
 
         // ---- 5. the forwarding node-admin: one copy, a full writes only its delta (Q409) ----------
-        let f41 = Full::new(mesh2.digests(10), vec![], vec![]);
+        let f41 = Full::new(mesh2.digests(10));
         let mut d43 = mesh2.digests(900);
         d43[1].status = NodeStatus::ConnectionsDeleting;
-        let f43 = Full::new(d43, vec![], vec![]);
+        let f43 = Full::new(d43);
         let mut fwd = Forwarder::default();
         let forwarder = author_of(&publisher("mesh1.node-admin.1"));
         fwd.set_author(forwarder.clone());
@@ -418,7 +418,7 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         // A heartbeat-only Mesh writes no delta and forwards nothing; an older version is refused by the copy.
         let mut beating = mesh2.digests(5_000);
         beating[1].status = NodeStatus::ConnectionsDeleting;
-        let heard = write(&mut copy, 43, &Full::new(beating, vec![], vec![]));
+        let heard = write(&mut copy, 43, &Full::new(beating));
         assert!(heard.refreshed && heard.delta.is_empty(), "a republication of the version held writes nothing");
         assert!(matches!(fwd.source("mesh1.node-admin.1", &heard, 3), Forward::Nothing(_)));
         assert!(matches!(copy.take_chunk(chunk_of(&topology_full_chunks(&f41, &mesh2_primary, 40, 99)[0])), Taken::Refused(rdm_gossip::aggregate::Refusal::OlderThanHeld { held_version: 43, offered_version: 40 })));
@@ -426,7 +426,7 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         assert!(matches!(fwd.source("mesh1.node-admin.1", &write(&mut copy, 44, &f43), 3), Forward::Nothing(_)));
         let mut d45 = f43.digests();
         d45[0].status = NodeStatus::Pending;
-        let f45 = Full::new(d45, vec![], vec![]);
+        let f45 = Full::new(d45);
         let Forward::Delta(next) = fwd.source("mesh1.node-admin.1", &write(&mut copy, 45, &f45), 4) else { panic!("a further move is a delta") };
         let (_, _, base, to, _) = delta_of(&next);
         assert_eq!((base, to), (43, 45), "the base stays the last version published into the Mesh");
@@ -437,24 +437,24 @@ fn members_receiver_commits_complete_aggregate_before_advancing_version() {
         assert!(matches!(fwd.source("mesh1.node-admin.2", &write(&mut copy, 45, &f45), 5), Forward::Nothing(_)), "the version the Mesh holds is not sent again");
         let mut d46 = f45.digests();
         d46[0].status = NodeStatus::Ready;
-        let f46 = Full::new(d46, vec![], vec![]);
+        let f46 = Full::new(d46);
         let Forward::Delta(after_take) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 46, &f46), 6) else { panic!("taking the role: a differential from the copy held") };
         let (_, _, take_base, take_to, _) = delta_of(&after_take);
         assert_eq!((take_base, take_to), (45, 46));
         // A differential that does not fit one message is sent in chunks (gossip.md §Size), each within
         // one message, and the next one is from its version.
         let huge = Mesh::new("mesh2", 200);
-        let Forward::Delta(chunked) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 47, &Full::new(huge.digests(1), vec![], vec![])), 7) else { panic!("200 additions go in, in chunks") };
+        let Forward::Delta(chunked) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 47, &Full::new(huge.digests(1))), 7) else { panic!("200 additions go in, in chunks") };
         assert!(chunked.len() > 1 && chunked.iter().all(|c| c.encode().len() <= MAX_FRAME), "200 additions do not fit one message: {} chunk(s), each within one", chunked.len());
         let (_, _, chunked_base, chunked_to, chunked_parts) = delta_of(&chunked);
         assert_eq!((chunked_base, chunked_to, chunked_parts.added.len()), (46, 47, 200), "every addition, across the chunks");
         let mut churned = huge.digests(2);
         churned.iter_mut().for_each(|d| d.status = NodeStatus::ConnectionsDeleting);
-        let Forward::Delta(statuses) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 48, &Full::new(churned.clone(), vec![], vec![])), 8) else { panic!("200 status changes go in") };
+        let Forward::Delta(statuses) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 48, &Full::new(churned.clone())), 8) else { panic!("200 status changes go in") };
         let (_, _, statuses_base, statuses_to, statuses_parts) = delta_of(&statuses);
         assert_eq!((statuses_base, statuses_to, statuses_parts.changed.len(), statuses_parts.added.len()), (47, 48, 200, 0), "a status change carries the birth and its status only");
         churned[0].status = NodeStatus::Ready;
-        let Forward::Delta(small) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 49, &Full::new(churned, vec![], vec![])), 9) else { panic!("a move that fits is sent") };
+        let Forward::Delta(small) = fwd.source("mesh1.node-admin.2", &write(&mut copy, 49, &Full::new(churned)), 9) else { panic!("a move that fits is sent") };
         let (_, _, small_base, small_to, _) = delta_of(&small);
         assert_eq!((small.len(), small_base, small_to), (1, 48, 49), "one status change is one chunk, from the version before");
         result.insert(
@@ -624,7 +624,7 @@ fn a_primary_serves_a_peer_source_it_wrote_from_a_topology_read_from_its_one_cop
         // backbone publication of mesh2 ever reaches this node-admin.
         let src = publisher("mesh2.node-admin.1");
         let remote = Mesh::new("mesh2", 5);
-        let full = Full::new(remote.digests(1), vec![], vec![]);
+        let full = Full::new(remote.digests(1));
         let mut taken = None;
         for f in topology_full_chunks(&full, &src, 3, 0) {
             taken = Some(fwd_m_channels.take_read_chunk(Chunk { author: None, ..chunk_of(&f) }, "mesh2"));

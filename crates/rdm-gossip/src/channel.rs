@@ -253,14 +253,15 @@ pub(crate) struct Channel {
     pub(crate) clock: SharedClock,
 }
 
-/// Classify the families whose ordering state ReceiveOrder holds. Lifecycle identities are
-/// recorded before their carried revision is judged, even on a revision refusal. Digest is
-/// classified once, against its installed content under the digest view's lock; it has no
-/// second receive-history floor. Every ordering refusal is named via-stale.
+/// The one ordering check of the receive path (gossip.md receive rules): a frame whose
+/// `topology_version` is below its mesh's floor ([`crate::receive_order::ReceiveOrder`]) is ignored by
+/// name (`via-stale`) before any handler reads it, for every kind that carries one. A lifecycle fact's
+/// repeat runs no effect twice: its handler holds the operation's record
+/// ([`crate::receive_order::admit_overlay`]). Digest is classified once, against its held content
+/// under the digest view's lock; it has no second receive-history floor.
 pub(crate) fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str) -> bool {
-    let first_fact = order.admit_lifecycle_identity(f);
     match order.admit(f) {
-        Ok(()) => first_fact,
+        Ok(()) => true,
         Err(e) => {
             tracing::info_span!(
                 "rdm.mesh.topology.reject.via-stale",
@@ -368,10 +369,10 @@ impl Channel {
                                         }
                                         received.fetch_add(1, Ordering::Relaxed);
                                         // The one ordering check of the receive path (R-RX3), against the
-                                        // node's one held version per source, shared by every channel and
-                                        // the topology-read install: a frame received after a newer one of
-                                        // its source is ignored, by name, before any handler reads it. The
-                                        // check and what the handler installs are one hold of it.
+                                        // node's one floor per mesh, shared by every channel and the
+                                        // topology reads: a frame received after a newer one of its mesh is
+                                        // ignored, by name, before any handler reads it. The check and what
+                                        // the handler writes are one hold of it.
                                         let receipt = match f.data() {
                                             Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
                                                 "rdm.mesh.topology.update.via-lifecycle-receipt",
@@ -1299,7 +1300,7 @@ impl Channels {
     /// node-admin holding a birth of its mesh with no runtime fact (Q400). With no live primary to
     /// pull from (its primary record names a birth proven gone, or this node is its mesh's primary), a
     /// node-admin handed `records` takes those runtime facts from the births' node records instead
-    /// (Q404 A), `true` while one is still owed.
+    /// (Q404 A), `true` while one is still without its fact.
     pub(crate) async fn top_up(&self, fetch: &TopUpFetch, records: Option<&NodeRecordRead>, gaps: Vec<(String, Gap)>) -> bool {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
@@ -1310,8 +1311,8 @@ impl Channels {
             Err(no) => {
                 tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), primary = %no.primary().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
                     .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
-                // A primary proven gone holds nothing to read: a node-admin takes the runtime facts it is
-                // owed from the births' node records (Q404 A).
+                // A primary proven gone holds nothing to read: a node-admin takes the runtime facts
+                // it holds none of from the births' node records (Q404 A).
                 return match (&no, records) {
                     (NoMeshPrimary::PrimaryGone { .. }, Some(read)) => self.topology_view.runtimes_from_node_records(read, no.reason()).await,
                     _ => false,
@@ -1320,7 +1321,7 @@ impl Channels {
         };
         // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
         // publishes and every peer mesh from the copy its backbone fulls write (Q409). It takes the
-        // runtime facts it is owed from the births' node records (Q404 A).
+        // runtime facts it holds none of from the births' node records (Q404 A).
         if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node.node_id.as_str()) {
             const REASON: &str = "this-node-is-the-mesh-primary";
             tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = REASON)
@@ -1336,8 +1337,8 @@ impl Channels {
                 // A node-admin that still holds a birth of its mesh with no runtime fact once the read is
                 // written (its mesh-primary held none of it yet) keeps its own mesh desynchronized: it
                 // pulls again, on the one backoff rule, until a read supplies the fact (Q400).
-                let owed = if self.topology_view.view.reads_runtime_facts() { self.topology_view.digest_view.without_runtime_fact(&mesh) } else { Vec::new() };
-                if !owed.is_empty() {
+                let without_fact = if self.topology_view.view.reads_runtime_facts() { self.topology_view.digest_view.without_runtime_fact(&mesh) } else { Vec::new() };
+                if !without_fact.is_empty() {
                     self.topology_view.view.copies.lock().unwrap().mark_desynced(&mesh, Gap::NoRuntimeFact);
                 }
                 let still: Vec<String> = self.topology_view.desynced_sources().into_iter().map(|(m, _)| m).collect();
@@ -1351,7 +1352,7 @@ impl Channels {
                     served_by_path = %primary.node.path, served_by_name = %primary.node.name,
                     written = done.written.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
-                    runtime_facts_owed = owed.len(),
+                    without_runtime_fact = without_fact.len(),
                     pulls_again = behind,
                 )
                 .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));

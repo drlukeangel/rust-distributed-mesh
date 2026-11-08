@@ -64,37 +64,34 @@ fn node_command_frames_match_the_frozen_wire_schema() {
     assert_eq!(Frame::NodeRestarting { op: op("node.restart"), forwarded_by: None, publisher: publisher(), topology_version: 1 }.type_position(), 5);
 }
 
-/// CONTRACT: a peer mesh's primary forwards a command or completion frame onto its own channel,
-/// preserving the op and naming itself; the frame's own mesh hears the original and forwards
-/// nothing. `NodeLeaving` and `NodeLeft` are reserved positions (gossip.md frame catalog): never forwarded.
+/// CONTRACT (gossip.md frame catalog: the reserved positions, "None is published. Each type is refused
+/// before data decode as via-reserved"): a peer mesh's primary forwards a lifecycle fact it heard on the
+/// backbone onto its own channel, preserving the op and naming itself; the fact's own mesh hears the
+/// original and forwards nothing. No reserved frame (`NodeConnectionsDeleting`, `NodeConnectionsDeleted`,
+/// `NodeLeaving`, `NodeLeft`, `NodeRestarting`) is ever forwarded. Must NOT happen: a reserved frame
+/// forwarded into a mesh (code audit 2026-11-08 round 2, N7).
 #[test]
-fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() {
-    for original in [
-        Frame::NodeConnectionsDeleting { op: op("node.connections.delete"), forwarded_by: None },
-        Frame::NodeConnectionsDeleted { op: op("node.connections.delete"), forwarded_by: Some("mesh1.node-admin.1".into()) },
-    ] {
-        let forwarded = forward_of(original.clone(), "mesh2.node-admin.1", "mesh2").expect("a peer mesh forwards it");
-        let (want_op, kind) = match &original {
-            Frame::NodeConnectionsDeleting { op, .. } => (op.clone(), 9u8),
-            Frame::NodeConnectionsDeleted { op, .. } => (op.clone(), 12),
-            _ => unreachable!(),
-        };
-        assert_eq!(forwarded.type_position(), kind);
-        match forwarded {
-            Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
-                assert_eq!(op, want_op, "the op is preserved");
-                assert_eq!(forwarded_by.as_deref(), Some("mesh2.node-admin.1"));
-            }
-            other => panic!("{other:?}"),
+fn a_peer_mesh_primary_forwards_a_lifecycle_fact_and_no_reserved_frame() {
+    let original = Frame::NodeStopped { op: op("node.stop"), forwarded_by: None, topology_version: 3 };
+    let forwarded = forward_of(original.clone(), "mesh2.node-admin.1", "mesh2").expect("a peer mesh forwards it");
+    match forwarded {
+        Frame::NodeStopped { op: carried, forwarded_by, topology_version } => {
+            assert_eq!((carried, topology_version), (op("node.stop"), 3), "the op and its version are preserved");
+            assert_eq!(forwarded_by.as_deref(), Some("mesh2.node-admin.1"));
         }
-        assert!(forward_of(original, "mesh1.node-admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
+        other => panic!("{other:?}"),
     }
-    let left = Frame::NodeLeft { op: op("node.stop"), forwarded_by: Some("mesh1.node-admin.1".into()) };
-    assert!(forward_of(left, "mesh2.node-admin.1", "mesh2").is_none(), "NodeLeft is refused and never forwarded");
-    let leaving = Frame::NodeLeaving { op: op("node.stop"), forwarded_by: None };
-    assert!(forward_of(leaving, "mesh2.node-admin.1", "mesh2").is_none(), "NodeLeaving is refused and never forwarded");
-    let restarting = Frame::NodeRestarting { op: op("node.restart"), forwarded_by: None, publisher: publisher(), topology_version: 1 };
-    assert!(forward_of(restarting, "mesh2.node-admin.1", "mesh2").is_none(), "NodeRestarting is reserved (Q183) and never forwarded");
+    assert!(forward_of(original, "mesh1.node-admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
+    let reserved = [
+        ("NodeConnectionsDeleting", Frame::NodeConnectionsDeleting { op: op("node.connections.delete"), forwarded_by: None }),
+        ("NodeConnectionsDeleted", Frame::NodeConnectionsDeleted { op: op("node.connections.delete"), forwarded_by: Some("mesh1.node-admin.1".into()) }),
+        ("NodeLeft", Frame::NodeLeft { op: op("node.stop"), forwarded_by: Some("mesh1.node-admin.1".into()) }),
+        ("NodeLeaving", Frame::NodeLeaving { op: op("node.stop"), forwarded_by: None }),
+        ("NodeRestarting", Frame::NodeRestarting { op: op("node.restart"), forwarded_by: None, publisher: publisher(), topology_version: 1 }),
+    ];
+    for (name, frame) in reserved {
+        assert!(forward_of(frame, "mesh2.node-admin.1", "mesh2").is_none(), "{name} is reserved and never forwarded");
+    }
 }
 
 /// CONTRACT: `MeshLeaving` is variant 14, `MeshLeave` 15 and `MeshLeft` 16, appended after

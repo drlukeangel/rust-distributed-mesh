@@ -344,7 +344,7 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
 }
 
 /// Retained events carried by a directed join answer use the same envelope, preserving source
-/// and status sequence through read installation without another context schema.
+/// and status sequence through a read's write without another context schema.
 pub mod frames {
     use super::*;
     use serde::{Serializer, Deserializer, ser::Error as _, de::Error as _};

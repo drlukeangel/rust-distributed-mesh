@@ -141,7 +141,7 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     result.insert("frame_variants_round_tripped".into(), json!(all_frames.len()));
 
     let members: Vec<MeshDigest> = (1..=150).map(|k| if k % 2 == 0 { primary(k) } else { digest(k, k % 3 == 0) }).collect();
-    let full = Full::new(members.clone(), Vec::new(), Vec::new());
+    let full = Full::new(members.clone());
     let chunks = chunks_of(&full, |nodes, chunk_index, chunk_count| Frame::TopologyFull {
         mesh: "mesh1".into(),
         mesh_id: None,

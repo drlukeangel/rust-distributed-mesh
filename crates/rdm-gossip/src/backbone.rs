@@ -49,9 +49,9 @@ pub struct Backbone {
     pub(crate) published_wake: Arc<tokio::sync::Notify>,
     /// The version counter of this Mesh's topology, and the complete projection it was last bumped on.
     pub(crate) version: Arc<Mutex<SourceVersion>>,
-    /// This Mesh as the mesh topology last published it (version, full), whichever term of the role
-    /// published it.
-    pub(crate) own: Arc<Mutex<Option<(u64, Full)>>>,
+    /// The version of this Mesh the mesh topology last published, whichever term of the role published
+    /// it: a status event stamped a version past it goes out at once ([`Self::publication_wake`]).
+    pub(crate) published_version: Arc<Mutex<Option<u64>>>,
     /// Test seam ([`Backbone::withhold_announcements`]): asked before each announcement this
     /// [`Withhold`] covers is handed to a channel. The product sets none.
     pub(crate) withhold: Arc<std::sync::OnceLock<Withhold>>,
@@ -217,7 +217,7 @@ impl Backbone {
             published_as_primary: Arc::default(),
             published_wake: Arc::default(),
             version: Arc::new(Mutex::new(SourceVersion::with_publication_counter(channels.topology_view.view.forwarder.lock().unwrap().publication_counter()))),
-            own: Arc::default(),
+            published_version: Arc::default(),
             withhold: Arc::default(),
         };
         me.spawn_status_sender();
@@ -404,9 +404,10 @@ impl Backbone {
     /// §3.1, Q390): the envelope's `sequence`, its author this birth and its time the publication's
     /// Rafka-time. The version bumps when
     /// the normalized projection changed since the last publication and never otherwise, so a quiet Mesh
-    /// republishes the same version as passive anti-entropy. The same projection is this Mesh's
-    /// own source: what its members need of it goes into the Mesh as a delta or a full. A status
-    /// is not part of a publication: [`Backbone::announce_statuses`] sends one when it changes.
+    /// republishes the same version as passive anti-entropy. The same projection is what a topology
+    /// read of this mesh is served here; nothing of it goes on this mesh's channel, whose nodes publish
+    /// themselves (gossip.md §3.3). A status is not part of a publication:
+    /// [`Backbone::announce_statuses`] sends one when it changes.
     /// Returns whether it published: `false` when this node does not hold the publisher role, and
     /// nothing was sent.
     pub async fn publish(&self, topology_view: &TopologyView, members: Vec<MeshDigest>) -> bool {
@@ -415,11 +416,10 @@ impl Backbone {
         }
         let me_name = self.current_name();
         let publisher = self.current_publisher();
-        // The list is read, versioned, stamped and queued onto this mesh's own channel under one hold
-        // of the version (gossip.md §3.1: the publisher reads the envelope's `time` in the same
-        // critical section that assigns the version, so a version's stamp is never earlier than the
-        // one before it): a status event stamped in between ([`Backbone::publish_status_event`]) or a
-        // neighbour-up replay on the mesh channel is either wholly before it or wholly after.
+        // The list is read, versioned and stamped under one hold of the version (gossip.md §3.1: the
+        // publisher reads the envelope's `time` in the same critical section that assigns the version,
+        // so a version's stamp is never earlier than the one before it): a status event stamped in
+        // between ([`Backbone::publish_status_event`]) is either wholly before it or wholly after.
         let (full, version, sent, bumped) = {
             let mut v = self.version.lock().unwrap();
             let before = v.version();
@@ -433,14 +433,13 @@ impl Backbone {
             // What this primary publishes is its floor for its own source (gossip.md receive rules:
             // "against the mesh's held floor, including a topology read"), moved under the same hold.
             self.channels.topology_view.view.order.lock().unwrap().published(&self.mesh, version);
-            *self.own.lock().unwrap() = Some((version, full.clone()));
-            // Test seam: the projection withheld from its own mesh's channel ([`Withhold`] `aggregate`,
-            // `mesh`): nothing is put into the mesh.
-            let sent = if self.withholds("aggregate", "mesh") {
-                topology_view.clock.now_rafka_ms()
-            } else {
-                self.channels.forward_path.hold_own_with_clock(version, &full, || topology_view.clock.now_rafka_ms())
-            };
+            *self.published_version.lock().unwrap() = Some(version);
+            // What a topology read of this mesh is served from now on. Test seam: the publication withheld
+            // from its own mesh ([`Withhold`] `aggregate`, `mesh`): a read is served the one before it.
+            if !self.withholds("aggregate", "mesh") {
+                self.channels.forward_path.hold_own(version, &full);
+            }
+            let sent = topology_view.clock.now_rafka_ms();
             (full, version, sent, version != before)
         };
         if bumped {
@@ -461,11 +460,15 @@ impl Backbone {
         .into_iter()
         .filter(|_| !withheld)
         {
-            let _ = self.channel.broadcast(&frame).await;
+            // Best-effort dissemination (R-NS2): a chunk not sent is named, never sent again; the next
+            // publication carries the mesh again.
+            if let Err(e) = self.channel.broadcast(&frame).await {
+                tracing::info_span!("rdm.mesh.backbone.reject.via-publication-unsent", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, error = %e)
+                    .in_scope(|| tracing::info!("a chunk of this mesh's publication was not sent on the backbone: the next publication carries the mesh again"));
+            }
         }
         // The first publication after the role was taken is the successor's first act (elections §4.1):
-        // its mesh's aggregate on the backbone names it mesh-primary; its own mesh's update was queued
-        // above and goes out asynchronously.
+        // its mesh's aggregate on the backbone names it mesh-primary.
         if !self.published_as_primary.swap(true, Ordering::Relaxed) {
             tracing::info_span!("rdm.mesh.backbone.update.via-primary-aggregate", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, withheld)
                 .in_scope(|| tracing::info!("the mesh-primary's first aggregate on the backbone since it took the role"));
@@ -494,7 +497,7 @@ impl Backbone {
             in_flight.retain(|op| op.is_stop() || &op.node_id != last_id);
         }
         let nodes = topology_view.digest_view.aggregate_nodes(&self.mesh, members, &in_flight, &deleted);
-        Full::new(nodes, Vec::new(), Vec::new()).of_mesh(Some(topology_view.mesh_id().clone()))
+        Full::new(nodes).of_mesh(Some(topology_view.mesh_id().clone()))
     }
 
     /// Resolves when the next publication is due: at `deadline`, the anti-entropy timer, or
@@ -515,7 +518,7 @@ impl Backbone {
             primaries.borrow_and_update();
             if self.publishing.load(Ordering::Relaxed) {
                 let full = self.own_full(topology_view, self.own_members(topology_view));
-                let published = self.own.lock().unwrap().as_ref().map(|(v, _)| *v).unwrap_or(0);
+                let published = self.published_version.lock().unwrap().unwrap_or(0);
                 let (moved, held) = {
                     let v = self.version.lock().unwrap();
                     // A status event stamped a version no publication has carried yet: the projection
