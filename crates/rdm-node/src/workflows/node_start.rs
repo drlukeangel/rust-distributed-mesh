@@ -256,8 +256,9 @@ pub trait AfterHook: Send + 'static {
         step.record("outcome", "this node holds no Build log: it owes no Build floor");
     }
 
-    /// node.started: the type's report once every step before it ended.
-    async fn report(self: Box<Self>);
+    /// node.started: the type's report once every step before it ended. A report its own record does not
+    /// take (its Ready not recorded, Q356) is the start's failed step, answered as any other is.
+    async fn report(&mut self) -> Result<(), StartFailed>;
 
     /// A step after the hook failed, or a start after a stop ended Failed at the hook: `inside` the
     /// start (which answers the failure; the kind ends what the start brought up), or in the task a
@@ -520,7 +521,9 @@ impl AfterTheHook {
             drop(step);
         }
         // 5. node.started.
-        after.report().await;
+        if let Err(failed) = after.report().await {
+            return Err((failed, after));
+        }
         if let Some(driver) = driver {
             driver.spawn_on_node_ready();
         }
@@ -644,8 +647,9 @@ mod tests {
             step.record("outcome", "unit-cell-floor-checked");
         }
 
-        async fn report(self: Box<Self>) {
+        async fn report(&mut self) -> Result<(), StartFailed> {
             self.steps.lock().unwrap().push("report");
+            Ok(())
         }
     }
 

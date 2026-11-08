@@ -247,19 +247,8 @@ impl NodeConfigs {
         writer.update(initial, change, |_| {}).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
-    /// Write `to` as this admin's own state on its own record (Q356; [`rdm_node::nodes_storage::NodeRecord::set_state`]),
-    /// before it publishes or declares it. A state its record holds already, or one its order refuses,
-    /// writes nothing.
-    pub async fn own_state(&self, to: crate::model::NodeStatus) -> Result<(), String> {
-        let Some(writer) = self.own_properties.get() else {
-            return Err("its own property writer is not bound".into());
-        };
-        let initial = writer.start_record().ok_or("its start has not written its record yet")?;
-        writer.state(initial, to).await.map(|_| ()).map_err(|e| e.to_string())
-    }
-
-    /// This admin's own property writer, once its start bound it: what its `NodeSelf` writes each state
-    /// of a stop and a start through (Q356).
+    /// This admin's own property writer, once its start bound it: what every status it moves itself to
+    /// is written through, by the one status move (`rdm_node::node_self::write_own_status`, Q356).
     pub fn own_writer(&self) -> Option<rdm_node::node_records::NodePropertyWriter> {
         self.own_properties.get().cloned()
     }

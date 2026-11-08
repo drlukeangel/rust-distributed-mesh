@@ -359,8 +359,8 @@ impl NodeSelf {
         *self.records.lock().unwrap() = Some(records);
     }
 
-    /// Write `to` as this birth's status on its own record (Q356) under one `Send`
-    /// ([`crate::node_records::NodePropertyWriter::write_status`]), before the frame that reports it,
+    /// Write `to` as this birth's status on its own record (Q356) under one `Send`, through the one
+    /// status move ([`write_own_status`]), before the frame that reports it,
     /// and publish the status the record then holds at once in its Digest (gossip.md §3.1 `Digest`: "at
     /// once when its status changes"): the one status its record, its Digest and its answers carry. A
     /// write refused or whose `Send` is spent moves nothing: the Digest keeps the record's last status,
@@ -368,18 +368,17 @@ impl NodeSelf {
     /// with nothing recorded to differ from. A Digest sent while the birth is on no channel reaches
     /// nobody; its heartbeats carry the status once it is.
     async fn write_state(&self, to: crate::model::NodeStatus) {
+        if let Ok(d) = self.record_state(to).await {
+            let _ = self.channels.publish(&d).await;
+        }
+    }
+
+    /// [`Self::write_state`]'s record write and status set, without the publish: the Digest carrying the
+    /// status the record holds, for a caller that publishes it elsewhere first (a stop's last mesh
+    /// topology). `Err` when the write was refused or its `Send` spent, named on the writer's span.
+    async fn record_state(&self, to: crate::model::NodeStatus) -> Result<MeshDigest, StatusUnwritten> {
         let writer = self.records.lock().unwrap().clone();
-        let held = match writer {
-            Some(writer) => writer.write_status(to).await,
-            None => None,
-        };
-        let status = match held {
-            None => to,
-            Some(Ok(held)) => held,
-            Some(Err(_)) => return,
-        };
-        let d = (self.set_status)(status);
-        let _ = self.channels.publish(&d).await;
+        write_own_status(writer.as_ref(), to, |_| {}, |status| (self.set_status)(status)).await
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -780,17 +779,16 @@ impl NodeSelf {
         let (node, node_id, incarnation) = (self.node_id.clone(), self.node_id.clone(), self.incarnation.clone());
         let commander_name = named(commander);
         let all = matches!(scope, ConnectionScope::All);
-        let own = self.records.lock().unwrap().clone();
         let report = {
             let sink = sink.clone();
-            let own = own.clone();
+            let me = self.clone();
             move || async move {
-                // The node's own record first (Q356): connections-deleting before its report, under one
-                // `Send`; a refusal or a spent `Send` is named on the writer's `via-status` span.
-                if let (true, Some(writer)) = (all, own) {
-                    if let Some(Err(end)) = writer.write_status(crate::model::NodeStatus::ConnectionsDeleting).await {
-                        tracing::info!(node = %node, %end, "connections-deleting is not written on this node's record; the report still goes on the command's stream");
-                    }
+                // The node's own record first (Q356), then its Digest at once (gossip.md §3.1: its
+                // connections-deleting reaches its own mesh in its own Digest): before its report, under
+                // one `Send`; a refusal or a spent `Send` is named on the writer's `via-status` span and
+                // moves neither, and the report still goes on the command's stream.
+                if all {
+                    me.write_state(crate::model::NodeStatus::ConnectionsDeleting).await;
                 }
                 // The span opens before the report leaves, so it starts before whatever the report causes
                 // (an in-process recorder may take it before the send returns).
@@ -954,9 +952,8 @@ impl NodeSelf {
             "otel.kind" = "internal"
         );
         async {
-            // The primitive's progress, `leaving`, from its command until the mesh is left: nothing
-            // publishes it, in that state or after it (node-mesh-leave.md).
-            let _ = (self.set_status)(rdm_core::model::NodeStatus::Leaving);
+            // The primitive's progress, `leaving`, is on the record from its command (the stop's step
+            // before this one) until the mesh is left.
             let session = self.session.lock().unwrap().clone();
             let report = match &session {
                 Some(session) => session.cut(spare, mesh_primary).await,
@@ -1017,10 +1014,10 @@ impl NodeSelf {
             }
             *cycle = Cycle::Starting { outcome: outcome_rx.clone(), commander: Some(commander_tx), calls: vec![key] };
         }
-        // The birth leaves the channels it is on and says Pending: its hook gates its app ops again,
-        // and it is published Ready only once the hook has passed.
+        // The birth leaves the channels it is on: its hook gates its app ops again, it writes pending at
+        // its accepted join (node-mesh-join.md step 10, its session's channel entry), and it is
+        // published Ready only once the hook has passed.
         session.leave_channels().await;
-        let _ = (self.set_status)(rdm_core::model::NodeStatus::Pending);
         self.server.resume();
         self.admit_new_connections();
         let birth_cancel = match &self.birth_cancel {
@@ -1121,10 +1118,6 @@ impl NodeSelf {
                     commander = %named(commander.as_ref()), state = "Stopped", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
                 let (receipt, _) = self.stop_steps(StopBy::Command { commander: commander.as_ref(), spare, op: &op, progress: progress.clone() }).instrument(span.clone()).await;
-                // Its Stopped on its own record before node.stopped answers (node-stop.md "Completion":
-                // the matching node.stopped and the stop recorded on the node record; Q356). The owed
-                // declaration then finds it written.
-                self.write_state(crate::model::NodeStatus::Stopped).await;
                 span.record("receipt", receipt.name());
                 *self.cycle.lock().unwrap() = Cycle::Stopped(receipt.clone());
                 let _ = tx.send(Some(receipt.clone()));
@@ -1173,12 +1166,18 @@ impl NodeSelf {
         let closure = tracing::info_span!("rdm.node_admin.connection.delete.via-stop", node = %self.node_id, operation = %operation, commander = %named(commander), outcome = tracing::field::Empty);
         let already = self.completed.lock().unwrap().deleted.clone();
         let deleting = Mutex::new(None);
-        let ack = |progress: &Option<CommandProgress>| {
+        // `owe_deleting`: a signal's stop owes its connections-deleting, once it is on the record.
+        let ack = |progress: &Option<CommandProgress>, owe_deleting: bool| {
             let progress = progress.clone();
             let frame = rdm_core::reply::node_command::connections_deleting(self.node_id.clone(), self.incarnation.clone());
+            let deleting = &deleting;
             async move {
-                // The node's own record first (Q356): connections-deleting before its frame.
+                // The node's own record first (Q356): connections-deleting before its declaration and
+                // its frame.
                 self.write_state(crate::model::NodeStatus::ConnectionsDeleting).await;
+                if owe_deleting {
+                    *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting, None);
+                }
                 if let Some(progress) = progress {
                     let _ = progress.lock().await.progress(frame).await;
                 }
@@ -1186,18 +1185,13 @@ impl NodeSelf {
         };
         let receipt = match already {
             Some(receipt) => {
-                ack(&progress).await;
+                ack(&progress, false).await;
                 closure.record("outcome", "already-deleted");
                 receipt
             }
             None => {
                 let deleted = self
-                    .delete_connections_asked(&ConnectionScope::All, asking, || {
-                        if op.is_none() {
-                            *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting, None);
-                        }
-                        ack(&progress)
-                    })
+                    .delete_connections_asked(&ConnectionScope::All, asking, || ack(&progress, op.is_none()))
                     .instrument(closure.clone())
                     .await;
                 closure.record("outcome", "deleted");
@@ -1243,7 +1237,12 @@ impl NodeSelf {
         if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
             let del_op = if op.is_stop() { LifecycleOp { operation: op.operation.command("node.delete", &self.node_id), ..op.clone() } } else { op.clone() };
             self.topology_view.digest_view.deleting(del_op);
-            let me = (self.set_status)(rdm_core::model::NodeStatus::Leaving);
+            // Its leaving on its own record first (Q356); the aggregate carries the status the record
+            // holds, its last one when the write was refused (named on the writer's span).
+            let me = match self.record_state(rdm_core::model::NodeStatus::Leaving).await {
+                Ok(me) => me,
+                Err(_) => (self.set_status)((self.status)()),
+            };
             let mut members: Vec<MeshDigest> = backbone.own_members(&self.topology_view);
             match members.iter_mut().find(|d| d.node.node_id == me.node.node_id) {
                 Some(slot) => *slot = me.clone(),
@@ -1253,7 +1252,7 @@ impl NodeSelf {
             // Best-effort dissemination (R-NS2): the stop does not wait for its delivery, and the cut
             // below follows its send at once.
             let published = if backbone.withholds("stopping-aggregate", "backbone") { "withheld" } else if backbone.publish(&self.topology_view, members).await { "true" } else { "false" };
-            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.node_id, mesh = %self.topology_view.mesh_name(), operation = %operation, status = "Leaving", members = count, published)
+            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.node_id, mesh = %self.topology_view.mesh_name(), operation = %operation, status = ?me.status, members = count, published)
                 .in_scope(|| tracing::info!("the last mesh topology before the stop carries this node Leaving"));
         }
         // 5. node.mesh.leave, called after its connections are deleted (node-stop.md step 3;
@@ -1296,6 +1295,10 @@ impl NodeSelf {
         // process ends once each is answered or its receiver is proven gone (Q206). A command's names its stop: the owed
         // twin of the reply's `stopped`; whichever of the two reaches the mesh-primary first is applied and
         // the other answers AlreadyApplied (node-stop.md step 5, Q49). A signal's names no operation.
+        // Its Stopped is on its own record first, before the declaration and before node.stopped answers
+        // (node-stop.md "Completion": the matching node.stopped and the stop recorded on the node record;
+        // Q356).
+        self.write_state(crate::model::NodeStatus::Stopped).await;
         owed.extend(self.owe(NodeState::Stopped, op.map(declared)));
         (receipt, owed)
     }
@@ -1448,7 +1451,8 @@ impl NodeSelf {
                 Some(w) => Some(w.hold_rows().await),
                 None => None,
             };
-            let _ = (self.set_status)(rdm_core::model::NodeStatus::Pending);
+            // Its pending is written at its accepted join (node-start.md step 2, its session's channel
+            // entry), never before it: starting holds until then.
             self.server.resume();
             self.admit_new_connections();
             // The admin that commanded the start answers its join, reached back over its own call:
@@ -1502,6 +1506,36 @@ impl NodeSelf {
         span.record("node", self.node_id.to_string().as_str());
         span.record("outcome", reply.name());
         reply
+    }
+}
+
+/// Why a birth's own status did not move: its record's write was refused by name, or its `Send` was
+/// spent (named on the writer's `rdm.node.record.update.via-status` span).
+pub type StatusUnwritten = rdm_transport::client::SendEnd<crate::storage_error::StorageError>;
+
+/// The one move of a birth's own status (Q356): `to` written on its own record first, under one `Send`
+/// ([`crate::node_records::NodePropertyWriter::write_status_with`], `also` on the same line), then its
+/// status set by `set` to the status the record then holds (the record's one status order), answering the
+/// Digest that carries it, for its caller to publish at once (gossip.md §3.1 `Digest`: "at once when its
+/// status changes"). Every status a birth moves itself to goes through here: each state of a stop and a
+/// start ([`NodeSelf::write_state`]), its pending at an accepted join, its Ready at node.started, and a
+/// node-admin's Ready at its gate. A process that holds no record yet sets `to`, with nothing recorded
+/// to differ from. A write refused, or whose `Send` is spent, sets nothing: the Digest keeps the record's
+/// last status, and the end is answered.
+pub async fn write_own_status(
+    writer: Option<&crate::node_records::NodePropertyWriter>,
+    to: crate::model::NodeStatus,
+    also: impl Fn(&mut crate::nodes_storage::NodeRecord) + Clone + Send + 'static,
+    set: impl FnOnce(crate::model::NodeStatus) -> MeshDigest,
+) -> Result<MeshDigest, StatusUnwritten> {
+    let held = match writer {
+        Some(writer) => writer.write_status_with(to, also).await,
+        None => None,
+    };
+    match held {
+        None => Ok(set(to)),
+        Some(Ok(held)) => Ok(set(held)),
+        Some(Err(end)) => Err(end),
     }
 }
 
@@ -2191,5 +2225,68 @@ mod tests {
         own.write_state(rdm_core::model::NodeStatus::ConnectionsDeleting).await;
         assert_eq!(held().await, rdm_core::model::NodeStatus::ConnectionsDeleting, "the record holds the status");
         assert_eq!(*published.lock().unwrap(), vec![rdm_core::model::NodeStatus::ConnectionsDeleting], "and then the Digest carries it");
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT (gossip.md §3.1: "connections-deleting, connections-deleted and stopping reach the node's
+    /// own mesh in its own Digest", sent "at once when its status changes"; node-connections-delete.md
+    /// step 3.1: the node "writes connections-deleting on its own record. Peers hear it later"; Q356): a
+    /// standalone `node.connection.delete { All }` moves the node's Digest with its record, to
+    /// connections-deleting when it reports it, then connections-deleted from its `Established`
+    /// completion. Must NOT happen: a record at connections-deleting while the Digest still says Ready,
+    /// or a Digest that goes from Ready to connections-deleted with nothing between.
+    #[tokio::test]
+    async fn a_standalone_connections_delete_moves_the_digest_with_the_record() {
+        use crate::nodes_storage::NodesStorage as _;
+        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep_id = EndpointId(endpoint.secret_key().public().to_string());
+        let (node_id, incarnation, name) = (NodeId::mint(), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
+        let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+        clock.adopt(1_000_000);
+        let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Default::default());
+        let channels = rdm_gossip::channel::Channels::new(&g, &endpoint, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.unwrap();
+        let resolver = Arc::new(LiveNodeResolver::default());
+        let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm"));
+        let server = ServerBuilder::new().serve_core(client.clone(), None).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
+        let digest = MeshDigest {
+            fabric_id,
+            node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: ep_id, transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None },
+            status: rdm_core::model::NodeStatus::Ready,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1_000,
+            primary: Vec::new(),
+        };
+        let published: Arc<Mutex<Vec<rdm_core::model::NodeStatus>>> = Arc::default();
+        let into = published.clone();
+        let set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync> = Arc::new(move |s| {
+            into.lock().unwrap().push(s);
+            MeshDigest { status: s, ..digest.clone() }
+        });
+        let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), "node".into(), server, client, resolver, channels, set_status, Arc::new(|| rdm_core::model::NodeStatus::Ready), None, Duration::from_millis(200)));
+        let store = Arc::new(crate::nodes_storage::MemoryNodesStorage::default());
+        let writer = crate::node_records::NodePropertyWriter::new(store.clone(), || "file".to_string());
+        writer.bound(crate::nodes_storage::fixture_record(&name, "node", node_id.clone(), incarnation.clone(), rdm_core::model::NodeStatus::Ready), |_| {}).await.unwrap();
+        own.set_records(writer);
+        let own_end = ConnectionEnd { mesh: "mesh1".into(), r#type: "node".into(), path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
+        own.set_connections(Arc::new(ConnectionsWriter::new(own_end, Arc::new(MemoryConnectionsStorage::default()), Arc::new(Mutex::new(ConnectionsHeld::new())))));
+        let (tx, mut frames) = tokio::sync::mpsc::unbounded_channel();
+        let req = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        let reply = own.serve_node_command_on(None, None, &req, Box::new(ChannelFrames(tx))).await;
+        assert!(matches!(reply, NodeCommandReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Established { .. }), .. }), "{reply:?}");
+        let mut streamed = Vec::new();
+        while let Ok(frame) = frames.try_recv() {
+            streamed.push(frame);
+        }
+        assert!(streamed.iter().any(|f| matches!(f, NodeCommandReply::ConnectionsDeleting { .. })), "the report went on the command's stream: {streamed:?}");
+        assert_eq!(store.node(&node_id).await.unwrap().expect("its record").record.state, rdm_core::model::NodeStatus::ConnectionsDeleted, "the record holds connections-deleted");
+        assert_eq!(
+            *published.lock().unwrap(),
+            vec![rdm_core::model::NodeStatus::ConnectionsDeleting, rdm_core::model::NodeStatus::ConnectionsDeleted],
+            "the Digest moved with the record: connections-deleting when it was reported, then connections-deleted"
+        );
+        endpoint.close().await;
     }
 }

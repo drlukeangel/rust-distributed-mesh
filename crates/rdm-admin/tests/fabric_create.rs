@@ -58,6 +58,123 @@ impl Capture {
     }
 }
 
+/// The memory backend, its nodes store refusing by name the first write that would put a node-admin's
+/// own record at Ready: the Ready gate's own write, refused once.
+struct RefusesFirstReady {
+    refused: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// [`RefusesFirstReady`]'s nodes store over the memory one.
+struct RefusingNodes {
+    held: Arc<dyn rdm_admin::storage::NodesStorage>,
+    refused: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::storage::NodesStorage for RefusingNodes {
+    async fn node(&self, node_id: &rdm_core::NodeId) -> Result<Option<rdm_node::nodes_storage::NodeLine>, rdm_admin::storage_error::StorageError> {
+        self.held.node(node_id).await
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_node::nodes_storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
+        self.held.nodes(mesh).await
+    }
+    async fn put_node(&self, record: &rdm_node::nodes_storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
+        if record.r#type == "node-admin" && record.state == NodeStatus::Ready && self.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Err(rdm_admin::storage_error::StorageError::Refused { file: format!("nodes/records/{}", record.node_id), reason: "the cell refuses the first Ready write".into() });
+        }
+        self.held.put_node(record).await
+    }
+    async fn records_at(&self, name: &rdm_core::PathName) -> Result<Vec<rdm_node::nodes_storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
+        self.held.records_at(name).await
+    }
+}
+
+#[async_trait::async_trait]
+impl rdm_admin::storage_backend::StorageBackend for RefusesFirstReady {
+    fn qualify(&self, provider: rdm_admin::model::ProviderKind) -> Result<(), String> {
+        MemoryBackend.qualify(provider)
+    }
+    async fn own_row(&self, data_dir: &std::path::Path, writer: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::storage::OwnRow>, rdm_admin::storage_error::StorageError> {
+        MemoryBackend.own_row(data_dir, writer).await
+    }
+    async fn put_own_row(&self, data_dir: &std::path::Path, writer: &rdm_core::IncarnationId, record: &rdm_admin::storage::OwnRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        MemoryBackend.put_own_row(data_dir, writer, record).await
+    }
+    async fn open(&self, scope: &rdm_admin::storage_backend::StorageScope) -> Result<rdm_admin::storage_backend::StorageBoundaries, String> {
+        let mut boundaries = MemoryBackend.open(scope).await?;
+        boundaries.nodes = Arc::new(RefusingNodes { held: boundaries.nodes, refused: self.refused.clone() });
+        Ok(boundaries)
+    }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (`start_booted`'s Ready gate: "a refused write leaves it Pending, and the gate is tried
+/// again"; node-start.md: "the caller's node.start completes only after the Ready record"; Q344: one
+/// `Send` on the write, a refusal by name its end): a Day-0 node-admin whose own record refuses its
+/// first Ready write stays Pending, names the refusal as that pass's blocker, and becomes Ready on the
+/// gate's next pass: its fabric goes ready. Must NOT happen: an admin that stays Pending for good after
+/// one refused write, its gate ended.
+#[test]
+fn a_day0_admin_whose_first_ready_write_is_refused_becomes_ready_on_the_gates_next_pass() {
+    let capture = Capture::new("a_day0_admin_whose_first_ready_write_is_refused_becomes_ready_on_the_gates_next_pass");
+    let dispatch = capture.dispatch.clone();
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+        .build()
+        .unwrap();
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+    let dir = std::env::temp_dir().join(format!("rdm-fabric-create-{}", rdm_core::NodeId::mint()));
+    let (data_dir, store_dir) = (dir.join("admin"), dir.join("store"));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let cfg = AdminConfig::from_env(|k| match k {
+        "RDM_DATA_DIR" => Some(data_dir.display().to_string()),
+        "RDM_STORE_DIR" => Some(store_dir.display().to_string()),
+        "MESH_SPAWN_TYPE" => Some("process".into()),
+        rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER => Some(MEMORY.into()),
+        _ => None,
+    })
+    .expect("valid Day-0 AdminConfig");
+    let own_id = cfg.node_id.clone();
+    let certs = rdm_admin::certs::CertChoice::from_material(&data_dir, &cfg.mesh, true, |_| None).expect("Day-0 mints the fabric root");
+    let refused = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let backend = RefusesFirstReady { refused: refused.clone() };
+    rt.block_on(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
+        let hooks = FabricHooks {
+            on_fabric_ready: Some(Arc::new(move |ctx| {
+                let _ = tx.send(ctx);
+                Box::pin(async {})
+            })),
+            ..FabricHooks::no_app_work()
+        };
+        let providers = TopologyStorageProviders::new().register(MEMORY, Arc::new(backend));
+        let running = start_on(cfg, Wiring { certs, fabric_hooks: hooks, ..Wiring::default() }, providers).await.expect("the Day-0 admin starts");
+        tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("the admin becomes Ready after its refused write, and its fabric goes ready")
+            .expect("on_fabric_ready channel open");
+        let view = running.control.topology.read().await.clone();
+        let me = view.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).expect("the admin is in its view");
+        assert_eq!(me.node_id, own_id);
+        assert_eq!(me.status, NodeStatus::Ready);
+        drop(running);
+    });
+    assert!(refused.load(std::sync::atomic::Ordering::SeqCst) >= 2, "its first Ready write was refused and a later one written");
+    let unwritten: Vec<Captured> = capture
+        .named("rdm.node_admin.runtime.reject.via-not-ready")
+        .into_iter()
+        .filter(|s| s.attributes.get("detail").is_some_and(|d| d.contains("its own record's Ready is not written")))
+        .collect();
+    assert_eq!(unwritten.len(), 1, "the refused write is named once, as that pass's blocker");
+    let ready = capture.named("rdm.mesh.node.update.via-ready");
+    assert_eq!(ready.len(), 1, "the admin becomes Ready once");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// CONTRACT:
 /// - `docs/architecture/lifecycles/fabric-create.md:5-8` — "`fabric.create(spec)` brings a fabric into being with its first mesh. The fabric id is minted with status pending, each mesh's first node-admin is created, the first mesh's primary becomes the fabric-primary, and the fabric changes to ready."
 /// - `docs/architecture/lifecycles/fabric-create.md:16` — "Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-primary.md#11-identity-creation-order)); the bootstrap admin's own node id is minted before its mesh's, by the bootstrap's first step, before anything else of its boot (Q208)"

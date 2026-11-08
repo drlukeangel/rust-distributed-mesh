@@ -393,7 +393,7 @@ impl crate::node_self::Session for AdminSession {
 impl AdminSession {
     /// This node-admin's channel entry inside `node.mesh.join`, for its start and its standalone join
     /// alike: its mesh, then the backbone.
-    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>, commander: iroh::PublicKey) -> rdm_gossip::channel::Channels {
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>, commander: iroh::PublicKey) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         let s = self;
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
@@ -408,6 +408,20 @@ impl AdminSession {
             }
             // The member cert this join was issued, as at every join (Q87).
             rdm_node::node::install_join_cert(&s.data_connections, &joined.control.member_cert, &s.topology_view.node_name().to_string(), &s.node_id, &s.incarnation);
+            // The accepted join report on its own record (Q356; node-mesh-join.md step 10): its pending and
+            // the installed cert's dates, one line, through the one status move; its digest then carries
+            // what the record holds. A join whose pending is not written does not hold the mesh: the start
+            // ends at its join, named by the write's end.
+            let dates = joined.control.member_cert_dates.clone();
+            let also = move |record: &mut rdm_node::nodes_storage::NodeRecord| {
+                if let Some(dates) = &dates {
+                    record.cert = Some(dates.clone());
+                }
+            };
+            let writer = s.configs.get().and_then(|c| c.own_writer());
+            crate::node_self::write_own_status(writer.as_ref(), crate::model::NodeStatus::Pending, also, |st| set_own_status(&s.digest, st))
+                .await
+                .map_err(|end| crate::node_self::StartFailed { step: "node.join", reason: format!("{}: its accepted join's pending is not written on its own record: {end}", s.node_id) })?;
             // Only now are its connections recorded: the join's names the handed name.
             drop(rows.take());
         }
@@ -443,7 +457,7 @@ impl AdminSession {
         )
         .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
-        s.channels.clone()
+        Ok(s.channels.clone())
     }
 }
 
@@ -482,7 +496,7 @@ impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
 
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         let commander = *self.commander.borrow();
-        Ok(self.session.enter_mesh(step, joined, &mut self.rows, commander).await)
+        self.session.enter_mesh(step, joined, &mut self.rows, commander).await
     }
 }
 
@@ -535,6 +549,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             node_id: s.node_id.clone(),
             fabric_id: s.fabric_id.clone(),
             digest: s.digest.clone(),
+            channels: s.channels.clone(),
             wake: s.wake.clone(),
             configs: s.configs.clone(),
             root: self.root.clone(),
@@ -593,6 +608,8 @@ pub(crate) struct AdminAfterStopTail {
     pub(crate) node_id: NodeId,
     pub(crate) fabric_id: FabricId,
     pub(crate) digest: Arc<Mutex<MeshDigest>>,
+    /// Its channels: its Ready goes out in its digest at once.
+    pub(crate) channels: rdm_gossip::channel::Channels,
     pub(crate) wake: Arc<Records>,
     /// This admin's own property writer's holder: its Ready is on its own record first (Q356).
     pub(crate) configs: crate::node_config::NodeConfigsSlot,
@@ -630,35 +647,37 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
         self.floor.until_held(step).await;
     }
 
-    async fn report(self: Box<Self>) {
-        // Its own record holds Ready before its digest does (Q356); a refused write is named, and the
-        // start's report stands on its digest.
-        if let Some(configs) = self.configs.get() {
-            if let Err(e) = configs.own_state(crate::model::NodeStatus::Ready).await {
-                tracing::info!(error = %e, "this admin's own record's ready state is not written");
-            }
+    async fn report(&mut self) -> Result<(), crate::node_self::StartFailed> {
+        // Its Ready on its own record first, through the one status move (Q356; node-start.md: "the
+        // caller's node.start completes only after the Ready record"): its digest carries what the record
+        // holds, published at once. A Ready the record does not take ends the start at `node.started`,
+        // named by the write's end; a record moved past Ready (a stop admitted) makes no Ready.
+        if self.digest.lock().unwrap().status != rdm_core::model::NodeStatus::Pending {
+            return Ok(());
         }
-        let (set, d) = set_own_status(&self.digest, Some(rdm_core::model::NodeStatus::Pending), rdm_core::model::NodeStatus::Ready);
-        if set {
+        let writer = self.configs.get().and_then(|c| c.own_writer());
+        let d = crate::node_self::write_own_status(writer.as_ref(), crate::model::NodeStatus::Ready, |_| {}, |st| set_own_status(&self.digest, st))
+            .await
+            .map_err(|end| crate::node_self::StartFailed { step: "node.started", reason: format!("{}: Ready not recorded on its own record: {end}", self.node_id) })?;
+        if d.status == rdm_core::model::NodeStatus::Ready {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
             self.wake.wake.poke();
             tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node_path = %self.path, node_name = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
+            let _ = self.channels.publish(&d).await;
         }
+        Ok(())
     }
 }
 
-/// Set this node-admin's own status in `digest`, the digest it publishes, to `to` when it holds `from`
-/// (whatever it holds when `from` is `None`), under one hold of the digest: the one place a node-admin
-/// sets its own status (every status its `NodeSelf` sets, and its Ready, from Pending only,
-/// at its Ready gate and at a start's report). Answers whether it was set, and the digest as it stands.
-pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, from: Option<rdm_core::model::NodeStatus>, to: rdm_core::model::NodeStatus) -> (bool, MeshDigest) {
+/// Set this node-admin's own status in `digest`, the digest it publishes, to `to`, the status its own
+/// record holds, under one hold of the digest, and answer the digest as it stands: the one place a
+/// node-admin sets its own status, called only by the one status move
+/// ([`crate::node_self::write_own_status`]), which wrote `to` on its record first (Q356).
+pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, to: rdm_core::model::NodeStatus) -> MeshDigest {
     let mut d = digest.lock().unwrap();
-    if from.is_some_and(|from| d.status != from) {
-        return (false, d.clone());
-    }
     d.status = to;
-    (true, d.clone())
+    d.clone()
 }
 
 /// How often a start below its Build floor checks the floor again when no request of its own ends
@@ -842,9 +861,10 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         self.progress.at(format!("{}: node.start is at its topology step", self.me_id));
     }
 
-    async fn report(self: Box<Self>) {
+    async fn report(&mut self) -> Result<(), crate::node_self::StartFailed> {
         // node.started: the Ready check, which waits on every other blocker too, makes the report.
         self.progress.started();
+        Ok(())
     }
 
     async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {

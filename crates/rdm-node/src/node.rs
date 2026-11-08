@@ -826,8 +826,11 @@ async fn start_booted(
                             initial.cert = member_cert_dates.clone();
                             property_writer.bound(initial, |_| {}).await
                                 .map_err(|error| anyhow!("{}: bound properties could not be persisted: {error}", launch.node_id))?;
-                            // Its accepted join report's pending, on its own record after the launch's starting (Q356).
-                            write_own_state(&property_writer, rdm_core::status::NodeState::Pending).await;
+                            // Its accepted join report's pending, on its own record after the launch's starting
+                            // (Q356), through the one status move: a start whose pending is not written does
+                            // not start, named by its end.
+                            crate::node_self::write_own_status(Some(&property_writer), rdm_core::model::NodeStatus::Pending, |_| {}, |st| set_own_status(&status, &digest, st)).await
+                                .map_err(|end| anyhow!("refusing to start: {}: its own record's pending state is not written: {end}", launch.node_id))?;
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), held_name: held_name.clone(), channels: channels.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&channels, &digest, &status));
@@ -847,7 +850,6 @@ async fn start_booted(
                                 tokio::spawn(async move {
                                     let mut primaries = topology_view.primaries().subscribe();
                                     let mut told: Option<(NodeId, IncarnationId)> = None;
-                                    let mut written: Option<u64> = None;
                                     // The roles this birth last recorded on its own record: none at its start line.
                                     let mut roles_written: (Option<u64>, Option<u64>) = (None, None);
                                     let birth = crate::nodes_storage::BirthRef { node_id: node.node_id.clone(), incarnation_id: node.incarnation.clone() };
@@ -862,13 +864,9 @@ async fn start_booted(
                                                 .in_scope(|| tracing::info!("the mesh's primary moved to another birth: this birth's state is owed to it"));
                                             drop(owed.owe_again(state));
                                         }
+                                        // Each state it declares is on its own record before it is owed (Q356; the
+                                        // one status move, `node_self::write_own_status`).
                                         while let Some((at, declaration)) = owed.first() {
-                                            // The node's own record first (Q356): the state it declares is on its
-                                            // record before its mesh-primary hears it.
-                                            if written != Some(at) {
-                                                written = Some(at);
-                                                write_own_state(&records, declaration.0).await;
-                                            }
                                             match declare_until_mesh_primary_moves(&node, &topology_view, &client, &owed, &held, at, &declaration).await {
                                                 Declared::Answered => {}
                                                 // The mesh-primary changing is the one retargeting (i146 Q39): the call
@@ -1086,7 +1084,7 @@ impl NodeSession {
     /// alike: the row's name and config the join answer handed are held before the node re-enters its
     /// channel or says anything (a node renamed while stopped publishes its row's name, R-JN1), and only
     /// then are its connections recorded (`rows`), under the handed name.
-    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: Option<crate::connections_writer::RowsHeld>, commander: iroh::PublicKey) -> rdm_gossip::channel::Channels {
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: Option<crate::connections_writer::RowsHeld>, commander: iroh::PublicKey) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         step.record("mesh_id", tracing::field::display(&self.mesh_id));
         if let Some(joined) = joined {
             // This is the same running instance. Its node-owned property writer already
@@ -1094,21 +1092,19 @@ impl NodeSession {
             // The primary supplies its lifecycle name and certificate, not a copied map.
             if let Some(name) = &joined.control.name { self.held_name.set(name.clone()); }
             install_join_cert(&self.data_connections, &joined.control.member_cert, &self.topology_view.node_name().to_string(), &self.node_id, &self.incarnation);
-            // The accepted join report on its own record (Q356): its pending and the installed cert's
-            // dates, one line. A refused write is named on the writer's span; the next renewal writes
-            // the dates again.
+            // The accepted join report on its own record (Q356; node-mesh-join.md step 10): its pending and
+            // the installed cert's dates, one line, through the one status move; its Digest then carries
+            // what the record holds. A join whose pending is not written does not hold the mesh: the start
+            // ends at its join, named by the write's end.
             let dates = joined.control.member_cert_dates.clone();
-            if let Some(initial) = self.property_writer.start_record() {
-                let _ = self
-                    .property_writer
-                    .update(initial, move |record| {
-                        record.set_state(crate::model::NodeStatus::Pending);
-                        if let Some(dates) = dates {
-                            record.cert = Some(dates);
-                        }
-                    }, |_| {})
-                    .await;
-            }
+            let also = move |record: &mut crate::nodes_storage::NodeRecord| {
+                if let Some(dates) = &dates {
+                    record.cert = Some(dates.clone());
+                }
+            };
+            crate::node_self::write_own_status(Some(&self.property_writer), crate::model::NodeStatus::Pending, also, |st| set_own_status(&self.status, &self.digest, st))
+                .await
+                .map_err(|end| crate::node_self::StartFailed { step: "node.join", reason: format!("{}: its accepted join's pending is not written on its own record: {end}", self.node_id) })?;
         }
         drop(rows);
         self.channels.start().await;
@@ -1128,7 +1124,7 @@ impl NodeSession {
         )
         .in_scope(|| tracing::info!("joined the mesh channel"));
         drop(step);
-        self.channels.clone()
+        Ok(self.channels.clone())
     }
 }
 
@@ -1173,7 +1169,7 @@ impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
 
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<rdm_gossip::channel::Channels, crate::node_self::StartFailed> {
         let commander = *self.commander.borrow();
-        Ok(self.session.enter_mesh(step, joined, self.rows.take(), commander).await)
+        self.session.enter_mesh(step, joined, self.rows.take(), commander).await
     }
 }
 
@@ -1318,12 +1314,11 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
         let _ = channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await;
     }
 
-    async fn report(self: Box<Self>) {
-        let RpcAfterHook { becoming, knob, .. } = *self;
-        if let Some(knob) = knob {
+    async fn report(&mut self) -> Result<(), crate::node_self::StartFailed> {
+        if let Some(knob) = self.knob.take() {
             knob();
         }
-        becoming.go().await;
+        self.becoming.go().await
     }
 
     async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {
@@ -1363,11 +1358,22 @@ struct Becoming {
 }
 
 impl Becoming {
-    /// node.started: the report `node.start` makes once its steps after the hook ended.
-    async fn go(&self) {
+    /// node.started: the report `node.start` makes once its steps after the hook ended. Its Ready is on
+    /// its own record first, through the one status move (Q356; node-start.md: "the caller's node.start
+    /// completes only after the Ready record"): the Digest, the declaration and node.started follow what
+    /// the record holds. A Ready the record does not take ends the start at `node.started`, named by the
+    /// write's end, and the node stays Pending.
+    async fn go(&self) -> Result<(), crate::node_self::StartFailed> {
         // A node deleted while its hook ran is not Pending any more and is not made Ready.
         if *self.status.lock().unwrap() != rdm_core::model::NodeStatus::Pending {
-            return;
+            return Ok(());
+        }
+        let d = crate::node_self::write_own_status(Some(&self.records), rdm_core::model::NodeStatus::Ready, |_| {}, |st| set_own_status(&self.status, &self.digest, st))
+            .await
+            .map_err(|end| crate::node_self::StartFailed { step: "node.started", reason: format!("{}: Ready not recorded on its own record: {end}", self.node_id) })?;
+        if d.status != rdm_core::model::NodeStatus::Ready {
+            // Its record moved past Ready while the steps ran (a stop admitted, a delete): not made Ready.
+            return Ok(());
         }
         tracing::info_span!(
             parent: &self.boot,
@@ -1387,17 +1393,13 @@ impl Becoming {
             source = "self-published-topology"
         )
         .in_scope(|| tracing::info!("ready"));
-        let d = set_own_status(&self.status, &self.digest, rdm_core::model::NodeStatus::Ready);
-        // Its Ready on its own record first (Q356; node-start.md: "the caller's node.start completes only
-        // after the Ready record"): node.started, and the start's completion, follow it. The owed
-        // declaration below then finds its state already written.
-        write_own_state(&self.records, rdm_core::status::NodeState::Ready).await;
         // The node also declares Ready to its mesh-primary as an owed message, as it declares Stopped
         // (node-start.md step 5; Q36, Q87), with or without a start stream reporting it: frame and
         // declaration apply once (Q49). Owed before anything that follows it can be (Q210): a stop's
         // declarations queue behind it.
         drop(self.owed.owe((rdm_core::status::NodeState::Ready, self.operation.clone())));
         let _ = self.channels.publish(&d).await;
+        Ok(())
     }
 }
 
@@ -1504,16 +1506,6 @@ fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, writ
         executable: own.as_ref().and_then(|r| r.executable.clone()).or_else(|| launch.initial_properties.executable.clone()),
         config,
         tags,
-    }
-}
-
-/// Write the state `declared` on this node's own record (Q356), through `writer` under one `Send`
-/// ([`crate::node_records::NodePropertyWriter::write_status`]), before the declaration that reports it
-/// is sent. A refusal, or a `Send` spent, is named on the writer's `via-status` span; the declaration is
-/// still sent.
-pub async fn write_own_state(writer: &crate::node_records::NodePropertyWriter, declared: rdm_core::status::NodeState) {
-    if let Some(Err(end)) = writer.write_status(declared.into()).await {
-        tracing::info!(declared = ?declared, %end, "the declared state is not written on this node's record; its declaration is still sent");
     }
 }
 
@@ -2284,9 +2276,96 @@ mod primary_tests {
                 operation: Some(start.clone()),
                 records: crate::node_records::NodePropertyWriter::new(Arc::new(crate::nodes_storage::MemoryNodesStorage::default()), || "memory".into()),
             };
-            becoming.go().await;
+            becoming.go().await.expect("its Ready is recorded");
             assert_eq!(*status.lock().unwrap(), rdm_core::model::NodeStatus::Ready, "the start's hook passed: the birth is Ready");
             assert_eq!(owed.first().map(|(_, d)| d), Some((NodeState::Ready, Some(start))), "the start owes its mesh-primary Ready naming the start");
+            endpoint.close().await;
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A nodes store that refuses, by name, every write of a record at Ready.
+    struct RefusesReady(crate::nodes_storage::MemoryNodesStorage);
+
+    #[async_trait::async_trait]
+    impl crate::nodes_storage::NodesStorage for RefusesReady {
+        async fn node(&self, node_id: &NodeId) -> std::result::Result<Option<crate::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
+            self.0.node(node_id).await
+        }
+        async fn nodes(&self, mesh: &str) -> std::result::Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.0.nodes(mesh).await
+        }
+        async fn put_node(&self, record: &crate::nodes_storage::NodeRecord) -> std::result::Result<(), crate::storage_error::StorageError> {
+            if record.state == rdm_core::model::NodeStatus::Ready {
+                return Err(crate::storage_error::StorageError::Refused { file: format!("nodes/records/{}", record.node_id), reason: "the cell refuses Ready".into() });
+            }
+            self.0.put_node(record).await
+        }
+        async fn records_at(&self, name: &rdm_core::PathName) -> std::result::Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.0.records_at(name).await
+        }
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT (node-start.md step 5: "That frame is the node's report, and the node writes ready on its
+    /// own record (Q356)"; "the caller's node.start completes only after the Ready record"; Q356: the one
+    /// status its record, its Digest and its answers carry): a start whose Ready its own record refuses
+    /// is not made Ready: its status and Digest stay Pending, no Ready is owed its mesh-primary, nothing
+    /// is published, and the start ends at `node.started`, naming the refusal. Must NOT happen: a Digest
+    /// and a declaration saying Ready while the node's record holds Pending, and the start completing.
+    #[test]
+    fn a_start_whose_ready_its_record_refuses_stays_pending_and_ends_at_node_started() {
+        use rdm_core::status::DeclaredOperation;
+        let dir = std::env::temp_dir().join(format!("rdm-node-start-ready-refused-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-ready-refused").expect("evidence capture starts");
+        capture.run(2, async {
+            use crate::nodes_storage::NodesStorage as _;
+            let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let (node_id, incarnation, fabric_id, mesh_id) = (NodeId::mint(), IncarnationId::mint(), rdm_core::FabricId::mint(), rdm_core::MeshId::mint());
+            let name = rdm_core::PathName::new("mesh1.node", "2").unwrap();
+            let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+            clock.adopt(1_000_000);
+            let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+            let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Default::default());
+            let channels = rdm_gossip::channel::Channels::new(&g, &endpoint, &topology_view).unwrap();
+            channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.unwrap();
+            let digest = MeshDigest {
+                fabric_id: fabric_id.clone(),
+                node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, },
+                status: rdm_core::model::NodeStatus::Pending,
+                digest_seq: 1,
+                emitted_at_rafka_ms: 1_000,
+                primary: Vec::new(),
+            };
+            let store = Arc::new(RefusesReady(Default::default()));
+            let records = crate::node_records::NodePropertyWriter::new(store.clone(), || "memory".into());
+            records.bound(crate::nodes_storage::fixture_record(&name, "node", node_id.clone(), incarnation.clone(), rdm_core::model::NodeStatus::Pending), |_| {}).await.unwrap();
+            let owed: Arc<OwedDeclarations> = Arc::default();
+            let status = Arc::new(Mutex::new(rdm_core::model::NodeStatus::Pending));
+            let becoming = Becoming {
+                channels: channels.clone(),
+                boot: tracing::info_span!("rdm.mesh.node.update.via-start", node_id = %node_id),
+                name: node_id.to_string(),
+                r#type: "node".into(),
+                incarnation_id: incarnation.to_string(),
+                node_id: node_id.clone(),
+                mesh_id: mesh_id.to_string(),
+                fabric_id: fabric_id.to_string(),
+                runtime: rdm_core::RuntimeFact::of_this_process(rdm_core::DeploymentId::mint().as_str()).unwrap(),
+                topology_view,
+                digest,
+                status: status.clone(),
+                owed: owed.clone(),
+                operation: Some(DeclaredOperation { operation: rdm_core::OperationId::node("node.start", &node_id) }),
+                records,
+            };
+            let failed = becoming.go().await.expect_err("a Ready its record refuses ends the start");
+            assert_eq!(failed.step, "node.started", "the start ends at node.started: {failed:?}");
+            assert!(failed.reason.contains("Ready not recorded"), "the refusal is named: {failed:?}");
+            assert_eq!(store.node(&node_id).await.unwrap().expect("its record").record.state, rdm_core::model::NodeStatus::Pending, "the record keeps Pending");
+            assert_eq!(*status.lock().unwrap(), rdm_core::model::NodeStatus::Pending, "its status, its Digest's, stays the record's: Pending");
+            assert!(owed.is_empty(), "no Ready is owed its mesh-primary");
             endpoint.close().await;
         });
         let _ = std::fs::remove_dir_all(&dir);

@@ -1860,8 +1860,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 };
                                 let configs = configs_slot.get().expect("configs bound before digest");
                                 configs.bound_own(&subject, initial, runtime.clone(), own_cert_dates.clone()).await?;
-                                // Pending until it can take authority at once, as its digest is: on its record first.
-                                configs.own_state(crate::model::NodeStatus::Pending).await.map_err(|e| format!("refusing to start: {node_id}: its own record's pending state is not written: {e}"))?;
+                                // Pending until it can take authority at once, as its digest is: on its record first,
+                                // through the one status move (Q356).
+                                crate::node_self::write_own_status(configs.own_writer().as_ref(), crate::model::NodeStatus::Pending, |_| {}, |st| super::session::set_own_status(&digest, st))
+                                    .await
+                                    .map_err(|end| format!("refusing to start: {node_id}: its own record's pending state is not written: {end}"))?;
                                 // A role this admin takes or gives up is on its own record from its start on (Q356).
                                 {
                                     let (configs, primaries, birth, mesh) = (configs.clone(), topology_view.primaries().clone(), crate::storage::BirthRef { node_id: node_id.clone(), incarnation_id: incarnation.clone() }, cfg.mesh.clone());
@@ -2221,15 +2224,25 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         (None, _) => blocked.push(format!("{me_id}: no view yet to apply its mesh's state to itself")),
                                                     },
                                                 }
-                                                if blocked.is_empty() {
-                                                    // Its own record holds Ready before its digest publishes it (Q356); a refused
-                                                    // write leaves it Pending, and the gate is tried again.
-                                                    if let Some(Err(e)) = match configs_slot.get() { Some(c) => Some(c.own_state(crate::model::NodeStatus::Ready).await), None => None } {
-                                                        tracing::info!(error = %e, "this admin's own record's ready state is not written: it stays pending");
-                                                        break;
+                                                // Its own record holds Ready before its digest publishes it (Q356), through the
+                                                // one status move under one `Send`: a write refused or spent leaves it Pending,
+                                                // its end named as this pass's blocker, and the gate is tried again.
+                                                let ready = match blocked.is_empty() {
+                                                    true => {
+                                                        let writer = configs_slot.get().and_then(|c| c.own_writer());
+                                                        match crate::node_self::write_own_status(writer.as_ref(), crate::model::NodeStatus::Ready, |_| {}, |st| super::session::set_own_status(&digest, st)).await {
+                                                            Ok(d) => Some(d),
+                                                            Err(end) => {
+                                                                blocked.push(format!("{me_id}: its own record's Ready is not written: {end}"));
+                                                                None
+                                                            }
+                                                        }
                                                     }
-                                                    let (set, d_ready) = super::session::set_own_status(&digest, Some(rdm_core::model::NodeStatus::Pending), rdm_core::model::NodeStatus::Ready);
-                                                    if !set {
+                                                    false => None,
+                                                };
+                                                if let Some(d_ready) = ready {
+                                                    if d_ready.status != rdm_core::model::NodeStatus::Ready {
+                                                        // Its record moved past Ready (a stop admitted): its start after the stop makes its Ready.
                                                         break;
                                                     }
                                                     let _ = channels.publish(&d_ready).await;
@@ -2338,7 +2351,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let digest_for_status = digest.clone();
                                         let digest_now = digest.clone();
-                                        let set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| super::session::set_own_status(&digest_for_status, None, st).1);
+                                        let set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| super::session::set_own_status(&digest_for_status, st));
                                         let status: Arc<dyn Fn() -> rdm_core::model::NodeStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
                                         // Its stop's Stopped names the stop, as every node's does (node-status.md "Status
                                         // report", node-stop.md step 4; i146 Q37): owed in its declarer and sent from this
@@ -2353,11 +2366,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let (me, mesh) = { let d = digest.lock().unwrap(); (d.node.location(), d.node.mesh.clone()) };
                                                 let (declarer, topology, client, status_service, me_id, incarnation, wake, configs) = (declarer.clone(), topology.clone(), client.clone(), status_service.clone(), me_id.clone(), incarnation.clone(), wake.clone(), configs.clone());
                                                 Box::pin(async move {
-                                                    // Its own record first (Q356): the state it declares is on its record before any
-                                                    // primary hears it; a refused write is named and the declaration still owed.
-                                                    if let Some(Err(e)) = match configs.get() { Some(c) => Some(c.own_state(rdm_core::model::NodeStatus::from(state)).await), None => None } {
-                                                        tracing::info!(error = %e, "this admin's own record's declared state is not written");
-                                                    }
+                                                    // The state it declares is on its own record before it is owed (Q356; the one
+                                                    // status move, `node_self::write_own_status`).
                                                     let view = topology.read().await.clone();
                                                     if view.node_type_primary(&mesh, "node-admin").is_some_and(|p| p.node_id == me_id) {
                                                         tracing::info_span!("rdm.node_admin.status.reject.via-own-mesh-primary", node_path = %me.path, node_name = %me.name, state = ?state, operation = %operation.as_ref().map(|o| o.operation.action.as_str()).unwrap_or(""), operation_subject = ?operation.as_ref().and_then(|o| o.operation.subject.as_ref()), "otel.kind" = "internal")

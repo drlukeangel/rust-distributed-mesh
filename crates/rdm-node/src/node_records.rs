@@ -258,10 +258,24 @@ impl NodePropertyWriter {
     /// refusal, or a `Send` spent, is the end, named on its `rdm.node.record.update.via-status` span;
     /// the record keeps its last status.
     pub async fn write_status(&self, to: crate::model::NodeStatus) -> Option<Result<crate::model::NodeStatus, rdm_transport::client::SendEnd<StorageError>>> {
+        self.write_status_with(to, |_| {}).await
+    }
+
+    /// [`Self::write_status`], with `also` applied to the same line: what an accepted join writes, its
+    /// pending and the dates of the member cert it installed, one record line (Q356).
+    pub async fn write_status_with(
+        &self,
+        to: crate::model::NodeStatus,
+        also: impl Fn(&mut NodeRecord) + Clone + Send + 'static,
+    ) -> Option<Result<crate::model::NodeStatus, rdm_transport::client::SendEnd<StorageError>>> {
         let initial = self.start_record()?;
         let span = tracing::info_span!("rdm.node.record.update.via-status", node_id = %initial.node_id, incarnation_id = %initial.incarnation.as_str(), status = ?to, outcome = tracing::field::Empty, held = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let send = rdm_transport::client::Send::default();
-        let written = tracing::Instrument::instrument(send.run(StorageError::answered, || self.state(initial.clone(), to)), span.clone()).await;
+        let attempt = || {
+            let also = also.clone();
+            self.update(initial.clone(), move |record| { record.set_state(to); also(record); }, |_| {})
+        };
+        let written = tracing::Instrument::instrument(send.run(StorageError::answered, attempt), span.clone()).await;
         Some(match written {
             Ok(w) => {
                 span.record("outcome", "written").record("held", tracing::field::debug(w.record.state));
