@@ -10,7 +10,10 @@
 # The plan: the consumer build (`i143-rshape-consumer-build`) is in the first batch, and every job
 # whose command runs the consumer's executables (RDM_RSHAPE_CONSUMER_BIN_DIR) comes after it. The
 # other jobs fill the batches longest first, by the wall of the job's last receipt in this checkout,
-# or by its layer when it has none; at most I143_EXPORT_BATCH jobs (default 6) run in a batch. The
+# or by its layer when it has none; at most I143_EXPORT_BATCH jobs (default 6) run in a batch, and at
+# most I143_EXPORT_CONTAINER_BATCH (default 3) of a container layer: six container estates started in one
+# batch at a218f3319 left two new containers' packets undelivered to their node-admin at start (no
+# packet reached the receiver; both passed alone, 2026-11-08). The
 # soak jobs (layer soak-*) are held by name: no soak runs until the fast gate and the release suite
 # are green on one SHA (Luke 2026-10-09). `--plan` prints the plan and runs nothing.
 #
@@ -35,6 +38,7 @@ cd "$ROOT"
 unset CARGO_TARGET_DIR
 REG="${I143_ACCEPTANCE_JOBS:-tools/mesh-audit/i143-acceptance-jobs.json}"
 N="${I143_EXPORT_BATCH:-6}"
+NC="${I143_EXPORT_CONTAINER_BATCH:-3}"
 SOAKS=0 DRY=0
 for a in "$@"; do
     case "$a" in
@@ -44,11 +48,11 @@ for a in "$@"; do
     esac
 done
 
-PLAN=$(python3 - "$REG" "$N" "$SOAKS" <<'PY'
+PLAN=$(python3 - "$REG" "$N" "$SOAKS" "$NC" <<'PY'
 import datetime, json, os, re, sys
-reg_path, n, soaks = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
-if n < 1:
-    sys.exit(f"I143_EXPORT_BATCH={n}: a batch runs at least one job")
+reg_path, n, soaks, nc = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1", int(sys.argv[4])
+if n < 1 or nc < 1:
+    sys.exit(f"I143_EXPORT_BATCH={n}, I143_EXPORT_CONTAINER_BATCH={nc}: a batch runs at least one job")
 reg = json.load(open(reg_path))
 # The wall a layer's job takes when this checkout holds no receipt of it.
 LAYER_S = {"chaos-container": 400, "chaos-process": 300, "process": 200, "container": 150, "fast": 120,
@@ -79,7 +83,7 @@ for section in ("jobs", "rshape_jobs"):
         # target/debug binaries under each other's running cells (a node-admin hashed at a cell's
         # start no longer the file its Build launches), so a batch holds one package's jobs.
         shape = next((m.group(1) for c in v.get("cells", []) for m in [re.search(r"cargo \w+ -p (\S+)", c.get("command", ""))] if m), "")
-        jobs.append((job, consumer, wall(section, job, layer), shape))
+        jobs.append((job, consumer, wall(section, job, layer), shape, layer))
 build = [j for j in jobs if j[0] == "i143-rshape-consumer-build"]
 others = sorted((j for j in jobs if j not in build), key=lambda j: -j[2])
 lead = next((j[3] for j in others if not j[1]), "")
@@ -88,7 +92,10 @@ rest = [j for j in others if j not in first]
 batches = [first]
 for shape in dict.fromkeys(j[3] for j in rest):
     same = [j for j in rest if j[3] == shape]
-    batches += [same[i:i + n] for i in range(0, len(same), n)]
+    procs = [j for j in same if not j[4].endswith("container")]
+    conts = [j for j in same if j[4].endswith("container")]
+    batches += [procs[i:i + n] for i in range(0, len(procs), n)]
+    batches += [conts[i:i + nc] for i in range(0, len(conts), nc)]
 for i, b in enumerate(x for x in batches if x):
     print(f"batch {i + 1}: " + " ".join(j[0] for j in b))
 for job, layer in held:
