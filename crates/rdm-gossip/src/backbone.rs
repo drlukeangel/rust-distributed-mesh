@@ -49,8 +49,8 @@ pub struct Backbone {
     pub(crate) published_wake: Arc<tokio::sync::Notify>,
     /// The version counter of this Mesh's topology, and the complete projection it was last bumped on.
     pub(crate) version: Arc<Mutex<SourceVersion>>,
-    /// This Mesh as the mesh topology last published it (publisher, version, full): the forwarder's
-    /// own-Mesh source.
+    /// This Mesh as the mesh topology last published it (version, full), whichever term of the role
+    /// published it.
     pub(crate) own: Arc<Mutex<Option<(u64, Full)>>>,
     /// Test seam ([`Backbone::withhold_announcements`]): asked before each announcement this
     /// [`Withhold`] covers is handed to a channel. The product sets none.
@@ -162,19 +162,19 @@ impl Backbone {
                 for d in &taken.carried {
                     m.mesh().register(d);
                 }
-                // A complete aggregate of a source Mesh: the forwarding primary says what moved
-                // since it last published that source into its own Mesh. The forward path decides
+                // A complete full of a source Mesh written to the topology view: the forwarding
+                // primary puts the delta it wrote into its own Mesh (Q409). The forward path decides
                 // nothing unless this node holds the forwarder role, read under its lock.
-                if let Some((source_mesh, version, full)) = taken.source {
+                if let Some(written) = taken.source {
                     // A deleted mesh's final aggregate: its last node-admin, the only node, deleting. A
                     // node it lists `deleted` is a departure held for the deleted retention (Q390).
-                    let nodes: Vec<MeshDigest> = full.digests().into_iter().filter(|d| d.status != rdm_core::model::NodeStatus::Deleted).collect();
+                    let nodes: Vec<MeshDigest> = written.full.digests().into_iter().filter(|d| d.status != rdm_core::model::NodeStatus::Deleted).collect();
                     let is_final_delete = nodes.len() == 1
                         && nodes[0].status == rdm_core::model::NodeStatus::Deleting
                         && rdm_core::is_node_admin(&nodes[0].node.r#type);
-                    let _ = m.forward_path.source_with_clock(&me, &source_mesh, version, &full, || m.topology_view.clock.now_rafka_ms());
+                    let _ = m.forward_path.source_with_clock(&me, &written, || m.topology_view.clock.now_rafka_ms());
                     if is_final_delete {
-                        m.topology_view.view.forwarder.lock().unwrap().remove(&source_mesh);
+                        m.topology_view.view.forwarder.lock().unwrap().remove(&written.mesh);
                     }
                 }
                 return;
@@ -323,9 +323,9 @@ impl Backbone {
         (flag.swap(on, Ordering::Relaxed) != on).then_some(if on { "start" } else { "stop" })
     }
 
-    /// The author's label and version of `mesh`'s complete aggregate this admin holds from the backbone.
+    /// The author's label and version of the copy of `mesh` this admin holds in its topology view.
     pub fn held_source(&self, mesh: &str) -> Option<(Option<PublisherId>, u64)> {
-        self.channels.topology_view.view.backbone_rx.lock().unwrap().held_version(mesh)
+        self.channels.topology_view.view.copies.lock().unwrap().held_version(mesh)
     }
 
     /// Whether this backbone publishes its mesh's members now (it is the mesh's primary).
@@ -337,28 +337,25 @@ impl Backbone {
     pub fn set_mesh_primary(&self, primary: bool) {
         if primary {
             // The mesh's version is the mesh's, whoever its primary is (Q389, Q391): taking the role,
-            // this node continues it from the last aggregate of its mesh it installed.
-            let held = self.channels.topology_view.view.order.lock().unwrap().installed_aggregate(&self.mesh).map(|(_, version, full, _)| (version, full.clone()));
+            // this node continues it from the copy of its mesh it holds in its topology view.
+            let held = {
+                let copies = self.channels.topology_view.view.copies.lock().unwrap();
+                copies.held_version(&self.mesh).zip(copies.held_full(&self.mesh).cloned()).map(|((_, version), full)| (version, full))
+            };
             if let Some((version, full)) = held {
                 self.version.lock().unwrap().continue_from(version, full);
             }
         }
         self.channels.topology_view.set_mesh_primary(primary);
-        // A forwarder taking the role starts from what its Mesh holds of each peer mesh: what this node
-        // holds of it from its own mesh channel, or a read of its own Mesh (gossip.md §3.3). The role,
-        // its baseline and its term switch together under the forwarder's lock; then each peer mesh this
-        // node holds goes in as the differential from there.
-        let held_in_mesh: Vec<(String, u64, Full)> = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources_in_mesh().into_iter().filter(|(m, ..)| m != &self.mesh).map(|(m, _, v, f)| (m, v, f)).collect();
-        let forwarder_changed = self.channels.forward_path.set_role(primary, &held_in_mesh);
-        // The role's span opens as the role switches, before the forward path sends anything under it:
-        // the held peer meshes go in after it, on the forward path's own task.
+        // A node-admin taking the role already holds what its Mesh reached of each peer mesh, from the
+        // backbone it joined at its boot: it forwards the next delta each full writes to that copy, and
+        // tops up nothing (gossip.md §3.3, Q409). The role and its term switch together under the
+        // forwarder's lock.
+        let forwarder_changed = self.channels.forward_path.set_role(primary);
         if forwarder_changed {
             let role = if primary { "start" } else { "stop" };
             tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.current_name(), mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
-        }
-        if forwarder_changed && primary {
-            self.forward_held_now();
         }
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
@@ -424,7 +421,7 @@ impl Backbone {
         let (full, version, sent, bumped) = {
             let mut v = self.version.lock().unwrap();
             let before = v.version();
-            // A read of this mesh it installed after taking the role, above the version it holds: the
+            // A read of this mesh it wrote after taking the role, above the version it holds: the
             // mesh's version continues from that read's (Q391), so the mesh's sequence never goes back.
             if let Some((read, read_full)) = self.channels.topology_view.view.read_version.lock().unwrap().take() {
                 v.continue_from(read, read_full);
@@ -432,7 +429,7 @@ impl Backbone {
             let full = self.own_full(topology_view, members);
             let version = v.observe(&full);
             // What this primary publishes is its floor for its own source (gossip.md receive rules:
-            // "against the installed floor, including a topology read"), moved under the same hold.
+            // "against the mesh's held floor, including a topology read"), moved under the same hold.
             self.channels.topology_view.view.order.lock().unwrap().published(&self.mesh, version);
             *self.own.lock().unwrap() = Some((version, full.clone()));
             // Test seam: the projection withheld from its own mesh's channel ([`Withhold`] `aggregate`,
@@ -440,7 +437,7 @@ impl Backbone {
             let sent = if self.withholds("aggregate", "mesh") {
                 topology_view.clock.now_rafka_ms()
             } else {
-                self.channels.forward_path.source_with_clock(&me_name, &self.mesh, version, &full, || topology_view.clock.now_rafka_ms())
+                self.channels.forward_path.hold_own_with_clock(version, &full, || topology_view.clock.now_rafka_ms())
             };
             (full, version, sent, version != before)
         };
@@ -541,24 +538,6 @@ impl Backbone {
                 (&mut sleep).await;
                 return;
             }
-        }
-    }
-
-    /// Each peer mesh this primary holds (from the backbone, or a read of another mesh's node), put into
-    /// its Mesh as the differential from what the Mesh holds (gossip.md §3.3): on taking the role. Of a
-    /// mesh both hold, the higher version goes in.
-    pub(crate) fn forward_held_now(&self) {
-        let me_name = self.current_name();
-        let mut held: std::collections::BTreeMap<String, (u64, Full)> = Default::default();
-        let backbone = self.channels.topology_view.view.backbone_rx.lock().unwrap().sources();
-        let read = self.channels.topology_view.view.mesh_rx.lock().unwrap().sources();
-        for (mesh, _, version, full) in backbone.into_iter().chain(read).filter(|(m, ..)| m != &self.mesh) {
-            if held.get(&mesh).is_none_or(|(v, _)| *v < version) {
-                held.insert(mesh, (version, full));
-            }
-        }
-        for (mesh, (version, full)) in held {
-            self.channels.forward_path.source_with_clock(&me_name, &mesh, version, &full, || self.channels.topology_view.clock.now_rafka_ms());
         }
     }
 

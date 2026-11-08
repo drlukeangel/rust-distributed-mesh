@@ -9,19 +9,21 @@
 //! order. The queue is unbounded and never drops: topology forwards are low-rate.
 //!
 //! Only the mesh's primary (holding the forwarder role) decides or carries anything. The role
-//! and its term live under the forwarder's lock: taking or losing it clears the baseline and begins
-//! a new term in one step, every decision reads the role under that same lock, and each queued
+//! and its term live under the forwarder's lock: taking or losing it forgets the term's forwards and
+//! begins a new term in one step, every decision reads the role under that same lock, and each queued
 //! entry carries the term it was decided in. The sender drops an entry whose term is not the
 //! current one: what a node decided as primary is never sent once it no longer is.
 //!
-//! The forwarder advances its baseline when it decides, before the send. A frame the channel
+//! What the forwarder decides from is the delta a complete full wrote to the one copy in the topology
+//! view (Q409): it holds no copy of its own. It advances the version it forwarded when it decides,
+//! before the send. A frame the channel
 //! refuses, or a queue whose task is gone, is named by its span and nothing else: a node that missed
 //! it is behind the next differential's base and repairs by a read (gossip.md §3.3), with no full,
 //! no timer and no retry. A differential in chunks is sent chunk by chunk; once the channel refuses
 //! one, the rest of it is not sent, since no receiver can apply it without every chunk.
 
 use crate::frame::Frame;
-use crate::aggregate::{Forward, Forwarder, Full};
+use crate::aggregate::{Forward, Forwarder, Full, Written};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -76,39 +78,44 @@ impl ForwardPath {
         tokio::spawn(send_in_order(rx.0, sink, self.forwarder.clone()));
     }
 
-    /// Decide what `source_mesh` moving to `version` puts into the mesh, and queue it behind every
-    /// frame queued before it.
+    /// Decide what the full `written` to the topology view puts into the mesh, and queue it behind
+    /// every frame queued before it.
     #[cfg(test)]
-    pub(crate) fn source(&self, me: &str, source_mesh: &str, version: u64, full: &Full, now_ms: u64) {
-        let _ = self.source_with_clock(me, source_mesh, version, full, || now_ms);
+    pub(crate) fn source(&self, me: &str, written: &Written, now_ms: u64) {
+        let _ = self.source_with_clock(me, written, || now_ms);
     }
 
-    /// Decide what `source_mesh` moving to `version` puts into the mesh, reading `now_ms` inside
-    /// the forwarder lock so no replay or concurrent forward can interleave between the clock read
-    /// and the forwarder's version update, and queue it behind every frame queued before it.
-    pub(crate) fn source_with_clock(&self, me: &str, source_mesh: &str, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
+    /// Decide what the full `written` to the topology view puts into the mesh (the delta it wrote,
+    /// from the version this Mesh holds), reading `now_ms` inside the forwarder lock so no replay or
+    /// concurrent forward can interleave between the clock read and the forwarder's version update,
+    /// and queue it behind every frame queued before it.
+    pub(crate) fn source_with_clock(&self, me: &str, written: &Written, now_ms: impl FnOnce() -> u64) -> u64 {
         let mut forwarder = self.forwarder.lock().unwrap();
         let now_ms = now_ms();
         let Some(revision) = forwarder.role() else { return now_ms };
-        let out = forwarder.source(me, source_mesh, version, full, now_ms);
+        let out = forwarder.source(me, written, now_ms);
         if matches!(out, Forward::Nothing(_)) {
             return now_ms;
         }
-        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: Some((source_mesh.to_string(), version)), out });
+        self.enqueue(Job::Forwarded { me: me.to_string(), revision, source: Some((written.mesh.clone(), written.topology_version)), out });
+        now_ms
+    }
+
+    /// Hold this primary's publication of its own mesh at `version` for a topology read of it,
+    /// reading `now_ms` inside the forwarder lock as [`Self::source_with_clock`] does: its own nodes
+    /// publish themselves, so nothing is queued.
+    pub(crate) fn hold_own_with_clock(&self, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
+        let mut forwarder = self.forwarder.lock().unwrap();
+        let now_ms = now_ms();
+        forwarder.hold_own(version, full);
         now_ms
     }
 
     /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. Under the forwarder's
-    /// lock its baseline is cleared and a new term begins; taking it, the baseline is `held`, what this
-    /// node holds of each peer mesh from its own mesh channel (gossip.md §3.3). Returns whether the
-    /// role changed.
-    pub(crate) fn set_role(&self, on: bool, held: &[(String, u64, Full)]) -> bool {
-        let mut forwarder = self.forwarder.lock().unwrap();
-        let changed = forwarder.set_role(on);
-        if changed && on {
-            forwarder.start_from(held);
-        }
-        changed
+    /// lock the term's forwards are forgotten and a new term begins; taking it, the node forwards from
+    /// the copy it holds of each peer mesh (gossip.md §3.3, Q409). Returns whether the role changed.
+    pub(crate) fn set_role(&self, on: bool) -> bool {
+        self.forwarder.lock().unwrap().set_role(on)
     }
 
     /// Carry a lifecycle frame into the mesh, behind every frame queued before it.
@@ -329,6 +336,27 @@ mod tests {
         Full::new(vec![d], Vec::new(), Vec::new())
     }
 
+    /// The node-admin's one copy of each peer mesh in its topology view (Q409): what a complete full
+    /// writes, and so what its forwarder forwards.
+    #[derive(Default)]
+    struct Copies {
+        held: crate::aggregate::AggregateReceiver,
+        published: u64,
+    }
+
+    impl Copies {
+        /// `mesh`'s complete full at `version`, a new publication of it, written to the copy: its
+        /// delta from the version held.
+        fn write(&mut self, mesh: &str, version: u64, full: &Full) -> Written {
+            self.published += 1;
+            let chunk = crate::aggregate::Chunk { mesh: mesh.into(), mesh_id: None, author: Some(test_author()), topology_version: version, time_ms: self.published, chunk_index: 0, chunk_count: 1, digests: full.digests(), runtimes: Vec::new() };
+            match self.held.take_chunk(chunk) {
+                crate::aggregate::Taken::Written(w) => *w,
+                other => panic!("{mesh}'s full at {version} is written: {other:?}"),
+            }
+        }
+    }
+
     /// Every frame the sink was handed, in the order it was handed it. The send of the first
     /// frame handed to it takes `first_takes`; a send in `fail` returns an error.
     #[derive(Clone, Default)]
@@ -384,10 +412,11 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), rec.sink());
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
-        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
-        path.source("mesh2.node-admin.1", "mesh1", 12, &source_at(&ids, 12), 3);
+        let mut copies = Copies::default();
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &source_at(&ids, 10)), 1);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &source_at(&ids, 11)), 2);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 12, &source_at(&ids, 12)), 3);
         assert_eq!(rec.seen_after(3).await, vec![(0, 10), (10, 11), (11, 12)]);
     }
 
@@ -435,10 +464,11 @@ mod tests {
         // The channel refuses the second send: the delta v10 to v11.
         let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), rec.sink());
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
+        let mut copies = Copies::default();
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &source_at(&ids, 10)), 1);
         assert_eq!(rec.seen_after(1).await, vec![(0, 10)]);
-        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &source_at(&ids, 11)), 2);
 
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1, "the refusal is named once");
@@ -447,7 +477,7 @@ mod tests {
         assert_eq!(f["mesh"], "mesh1");
         assert_eq!(f["topology_version"], "11");
         assert!(f["cause"].contains("the channel refused call 1"), "the cause is the channel's own: {}", f["cause"]);
-        path.source("mesh2.node-admin.1", "mesh1", 12, &source_at(&ids, 12), 3);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 12, &source_at(&ids, 12)), 3);
         assert_eq!(rec.seen_after(2).await, vec![(0, 10), (11, 12)], "nothing full follows a refusal; the next differential is from the version decided");
     }
 
@@ -463,7 +493,7 @@ mod tests {
         forwarder.lock().unwrap().set_author(test_author());
         let path = ForwardPath { forwarder, queue };
         path.forwarder.lock().unwrap().set_role(true);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
+        path.source("mesh2.node-admin.1", &Copies::default().write("mesh1", 10, &source_at(&ids, 10)), 1);
         let failed = spans.named("rdm.mesh.topology.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
@@ -509,8 +539,9 @@ mod tests {
     /// the role is never sent: the role dropped between the decision and the send, and a node that
     /// is no longer its mesh's primary puts nothing into the mesh. The differential to v10 is on the
     /// channel before the role drops; the delta v10 to v11 and a carried frame queued behind it are
-    /// not. Taking the role again, the new term starts from what the mesh holds (v10) and its next
-    /// differential is from there, behind nothing of the old term.
+    /// not. Taking the role again, the new term forwards from the copy it holds (v11, Q409) and its
+    /// next differential is from there, behind nothing of the old term: a node of the mesh at v10 is
+    /// behind its base and repairs by a read (gossip.md §3.3).
     #[tokio::test]
     async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
         let spans = Spans::default();
@@ -518,22 +549,23 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         let path = ForwardPath::new(Arc::default(), gate.sink());
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
+        let mut copies = Copies::default();
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &source_at(&ids, 10)), 1);
         gate.entered.notified().await;
-        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &source_at(&ids, 11)), 2);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
-        path.set_role(false, &[]);
+        path.set_role(false);
         gate.release.add_permits(1);
-        path.set_role(true, &[("mesh1".to_string(), 10, source_at(&ids, 10))]);
-        path.source("mesh2.node-admin.1", "mesh1", 12, &source_at(&ids, 12), 3);
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 12, &source_at(&ids, 12)), 3);
         for _ in 0..400 {
-            if gate.seen.lock().unwrap().contains(&(10, 12)) {
+            if gate.seen.lock().unwrap().contains(&(11, 12)) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (10, 12)], "nothing queued before the role dropped reaches the channel");
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (11, 12)], "nothing queued before the role dropped reaches the channel; the new term forwards from the copy held");
         let dropped = spans.named("rdm.mesh.topology.reject.via-forwarder-role-dropped").await;
         let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_revision"].clone(), f["current_revision"].clone(), f["sources"].clone())).collect();
         assert_eq!(
@@ -544,25 +576,27 @@ mod tests {
     }
 
     /// CONTRACT: a node that does not hold the role decides nothing: a source moving and a carried
-    /// frame put nothing into the mesh, and leave no baseline behind.
+    /// frame put nothing into the mesh, and leave nothing forwarded behind. Its copy still holds what
+    /// the full wrote (v10): taking the role, it forwards the next move from there (Q409).
     #[tokio::test]
     async fn a_node_without_the_role_forwards_nothing() {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         gate.release.add_permits(1);
         let path = ForwardPath::new(Arc::default(), gate.sink());
-        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
+        let mut copies = Copies::default();
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &source_at(&ids, 10)), 1);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
-        assert!(path.forwarder.lock().unwrap().aggregates().is_empty(), "no baseline is recorded without the role");
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
+        assert_eq!(path.forwarder.lock().unwrap().forwarded_version("mesh1"), None, "nothing is forwarded without the role");
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &source_at(&ids, 11)), 2);
         for _ in 0..400 {
             if !gate.seen.lock().unwrap().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the mesh held nothing of mesh1: the first differential after taking the role is from 0, and nothing before it was sent");
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(10, 11)], "the first differential after taking the role is from the copy held, and nothing before it was sent");
     }
 
     /// CONTRACT: every producer shares the one order: a differential, a carried lifecycle frame, a
@@ -573,28 +607,33 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), carried_marker: true, ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), rec.sink());
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
+        let mut copies = Copies::default();
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &source_at(&ids, 10)), 1);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
         let (replayed, deltas, _) = path.replay("mesh2.node-admin.1", Vec::new(), || 2);
         assert_eq!((replayed, deltas), (1, 1), "the replay is the last differential of mesh1");
-        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 3);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &source_at(&ids, 11)), 3);
         assert_eq!(rec.seen_after(4).await, vec![(0, 10), (1, 1), (0, 10), (10, 11)]);
     }
 
-    /// CONTRACT: a forwarder taking the role starts from what its mesh holds of each peer mesh (the
-    /// version its nodes reached from the forwarder before it, whoever that was), and the peer mesh's
-    /// next move goes in as the differential from there, whichever mesh-primary of the peer mesh
-    /// sent it (Q389). Nothing full is sent.
+    /// CONTRACT (gossip.md §3.3, rule 26, Q409): a node-admin taking the role forwards from the copy it
+    /// holds of each peer mesh (the version it holds from the backbone, which its mesh's nodes reached
+    /// from the forwarder before it), and the peer mesh's next move goes in as the delta its next full
+    /// writes to that copy, its base the version held, whichever mesh-primary of the peer mesh sent it
+    /// (Q389). A republication of the version held sends nothing; nothing full is sent, and nothing is
+    /// topped up.
     #[tokio::test]
-    async fn a_forwarder_taking_the_role_continues_from_what_its_mesh_holds() {
+    async fn a_node_admin_taking_the_role_forwards_from_the_copy_it_holds() {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         gate.release.add_permits(1);
         let path = ForwardPath::new(Arc::default(), gate.sink());
-        path.set_role(true, &[("mesh1".to_string(), 7, source_at(&ids, 7))]);
-        path.source("mesh2.node-admin.2", "mesh1", 7, &source_at(&ids, 7), 1);
-        path.source("mesh2.node-admin.2", "mesh1", 9, &source_at(&ids, 9), 2);
+        let mut copies = Copies::default();
+        let _ = copies.write("mesh1", 7, &source_at(&ids, 7));
+        path.set_role(true);
+        path.source("mesh2.node-admin.2", &copies.write("mesh1", 7, &source_at(&ids, 7)), 1);
+        path.source("mesh2.node-admin.2", &copies.write("mesh1", 9, &source_at(&ids, 9)), 2);
         for _ in 0..400 {
             if !gate.seen.lock().unwrap().is_empty() {
                 break;
@@ -627,10 +666,11 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder::default();
         let path = ForwardPath::new(Arc::default(), rec.sink());
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &members_at(&members, 10), 1);
-        path.source("mesh2.node-admin.1", "mesh3", 5, &source_at(&ids, 5), 2);
-        path.source("mesh2.node-admin.1", "mesh1", 11, &members_at(&members, 11), 3);
+        let mut copies = Copies::default();
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &members_at(&members, 10)), 1);
+        path.source("mesh2.node-admin.1", &copies.write("mesh3", 5, &source_at(&ids, 5)), 2);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &members_at(&members, 11)), 3);
         let forwarded = spans.named("rdm.mesh.topology.update.via-forwarded-delta").await;
         let chunks: usize = forwarded.iter().find(|f| f["mesh"] == "mesh1" && f["topology_version"] == "10").expect("the differential is named")["chunk_count"].parse().unwrap();
         assert!(chunks > 1, "400 members do not fit one message: {chunks} chunk(s)");
@@ -662,10 +702,11 @@ mod tests {
         };
         let rec = Recorder::default();
         let path = ForwardPath::new(Arc::default(), rec.sink());
-        path.set_role(true, &[]);
-        path.source("mesh2.node-admin.1", "mesh1", 10, &with_huge(10), 1);
-        path.source("mesh2.node-admin.1", "mesh3", 5, &source_at(&ids, 5), 2);
-        path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 3);
+        let mut copies = Copies::default();
+        path.set_role(true);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 10, &with_huge(10)), 1);
+        path.source("mesh2.node-admin.1", &copies.write("mesh3", 5, &source_at(&ids, 5)), 2);
+        path.source("mesh2.node-admin.1", &copies.write("mesh1", 11, &source_at(&ids, 11)), 3);
         assert_eq!(rec.seen_after(2).await, vec![(0, 5), (10, 11)], "nothing of the differential with the oversize entry is sent; the next is from its version");
         let named = spans.named("rdm.mesh.topology.reject.via-delta-too-large").await;
         assert_eq!(named.len(), 1, "the entry that fits no message is named once");

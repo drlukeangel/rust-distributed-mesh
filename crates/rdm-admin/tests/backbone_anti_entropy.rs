@@ -224,7 +224,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let receipts: Vec<(u64, String)> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-aggregate-installed" && s["attributes"]["node"] == "mesh2.node-admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
+        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-full" && s["attributes"]["node"] == "mesh2.node-admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
         .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["topology_version"].as_str().unwrap_or_default().to_string()))
         .collect();
     let held_spans = spans.iter().filter(|s| s["name"] == "cell.store.update.via-held-read").count();

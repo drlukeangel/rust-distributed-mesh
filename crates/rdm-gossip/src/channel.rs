@@ -667,8 +667,8 @@ pub(crate) enum Side {
     Backbone,
     /// This node's own Mesh channel: the other sources as its primary forwards them, no loads.
     MeshChannel,
-    /// A topology read (Node RPC op `0x1E`) from a node that holds the topology: installed into
-    /// the Mesh channel's receiver. The answerer is a member of this node's mesh: its own mesh's
+    /// A topology read (Node RPC op `0x1E`) from a node that holds the topology: written to the one
+    /// copy in the topology view. The answerer is a member of this node's mesh: its own mesh's
     /// members are held as the answerer hears them.
     Read,
     /// A topology read from a node of another mesh: everything it serves is a source it holds, not
@@ -1229,24 +1229,24 @@ impl Channels {
         self.mesh().broadcast(f).await
     }
 
-    /// One chunk of a topology read from another node. The mesh installs atomically once every
-    /// chunk of its aggregate is held, through the same receiver the Mesh channel's aggregates
-    /// install into; a source it ends the desynchronization of is resumed. Every member the
-    /// aggregate carries is held as heard and its location registered.
+    /// One chunk of a topology read from another node. Once every chunk of the mesh's full is held it
+    /// writes its delta to the one copy in the topology view atomically, the same copy the backbone's
+    /// fulls and the Mesh channel's deltas write (Q409); a source it ends the desynchronization of is
+    /// resumed. Every member the full carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let side = if answerer_mesh == self.topology_view.view.mesh { Side::Read } else { Side::ReadPeer };
         let own_digests = (side == Side::Read && chunk.mesh == self.topology_view.view.mesh).then(|| chunk.digests.clone());
         let taken = self.topology_view.view.take_read_chunk(chunk, side, &self.topology_view.fabric);
-        if let Taken::Installed(i) = &taken {
-            for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.topology_view.fabric) {
+        if let Taken::Written(w) = &taken {
+            for d in w.full.digests().into_iter().filter(|d| d.fabric_id == self.topology_view.fabric) {
                 self.mesh().register(&d);
             }
-            // A peer mesh installed from a topology read is a topology this node holds: while it holds
-            // its Mesh's forwarder role, it goes into the Mesh as a backbone install would, the
-            // differential from what the Mesh holds (gossip.md §3.3).
-            if side == Side::ReadPeer && i.mesh != self.topology_view.view.mesh {
+            // A peer mesh's read written to the topology view: while this node holds its Mesh's
+            // forwarder role, the delta it wrote goes into the Mesh as a backbone full's would
+            // (gossip.md §3.3).
+            if side == Side::ReadPeer && w.mesh != self.topology_view.view.mesh {
                 let me = self.topology_view.view.current_name();
-                let _ = self.forward_path.source_with_clock(&me, &i.mesh, i.topology_version, &i.full, || self.topology_view.clock.now_rafka_ms());
+                let _ = self.forward_path.source_with_clock(&me, w, || self.topology_view.clock.now_rafka_ms());
             }
         } else if let Some(digests) = own_digests {
             for d in digests.into_iter().filter(|d| d.fabric_id == self.topology_view.fabric && d.node.mesh == self.topology_view.view.mesh && self.topology_view.digest_view.get(d.node.node_id.as_str()).is_some()) {
@@ -1258,7 +1258,8 @@ impl Channels {
 
     /// Resume desynchronized sources from this Mesh's own primary (gossip.md §3.3): when a delta
     /// did not follow what is held, the node reads the current topology of each desynchronized
-    /// mesh from its own mesh-primary (Node RPC op `0x1E`), installs it atomically, and resumes.
+    /// mesh from its own mesh-primary (Node RPC op `0x1E`), writes its delta to the topology view
+    /// atomically, and resumes.
     /// Never the remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or
     /// held for later; the next delta or full from the primary signals or resumes it again. The top-up
     /// of a node that is no node-admin: it manages no birth's runtime, so it reads no node record.
@@ -1278,7 +1279,7 @@ impl Channels {
             loop {
                 // One attempt per signal: a delta heard on a desynchronized source signals again,
                 // so a top-up that failed is attempted when the primary next speaks. A pull that
-                // installed a copy older than a delta dropped while it was in flight pulls again
+                // wrote a copy older than a delta dropped while it was in flight pulls again
                 // (gossip.md §3.3, Q130), on the one backoff rule, and so does one that left a
                 // node-admin a birth of its mesh with no runtime fact (Q400), or a node record read that
                 // did not hold it (Q404 A).
@@ -1293,7 +1294,7 @@ impl Channels {
         }
     }
 
-    /// One pull of `gaps`: `true` when it installed a copy of a source older than a delta that
+    /// One pull of `gaps`: `true` when it wrote a copy of a source older than a delta that
     /// source dropped while the pull was in flight, so the source is still behind, or when it left a
     /// node-admin holding a birth of its mesh with no runtime fact (Q400). With no live primary to
     /// pull from (its primary record names a birth proven gone, or this node is its mesh's primary), a
@@ -1318,12 +1319,12 @@ impl Channels {
             }
         };
         // The Mesh's primary has no primary to top up from: it serves its own mesh from what it
-        // publishes and every peer mesh from the backbone, never from its mesh-channel sources. It takes
-        // the runtime facts it is owed from the births' node records (Q404 A).
+        // publishes and every peer mesh from the copy its backbone fulls write (Q409). It takes the
+        // runtime facts it is owed from the births' node records (Q404 A).
         if self.topology_view.digest_view.own.lock().unwrap().as_deref() == Some(primary.node.node_id.as_str()) {
             const REASON: &str = "this-node-is-the-mesh-primary";
             tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name, reason = REASON)
-                .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and it serves no source from its mesh channel"));
+                .in_scope(|| tracing::info!("this node is its Mesh's primary: it has no primary to top up from, and its backbone fulls write every peer mesh's copy"));
             return match records {
                 Some(read) => self.topology_view.runtimes_from_node_records(read, REASON).await,
                 None => false,
@@ -1333,14 +1334,14 @@ impl Channels {
         match fetch(self.clone(), primary.clone(), names).await {
             Ok(done) => {
                 // A node-admin that still holds a birth of its mesh with no runtime fact once the read is
-                // installed (its mesh-primary held none of it yet) keeps its own mesh desynchronized: it
+                // written (its mesh-primary held none of it yet) keeps its own mesh desynchronized: it
                 // pulls again, on the one backoff rule, until a read supplies the fact (Q400).
                 let owed = if self.topology_view.view.reads_runtime_facts() { self.topology_view.digest_view.without_runtime_fact(&mesh) } else { Vec::new() };
                 if !owed.is_empty() {
-                    self.topology_view.view.mesh_rx.lock().unwrap().mark_desynced(&mesh, Gap::NoRuntimeFact);
+                    self.topology_view.view.copies.lock().unwrap().mark_desynced(&mesh, Gap::NoRuntimeFact);
                 }
                 let still: Vec<String> = self.topology_view.desynced_sources().into_iter().map(|(m, _)| m).collect();
-                let behind = done.installed.iter().any(|(m, _)| still.contains(m));
+                let behind = done.written.iter().any(|(m, _)| still.contains(m));
                 tracing::info_span!(
                     "rdm.mesh.entry.update.via-top-up",
                     node = %node,
@@ -1348,7 +1349,7 @@ impl Channels {
                     reasons = %reasons,
                     mesh_primary_path = %primary.node.path, mesh_primary_name = %primary.node.name,
                     served_by_path = %primary.node.path, served_by_name = %primary.node.name,
-                    installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
+                    written = done.written.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
                     runtime_facts_owed = owed.len(),
                     pulls_again = behind,

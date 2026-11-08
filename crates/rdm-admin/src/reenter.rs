@@ -105,7 +105,7 @@ impl MapNode {
 
 /// The births of one topology read, as the map a Ping reaches.
 pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rdm_core::FabricId) -> Vec<MapNode> {
-    read.installed
+    read.fulls
         .iter()
         .flat_map(|m| m.members.iter().map(move |d| (m, d)))
         .filter(|(_, d)| &d.fabric_id == fabric)
@@ -182,7 +182,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
             // The roles this node's mesh knows are held: an entering admin computes none before it has them.
             topology_view.learn_primaries(&read.primaries, "entry");
             channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.node_id))?;
-            let fabric = read.installed.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
+            let fabric = read.fulls.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
             let Some(fabric) = fabric else {
                 return Err(format!("{} answered a topology read that does not name itself", node.node_id));
             };
@@ -411,10 +411,10 @@ mod tests {
     /// the node-admin binds port 0 and the OS assigns the port."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:121
     /// "2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
-    /// maker. It installs complete topology aggregates and obtains its control/status context."
+    /// maker. It writes complete topology aggregates to its topology view and obtains its control/status context."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:123
     /// "3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
-    /// can exit while the mesh has no node-admin. It installs complete aggregates and joins its mesh
+    /// can exit while the mesh has no node-admin. It writes complete aggregates to its topology view and joins its mesh
     /// channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module)."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:129
     /// "4. Before it is ready, it sends one bounded Ping, once, to every node IN ITS OWN MESH
@@ -433,15 +433,15 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:184
     /// "| Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |"
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:185
-    /// "| Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes installed | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |"
+    /// "| Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes written to the topology view | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read` |"
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:186
     /// "| Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |"
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:187
     /// "| Mesh-primary / provider | node recovery | node investigation, one recovery on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |"
     /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:98-100: "1. Load the durable topology and the
     /// accepted Build map; bind port 0 and retain the OS-assigned endpoint. The first GetTopology targets a node
-    /// from that durable map: OWN MESH first, install only complete source aggregates. Stabilize the own mesh
-    /// before investigating peers."
+    /// from that durable map: OWN MESH first, write only complete source aggregates to the topology view.
+    /// Stabilize the own mesh before investigating peers."
     /// docs/architecture/lifecycles/fabric-recovery.md:101-102: "2. Obtain current own-mesh topology, join the
     /// mesh channel from its member addresses, recover control and become ready under the ordinary election."
     /// docs/architecture/lifecycles/fabric-recovery.md:102-104: "3. Run the single bounded own-mesh Ping sweep
@@ -453,7 +453,7 @@ mod tests {
     /// docs/architecture/lifecycles/fabric-recovery.md:139: "| Recovered fabric-primary | GetTopology to
     /// durable-map node | Topology schema; own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`,
     /// `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`,
-    /// `rdm.mesh.topology.update.via-read-install` |"
+    /// `rdm.mesh.topology.update.via-read` |"
     /// docs/architecture/lifecycles/fabric-recovery.md:140: "| Recovered own-mesh primary | Ping / node recovery |
     /// same own-mesh sweep and node investigation as a node-admin joining a live mesh |
     /// `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |"
@@ -603,7 +603,7 @@ mod tests {
         assert!(!capture.named("rdm.node_rpc.request.update.via-call").is_empty(), "via-call span emitted");
         assert!(!capture.named("rdm.node_rpc.request.serve.via-direct").is_empty(), "via-direct span emitted");
         assert!(!capture.named("rdm.mesh.topology.serve.via-read").is_empty(), "via-read span emitted");
-        assert!(!capture.named("rdm.mesh.topology.update.via-read-install").is_empty(), "via-read-install span emitted");
+        assert!(!capture.named("rdm.mesh.topology.update.via-read").is_empty(), "the caller's via-read span emitted");
         assert!(!capture.named("rdm.node_admin.mesh.update.via-entry-sweep").is_empty(), "via-entry-sweep span emitted");
     }
 }

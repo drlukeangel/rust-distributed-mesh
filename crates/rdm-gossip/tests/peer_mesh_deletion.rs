@@ -157,7 +157,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
 
         // mesh2.node-admin.2, mesh2's next mesh-primary, reads the fabric-primary at its start (its mesh
         // holds no mesh-primary): it holds the node deleted.
-        assert!(matches!(m2_m_channels.take_read_chunk(read(&served, 2_000), "mesh1"), Taken::Installed(_)), "its start read installs mesh2");
+        assert!(matches!(m2_m_channels.take_read_chunk(read(&served, 2_000), "mesh1"), Taken::Written(_)), "its start read installs mesh2");
         assert!(m2_m.digest_view.is_deleted(id.as_str()), "its start read holds mesh2.node-admin.1 deleted");
 
         // It takes the role: its first aggregate continues mesh2's version (Q391) and lists the node
@@ -176,7 +176,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         // mesh2.node.1 reads its mesh-primary: it holds the node deleted.
         let from_primary = m2_m.held_topology_of(&m2_own, Some("mesh2"));
         assert_eq!(listed(&from_primary).map(|(_, status)| status), Some(NodeStatus::Deleted), "mesh2's mesh-primary serves the node deleted");
-        assert!(matches!(rpc_m_channels.take_read_chunk(read(&from_primary, 3_000), "mesh2"), Taken::Installed(_)), "mesh2.node.1's read installs mesh2");
+        assert!(matches!(rpc_m_channels.take_read_chunk(read(&from_primary, 3_000), "mesh2"), Taken::Written(_)), "mesh2.node.1's read installs mesh2");
         for v in [&m2_m, &rpc_m] {
             assert!(v.digest_view.is_deleted(id.as_str()), "mesh2's nodes hold mesh2.node-admin.1 deleted");
             assert!(v.digest_view.get(id.as_str()).is_none(), "the current topology no longer lists mesh2.node-admin.1");
@@ -199,7 +199,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         }
         let installed: Vec<&Value> = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-aggregate-installed" && attr(s, "node") == "mesh1.node-admin.1" && attr(s, "channel") == "backbone" && attr(s, "mesh") == "mesh2" && attr(s, "topology_version").parse::<u64>().is_ok_and(|v| v > 7))
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-full" && attr(s, "node") == "mesh1.node-admin.1" && attr(s, "channel") == "backbone" && attr(s, "mesh") == "mesh2" && attr(s, "topology_version").parse::<u64>().is_ok_and(|v| v > 7))
             .collect();
         assert!(installed.first().is_some_and(|s| attr(s, "deleted") == "1"), "the next mesh-primary's first aggregate lists the node deleted: {installed:#?}");
         println!("peer-mesh-deletion: mesh1.node-admin.1 installed mesh2's next aggregate trace {} span {}", installed[0]["trace_id"], installed[0]["span_id"]);

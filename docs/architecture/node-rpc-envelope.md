@@ -1209,9 +1209,10 @@ Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
 
 Caller span: `rdm.node_rpc.request.update.via-call`, op=0x1E. Server:
 `rdm.node_rpc.request.serve.via-direct`, child `rdm.mesh.topology.serve.via-read`, with
-`meshes`, `aggregates`, `unchanged`, `stored`, `bytes`. Caller installation emits
-`rdm.mesh.topology.update.via-read-install` per mesh, with publisher, topology_version
-and target node. Complete state installation is evidence in addition to trace ancestry.
+`meshes`, `aggregates`, `unchanged`, `stored`, `bytes`. The caller's write emits
+`rdm.mesh.topology.update.via-read` per mesh, with publisher, topology_version, the
+`added`, `changed` and `removed` counts and target node. A complete write is evidence in
+addition to trace ancestry.
 
 Uses: [node-admin create](lifecycles/node-create.md#ordinary-process-birth),
 [delta-gap top-up](lifecycles/node-topology-get.md#node-topology-top-up),

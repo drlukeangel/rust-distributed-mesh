@@ -329,7 +329,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let read_channels = rdm_gossip::channel::Channels::new(&reader.gossip, &reader.ep, &read).unwrap();
         read_channels.join(rdm_gossip::channel::ChannelId::mesh(read.fabric_id(), read.mesh_id()), vec![]).await.unwrap();
         let chunk = rdm_gossip::aggregate::Chunk { mesh: served.mesh, mesh_id: None, author: None, topology_version: served.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, runtimes: Vec::new() };
-        assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::aggregate::Taken::Installed(_)));
+        assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::aggregate::Taken::Written(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((None, version)), "a topology read installs the version; its reply names no author");
 
         // A subsequent material change goes in through the delta path, from the same forwarder.

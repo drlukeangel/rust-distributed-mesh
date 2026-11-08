@@ -189,9 +189,9 @@ mod tests {
             let read = get_topology(&client, &target, "mesh1", &caller_view_channels, None, None)
                 .await
                 .expect("get_topology succeeds");
-            assert_eq!(read.installed.len(), 1);
-            assert_eq!(read.installed[0].mesh, "mesh1");
-            assert_eq!(read.installed[0].topology_version, 3);
+            assert_eq!(read.fulls.len(), 1);
+            assert_eq!(read.fulls[0].mesh, "mesh1");
+            assert_eq!(read.fulls[0].topology_version, 3);
             assert_eq!(read.stored.len(), 1);
             assert_eq!(read.stored[0].mesh, "mesh2");
             assert_eq!(read.stored[0].mesh_id, Some(stored_mesh2_id));
@@ -222,7 +222,7 @@ mod tests {
             )
             .await
             .expect("get_topology unchanged succeeds");
-            assert!(read_unchanged.installed.is_empty());
+            assert!(read_unchanged.fulls.is_empty());
             assert_eq!(read_unchanged.unchanged, vec![("mesh1".to_string(), 3)]);
 
             let _ = server_router.shutdown().await;
@@ -242,8 +242,8 @@ mod tests {
             "expected rdm.mesh.topology.serve.via-read with unchanged=1"
         );
         assert!(
-            !capture.named("rdm.mesh.topology.update.via-read-install").is_empty(),
-            "expected rdm.mesh.topology.update.via-read-install"
+            !capture.named("rdm.mesh.topology.update.via-read").is_empty(),
+            "expected rdm.mesh.topology.update.via-read"
         );
     }
 }

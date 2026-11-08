@@ -109,7 +109,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         }
         // The fabric-primary holds mesh2 at v7, read from mesh2's last primary.
         let read = rdm_gossip::aggregate::Chunk { mesh: "mesh2".into(), mesh_id: None, author: None, topology_version: 7, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: vec![admin2.clone(), rpc.clone()], runtimes: Vec::new() };
-        assert!(matches!(fp_m_channels.take_read_chunk(read, "mesh1"), rdm_gossip::aggregate::Taken::Installed(_)), "the fabric-primary holds mesh2 at v7");
+        assert!(matches!(fp_m_channels.take_read_chunk(read, "mesh1"), rdm_gossip::aggregate::Taken::Written(_)), "the fabric-primary holds mesh2 at v7");
         // The first publication has published; the next waits.
         fp_bb.publish(&fp_m, fp_bb.own_members(&fp_m)).await;
 

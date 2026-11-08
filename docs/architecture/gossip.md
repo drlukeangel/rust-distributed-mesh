@@ -416,7 +416,7 @@ projection, primary announcement and aggregate publication. What a receiver may 
 | category | stale | duplicate | gap |
 |---|---|---|---|
 | replacement state | a lower revision of the same source projection than the one held, including one written to the topology view by a topology read | the held revision with identical content | — |
-| full or delta | a publication older than the installed one; a delta older than the installed version | a chunk of a publication already written to the topology view, or an already-applied delta; distinct chunks of an unfinished publication stay admissible | a delta whose base is ahead of the installed version: repair, never applied, never stale |
+| full or delta | a publication older than the held one; a delta older than the held version | a chunk of a publication already written to the topology view, or an already-applied delta; distinct chunks of an unfinished publication stay admissible | a delta whose base is ahead of the held version: repair, never applied, never stale |
 | operation fact | — ; an unrelated newer frame does not supersede it, and its effect is reconciled against the same operation's completion and the exact birth's later lifecycle evidence: a completed operation is never reopened | the same operation identity already applied | — |
 | reserved | — | — | — ; refused by name, nothing applied |
 
@@ -425,8 +425,8 @@ P(n) is the 20-digit zero-padded decimal representation of the existing u64 vers
 | frame / type | category | source / subject | sequence / data validity | id / identity |
 |---|---|---|---|---|
 | `Digest` (`rdm.mesh.digest`) | replacement state | the author birth / that exact birth | `P(digest_seq)`, higher is newer | birth and digest sequence |
-| `TopologyFull` (`rdm.mesh.members`, the source publication on the backbone) | full | the original author birth / the mesh | `P(topology_version)` against the mesh's installed floor, whichever mesh-primary sent it (Q389), including a topology read; equal material version admits a new publication's hearing and distinct unfinished chunks | `rdm.mesh.members/<mesh>/<version>/<chunk>`; a chunk set is its (mesh, version, author), a publication its author's `time`; a resend keeps id |
-| `TopologyDelta` (`rdm.mesh.members.delta`) | delta | the forwarding mesh-primary's birth / the mesh | `P(the peer Mesh's version)`, whichever forwarder sent it (Q389); applied once every chunk of (mesh, base, version, source) is held; `base_version` in data equals installed to apply (0: the mesh's first differential, applied onto nothing held), another base requests repair as via-gap at its first chunk, lower version is stale | mesh, base version, version and chunk index |
+| `TopologyFull` (`rdm.mesh.members`, the source publication on the backbone) | full | the original author birth / the mesh | `P(topology_version)` against the mesh's held floor, whichever mesh-primary sent it (Q389), including a topology read; equal material version admits a new publication's hearing and distinct unfinished chunks | `rdm.mesh.members/<mesh>/<version>/<chunk>`; a chunk set is its (mesh, version, author), a publication its author's `time`; a resend keeps id |
+| `TopologyDelta` (`rdm.mesh.members.delta`) | delta | the forwarding mesh-primary's birth / the mesh | `P(the peer Mesh's version)`, whichever forwarder sent it (Q389); applied once every chunk of (mesh, base, version, source) is held; `base_version` in data equals the version held to apply (0: the mesh's first differential, applied onto nothing held), another base requests repair as via-gap at its first chunk, lower version is stale | mesh, base version, version and chunk index |
 | `NodeDeleting`, `NodeStopped` (`rdm.node.deleting`, `rdm.node.stopped`) | operation fact | the author birth / `(build_id, operation, node_id, incarnation)` | absent; the operation cannot reopen after completion or the exact birth's later lifecycle. The carried `topology_version` is data, checked against the subject mesh's floor, whichever mesh-primary or executor published it (Q389), even for a repeated fact | kind and the complete operation identity; a repeat runs no effect twice, including when the carried version is refused |
 | `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
 | `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(the primary's revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from the Mesh row. A predecessor's later timestamp loses to the successor's higher revision; within one primary its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
@@ -442,7 +442,7 @@ source-projection floors remain as specified above. A recovery
 through a topology read writes its delta to the topology view under the receiver's one hold; stale gossip after
 it is refused by these rules and never rolls it back. Spans: `rdm.mesh.topology.reject.via-stale`
 (frame, subject, held key, frame key), `rdm.mesh.topology.update.via-duplicate` (frame, identity,
-`ignored`), `rdm.mesh.topology.update.via-gap` (frame, subject, installed, frame key,
+`ignored`), `rdm.mesh.topology.update.via-gap` (frame, subject, held version, frame key,
 `repair-requested`), `rdm.mesh.topology.reject.via-inconsistent` (frame, subject, revision),
 `rdm.mesh.topology.reject.via-reserved` (position).
 

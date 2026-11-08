@@ -610,14 +610,14 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
         }
     }
 
-    async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+    async fn topology_written(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
         // Its own whole row its mesh-primary's atlas holds, held by its property writer (Q234).
         if let (Some(row), Some(writer)) = (&read.own_row, self.configs.get().and_then(|c| c.own_writer())) {
             writer.set_own_row(row.clone());
         }
         let topology_view = channels.topology_view();
         let mesh_peers: Vec<EndpointAddr> = read
-            .installed
+            .fulls
             .iter()
             .flat_map(|m| m.members.iter())
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == topology_view.mesh_name())
@@ -778,7 +778,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         }
     }
 
-    async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+    async fn topology_written(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
         // Its own whole row its mesh-primary's atlas holds, held by its property writer (Q234).
         if let (Some(row), Some(writer)) = (&read.own_row, self.configs.get().and_then(|c| c.own_writer())) {
             writer.set_own_row(row.clone());
@@ -786,7 +786,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         let topology_view = channels.topology_view();
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();
-        for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.me_id) {
+        for d in read.fulls.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.me_id) {
             if let Some(a) = rdm_gossip::location::gossip_addr(d) {
                 if d.node.mesh == topology_view.mesh_name() {
                     mesh_peers.push(a.clone());
@@ -822,7 +822,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         }
         // So are the ids the mesh topologies it installed name beside each mesh's name: a launched admin
         // holds its meshes' ids from this hydration sync, never from the Build records (Q227).
-        for m in &read.installed {
+        for m in &read.fulls {
             if let Some(id) = &m.mesh_id {
                 self.records.meshes.lock().unwrap().entry(m.mesh.clone()).or_insert_with(|| id.clone());
             }

@@ -1,13 +1,13 @@
 //! The topology read (`GetTopology`, op `0x1E`; node-rpc-envelope.md "Topology, op `0x1E`, rdm").
 //!
-//! Every node serves it: it reads what the node holds (its topology view and the aggregate
-//! receiver's held sources, each at the `topology_version` it holds it, one list of nodes each) and
+//! Every node serves it: it reads what the node holds (its topology view and the one copy of each
+//! mesh held there, each at the `topology_version` it holds it, one list of nodes each) and
 //! streams one aggregate per mesh, chunked by the one method gossip's `TopologyFull` aggregates use
 //! ([`rdm_gossip::aggregate::chunks_of`]). It mutates nothing at the target.
 //!
-//! The caller ([`get_topology`]) installs a mesh only once every chunk of one aggregate is held,
-//! through the receiver the Mesh channel's aggregates install into
-//! ([`TopologyView::take_read_chunk`]): there is no second install path.
+//! The caller ([`get_topology`]) writes a mesh's delta to its topology view only once every chunk of
+//! one full is held, into the one copy the backbone's fulls and the Mesh channel's deltas write
+//! ([`TopologyView::take_read_chunk`], Q409): there is no second copy.
 
 use rdm_core::wire::ReadNode;
 use rdm_core::MeshDigest;
@@ -93,7 +93,7 @@ impl TopologyService {
 /// The `TopologyService` a running node fills once it holds a view.
 pub type TopologySlot = Arc<OnceLock<Arc<TopologyService>>>;
 
-/// The chunk a topology read's reply carries, as the reader of fabric `fabric` installs it: each node
+/// The chunk a topology read's reply carries, as the reader of fabric `fabric` takes it: each node
 /// of the mesh the read names, with its status (Q390) and the runtime and data dir the read carried
 /// of it, dated `at_rafka_ms` (the rafka-time the answerer served). `None` for a reply that carries no
 /// chunk.
@@ -292,17 +292,18 @@ pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
     })
 }
 
-/// What one topology read left installed (`lifecycles/node-topology-get.md`).
+/// What one topology read answered (`lifecycles/node-topology-get.md`).
 #[derive(Debug, Clone, Default)]
 pub struct TopologyRead {
-    /// Each mesh installed from a complete aggregate, with its node digests.
-    pub installed: Vec<ReadMesh>,
+    /// Each mesh whose full arrived complete, with its node digests: written to the topology view by
+    /// [`get_topology`], returned alone by [`read_topology`].
+    pub fulls: Vec<ReadMesh>,
     /// Each mesh the target answered `Unchanged`: `(mesh, topology_version)`.
     pub unchanged: Vec<(String, u64)>,
     /// The meshes the target says it answered.
     pub meshes: u32,
     /// Each mesh the target answered from its stored map, with no version: births to reach, never
-    /// installed and never the mesh's current topology.
+    /// written to the topology view and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
     /// The primary records the target holds, in the order it sent them (`lifecycles/node-topology-get.md`).
     pub primaries: Vec<(rdm_core::PrimaryRole, rdm_core::Primary, bool)>,
@@ -377,7 +378,7 @@ pub struct ReadMesh {
     pub runtimes: Vec<(rdm_core::NodeId, rdm_core::IncarnationId, rdm_core::NodeRuntime)>,
 }
 
-/// Why a topology read installed nothing more.
+/// Why a topology read wrote nothing more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopologyFailure {
     /// The target holds no topology yet.
@@ -386,7 +387,7 @@ pub enum TopologyFailure {
     Refused(String),
     /// The target could not be reached, or the stream ended before its terminal.
     Unreached(String),
-    /// The stream ended complete but its count disagrees with what was installed.
+    /// The stream ended complete but its count disagrees with what arrived whole.
     Incomplete(String),
 }
 
@@ -401,19 +402,19 @@ impl std::fmt::Display for TopologyFailure {
     }
 }
 
-/// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `topology_view` each mesh whose aggregate arrives
-/// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
-/// for the one `mesh` asked for.
+/// `GetTopology` to `target` (a node of `answerer_mesh`), writing to `topology_view` the delta of each
+/// mesh whose full arrives complete. `mesh = None` reads every mesh the target holds; `since` is the
+/// source version held for the one `mesh` asked for.
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, channels: &rdm_gossip::channel::Channels, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let topology_view = channels.topology_view();
     let node_name = topology_view.node_name();
-    // A mesh whose served aggregate is older than the complete one this node already installed of the
-    // same source (its publication arrived before the read's answer) is refused `OlderThanHeld`: the
-    // held aggregate stands, and it is the one this read leaves installed (node-start.md step 4).
+    // A mesh whose served full is older than the copy this node already holds of the same source (its
+    // publication arrived before the read's answer) is refused `OlderThanHeld`: the held copy stands,
+    // and it is the one this read reports (node-start.md step 4).
     let mut older_than_held: Vec<String> = Vec::new();
     // The primary records the target holds are this node's too, wherever they supersede its own: it
     // computes no primary before it has them, so they are held before any mesh's topology in the read is
-    // installed (a view rebuild between the two elected a node-admin of a mesh whose fabric recovery was
+    // written (a view rebuild between the two elected a node-admin of a mesh whose fabric recovery was
     // restoring its primary: node_recovery_exits, lane 5 #339).
     let mut read = read_with(client, target, topology_view.fabric_id(), &node_name, mesh, since, |r| topology_view.learn_primaries(&r.primaries, "entry"), |c| {
         let mesh = c.mesh.clone();
@@ -424,12 +425,12 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
         taken
     })
     .await?;
-    older_than_held.retain(|m| read.installed.iter().all(|i| &i.mesh != m));
+    older_than_held.retain(|m| read.fulls.iter().all(|i| &i.mesh != m));
     for mesh in older_than_held {
-        if let Some((topology_version, members)) = topology_view.installed_aggregate(&mesh) {
+        if let Some((topology_version, members)) = topology_view.held_copy(&mesh) {
             let mesh_id = topology_view.digest_view.mesh_id_of(&mesh);
             let runtimes = members.iter().filter_map(|d| topology_view.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).map(|r| (d.node.node_id.clone(), d.node.incarnation.clone(), r))).collect();
-            read.installed.push(ReadMesh { mesh, mesh_id, topology_version, members, runtimes });
+            read.fulls.push(ReadMesh { mesh, mesh_id, topology_version, members, runtimes });
         }
     }
     Ok(read)
@@ -437,10 +438,10 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 
 /// The top-up read every receiver of a mesh channel hands [`TopologyView::top_ups`] (gossip.md §3.3: a
 /// node whose source desynchronized "pulls the current full fabric topology from its own current
-/// mesh-primary with GetTopology, installs it atomically, records the publisher and version baseline,
-/// and resumes"): one [`get_topology`] of each desynchronized mesh to the exact birth of the primary
-/// the topology view names, installed through the topology view's own receiver. The one workflow a
-/// node-admin and every other node run.
+/// mesh-primary with GetTopology, writes its delta to the topology view atomically, records the
+/// publisher and version baseline, and resumes"): one [`get_topology`] of each desynchronized mesh to
+/// the exact birth of the primary the topology view names, written to the topology view's one copy of
+/// it. The one workflow a node-admin and every other node run.
 ///
 /// A top-up is a topology read repair (`lifecycles/node-topology-get.md`) and adopts no rafka-time:
 /// between its pulls a node keeps its rafka-time disciplined from its own primary's heartbeats only
@@ -453,16 +454,16 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFe
             let mut done = rdm_gossip::topology::TopUpDone::default();
             for mesh in meshes {
                 let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.mesh, &channels, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
-                done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
+                done.written.extend(read.fulls.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)
         })
     })
 }
 
-/// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole
-/// or not at all, and returned. A recovering admin reads a local node's topology only to know
-/// whom to reach; what it holds as nodes stays what it hears itself.
+/// [`get_topology`] that writes nothing to a topology view: each mesh is assembled by a receiver of
+/// its own, whole or not at all, and returned. A recovering admin reads a local node's topology only
+/// to know whom to reach; what it holds as nodes stays what it hears itself.
 /// Read the topology from `target`.
 pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, fabric: &rdm_core::FabricId, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let mut receiver = rdm_gossip::aggregate::AggregateReceiver::default();
@@ -494,10 +495,10 @@ async fn read_with(
     };
     let mut read = TopologyRead::default();
     let mut served_meshes = None;
-    // Each mesh's topology in the answer is installed once the answer is whole, after the primary records
+    // Each mesh's topology in the answer is written once the answer is whole, after the primary records
     // it carries are held: `learn`.
     let mut chunks: Vec<Chunk> = Vec::new();
-    // The runtime and data dir each mesh's chunks carried of its births, kept for the mesh as it installs.
+    // The runtime and data dir each mesh's chunks carried of its births, kept for the mesh as it is written.
     let mut runtimes: std::collections::HashMap<String, Vec<(rdm_core::NodeId, rdm_core::IncarnationId, rdm_core::NodeRuntime)>> = Default::default();
     while let Some(item) = stream.next().await {
         match item {
@@ -537,26 +538,31 @@ async fn read_with(
         chunk.time_ms = served_at;
         match take(chunk) {
             Taken::Waiting { .. } => {}
-            Taken::Installed(i) => {
-                let members = i.full.digests();
+            Taken::Written(w) => {
+                let members = w.full.digests();
                 tracing::info_span!(
-                    "rdm.mesh.topology.update.via-read-install",
+                    "rdm.mesh.topology.update.via-read",
                     node = node,
-                    mesh = %i.mesh,
-                    topology_version = i.topology_version,
+                    mesh = %w.mesh,
+                    publisher = %w.publisher.as_ref().map(ToString::to_string).unwrap_or_default(),
+                    base_version = w.base_version,
+                    topology_version = w.topology_version,
+                    added = w.delta.added.len(),
+                    changed = w.delta.changed.len(),
+                    removed = w.delta.removed.len(),
                     members = members.len(),
                     target = %target_name,
                 )
-                .in_scope(|| tracing::info!("a complete aggregate read from the target is installed"));
-                read.installed.push(ReadMesh { mesh: i.mesh.clone(), mesh_id: i.full.mesh_id(), topology_version: i.topology_version, members, runtimes: runtimes.remove(&i.mesh).unwrap_or_default() });
+                .in_scope(|| tracing::info!("a complete full read from the target is written to the topology view: its delta from the copy held"));
+                read.fulls.push(ReadMesh { mesh: w.mesh.clone(), mesh_id: w.full.mesh_id(), topology_version: w.topology_version, members, runtimes: runtimes.remove(&w.mesh).unwrap_or_default() });
             }
             Taken::Refused(r) => {
-                tracing::info_span!("rdm.mesh.topology.reject.via-read-install", target = %target_name, reason = ?r)
-                    .in_scope(|| tracing::info!("an aggregate chunk read from the target is refused: the held projection stands"));
+                tracing::info_span!("rdm.mesh.topology.reject.via-read", target = %target_name, reason = ?r)
+                    .in_scope(|| tracing::info!("a full's chunk read from the target is refused: the held copy stands"));
             }
         }
     }
-    let held = (read.installed.len() + read.unchanged.len() + read.stored.len()) as u32;
+    let held = (read.fulls.len() + read.unchanged.len() + read.stored.len()) as u32;
     if held > meshes {
         return Err(TopologyFailure::Incomplete(format!("{held} meshes arrived whole, the target counted {meshes}")));
     }

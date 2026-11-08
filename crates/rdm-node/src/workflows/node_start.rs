@@ -238,9 +238,9 @@ pub struct HookParts {
 /// when the hook runs inline, and otherwise in the task the spawned hook runs in.
 #[async_trait::async_trait]
 pub trait AfterHook: Send + 'static {
-    /// The topology step's read is installed: the kind takes what it reaches its mesh through (its
+    /// The topology step's read is written to the topology view: the kind takes what it reaches its mesh through (its
     /// gossip peers). Runs inside the topology step's span.
-    async fn topology_installed(&mut self, channels: &Channels, read: &TopologyRead);
+    async fn topology_written(&mut self, channels: &Channels, read: &TopologyRead);
 
     /// The topology step is about to make its read of `primary`: the kind may wait here before the read is
     /// made. Runs inside the topology step's span. A kind with nothing to wait on makes the read at once.
@@ -504,7 +504,7 @@ impl AfterTheHook {
                 Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
             };
             step.record("served_by", tracing::field::display(&who));
-            after.topology_installed(&channels, &read).instrument(step.clone()).await;
+            after.topology_written(&channels, &read).instrument(step.clone()).await;
             match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &topology_view, node_id.as_str(), topology_view.mesh_name(), &node_id, &who)) {
                 Ok(_) => {
                     step.record("rafka_time", "adopted");
@@ -634,8 +634,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AfterHook for RecordedAfter {
-        async fn topology_installed(&mut self, _: &Channels, _: &TopologyRead) {
-            self.steps.lock().unwrap().push("topology_installed");
+        async fn topology_written(&mut self, _: &Channels, _: &TopologyRead) {
+            self.steps.lock().unwrap().push("topology_written");
         }
 
         async fn floor(&mut self, step: &tracing::Span) {
@@ -793,9 +793,10 @@ mod tests {
     /// a successful storage read alone does not satisfy the floor. This check must not depend on
     /// fetching topology early.
     /// Then obtain topology once through node.topology.get, as the final
-    /// startup read. Request it without a conditional source version and install only complete
-    /// aggregates. The same reply supplies the recorded primaries, startup context and current
-    /// Rafka-time; adopt the time after installing topology and before reporting started.
+    /// startup read. Request it without a conditional source version and write only complete
+    /// aggregates to the topology view. The same reply supplies the recorded primaries, startup
+    /// context and current Rafka-time; adopt the time after writing topology to the topology view and
+    /// before reporting started.
     /// Preserve retained own properties and application recognition. Do not fetch topology before
     /// the Build-floor check and do not issue a second topology request just to refresh time.
     /// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial aggregate

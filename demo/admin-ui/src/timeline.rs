@@ -228,7 +228,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lines = [
             span("rdm.node_rpc.request.update.via-call", 3_000_000_000, json!({"node_path": "mesh1.broker", "node_name": "1", "node_id": "0123456789ab", "op": "27", "outcome": "Reply"})),
-            span("rdm.mesh.topology.update.via-aggregate-installed", 4_000_000_000, json!({"node": "0123456789ab"})),
+            span("rdm.mesh.topology.update.via-full", 4_000_000_000, json!({"node": "0123456789ab"})),
             span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"path": "mesh1.node-admin", "name": "1", "outcome": "applied"})),
         ];
         std::fs::write(dir.join("testkit-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(shown[0].process, "testkit-node.1-1", "the span file's name before `.spans.jsonl`");
         let (all, _) = e.newest(&[], true, 10);
         assert_eq!(all.len(), 3);
-        assert_eq!(all[0].name, "rdm.mesh.topology.update.via-aggregate-installed", "newest first across the toggle");
+        assert_eq!(all[0].name, "rdm.mesh.topology.update.via-full", "newest first across the toggle");
         assert_eq!(node(&all[0]), (Some("mesh1.broker".into()), Some("1".into()), Some("0123456789ab".into())), "a span naming no node is its process file's node");
         // A second refresh reads only what was appended, and never a half-written line.
         let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("testkit-node.1-1.spans.jsonl")).unwrap();

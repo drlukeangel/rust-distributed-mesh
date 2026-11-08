@@ -131,13 +131,13 @@ async fn a_mesh_with_no_published_aggregate_is_absent_from_the_answer() {
     open(&server, &fabric);
     let t = target_of(&caller, &server);
     let empty = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
-    assert!(empty.installed.is_empty() && empty.meshes == 0, "nothing held: an empty, complete answer");
+    assert!(empty.fulls.is_empty() && empty.meshes == 0, "nothing held: an empty, complete answer");
 
     let mesh2: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh2", "node", k)).collect();
     hold(&server.channels, &aggregate("mesh2", 7, mesh2));
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
-    assert_eq!((read.meshes, read.installed.len()), (1, 1));
-    assert_eq!(read.installed[0].mesh, "mesh2");
+    assert_eq!((read.meshes, read.fulls.len()), (1, 1));
+    assert_eq!(read.fulls[0].mesh, "mesh2");
     assert!(caller.topology_view.held_source_version("mesh1").is_none(), "no version of the own mesh is invented");
 
     let err = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh1"), None).await.unwrap_err();
@@ -162,9 +162,9 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_view_h
     server.topology_view.digest_view.record(member_of(&fabric, "mesh1", "node", 2));
     let t = target_of(&caller, &server);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
-    assert_eq!((read.meshes, read.installed.len()), (1, 1), "the primary's own mesh is served");
-    assert_eq!((read.installed[0].mesh.as_str(), read.installed[0].topology_version), ("mesh1", 0));
-    assert_eq!(read.installed[0].members.len(), 2, "its own digest and the member its view holds");
+    assert_eq!((read.meshes, read.fulls.len()), (1, 1), "the primary's own mesh is served");
+    assert_eq!((read.fulls[0].mesh.as_str(), read.fulls[0].topology_version), ("mesh1", 0));
+    assert_eq!(read.fulls[0].members.len(), 2, "its own digest and the member its view holds");
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -187,7 +187,7 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
     assert_eq!(read.meshes, 2);
     let names = |mesh: &str| -> Vec<rdm_core::PathName> {
-        let mut v: Vec<rdm_core::PathName> = read.installed.iter().find(|m| m.mesh == mesh).unwrap().members.iter().map(|d| d.node.location()).collect();
+        let mut v: Vec<rdm_core::PathName> = read.fulls.iter().find(|m| m.mesh == mesh).unwrap().members.iter().map(|d| d.node.location()).collect();
         v.sort();
         v
     };
@@ -198,13 +198,13 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
 
     let held = SourceVersion { topology_version: 7 };
     let again = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), Some(held)).await.unwrap();
-    assert!(again.installed.is_empty());
+    assert!(again.fulls.is_empty());
     assert_eq!(again.unchanged, vec![("mesh2".to_string(), 7)]);
     assert_eq!(again.meshes, 1, "End counts the meshes answered, Unchanged included");
 
     let behind = SourceVersion { topology_version: 6 };
     let newer = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), Some(behind)).await.unwrap();
-    assert!(newer.unchanged.is_empty() && newer.installed.len() == 1, "a caller behind the node's version is sent the aggregate");
+    assert!(newer.unchanged.is_empty() && newer.fulls.len() == 1, "a caller behind the node's version is sent the aggregate");
 
     let err = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh9"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh9".into()));
@@ -236,7 +236,7 @@ async fn a_read_of_an_aggregate_older_than_the_held_one_reports_the_aggregate_th
 
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
     assert_eq!(caller.topology_view.held_source_version("mesh1").map(|(_, v)| v), Some(2), "the held projection stands");
-    let m = read.installed.iter().find(|m| m.mesh == "mesh1").expect("the read reports the mesh it leaves installed: the newer aggregate the caller holds");
+    let m = read.fulls.iter().find(|m| m.mesh == "mesh1").expect("the read reports the mesh it leaves installed: the newer aggregate the caller holds");
     assert_eq!(m.topology_version, 2, "at the version the caller holds, never the one served");
     let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
     ids.sort();
@@ -284,7 +284,7 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     }
     let t = target_of(&caller, &server);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), None).await.unwrap();
-    let m = &read.installed[0];
+    let m = &read.fulls[0];
     let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
     ids.sort();
     ids.dedup();
@@ -334,7 +334,7 @@ async fn an_aggregate_missing_a_chunk_is_never_installed() {
     server.resolver.insert(lossy_node);
     let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), "mesh1", &server.channels, None, None).await.unwrap();
     assert_eq!(*sent.lock().unwrap(), 1);
-    assert!(read.installed.is_empty(), "one chunk of two installs nothing");
+    assert!(read.fulls.is_empty(), "one chunk of two installs nothing");
     assert!(server.topology_view.held_source_version("mesh2").is_none());
     server.ep.close().await;
     lossy_ep.close().await;
@@ -403,7 +403,7 @@ fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_noth
     assert_eq!(serves.len(), 1, "{serves:?}");
     assert_eq!((serves[0]["outcome"].as_str(), serves[0]["requested"].as_str()), ("unknown-mesh", "mesh77"));
     assert!(!serves[0].contains_key("aggregates"), "nothing was streamed: {:?}", serves[0]);
-    assert!(cap.named("rdm.mesh.topology.update.via-read-install").is_empty(), "nothing was installed");
+    assert!(cap.named("rdm.mesh.topology.update.via-read").is_empty(), "nothing was installed");
 }
 
 // @feature: node-lifecycle
@@ -422,14 +422,14 @@ fn a_since_behind_the_held_version_is_answered_with_the_aggregate_and_the_held_v
         let t = target_of(&caller, &server);
         let behind = SourceVersion { topology_version: 6 };
         let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), Some(behind)).await.unwrap();
-        assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");
+        assert!(read.unchanged.is_empty() && read.fulls.len() == 1, "{read:?}");
         assert_eq!(caller.topology_view.held_source_version("mesh2").map(|(_, v)| v), Some(7), "installed at the mesh's version");
         // The version held is Unchanged; a `since` with no mesh named is ignored.
         let held = SourceVersion { topology_version: 7 };
         let unchanged = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), Some(held.clone())).await.unwrap();
         assert_eq!(unchanged.unchanged, vec![("mesh2".to_string(), 7)]);
         let all = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, Some(held)).await.unwrap();
-        assert!(all.unchanged.is_empty() && all.installed.len() == 1, "since is honoured only with a mesh named: {all:?}");
+        assert!(all.unchanged.is_empty() && all.fulls.len() == 1, "since is honoured only with a mesh named: {all:?}");
         server.ep.close().await;
         caller.ep.close().await;
     });
@@ -457,7 +457,7 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
         hold(&server.channels, &aggregate("mesh3", 2, third.clone()));
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh2", &caller.channels, None, None).await.unwrap();
-        let members_of = |mesh: &str| read.installed.iter().find(|m| m.mesh == mesh).map(|m| m.members.len());
+        let members_of = |mesh: &str| read.fulls.iter().find(|m| m.mesh == mesh).map(|m| m.members.len());
         assert_eq!((members_of("mesh1"), members_of("mesh3")), (Some(3), Some(2)), "the reader is given every mesh the node holds");
         for d in &own {
             assert!(caller.topology_view.digest_view.get(d.node.node_id.as_str()).is_none(), "{:?} of the reader's own mesh is not held as heard from a peer mesh's stale source", d.node.name);
@@ -468,7 +468,7 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
         server.ep.close().await;
         caller.ep.close().await;
     });
-    let installs = cap.named("rdm.mesh.topology.update.via-read-install");
+    let installs = cap.named("rdm.mesh.topology.update.via-read");
     // The reader installs: every install span names the one reading node, by its node id.
     let mut got: Vec<(&str, &str)> = installs.iter().map(|a| (a["mesh"].as_str(), a["members"].as_str())).collect();
     got.sort();
@@ -494,8 +494,8 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         hold(&server.channels, &aggregate("mesh3", 4, members.clone()));
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh3"), None).await.unwrap();
-        assert_eq!(read.installed[0].members.len(), 3, "the deleting member is still listed");
-        assert!(read.installed[0].members.iter().any(|d| d.node.node_id == deleting.node.node_id && d.status == rdm_core::model::NodeStatus::Deleting), "listed deleting");
+        assert_eq!(read.fulls[0].members.len(), 3, "the deleting member is still listed");
+        assert!(read.fulls[0].members.iter().any(|d| d.node.node_id == deleting.node.node_id && d.status == rdm_core::model::NodeStatus::Deleting), "listed deleting");
         let (in_flight, _) = caller.topology_view.digest_view.overlays_of("mesh3");
         assert!(matches!(in_flight.as_slice(), [op] if !op.is_stop() && op.node_id == deleting.node.node_id && op.incarnation == deleting.node.incarnation), "the reader holds the deletion as an overlay: {in_flight:?}");
         assert!(!caller.topology_view.digest_view.routable(deleting.node.node_id.as_str()), "a node under its delete is not routable");
@@ -572,7 +572,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
         hold(&server.channels, &aggregate("mesh3", 5, held.clone()));
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh2", &caller.channels, None, None).await.unwrap();
-        assert_eq!(read.installed.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held aggregate is answered as an aggregate");
+        assert_eq!(read.fulls.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held aggregate is answered as an aggregate");
         assert_eq!(read.stored.len(), 1, "only the lost mesh is answered from the stored map: {:?}", read.stored);
         assert_eq!((read.stored[0].mesh.as_str(), read.stored[0].nodes.len()), ("mesh1", 3));
         assert_eq!(read.stored[0].mesh_id, Some(MeshId::parse("04raj09p3zp7").unwrap()), "the stored mesh carries the id the node stored for it");
@@ -583,7 +583,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
         }
         // Asking for the stored mesh by name is answered the same way; a mesh stored nowhere is unknown.
         let one = get_topology(&caller.client, &t, "mesh2", &caller.channels, Some("mesh1"), None).await.unwrap();
-        assert!(one.installed.is_empty() && one.stored.len() == 1 && one.meshes == 1, "{one:?}");
+        assert!(one.fulls.is_empty() && one.stored.len() == 1 && one.meshes == 1, "{one:?}");
         let err = get_topology(&caller.client, &t, "mesh2", &caller.channels, Some("mesh8"), None).await.unwrap_err();
         assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh8".into()));
         server.ep.close().await;
@@ -592,7 +592,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
     let serves = cap.named("rdm.mesh.topology.serve.via-read");
     let rows: Vec<(&str, &str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["outcome"].as_str(), a.get("stored").map(|s| s.as_str()).unwrap_or("-"), a.get("aggregates").map(|s| s.as_str()).unwrap_or("-"))).collect();
     assert_eq!(rows, vec![("*", "served", "1", "1"), ("mesh1", "served", "1", "0"), ("mesh8", "unknown-mesh", "-", "-")], "{serves:?}");
-    let installs = cap.named("rdm.mesh.topology.update.via-read-install");
+    let installs = cap.named("rdm.mesh.topology.update.via-read");
     assert!(installs.iter().all(|a| a["mesh"] == "mesh3"), "nothing of the stored mesh was installed: {installs:?}");
 }
 
@@ -704,7 +704,7 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
 
 // @feature: node-lifecycle
 /// CONTRACT (gossip.md §3.3: a desynchronized receiver "pulls the current full fabric topology from
-/// its own current mesh-primary with GetTopology, installs it atomically, records the publisher and
+/// its own current mesh-primary with GetTopology, writes its delta to the topology view atomically, records the publisher and
 /// version baseline, and resumes"; lifecycles/node-topology-get.md: the top-up "is a read/connection
 /// repair, not a stop, restart or new admission"; origin-ordering.md, rafka-time: adopted at every
 /// JoinNode, and "between pulls a node keeps its rafka-time disciplined from its own authority's
@@ -729,7 +729,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         primary.node.name = server.resolved.name.clone();
         let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
         let done = fetch(caller.channels.clone(), primary, vec!["mesh2".into()]).await.unwrap();
-        assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete aggregate");
+        assert_eq!(done.written, vec![("mesh2".to_string(), 7)], "the top-up installed the complete aggregate");
         let before = caller.time.now_ms();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let after = caller.time.now_ms();
@@ -738,7 +738,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         caller.ep.close().await;
     });
     assert!(cap.named("rdm.mesh.entry.update.via-rafka-time-adopted").is_empty(), "a top-up adopts no rafka-time: {:?}", cap.named("rdm.mesh.entry.update.via-rafka-time-adopted"));
-    let installed = cap.named("rdm.mesh.topology.update.via-read-install");
+    let installed = cap.named("rdm.mesh.topology.update.via-read");
     assert_eq!(installed.iter().map(|a| (a["mesh"].as_str(), a["topology_version"].as_str())).collect::<Vec<_>>(), vec![("mesh2", "7")], "{installed:?}");
 }
 
@@ -895,7 +895,7 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
         let one_m2 = get_topology(&probe.client, &t_probe, "mesh1", &probe.channels, Some("mesh2"), None).await.unwrap();
         assert_eq!(stored_calls.load(Ordering::SeqCst), 0, "a held mesh's read never builds the stored map");
         assert_eq!(gone_calls.load(Ordering::SeqCst), 1, "gone incarnations are read once per read, not once per primary record");
-        assert_eq!(one_m2.installed.len(), 1);
+        assert_eq!(one_m2.fulls.len(), 1);
 
         let whole_caller = node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "8").unwrap(), "node", |b| b).await;
         let t_whole = target_of(&whole_caller, &server);
@@ -911,7 +911,7 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
         };
         let expected: std::collections::BTreeMap<String, (u64, Vec<String>)> = ["mesh1", "mesh2", "mesh3"]
             .into_iter()
-            .map(|m| (m.to_string(), member_ids(&whole.installed, m)))
+            .map(|m| (m.to_string(), member_ids(&whole.fulls, m)))
             .collect();
 
         // Concurrent readers asking for mesh1, mesh2, mesh3, and None simultaneously.
@@ -944,16 +944,16 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
                 match ask {
                     Some(m) => {
                         assert_eq!(read.meshes, 1);
-                        assert_eq!(read.installed.len(), 1);
+                        assert_eq!(read.fulls.len(), 1);
                         assert!(read.stored.is_empty());
-                        assert_eq!(member_ids(&read.installed, m), exp[m], "one-mesh read of {m} matches whole read");
+                        assert_eq!(member_ids(&read.fulls, m), exp[m], "one-mesh read of {m} matches whole read");
                     }
                     None => {
                         assert_eq!(read.meshes, 4);
-                        assert_eq!(read.installed.len(), 3);
+                        assert_eq!(read.fulls.len(), 3);
                         assert_eq!(read.stored.len(), 1);
                         for m in ["mesh1", "mesh2", "mesh3"] {
-                            assert_eq!(member_ids(&read.installed, m), exp[m], "whole read of {m} matches reference");
+                            assert_eq!(member_ids(&read.fulls, m), exp[m], "whole read of {m} matches reference");
                         }
                     }
                 }

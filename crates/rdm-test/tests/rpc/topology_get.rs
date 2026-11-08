@@ -189,7 +189,7 @@ fn rdm_test_scenario_now() -> u64 {
 /// CONTRACT: a node born into the fabric makes `JoinNode` its first call to its maker and then
 /// reads the maker's topology with `GetTopology`: the maker's join span (`via-join`, installed)
 /// precedes the maker's topology serve span, which precedes the node's own
-/// `via-read-install` span, one per mesh the maker streamed. The read is one call that is answered
+/// `via-read` span, one per mesh the maker streamed. The read is one call that is answered
 /// (never refused) with the meshes the maker holds published aggregates of: a Day-0 maker that has
 /// published none answers none, and the birth completes. A join of an already-held member is not a
 /// re-read: no join is recorded as `member`.
@@ -213,7 +213,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
         // (the delta-gap top-up when a peer mesh's delta arrives past what it holds,
         // `topology_read::top_up_fetch`) is a read of its own, in its own trace, with its own serve:
         // at `5a220a6a` the member at path mesh1.node, name 1 took mesh2 that way 1 s after its birth, before the cell's stop.
-        let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node && sp["trace_id"] == joined["trace_id"]).collect();
+        let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read").into_iter().filter(|sp| attr(sp, "node") == node && sp["trace_id"] == joined["trace_id"]).collect();
         let serve = named(&spans, "rdm.mesh.topology.serve.via-read")
             .into_iter()
             .filter(|sp| attr(sp, "node_path") == maker_row.path && attr(sp, "node_name") == maker_row.name && sp["trace_id"] == joined["trace_id"] && at(sp) >= at(join_span))

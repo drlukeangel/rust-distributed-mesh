@@ -362,7 +362,7 @@ async fn mesh_primary_hearing_no_fabric_primary_finds_a_node_admin_of_its_mesh_l
     // Its clock on mesh1 starts at its first direct backbone receipt of mesh1 (gossip.md §3.2): the cut
     // follows it.
     wait_for(&format!("{victim:?} holds mesh1 by direct backbone receipt before the cut"), floor * 2, || async {
-        named(&estate.spans(), "rdm.mesh.topology.update.via-aggregate-installed").into_iter().find(|sp| attr(sp, "node") == victim_id && attr(sp, "channel") == "backbone" && attr(sp, "mesh") == "mesh1").map(|_| ())
+        named(&estate.spans(), "rdm.mesh.topology.update.via-full").into_iter().find(|sp| attr(sp, "node") == victim_id && attr(sp, "channel") == "backbone" && attr(sp, "mesh") == "mesh1").map(|_| ())
     })
     .await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &others)) {

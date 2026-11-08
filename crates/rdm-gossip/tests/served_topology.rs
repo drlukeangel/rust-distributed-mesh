@@ -109,7 +109,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let published = of(p.held_topology(&own()), "mesh1");
         let n = published.topology_version;
         assert!(n >= 1, "the publication published a version: {n}");
-        assert!(matches!(take_read(&reader_channels, &published, 1), Taken::Installed(_)), "the joiner installs version {n}");
+        assert!(matches!(take_read(&reader_channels, &published, 1), Taken::Written(_)), "the joiner installs version {n}");
 
         // A birth joins the view: a material change no publication has published yet.
         let (two, two_birth) = (NodeId::mint(), IncarnationId::mint());
@@ -129,7 +129,7 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let next = of(p.held_topology(&own()), "mesh1");
         assert!(next.topology_version > n, "the change was material: the publication bumped the version ({} after {n})", next.topology_version);
         assert!(next.digests.iter().any(|d| d.node.node_id == two), "the read serves the new member at the version that carries it: {:?}", names(&next));
-        assert!(matches!(take_read(&reader_channels, &next, 3), Taken::Installed(_)), "the joiner installs version {}", next.topology_version);
+        assert!(matches!(take_read(&reader_channels, &next, 3), Taken::Written(_)), "the joiner installs version {}", next.topology_version);
 
         let spans: Vec<Value> = capture.spans().expect("the cell's spans reached its evidence file");
         let refused: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.reject.via-inconsistent").collect();
@@ -217,7 +217,7 @@ fn a_mesh_primary_that_reads_a_higher_version_of_its_own_mesh_continues_the_mesh
 
         // A read of its own mesh, served by a node of its mesh, at the version the mesh's nodes hold.
         let held_by_the_mesh = HeldAggregate { mesh: "mesh1".into(), mesh_id: None, topology_version: 11, digests: vec![one_at(3)] };
-        assert!(matches!(take_read(&p_channels, &held_by_the_mesh, 7), Taken::Installed(_)), "the read of version 11 installs");
+        assert!(matches!(take_read(&p_channels, &held_by_the_mesh, 7), Taken::Written(_)), "the read of version 11 installs");
         assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
         assert_eq!(served(), 12, "the next publication continues the mesh's version from the read's (its topology is another)");
 

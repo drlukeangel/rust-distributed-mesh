@@ -1302,14 +1302,14 @@ impl Leave {
 
 #[async_trait::async_trait]
 impl crate::workflows::node_start::AfterHook for RpcAfterHook {
-    async fn topology_installed(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
+    async fn topology_written(&mut self, channels: &rdm_gossip::channel::Channels, read: &crate::topology_read::TopologyRead) {
         // Its own whole row its mesh-primary's atlas holds, held by its property writer (Q234).
         if let Some(row) = &read.own_row {
             self.property_writer.set_own_row(row.clone());
         }
         let topology_view = channels.topology_view();
         let mesh_peers: Vec<EndpointAddr> = read
-            .installed
+            .fulls
             .iter()
             .flat_map(|m| m.members.iter())
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == topology_view.mesh_name())

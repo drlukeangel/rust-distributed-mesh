@@ -56,5 +56,5 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_itself_deleting()
         runtimes: Vec::new(),
     };
     let taken = rx.take_chunk(chunk);
-    assert!(matches!(taken, rdm_gossip::aggregate::Taken::Installed(_)));
+    assert!(matches!(taken, rdm_gossip::aggregate::Taken::Written(_)));
 }

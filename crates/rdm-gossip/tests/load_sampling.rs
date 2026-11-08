@@ -164,7 +164,7 @@ fn a_node_samples_its_own_load_with_configured_budgets_and_gossip_delivers_it_wi
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let installs: Vec<&Value> = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-aggregate-installed")
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-full")
             .collect();
         assert!(
             installs.iter().any(|s| s["attributes"]["node"] == "mesh1.node-admin.1" && s["attributes"]["channel"] == "backbone"),

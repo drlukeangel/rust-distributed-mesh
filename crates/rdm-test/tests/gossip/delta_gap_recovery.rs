@@ -15,7 +15,7 @@
 //! source reached. A delta whose base the member does not hold (the frame a lost delta leaves
 //! behind, broadcast by the observer on mesh1's channel) desynchronizes that source alone: the
 //! member pulls the current fabric topology from mesh1's own primary by a topology read (Node RPC op 0x1E),
-//! installs it atomically at the version that primary last published into mesh1, and the next real
+//! writes it to the topology view atomically at the version that primary holds, and the next real
 //! delta applies at that baseline. mesh2's primary is never asked: no topology read of mesh2 answers
 //! the member. No frame carries a node's load (Q394).
 
@@ -262,7 +262,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The member holds mesh2 before anything changes: by its first differential, from 0, or by a read.
     let member_installed: Vec<Value> = wait_for("the member holds mesh2's projection", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        let v: Vec<Value> = ["rdm.mesh.topology.update.via-aggregate-installed", "rdm.mesh.topology.update.via-delta"].iter().flat_map(|n| spans_of(&spans, n, &member_id, 0)).filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
+        let v: Vec<Value> = ["rdm.mesh.topology.update.via-full", "rdm.mesh.topology.update.via-delta"].iter().flat_map(|n| spans_of(&spans, n, &member_id, 0)).filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
         (!v.is_empty()).then_some(v)
     })
     .await;
@@ -443,7 +443,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let caller = |sp: &Value| spans.iter().find(|p| p["span_id"] == sp["parent_span_id"]).map(|p| attr(p, "peer")).unwrap_or_default();
     let by_member: Vec<&Value> = reads_after_gap(&mesh2_admin_at).into_iter().filter(|sp| { let c = caller(sp); c.is_empty() || member_peer.starts_with(&c) }).collect();
     assert!(by_member.is_empty(), "the remote Mesh's primary is never queried by the member: {by_member:?}");
-    let topup_install = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().find(|sp| attr(sp, "node") == member_id && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
+    let topup_install = named(&spans, "rdm.mesh.topology.update.via-read").into_iter().find(|sp| attr(sp, "node") == member_id && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
     assert_eq!((attr(topup_install, "mesh"), num(topup_install, "topology_version")), ("mesh2".to_string(), latest));
     // The primary's evidence: its first differential of mesh2 is from 0; nothing full goes on the mesh channel.
     let first_from_zero = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().any(|sp| attr(sp, "node") == primary_id && attr(sp, "mesh") == "mesh2" && num(sp, "base_version") == 0);

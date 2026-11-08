@@ -74,7 +74,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         // The deletion the read carries is the node listed deleted (Q390).
         let listed=|d:&MeshDigest,status:NodeStatus|MeshDigest{status,..d.clone()};
         let served:Vec<MeshDigest>=full.iter().cloned().chain([listed(&deleted,NodeStatus::Deleted)]).collect();
-        assert!(matches!(server_topology_view_channels.take_read_chunk(Chunk{mesh:"mesh1".into(), mesh_id: None,author:None,topology_version:100,time_ms:1,chunk_index:0,chunk_count:1,digests:served, runtimes: Vec::new()},"mesh1"),Taken::Installed(_)));
+        assert!(matches!(server_topology_view_channels.take_read_chunk(Chunk{mesh:"mesh1".into(), mesh_id: None,author:None,topology_version:100,time_ms:1,chunk_index:0,chunk_count:1,digests:served, runtimes: Vec::new()},"mesh1"),Taken::Written(_)));
         // An aggregate of mesh1: its author the publisher, its stop and removal each the node's status.
         let aggregate=|version:u64,at:u64,nodes:Vec<MeshDigest>|Frame::aggregate("mesh1",None,&rdm_gossip::envelope::Birth::publisher(&fabric,&publisher),version,at,0,1,nodes);
         let primary_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
@@ -89,7 +89,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{ mesh: own.node.mesh.clone(), r#type: own.node.r#type.clone(),node_id:own.node.node_id.clone(),path:own.node.path.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
         let client=NodeRpcClient::new(receiver_ep.clone(),resolver);
         let read=rdm_node::topology_read::get_topology(&client,&NodeTarget::ExactNode(own.node.node_id.clone()),"mesh1",&receiver_channels,None,None).await.unwrap();
-        assert!(read.installed.iter().any(|s|s.mesh=="mesh1"&&s.topology_version==100));
+        assert!(read.fulls.iter().any(|s|s.mesh=="mesh1"&&s.topology_version==100));
         assert_eq!(receiver.held_source_version("mesh1"),Some((None,100)),"the read installs its version; its reply names no author");
         assert!(receiver.digest_view.in_flight().is_empty(),"the read installs the operations' completion/later lifecycle evidence");
         assert!(receiver.digest_view.is_deleted(deleted.node.node_id.as_str()));
@@ -131,7 +131,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
     let spans=capture.spans().unwrap();
     assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.topology.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
     for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.topology.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
-    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-aggregate-installed"&&s["attributes"]["node"]==receiver_id.as_str()&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
+    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-full"&&s["attributes"]["node"]==receiver_id.as_str()&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
     for frame in ["digest","mesh-status","fabric-status","mesh-topology","mesh-topology-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
     // The read holds the deletion by the node's status (Q390), with no operation identity: the later
     // NodeDeleted is refused by name against the departure it holds, which stands.

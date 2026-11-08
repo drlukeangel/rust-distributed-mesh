@@ -51,7 +51,7 @@ fn story(story: Story) {
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, }, status: NodeStatus::Ready, digest_seq: 100, emitted_at_rafka_ms: 1, primary: Vec::new(), };
         if matches!(story, Story::ReadFloor) {
             let read = rdm_gossip::aggregate::Chunk { mesh: "mesh1".into(), mesh_id: None, author: None, topology_version: 5, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: vec![digest.clone()], runtimes: Vec::new() };
-            assert!(matches!(receiver_channels.take_read_chunk(read, "mesh1"), rdm_gossip::aggregate::Taken::Installed(_)), "the real topology-read path installs the held digest");
+            assert!(matches!(receiver_channels.take_read_chunk(read, "mesh1"), rdm_gossip::aggregate::Taken::Written(_)), "the real topology-read path installs the held digest");
         } else {
             send(&sender, &receiver, digest.clone(), 1).await;
         }

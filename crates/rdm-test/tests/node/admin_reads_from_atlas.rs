@@ -115,7 +115,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
                 .await
                 .expect("the read ends")
                 .unwrap_or_else(|e| panic!("the mesh-primary refused the read of {mesh:?} with its store unreadable: {e}"));
-            assert!(read.installed.iter().any(|m| m.mesh == "mesh1"), "mesh1 is served whole ({mesh:?}): {:?}", read.installed.iter().map(|m| &m.mesh).collect::<Vec<_>>());
+            assert!(read.fulls.iter().any(|m| m.mesh == "mesh1"), "mesh1 is served whole ({mesh:?}): {:?}", read.fulls.iter().map(|m| &m.mesh).collect::<Vec<_>>());
             assert!(read.rafka_time.is_some() && !read.primaries.is_empty(), "the rafka-time and the primaries are served ({mesh:?})");
         }
         let served: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.topology.serve.via-read" && at_admin(f, "1")).map(|(_, _, f)| f.clone()).collect();
