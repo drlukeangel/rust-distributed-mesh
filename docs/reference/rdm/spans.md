@@ -34,7 +34,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.election.resolve.via-fabric-recompute` | `crates/rdm-admin/src/election.rs` | 492 |
 | `rdm.mesh.election.resolve.via-mesh-primary` | `crates/rdm-admin/src/election.rs` | 461 |
 | `rdm.mesh.election.resolve.via-recompute` | `crates/rdm-admin/src/election.rs` | 431 |
-| `rdm.mesh.election.resolve.via-recompute` | `crates/rdm-node/src/election.rs` | 161 |
+| `rdm.mesh.election.resolve.via-recompute` | `crates/rdm-node/src/election.rs` | 160 |
 | `rdm.mesh.entry.reject.via-rafka-time-from-non-primary` | `crates/rdm-node/src/rafka_time.rs` | 124 |
 | `rdm.mesh.entry.reject.via-rafka-time-pull-unanswered` | `crates/rdm-admin/src/rafka_time.rs` | 131 |
 | `rdm.mesh.entry.reject.via-rafka-time-sample` | `crates/rdm-gossip/src/discipline.rs` | 87 |

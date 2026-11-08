@@ -1,4 +1,5 @@
-//! e11.s4 — a product reads a node-type primary role from node-admin's view and never computes it.
+//! e11.s4 — a product reads a node-type primary role from RDM's view and never computes it; RDM's node
+//! base holds its type's election by the one rule (Q406).
 
 use rdm_core::{IncarnationId, NodeId};
 use rdm_client::{NodeStatus, NodeView};
@@ -35,9 +36,12 @@ fn an_election_in_flight_is_no_primary_not_a_guess() {
     assert_eq!(primary_of(&view, "mesh1", "broker"), None);
 }
 
-/// The product base holds no election: no NodeId ordering, no primary computation, anywhere in it. A
-/// node writing its own record's `is_primary` / `is_fabric_primary` from its PrimaryView (Q356) records
-/// the election's result and computes nothing.
+/// The node base holds no comparator of its own: no NodeId ordering, no primary computation of its own,
+/// anywhere in it. Its type's election, held by the nodes of the type among themselves (Q406,
+/// `rdm_node::election`), takes its winner from the one rule (`rdm_core::election::elect`,
+/// elections §9 invariant 2: one election implementation). A node writing its own record's
+/// `is_primary` / `is_fabric_primary` from its PrimaryView (Q356) records the election's result and
+/// computes nothing.
 #[test]
 fn node_base_holds_no_comparator() {
     // Every source file under src/, its executables' (src/bin/) included.
@@ -61,7 +65,7 @@ fn node_base_holds_no_comparator() {
             if l.starts_with("//") {
                 continue;
             }
-            for token in ["min_by", "max_by", ".cmp(", "fn elect", "is_primary =", "is_fabric_primary ="] {
+            for token in ["min_by", "max_by", ".cmp(", "is_primary =", "is_fabric_primary ="] {
                 // The node recording on its own record the role its PrimaryView names it (Q356,
                 // `node_records::write_own_roles`) writes the election's result; it computes no primary.
                 let recorded = token.ends_with(" =") && line.contains(&format!("record.{token}"));
@@ -72,4 +76,7 @@ fn node_base_holds_no_comparator() {
         }
     }
     assert!(hits.is_empty(), "node-base computes a primary:\n{}", hits.join("\n"));
+    // Its type's election takes the winner from the one rule.
+    let election = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/election.rs")).unwrap();
+    assert!(election.contains("use rdm_core::election::{elect, Candidate};"), "the node base's election calls rdm_core::election::elect");
 }

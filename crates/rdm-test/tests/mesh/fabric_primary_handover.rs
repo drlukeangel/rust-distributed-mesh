@@ -523,8 +523,10 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert!(end_ns(&finished) <= start_ns(&installed), "the issued writes finished, then the successor's install");
     assert!(end_ns(&installed) <= start_ns(&left) && end_ns(&left) < first_member_stop, "the fabric-primary left mesh1 before DeleteMesh and every stop");
     assert!(named(&spans, "rdm.node_admin.primary.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
-    // Commands go down: every 0x21 call is the primary's node.primary.update on its successor.
-    let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21).collect();
+    // Commands go down: every 0x21 call is the primary's node.primary.update on its successor, but the
+    // mesh-primary's create commanding a type's first node in its mesh (Q407, `via-create`).
+    let first_primaries = named(&spans, "rdm.node_admin.primary.update.via-create");
+    let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21).filter(|sp| !first_primaries.iter().any(|create| descends_from(&spans, sp, create))).collect();
     assert!(!calls.is_empty() && calls.iter().all(|sp| descends_from(&spans, sp, &updating)), "every 0x21 call is the primary's call on its successor: {calls:?}");
 
     // A desired change, not a recovery: no node recovery of a mesh1 birth (node recovery is the

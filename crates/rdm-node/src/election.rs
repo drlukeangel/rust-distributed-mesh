@@ -112,7 +112,6 @@ impl Elector {
             .map(|d| (d.node.node_id, d.status))
             .collect();
         inputs.push((self.node_id.clone(), *self.status.lock().unwrap()));
-        inputs.sort_by(|a, b| a.0.cmp(&b.0));
         let candidates: Vec<Candidate<'_>> = inputs.iter().map(|(node_id, status)| Candidate { node_id, ready: *status == NodeStatus::Ready }).collect();
         let winner = elect(&candidates).map(|i| inputs[i].0.clone());
         Some(Vacancy { held, why, inputs, winner })

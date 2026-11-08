@@ -1123,7 +1123,10 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.primary.reject.via-primary-update").into_iter().filter(|sp| attr(sp, "detail") == text).collect();
     assert_eq!(rejected.len(), 1, "mesh2's primary refused the update by name once, over its own view: {rejected:#?}");
     assert!(named(&spans, "rdm.node_admin.build.reject.via-last-admin").is_empty(), "the fabric-primary decided nothing for mesh2's primary from its projection (D64)");
-    assert!(named(&spans, "rdm.node_admin.primary.update.via-primary-updated").is_empty(), "no successor installed itself");
+    // The first primaries the creates commanded installed themselves (Q407); no successor of mesh2's
+    // primary did.
+    let successors: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "primaries").starts_with("node-admin ") || attr(sp, "primaries").starts_with("fabric ")).collect();
+    assert!(successors.is_empty(), "no successor installed itself: {successors:#?}");
     assert!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").is_empty(), "no stop was recorded");
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
 }
