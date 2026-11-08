@@ -1847,8 +1847,10 @@ mod tests {
     /// on its record by its mesh-primary; Q344: one `Send` on a store's write): the mesh-primary marks a
     /// birth `Dead` in its view only once the record write is answered `Ok`. A nodes.storage that refuses
     /// every write to the end of the `Send` leaves the record at its status and the view with no `Dead`
-    /// mark and no recovery reason. Must NOT happen: a view that shows `Dead` over a record that does not
-    /// hold it.
+    /// mark and no recovery reason, and only that spent write has the birth investigated again; a write
+    /// refused by name (Q344: an answer, never sent again) is the write's end. Must NOT happen: a view
+    /// that shows `Dead` over a record that does not hold it, or a named refusal investigated and written
+    /// again on every pass.
     // @feature: node-recovery
     #[tokio::test(start_paused = true)]
     async fn the_dead_mark_is_held_only_once_the_record_holds_dead() {
@@ -1874,15 +1876,20 @@ mod tests {
         let rows = crate::node_rows::NodeRows::new(me.node.location(), me.node.node_id.clone(), view.clone(), refusing.clone());
         let (records, reasons) = (Records::default(), Mutex::new(HashMap::new()));
         let marked = write_dead(&records, &reasons, Some(&rows), &member, crate::node_investigation::Reason::SelfHeal).await;
-        assert!(!marked, "a record write refused to the end of its Send holds no mark");
+        assert_eq!(marked, DeadWrite::Spent, "a record write refused to the end of its Send holds no mark, and is investigated again");
         assert!(!records.offline.lock().unwrap().contains(&birth), "the view shows no Dead the record does not hold");
         assert!(reasons.lock().unwrap().is_empty(), "no recovery reason is kept for a birth not written dead");
         assert_eq!(refusing.0.node(&member.node_id).await.unwrap().unwrap().record.state, PendingReconnect, "the record keeps its status");
         // A store that takes the write: the record holds Dead, and then the view does.
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         storage.put_node(&record).await.unwrap();
+        // A write refused by name (a writer that is not the record's mesh-primary): the write's end, no
+        // mark, not investigated again.
+        let not_primary = crate::node_rows::NodeRows::new(own.node.location(), own.node.node_id.clone(), view.clone(), storage.clone());
+        assert_eq!(write_dead(&records, &reasons, Some(&not_primary), &member, crate::node_investigation::Reason::SelfHeal).await, DeadWrite::Refused, "a refusal by name is the write's end");
+        assert!(!records.offline.lock().unwrap().contains(&birth), "a refused write holds no mark");
         let rows = crate::node_rows::NodeRows::new(me.node.location(), me.node.node_id.clone(), view.clone(), storage.clone());
-        assert!(write_dead(&records, &reasons, Some(&rows), &member, crate::node_investigation::Reason::SelfHeal).await, "the record write answered Ok holds the mark");
+        assert_eq!(write_dead(&records, &reasons, Some(&rows), &member, crate::node_investigation::Reason::SelfHeal).await, DeadWrite::Written, "the record write answered Ok holds the mark");
         assert_eq!(storage.node(&member.node_id).await.unwrap().unwrap().record.state, Dead, "the record holds Dead");
         assert!(records.offline.lock().unwrap().contains(&birth), "and the view shows it Dead");
     }

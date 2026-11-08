@@ -449,26 +449,27 @@ pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashS
 /// store answers it `Ok` is the birth held in this admin's view (`Records::offline`, shown `Dead`) with
 /// the reason kept for its re-create's event, and the tick's recovery takes it ([`recovery_due`]). A
 /// write the store refuses by name, or one whose `Send` is spent, holds no mark: the view never shows
-/// a status the record does not hold, and the caller has the birth investigated again
-/// ([`crate::offline::OfflineTickle::unsettle`]). One `rdm.node_admin.node.update.via-dead-record` span
-/// names how the write ended. Whether the mark is held.
-pub(crate) async fn write_dead(records: &Records, reasons: &Mutex<HashMap<(NodeId, IncarnationId), crate::node_investigation::Reason>>, rows: Option<&crate::node_rows::NodeRows>, n: &Node, reason: crate::node_investigation::Reason) -> bool {
+/// a status the record does not hold. Only a spent `Send` has the caller investigate the birth again
+/// ([`crate::offline::OfflineTickle::unsettle`]): the tickle reports a birth offline once. A refusal by
+/// name is the write's end, as `Send` itself holds it, named once and not written again. One
+/// `rdm.node_admin.node.update.via-dead-record` span names how the write ended.
+pub(crate) async fn write_dead(records: &Records, reasons: &Mutex<HashMap<(NodeId, IncarnationId), crate::node_investigation::Reason>>, rows: Option<&crate::node_rows::NodeRows>, n: &Node, reason: crate::node_investigation::Reason) -> DeadWrite {
     use crate::node_rows::RowRefused;
     use rdm_transport::client::SendEnd;
-    let Some(incarnation) = n.incarnation_id.clone() else { return false };
+    let Some(incarnation) = n.incarnation_id.clone() else { return DeadWrite::Refused };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-dead-record",
         node_id = %n.node_id, node_path = %n.path, node_name = %n.name, incarnation_id = %incarnation.as_str(), reason = reason.as_str(),
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let written = match rows {
-        None => Err(("no-rows-writer", "this admin holds no writer of node records: the dead state is not written".to_string())),
+        None => Err((DeadWrite::Refused, "no-rows-writer", "this admin holds no writer of node records: the dead state is not written".to_string())),
         Some(rows) => {
             let send = rdm_transport::client::Send::default();
             let ran = tracing::Instrument::instrument(send.run(|e: &RowRefused| !matches!(e, RowRefused::Unwritten(_)), || rows.investigated(n, NodeStatus::Dead)), span.clone()).await;
             ran.map_err(|end| match &end {
-                SendEnd::Answered(e) => (e.outcome(), end.to_string()),
-                SendEnd::Spent { .. } => ("send-spent", end.to_string()),
+                SendEnd::Answered(e) => (DeadWrite::Refused, e.outcome(), end.to_string()),
+                SendEnd::Spent { .. } => (DeadWrite::Spent, "send-spent", end.to_string()),
             })
         }
     };
@@ -479,14 +480,28 @@ pub(crate) async fn write_dead(records: &Records, reasons: &Mutex<HashMap<(NodeI
             if records.offline.lock().unwrap().insert((n.node_id.clone(), incarnation)) {
                 records.inputs_moved();
             }
-            true
+            DeadWrite::Written
         }
-        Err((outcome, detail)) => {
+        Err((end, outcome, detail)) => {
             span.record("outcome", outcome).record("detail", detail.as_str());
-            span.in_scope(|| tracing::info!(node_id = %n.node_id, outcome, "the dead state was not written on the node's record: the birth is not marked dead, and it is investigated again"));
-            false
+            span.in_scope(|| match end {
+                DeadWrite::Spent => tracing::info!(node_id = %n.node_id, outcome, "the dead state was not written on the node's record, its Send spent: the birth is not marked dead, and it is investigated again"),
+                _ => tracing::info!(node_id = %n.node_id, outcome, "the dead state was refused by name on the node's record: the birth is not marked dead, and the refusal is the write's end"),
+            });
+            end
         }
     }
+}
+
+/// How [`write_dead`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeadWrite {
+    /// The record holds Dead, and the view's mark follows it.
+    Written,
+    /// The write's `Send` was spent unanswered: the birth is investigated again.
+    Spent,
+    /// The write was refused by name (or there is nothing to write it with): its end, not written again.
+    Refused,
 }
 
 /// The watched births the tick recovers (node-recovery.md step 3, Q393): none unless this admin holds

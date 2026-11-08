@@ -2741,8 +2741,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     Some(async move { (id, write_dead(records, reasons, rows, n, reason).await) })
                                                 }))
                                                 .await;
+                                                // Only a spent write is investigated again; a refusal by name is its end.
                                                 for (id, marked) in written {
-                                                    if !marked {
+                                                    if marked == DeadWrite::Spent {
                                                         tickle.unsettle(id);
                                                     }
                                                 }
@@ -2769,7 +2770,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 let verdict = if start { "os-stopped" } else { "running" };
                                                                 tracing::info_span!("rdm.node_admin.node.update.via-dead", node_id = %n.node_id, node_path = %n.path, node_name = %n.name, verdict, detail = %how, reason = reason.as_str(), trigger = reason.trigger(), observer = %observer, "otel.kind" = "internal")
                                                                     .in_scope(|| tracing::info!(node_id = %n.node_id, verdict, "the self-heal's command went unanswered to the end of its attempts: the birth is written dead, and its recovery follows at once"));
-                                                                if !write_dead(&records, &recovery.reasons, rows.as_deref(), &n, reason).await {
+                                                                if write_dead(&records, &recovery.reasons, rows.as_deref(), &n, reason).await == DeadWrite::Spent {
                                                                     unwritten_dead.lock().unwrap().insert(n.node_id.to_string());
                                                                 }
                                                             }
