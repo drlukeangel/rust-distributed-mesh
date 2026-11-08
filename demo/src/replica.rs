@@ -481,16 +481,18 @@ pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node
 }
 
 /// Wait until `moved` holds, checked now and again on each tick of `heard` (the topology change
-/// event, `DigestView::heard_changes`) or of `passed` (a birth passed over, or asked again), never on
-/// a timer. `false` once `until` passed with `moved` still false: the forward's own bound,
-/// [`FORWARD_FOR`].
-pub async fn wait_for_change<T>(heard: &mut tokio::sync::watch::Receiver<u64>, passed: &mut tokio::sync::watch::Receiver<T>, until: tokio::time::Instant, mut moved: impl FnMut() -> bool) -> bool {
+/// event, `DigestView::heard_changes`), of `primaries` (a primary record held, `PrimaryView::subscribe`:
+/// RDM's election reaches the gateway as the broker primary's record on its Digest) or of `passed` (a
+/// birth passed over, or asked again), never on a timer. `false` once `until` passed with `moved` still
+/// false: the forward's own bound, [`FORWARD_FOR`].
+pub async fn wait_for_change<T>(heard: &mut tokio::sync::watch::Receiver<u64>, primaries: &mut tokio::sync::watch::Receiver<u64>, passed: &mut tokio::sync::watch::Receiver<T>, until: tokio::time::Instant, mut moved: impl FnMut() -> bool) -> bool {
     loop {
         if moved() {
             return true;
         }
         tokio::select! {
             Ok(()) = heard.changed() => {}
+            Ok(()) = primaries.changed() => {}
             Ok(()) = passed.changed() => {}
             () = tokio::time::sleep_until(until) => return moved(),
         }
@@ -512,11 +514,12 @@ async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) 
     let until = tokio::time::Instant::now() + FORWARD_FOR;
     let options = CallOptions::default();
     let Some(view) = node.view.get() else { return Records::not_ready(format!("path {:?}, name {:?} is starting", node.name.path, node.name.name)) };
-    let (mut heard, mut passed) = (view.digest_view.heard_changes(), node.passed.0.subscribe());
+    let (mut heard, mut primaries, mut passed) = (view.digest_view.heard_changes(), view.primaries().subscribe(), node.passed.0.subscribe());
     let mut last = String::from("no broker primary is held");
     loop {
         // Marked seen before the topology is read: a change from here on wakes the wait.
         heard.borrow_and_update();
+        primaries.borrow_and_update();
         passed.borrow_and_update();
         let asked = node.broker_to_ask();
         let mut status = None;
@@ -542,7 +545,7 @@ async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) 
                 other => format!("{broker}: {} {}", other.name(), other.detail_name()),
             };
         }
-        let moved = wait_for_change(&mut heard, &mut passed, until, || {
+        let moved = wait_for_change(&mut heard, &mut primaries, &mut passed, until, || {
             let now = node.broker_to_ask();
             now != asked || status.as_ref().is_some_and(|held| node.status_of(asked.as_ref().expect("a status is read of an asked broker")) != *held)
         })
@@ -599,6 +602,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn after_not_primary_the_next_ask_waits_for_the_primary_to_change_in_the_view_not_a_fixed_delay() {
         let (heard_tx, mut heard) = tokio::sync::watch::channel(0u64);
+        let (primaries_tx, mut primaries) = tokio::sync::watch::channel(0u64);
         let (passed_tx, mut passed) = tokio::sync::watch::channel(BTreeMap::<NodeId, IncarnationId>::new());
         let (asked, next) = (NodeId::mint(), NodeId::mint());
         let primary = Arc::new(Mutex::new(asked.clone()));
@@ -616,10 +620,27 @@ mod tests {
                 heard_tx
             })
         };
-        let moved = wait_for_change(&mut heard, &mut passed, start + FORWARD_FOR, || *primary.lock().unwrap() != asked).await;
+        let moved = wait_for_change(&mut heard, &mut primaries, &mut passed, start + FORWARD_FOR, || *primary.lock().unwrap() != asked).await;
         assert!(moved, "the topology named another broker primary");
         assert_eq!(start.elapsed(), Duration::from_secs(7), "the next ask is at the primary's change in the view, and only then");
         let heard_tx = changes.await.unwrap();
+
+        // A primary record held wakes the wait (RDM's election reaches the gateway as the broker
+        // primary's record on its Digest, which moves no member status): no wait to the bound.
+        let start = tokio::time::Instant::now();
+        let elected = NodeId::mint();
+        let record = {
+            let (primary, elected) = (primary.clone(), elected.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                *primary.lock().unwrap() = elected;
+                primaries_tx.send_modify(|n| *n += 1);
+                primaries_tx
+            })
+        };
+        assert!(wait_for_change(&mut heard, &mut primaries, &mut passed, start + FORWARD_FOR, || *primary.lock().unwrap() == elected).await);
+        assert_eq!(start.elapsed(), Duration::from_secs(3), "the record is the wake");
+        let _primaries_tx = record.await.unwrap();
 
         // A broker passed over wakes the wait too (a spent call's notice).
         let start = tokio::time::Instant::now();
@@ -635,13 +656,13 @@ mod tests {
             })
         };
         let passed_rx = passed.clone();
-        assert!(wait_for_change(&mut heard, &mut passed, start + FORWARD_FOR, || passed_rx.borrow().contains_key(&marked)).await);
+        assert!(wait_for_change(&mut heard, &mut primaries, &mut passed, start + FORWARD_FOR, || passed_rx.borrow().contains_key(&marked)).await);
         assert_eq!(start.elapsed(), Duration::from_secs(2), "the notice's mark is the wake");
         let _passed_tx = mark.await.unwrap();
 
         // Nothing moves: no ask until the forward's own bound.
         let start = tokio::time::Instant::now();
-        assert!(!wait_for_change(&mut heard, &mut passed, start + FORWARD_FOR, || false).await, "nothing moved");
+        assert!(!wait_for_change(&mut heard, &mut primaries, &mut passed, start + FORWARD_FOR, || false).await, "nothing moved");
         assert_eq!(start.elapsed(), FORWARD_FOR, "the forward answers NoBroker at its bound, and asks nothing before");
         drop(heard_tx);
     }
