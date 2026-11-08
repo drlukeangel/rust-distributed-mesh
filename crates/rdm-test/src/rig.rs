@@ -163,6 +163,24 @@ impl Drop for ReapOnDrop {
     }
 }
 
+/// The runtime record the rig's in-process provider writes for this process in `dir`, read again
+/// every 20 ms until it is written and describes this runtime ([`rdm_core::runtime::read_own_record`]);
+/// a named refusal after `within`. The rig registers a birth from a sync call, so it waits on this
+/// thread; the product's async wait is `rdm_node::node_self::wait_for_own_record`.
+fn own_record_within(dir: &std::path::Path, within: Duration) -> Result<rdm_core::RuntimeFact, String> {
+    let until = std::time::Instant::now() + within;
+    loop {
+        let last = match rdm_core::runtime::read_own_record(dir) {
+            Ok(f) => return Ok(f),
+            Err(e) => e,
+        };
+        if std::time::Instant::now() >= until {
+            return Err(format!("the provider wrote no runtime record for this runtime within {within:?}: {last}"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Whether a task of `pid` has not yet exited: it is in `/proc/<pid>/task` and its state is not zombie.
 fn live_task(pid: u32) -> bool {
     let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return false };
@@ -333,7 +351,7 @@ impl AdminSide {
     }
 
     fn register(&self, launch: &rdm_core::launch::Launch, key: &SecretKey, name: rdm_core::PathName, last_accepted: Option<rdm_core::PathName>, held: bool) {
-        let runtime = rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
+        let runtime = own_record_within(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
         let _ = self.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             path: name.path.clone(), name: name.name.clone(),
             node_id: launch.node_id.clone(),

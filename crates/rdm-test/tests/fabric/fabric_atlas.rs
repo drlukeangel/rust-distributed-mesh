@@ -324,7 +324,7 @@ async fn a_delete_of_a_primary_right_after_its_only_other_admins_start_is_accept
     let fp_view = estate.node_views().await.into_iter().find(|n| n.node_id == fp).expect("the fabric-primary is listed");
     Estate::workflow(&format!("node.stop of {other:?}"), estate.nodes_obj().await.stop(&other).await).await;
     // The fabric-primary's gossip view holds the stop: the birth dropped and its stop overlay held.
-    estate.peers().await.fact(&fp_view, "mesh2", "the fabric-primary's view holds the stopped node-admin stopped", |v| v.birth(&other_id).is_none() && v.overlay(&other_id, "node.stop").is_some()).await;
+    rdm_test::typed::peer_holds(&*estate.peers().await, &fp_view, "mesh2", "the fabric-primary's view holds the stopped node-admin stopped", |v| v.birth(&other_id).is_none() && v.overlay(&other_id, "node.stop").is_some()).await;
     Estate::workflow(&format!("node.start of {other:?}"), estate.nodes_obj().await.start(&other).await).await;
     // No wait: the Delete goes out on the start's Complete.
     let primary_id = estate.node_view(&primary).await.node_id;

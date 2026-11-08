@@ -82,6 +82,9 @@ pub enum Accepted {
 pub struct CommandView {
     /// Each open command: what resolves its completion, and the instant it was first sent.
     open: Mutex<HashMap<CommandKey, (watch::Sender<bool>, Instant)>>,
+    /// How many commands are open, moved under `open`'s lock each time one opens or closes: what
+    /// [`Self::block`] waits on to see every command in flight complete.
+    open_count: watch::Sender<usize>,
     connections_delete_deadline: Duration,
     /// Whether this admin, as a mesh-primary, replied `blocked` to a storage change's `mesh.block`
     /// (storage.md §2 "Changing it", step 1): it issues no new command until it is unblocked.
@@ -133,7 +136,7 @@ impl Default for CommandView {
 impl CommandView {
     /// A view whose commanded births run their `node.connection.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
-        Self { open: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()), caller_streams: Mutex::new(HashMap::new()) }
+        Self { open: Mutex::new(HashMap::new()), open_count: watch::channel(0).0, connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()), caller_streams: Mutex::new(HashMap::new()) }
     }
 
     /// Send every frame of the commands this admin carries to the birth `(node_id, incarnation)` on to
@@ -161,10 +164,10 @@ impl CommandView {
     pub async fn block(&self) -> usize {
         self.blocked.send_replace(true);
         self.rows_held.send_replace(true);
-        let in_flight = self.open.lock().unwrap().len();
-        while !self.open.lock().unwrap().is_empty() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let mut open = self.open_count.subscribe();
+        let in_flight = *open.borrow_and_update();
+        // Woken by the close that empties it, never on a timer; the sender lives as long as `self`.
+        let _ = open.wait_for(|n| *n == 0).await;
         drop(self.row_writes.lock().await);
         in_flight
     }
@@ -219,7 +222,10 @@ impl CommandView {
     /// Open `key` before the command is sent (so a completion that races the reply finds it) and
     /// return what resolves when the completion is accepted. Opening again is the same command.
     pub fn open(&self, key: CommandKey) -> watch::Receiver<bool> {
-        self.open.lock().unwrap().entry(key).or_insert_with(|| (watch::channel(false).0, Instant::now())).0.subscribe()
+        let mut open = self.open.lock().unwrap();
+        let done = open.entry(key).or_insert_with(|| (watch::channel(false).0, Instant::now())).0.subscribe();
+        self.open_count.send_replace(open.len());
+        done
     }
 
     /// Accept the completion for `key`.
@@ -266,7 +272,9 @@ impl CommandView {
     /// ended with its attempts spent is the spent call's mark at the primary above it (node-rpc.md §43;
     /// Q332, Q338), never this view's.
     pub fn close(&self, key: &CommandKey) {
-        self.open.lock().unwrap().remove(key);
+        let mut open = self.open.lock().unwrap();
+        open.remove(key);
+        self.open_count.send_replace(open.len());
     }
 }
 

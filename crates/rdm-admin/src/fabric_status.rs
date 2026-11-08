@@ -310,7 +310,7 @@ impl FabricStates {
         let from = self.env.records.fabric_state();
         let notice = next == FabricState::Ready && ready_of.is_some() && !change.notified;
         if notice {
-            self.env.records.set_fabric_ready_notice_owed(true);
+            self.env.records.set_fabric_ready_notice_unsent(true);
         }
         self.env.records.set_fabric_state(next);
         self.env.records.set_fabric_blocker(None);
@@ -337,7 +337,7 @@ impl FabricStates {
             }
             change.notified = true;
             self.notify_fabric_ready(build, parent, me.clone());
-            self.env.records.set_fabric_ready_notice_owed(false);
+            self.env.records.set_fabric_ready_notice_unsent(false);
         }
         self.env.records.wake.poke();
     }

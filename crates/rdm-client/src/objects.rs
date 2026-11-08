@@ -54,8 +54,8 @@ fn ended_read<T>(span: &tracing::Span, op: &'static str, r: &Result<T, CallEnd>)
 /// admin asked. An admin that does not report it within `within` ends the call `Indeterminate`, naming
 /// the fact, the admin and the last thing it reported (`report` of the last view read) or how its last
 /// read ended. `Fabrics::fact` is this body, and so is a caller's that supplies the read of a fact whose type
-/// this crate cannot name (the Build's records, read from the fabric's store root). `Peers::fact` polls on its own
-/// loop and is not this body.
+/// this crate cannot name (the Build's records, read from the fabric's store root). A peer's held view (`rdm_test::typed`) is
+/// read through it too.
 pub async fn await_fact<T, Fut>(
     kind: &str,
     admin: &str,

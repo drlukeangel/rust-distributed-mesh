@@ -565,7 +565,13 @@ impl Estate {
     pub async fn witness_holds_birth(&self, witness: &PathName, node: &PathName) {
         let (witness_view, birth) = (self.node_view(witness).await, self.node_view(node).await);
         let incarnation = birth.incarnation.clone().unwrap_or_else(|| panic!("{node:?} has no birth to hold: {birth:?}"));
-        self.peers().await.fact(&witness_view, &birth.mesh(), &format!("{witness:?} holds incarnation {incarnation:?} of {node:?}"), |v| v.birth(&birth.node_id).is_some_and(|d| d.node.incarnation == incarnation)).await;
+        self.peer_holds(&witness_view, &birth.mesh(), &format!("{witness:?} holds incarnation {incarnation:?} of {node:?}"), |v| v.birth(&birth.node_id).is_some_and(|d| d.node.incarnation == incarnation)).await;
+    }
+
+    /// [`peer_holds`] through this estate's peers.
+    async fn peer_holds(&self, peer: &rdm_client::NodeView, mesh: &str, fact: &str, holds: impl Fn(&rdm_client::HeldView) -> bool) {
+        let peers = self.peers().await;
+        peer_holds(&*peers, peer, mesh, fact, holds).await;
     }
 
     /// Wait until the node `witness` retains the departure of `node_id` in its held view of `mesh`
@@ -573,7 +579,7 @@ impl Estate {
     /// from a reply stream it holds, so the witness reports it and one that never does is named.
     pub async fn holds_departure(&self, witness: &PathName, mesh: &str, node_id: &str) {
         let witness_view = self.node_view(witness).await;
-        self.peers().await.fact(&witness_view, mesh, &format!("{witness:?} retains the departure of {node_id}"), |v| v.deleted.iter().any(|d| d.node.node_id.as_str() == node_id)).await;
+        self.peer_holds(&witness_view, mesh, &format!("{witness:?} retains the departure of {node_id}"), |v| v.deleted.iter().any(|d| d.node.node_id.as_str() == node_id)).await;
     }
 
     /// Wait for the answering admin's node view to hold a state no stream announces: `check` reads the
@@ -888,7 +894,7 @@ impl Estate {
         self.follow(stream).await
     }
 
-    /// The node client the typed objects share: what a peer node holds of its mesh, by `Peers::fact`.
+    /// The node client the typed objects share: what a peer node holds of its mesh, by `peer_holds`.
     pub async fn peers(&self) -> Arc<Peers> {
         // The client outlives the entry admin: a read at a named admin (`fabric_view_at`, `node_views_at`) is made
         // after the entry died, and only the first call, which has no client yet, needs the handover.
@@ -972,6 +978,20 @@ impl Estate {
     /// Re-learn every node the admin lists, so the typed objects reach births the last Build made.
     async fn refresh(&self) {
         let _ = self.node_views().await;
+    }
+}
+
+/// Wait until `peer`'s held view of `mesh` (`node.topology.get`, through `peers`) holds `fact`, read
+/// through [`rdm_client::await_fact`] within 30 s: a peer that never reports it fails the cell, named
+/// with the fact and the last thing it reported.
+pub async fn peer_holds(peers: &rdm_client::Peers, peer: &rdm_client::NodeView, mesh: &str, fact: &str, holds: impl Fn(&rdm_client::HeldView) -> bool) {
+    let carrier = peers.carrier_for(peer.node_id.clone());
+    let (rpc, target) = (rdm_client::NodeRpc::new(carrier.client()), rdm_transport::NodeTarget::ExactNode(peer.node_id.clone()));
+    let report = |v: &rdm_client::HeldView| format!("{} members, stopped {:?}, deleted {:?}", v.members.len(), v.stopped.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>(), v.deleted.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>());
+    let opts = rdm_transport::CallOptions::default();
+    let read = || rpc.held_view(&target, mesh, &opts);
+    if let Err(e) = rdm_client::await_fact("held view", peer.node_id.as_str(), fact, std::time::Duration::from_secs(30), read, holds, report).await {
+        panic!("{e}");
     }
 }
 

@@ -4,11 +4,10 @@
 //! of the mesh (`node.get` through `node.topology.get`), never a span count. A peer that never reports the
 //! fact is named, with the fact and the last thing it reported.
 
-use crate::{HeldView, NodeRpc, NodeStatus, NodeView};
+use crate::{NodeStatus, NodeView};
 use rdm_core::{MeshNode, NodeId, PathName};
-use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{NodeRpcClient, ResolvedNode, StaticResolver};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// The line a node-admin prints on its stdout once it has started: `RDM_NODE_BIRTH=` and, as JSON, the
 /// birth its readiness gate opens for (node id, `(path, name)`, endpoint, address, incarnation). The
@@ -141,22 +140,6 @@ impl Peers {
     /// A carrier selecting the entry admin by its globally unique ID.
     pub fn carrier_for(&self, admin: NodeId) -> crate::BuildCarrier {
         crate::BuildCarrier::at_node(self.rpc.clone(), admin)
-    }
-
-    /// Await the typed fact `fact` of `peer`'s held view of `mesh`; a peer that never reports it is named
-    /// with the fact and the last thing it reported.
-    pub async fn fact(&self, peer: &NodeView, mesh: &str, fact: &str, holds: impl Fn(&HeldView) -> bool) {
-        let target = NodeTarget::ExactNode(peer.node_id.clone());
-        let mut last = String::from("nothing");
-        for _ in 0..300 {
-            match NodeRpc::new(&self.rpc).held_view(&target, mesh, &CallOptions::default()).await {
-                Ok(view) if holds(&view) => return,
-                Ok(view) => last = format!("{} members, stopped {:?}, deleted {:?}", view.members.len(), view.stopped.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>(), view.deleted.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>()),
-                Err(e) => last = e.to_string(),
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("{} never reported: {fact}; its last report was {last}", peer.node_id);
     }
 }
 

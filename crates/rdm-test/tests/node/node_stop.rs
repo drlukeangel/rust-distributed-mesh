@@ -123,7 +123,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every other node reports that it dropped the stopped birth and holds the stop overlay.
     for peer in &others {
-        peers.fact(peer, "mesh1", "NodeStopped: the stopped birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop").is_some()).await;
+        rdm_test::typed::peer_holds(&*peers, peer, "mesh1", "NodeStopped: the stopped birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop").is_some()).await;
     }
     // node.get shows it stopped: the same birth, the same process, alive.
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
@@ -140,8 +140,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
     assert_eq!(estate.build_ids().await, builds, "a stop and a start write no Build");
     for peer in &others {
-        peers
-            .fact(peer, "mesh1", "the rejoined birth is held again as the same incarnation and the stop overlay is gone", |v| {
+        rdm_test::typed::peer_holds(&*peers, peer, "mesh1", "the rejoined birth is held again as the same incarnation and the stop overlay is gone", |v| {
                 v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation.as_ref().unwrap()) && v.overlay(&before.node_id, "node.stop").is_none()
             })
             .await;
@@ -395,8 +394,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_applied_and_its_start_rej
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
     for peer in &others {
-        peers
-            .fact(peer, "mesh1", "the rejoined birth is held again as the same incarnation, publishing its new name", |v| {
+        rdm_test::typed::peer_holds(&*peers, peer, "mesh1", "the rejoined birth is held again as the same incarnation, publishing its new name", |v| {
                 v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation.as_ref().unwrap() && d.node.location() == renamed)
             })
             .await;
@@ -548,8 +546,7 @@ async fn a_node_admin_stopped_and_renamed_starts_under_the_name_it_holds_on_ever
     let started = frames(nodes.start(&renamed).await.expect("the start by the row's name was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    peers
-        .fact(&rpc, "mesh1", "the rejoined birth is held as the same incarnation, publishing the row's name", |v| {
+    rdm_test::typed::peer_holds(&*peers, &rpc, "mesh1", "the rejoined birth is held as the same incarnation, publishing the row's name", |v| {
             v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation.as_ref().unwrap() && d.node.location() == renamed)
         })
         .await;

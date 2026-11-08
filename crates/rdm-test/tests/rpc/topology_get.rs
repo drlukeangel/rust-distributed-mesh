@@ -105,8 +105,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     for mesh in ["mesh1", "mesh2"] {
         let births: Vec<_> = nodes.iter().filter(|n| n.mesh() == mesh).map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
         let types: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n.mesh() == mesh && n.r#type != "node-admin").map(|n| n.r#type.clone()).collect();
-        peers
-            .fact(&member_view, mesh, &format!("{member_location:?} holds every settled birth of {mesh} ready and each node type's primary"), |v| {
+        rdm_test::typed::peer_holds(&*peers, &member_view, mesh, &format!("{member_location:?} holds every settled birth of {mesh} ready and each node type's primary"), |v| {
                 births.iter().all(|(id, inc)| v.birth(id).is_some_and(|d| Some(&d.node.incarnation) == inc.as_ref() && d.status == rdm_core::model::NodeStatus::Ready))
                     && types.iter().all(|t| v.members.iter().any(|d| d.primary.iter().any(|r| r.role == rdm_core::PrimaryRole::NodePrimary(t.clone()))))
             })

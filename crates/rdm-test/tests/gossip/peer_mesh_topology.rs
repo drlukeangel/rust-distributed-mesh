@@ -100,7 +100,7 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     let peers = estate.peers().await;
     for n in &views {
         for m in ["mesh1", "mesh2"] {
-            peers.fact(n, m, &format!("node {} has learned {m}", n.node_id), |held| !held.members.is_empty()).await;
+            rdm_test::typed::peer_holds(&*peers, n, m, &format!("node {} has learned {m}", n.node_id), |held| !held.members.is_empty()).await;
         }
     }
     let quiet_from = now_ns();
