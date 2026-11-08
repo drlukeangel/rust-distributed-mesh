@@ -359,20 +359,26 @@ impl NodeSelf {
         *self.records.lock().unwrap() = Some(records);
     }
 
-    /// Write `to` as this birth's status on its own record (Q356), before the frame that reports it,
-    /// and publish it at once in its Digest (gossip.md §3.1 `Digest`: "at once when its status
-    /// changes"): the one status its record, its Digest and its answers carry. A process that holds no
-    /// writer yet, or a write the store refuses, leaves the frame to go as it is; the refusal is named
-    /// on the writer's span. A Digest sent while the birth is on no channel reaches nobody; its
-    /// heartbeats carry the status once it is.
+    /// Write `to` as this birth's status on its own record (Q356) under one `Send`
+    /// ([`crate::node_records::NodePropertyWriter::write_status`]), before the frame that reports it,
+    /// and publish the status the record then holds at once in its Digest (gossip.md §3.1 `Digest`: "at
+    /// once when its status changes"): the one status its record, its Digest and its answers carry. A
+    /// write refused or whose `Send` is spent moves nothing: the Digest keeps the record's last status,
+    /// and the end is named on the writer's span. A process that holds no record yet publishes `to`,
+    /// with nothing recorded to differ from. A Digest sent while the birth is on no channel reaches
+    /// nobody; its heartbeats carry the status once it is.
     async fn write_state(&self, to: crate::model::NodeStatus) {
         let writer = self.records.lock().unwrap().clone();
-        if let Some(writer) = writer {
-            if let Some(initial) = writer.start_record() {
-                let _ = writer.state(initial, to).await;
-            }
-        }
-        let d = (self.set_status)(to);
+        let held = match writer {
+            Some(writer) => writer.write_status(to).await,
+            None => None,
+        };
+        let status = match held {
+            None => to,
+            Some(Ok(held)) => held,
+            Some(Err(_)) => return,
+        };
+        let d = (self.set_status)(status);
         let _ = self.channels.publish(&d).await;
     }
 
@@ -774,14 +780,17 @@ impl NodeSelf {
         let (node, node_id, incarnation) = (self.node_id.clone(), self.node_id.clone(), self.incarnation.clone());
         let commander_name = named(commander);
         let all = matches!(scope, ConnectionScope::All);
-        let own = self.records.lock().unwrap().clone().and_then(|w| w.start_record().map(|r| (w, r)));
+        let own = self.records.lock().unwrap().clone();
         let report = {
             let sink = sink.clone();
             let own = own.clone();
             move || async move {
-                // The node's own record first (Q356): connections-deleting before its report.
-                if let (true, Some((writer, initial))) = (all, own) {
-                    let _ = writer.state(initial, crate::model::NodeStatus::ConnectionsDeleting).await;
+                // The node's own record first (Q356): connections-deleting before its report, under one
+                // `Send`; a refusal or a spent `Send` is named on the writer's `via-status` span.
+                if let (true, Some(writer)) = (all, own) {
+                    if let Some(Err(end)) = writer.write_status(crate::model::NodeStatus::ConnectionsDeleting).await {
+                        tracing::info!(node = %node, %end, "connections-deleting is not written on this node's record; the report still goes on the command's stream");
+                    }
                 }
                 // The span opens before the report leaves, so it starts before whatever the report causes
                 // (an in-process recorder may take it before the send returns).
@@ -2109,5 +2118,81 @@ mod tests {
                 spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// A nodes store whose writes are refused (`Io`, not an answer) while `refuse` holds.
+    struct SwitchedNodes {
+        held: crate::nodes_storage::MemoryNodesStorage,
+        refuse: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::nodes_storage::NodesStorage for SwitchedNodes {
+        async fn node(&self, node_id: &NodeId) -> Result<Option<crate::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
+            self.held.node(node_id).await
+        }
+        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.held.nodes(mesh).await
+        }
+        async fn put_node(&self, record: &crate::nodes_storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(crate::storage_error::StorageError::Io { file: format!("nodes/records/{}", record.node_id), reason: "simulated disk refusal".into() });
+            }
+            self.held.put_node(record).await
+        }
+        async fn records_at(&self, name: &PathName) -> Result<Vec<crate::nodes_storage::NodeRecord>, crate::storage_error::StorageError> {
+            self.held.records_at(name).await
+        }
+    }
+
+    /// CONTRACT: `NodeSelf::write_state` (Q356: "the one status its record, its Digest and its answers
+    /// carry"; Q344: one `Send` on a store's write): a node writes its status on its own record first,
+    /// and its Digest carries the status the record then holds. A nodes.storage that refuses the write to
+    /// the end of the `Send` moves neither: the record keeps its last status and so does the Digest.
+    /// Must NOT happen: a Digest that says a status the node's record does not hold.
+    #[tokio::test]
+    async fn a_status_the_record_refuses_is_not_published_in_the_digest() {
+        use crate::nodes_storage::NodesStorage as _;
+        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep_id = EndpointId(endpoint.secret_key().public().to_string());
+        let (node_id, incarnation, name) = (NodeId::mint(), IncarnationId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
+        let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+        clock.adopt(1_000_000);
+        let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Default::default());
+        let channels = rdm_gossip::channel::Channels::new(&g, &endpoint, &topology_view).unwrap();
+        channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), Vec::new()).await.unwrap();
+        let resolver = Arc::new(LiveNodeResolver::default());
+        let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm"));
+        let server = ServerBuilder::new().serve_core(client.clone(), None).build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
+        let digest = MeshDigest {
+            fabric_id,
+            node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: ep_id, transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None },
+            status: rdm_core::model::NodeStatus::Ready,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1_000,
+            primary: Vec::new(),
+        };
+        let published: Arc<Mutex<Vec<rdm_core::model::NodeStatus>>> = Arc::default();
+        let into = published.clone();
+        let set_status: Arc<dyn Fn(rdm_core::model::NodeStatus) -> MeshDigest + Send + Sync> = Arc::new(move |s| {
+            into.lock().unwrap().push(s);
+            MeshDigest { status: s, ..digest.clone() }
+        });
+        let own = NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), "node".into(), server, client, resolver, channels, set_status, Arc::new(|| rdm_core::model::NodeStatus::Ready), None, Duration::from_millis(200));
+        let store = Arc::new(SwitchedNodes { held: Default::default(), refuse: AtomicBool::new(false) });
+        let writer = crate::node_records::NodePropertyWriter::new(store.clone(), || "file".to_string());
+        writer.bound(crate::nodes_storage::fixture_record(&name, "node", node_id.clone(), incarnation.clone(), rdm_core::model::NodeStatus::Ready), |_| {}).await.unwrap();
+        own.set_records(writer);
+        let held = || async { store.held.node(&node_id).await.unwrap().expect("its record").record.state };
+        store.refuse.store(true, Ordering::SeqCst);
+        own.write_state(rdm_core::model::NodeStatus::ConnectionsDeleting).await;
+        assert_eq!(held().await, rdm_core::model::NodeStatus::Ready, "the refused write leaves the record at its last status");
+        assert!(published.lock().unwrap().is_empty(), "the Digest keeps the record's last status: nothing is published over it");
+        store.refuse.store(false, Ordering::SeqCst);
+        own.write_state(rdm_core::model::NodeStatus::ConnectionsDeleting).await;
+        assert_eq!(held().await, rdm_core::model::NodeStatus::ConnectionsDeleting, "the record holds the status");
+        assert_eq!(*published.lock().unwrap(), vec![rdm_core::model::NodeStatus::ConnectionsDeleting], "and then the Digest carries it");
     }
 }

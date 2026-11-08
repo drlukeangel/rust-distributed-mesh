@@ -374,8 +374,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
     // Every birth the topology view has spoken for, whatever became of it.
     let mut heard: HashSet<IncarnationId> = HashSet::new();
-    // Each birth's election claim, by incarnation.
-    let mut mesh_ids: BTreeMap<String, MeshId> = records.meshes.lock().unwrap().clone();
+    // The id of each mesh, by its name: the topology view's one map, the last id held for a name winning
+    // (a mesh this admin created, its own, or one whose topology it holds).
+    let mesh_ids: BTreeMap<String, MeshId> = digest_view.mesh_ids();
     for d in digest_view.all() {
         if &d.fabric_id != fabric_id {
             continue;
@@ -396,9 +397,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             continue;
         }
         let silent = age > digest_view.staleness_floor();
-        if let Some(id) = digest_view.mesh_id_of(&d.node.mesh) {
-            mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
-        }
         let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
@@ -446,11 +444,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.location()) else { continue };
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
-        }
-        // Its held digest states its mesh's id as a heard one does: a mesh whose births are all
-        // stopped keeps its id, and with it its state (states.md: a mesh's deleted is final).
-        if let Some(id) = digest_view.mesh_id_of(&d.node.mesh) {
-            mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();
@@ -510,9 +503,6 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.location()) else { continue };
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
-        }
-        if let Some(id) = digest_view.mesh_id_of(&d.node.mesh) {
-            mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), &d.node.r#type);
         n.node_id = d.node.node_id.clone();

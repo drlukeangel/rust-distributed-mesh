@@ -241,9 +241,12 @@ impl std::fmt::Display for CreateMeshError {
     }
 }
 
-/// The mesh id the operation carries, held for what every launch of the mesh carries.
+/// The mesh id the operation carries, held in this admin's topology view (the one map of mesh ids,
+/// [`Records::mesh_id_of`]) for what every launch of the mesh carries.
 pub(crate) fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
-    records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
+    if let Some(view) = records.digest_view.get() {
+        view.hold_mesh_id(mesh, Some(mesh_id));
+    }
     records.wake.poke();
     records.inputs_moved();
 }
@@ -252,7 +255,7 @@ pub(crate) fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
 /// ... Until the mesh has a primary, the fabric-primary writes its rows"; R13: the row is
 /// the first durable write of a create): `mesh_id`, the id the operation carries (minted once, when the
 /// mesh entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is written at the
-/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch of
+/// mesh's name before anything else of the mesh is written, and held in its topology view (what every launch of
 /// the mesh carries) only once the row is written. Every run of the operation writes with that id, so a run
 /// whose predecessor wrote and was lost finds the mesh's own row: the same MeshId writing its own row again is
 /// idempotent. A refused write fails the operation by name, holding nothing of the mesh: the Build runs

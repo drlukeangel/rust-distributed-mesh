@@ -399,7 +399,7 @@ mod tests {
     #[tokio::test]
     async fn the_nodes_store_line_is_frozen_byte_for_byte() {
         let d = crate::record_store::tempdir("nodes-store-layout");
-        let root = crate::store_root::StoreRoot::at(&d);
+        let root = crate::store_root::StoreRoot::at(&d).unwrap();
         let writer = crate::store_log::LogWriter::mint();
         let store = FileNodesStorage::open(&root, &writer).await.unwrap();
         let name = PathName::new("mesh1.node", "1").unwrap();
@@ -426,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn a_line_of_a_schema_before_the_node_record_is_refused_by_name() {
         let d = crate::record_store::tempdir("nodes-store-properties-1");
-        let root = crate::store_root::StoreRoot::at(&d);
+        let root = crate::store_root::StoreRoot::at(&d).unwrap();
         let writer = crate::store_log::LogWriter::mint();
         let node_id = NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap();
         let incarnation_id = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();

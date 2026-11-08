@@ -2108,6 +2108,22 @@ impl DigestView {
         }
     }
 
+    /// The id of every mesh this view holds one for, by the mesh's name: a copy taken under the lock.
+    pub fn mesh_ids(&self) -> BTreeMap<String, rdm_core::MeshId> {
+        self.mesh_ids.lock().unwrap().iter().map(|(m, id)| (m.clone(), id.clone())).collect()
+    }
+
+    /// Forget `mesh_id` as the id of the mesh `mesh` (a mesh that left): a name held under another id
+    /// keeps it. Whether it was held.
+    pub fn forget_mesh_id(&self, mesh: &str, mesh_id: &rdm_core::MeshId) -> bool {
+        let mut ids = self.mesh_ids.lock().unwrap();
+        if ids.get(mesh) == Some(mesh_id) {
+            ids.remove(mesh);
+            return true;
+        }
+        false
+    }
+
     /// The births each held digest names as replaced (`supersedes`), read under the view's lock with
     /// nothing copied: what an election's lost set takes from the digests (Q271).
     pub fn superseded(&self) -> Vec<rdm_core::IncarnationId> {

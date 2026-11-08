@@ -23,8 +23,10 @@ fn record(node_id: NodeId, mesh: &str) -> NodeRecord {
 }
 
 /// The nodes store of the file provider under `dir`.
+/// The store root under the cell's directory `dir`: the cell's own files (its input) sit beside the
+/// root, never in it (R-SR1: the marker is a root's first entry).
 async fn file_store(dir: &std::path::Path) -> FileNodesStorage {
-    FileNodesStorage::open(&StoreRoot::at(dir), &rdm_node::store_log::LogWriter::mint()).await.unwrap()
+    FileNodesStorage::open(&StoreRoot::at(&dir.join("store")).unwrap(), &rdm_node::store_log::LogWriter::mint()).await.unwrap()
 }
 
 fn root(tag: &str) -> std::path::PathBuf {

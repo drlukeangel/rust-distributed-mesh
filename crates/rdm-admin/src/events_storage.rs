@@ -671,7 +671,7 @@ mod tests {
         #[cfg(feature = "file-backend")]
         {
             let dir = crate::test_support::tempdir("events-read-back");
-            let root = crate::store_root::StoreRoot::at(&dir);
+            let root = crate::store_root::StoreRoot::at(&dir).unwrap();
             let file = FileEventsStorage::open(&root).await.unwrap();
             for e in &events {
                 file.append(e).await.unwrap();
@@ -695,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn the_events_store_line_is_frozen_byte_for_byte() {
         let dir = crate::test_support::tempdir("events-store-layout");
-        let store = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir)).await.unwrap();
+        let store = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir).unwrap()).await.unwrap();
         let mp = source("mesh-primary");
         let (n1, inc) = (NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("node-inc")).unwrap());
         let mut event = Event::node_investigated(&mp, 1_000, &n1, &inc, "mesh1.node", "1", "exited", "recreate", crate::node_investigation::Reason::SelfHeal);
@@ -724,7 +724,7 @@ mod tests {
         let dir = crate::test_support::tempdir("events-restart");
         let first = source("fabric-primary");
         {
-            let root = crate::store_root::StoreRoot::at(&dir);
+            let root = crate::store_root::StoreRoot::at(&dir).unwrap();
             let file = FileEventsStorage::open(&root).await.unwrap();
             for e in &events {
                 file.append(e).await.unwrap();
@@ -733,7 +733,7 @@ mod tests {
         }
         // The reading admin restarted: a new incarnation of another node opens the root again.
         let after = source("restarted-admin");
-        let root = crate::store_root::StoreRoot::at(&dir);
+        let root = crate::store_root::StoreRoot::at(&dir).unwrap();
         let reopened = FileEventsStorage::open(&root).await.unwrap();
         reads_back(&reopened, &events, &b1, &b2, &n1, &n2).await;
         let later = Event::build_ended(&after, 2_000, &b1, &EndedState::Complete);
@@ -789,13 +789,13 @@ mod tests {
         events.push(storage[3].clone());
         let memory = MemoryEventsStorage::new();
         let dir = crate::test_support::tempdir("events-storage-changes");
-        let file = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir)).await.unwrap();
+        let file = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir).unwrap()).await.unwrap();
         for e in &events {
             memory.append(e).await.unwrap();
             file.append(e).await.unwrap();
         }
         file.finish_issued_writes().await;
-        let reopened = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir)).await.unwrap();
+        let reopened = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir).unwrap()).await.unwrap();
         let stores: [(&str, &dyn EventsStorage); 2] = [("memory", &memory), ("file", &reopened)];
         for (backend, store) in stores {
             let read = store.of_storage_changes().await.unwrap();

@@ -259,7 +259,7 @@ mod tests {
     async fn the_fabric_store_line_is_frozen_byte_for_byte() {
         let d = tempdir();
         let writer = crate::store_log::LogWriter::mint();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &writer).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d).unwrap(), &writer).await.unwrap();
         let fabric_id = FabricId::parse(&rdm_core::fixture_crockford60("fabric-1")).unwrap();
         s.put_fabric(&FabricRecord::new(FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() })).await.unwrap();
         let file = d.join(crate::store_root::FABRIC_FILE);
@@ -290,13 +290,13 @@ mod tests {
     #[tokio::test]
     async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_dataschema_by_name() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::store_log::LogWriter::mint()).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d).unwrap(), &crate::store_log::LogWriter::mint()).await.unwrap();
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         assert_eq!(crate::fabric_storage::write_identity(&s, &fabric).await.unwrap(), Ok(FabricWritten::Written));
         let mut ready = FabricRecord::new(fabric.clone());
         ready.state = FabricState::Ready;
         s.put_fabric(&ready).await.unwrap();
-        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::store_log::LogWriter::mint()).await.unwrap();
+        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d).unwrap(), &crate::store_log::LogWriter::mint()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(ready), "the latest line is the record");
         let lines = crate::store_log::read_file(&d.join(crate::store_root::FABRIC_FILE)).unwrap();
         assert_eq!(lines.len(), 2, "both writes stand as lines");
@@ -315,7 +315,7 @@ mod tests {
     /// and the file store each run their own check.
     #[tokio::test]
     async fn the_fabric_identity_is_written_once_by_its_writer_for_both_stores() {
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::store_log::LogWriter::mint()).await.unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()).unwrap(), &crate::store_log::LogWriter::mint()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             assert_eq!(crate::fabric_storage::write_identity(&*s, &first).await.unwrap(), Ok(FabricWritten::Written));

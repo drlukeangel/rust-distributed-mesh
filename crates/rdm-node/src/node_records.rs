@@ -251,6 +251,34 @@ impl NodePropertyWriter {
         self.update(initial, move |record| { record.set_state(to); }, |_| {}).await
     }
 
+    /// Write `to` as this node's status on its own record (Q356) under one `Send` (Q344: the only
+    /// retry; a refusal by name is an answer, never sent again): the status the record holds once the
+    /// store answers it, by the record's one status order, which is what the node's Digest and answers
+    /// carry. `None` while this process holds no start record: nothing of its record is written yet. A
+    /// refusal, or a `Send` spent, is the end, named on its `rdm.node.record.update.via-status` span;
+    /// the record keeps its last status.
+    pub async fn write_status(&self, to: crate::model::NodeStatus) -> Option<Result<crate::model::NodeStatus, rdm_transport::client::SendEnd<StorageError>>> {
+        let initial = self.start_record()?;
+        let span = tracing::info_span!("rdm.node.record.update.via-status", node_id = %initial.node_id, incarnation_id = %initial.incarnation.as_str(), status = ?to, outcome = tracing::field::Empty, held = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let send = rdm_transport::client::Send::default();
+        let written = tracing::Instrument::instrument(send.run(StorageError::answered, || self.state(initial.clone(), to)), span.clone()).await;
+        Some(match written {
+            Ok(w) => {
+                span.record("outcome", "written").record("held", tracing::field::debug(w.record.state));
+                Ok(w.record.state)
+            }
+            Err(end) => {
+                let outcome = match &end {
+                    rdm_transport::client::SendEnd::Answered(_) => "refused",
+                    rdm_transport::client::SendEnd::Spent { .. } => "send-spent",
+                };
+                span.record("outcome", outcome).record("detail", end.to_string().as_str());
+                span.in_scope(|| tracing::info!(outcome, "the status is not written on this node's record: the record keeps its last status, and the Digest with it"));
+                Err(end)
+            }
+        })
+    }
+
     /// Apply the whole Build entry through the same serialized writer as local changes.
     /// Both property fields are one durable effect.
     pub async fn entry(

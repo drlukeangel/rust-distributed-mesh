@@ -813,19 +813,17 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
             self.records.publish(n.as_node(if n.ready { NodeStatus::Ready } else { NodeStatus::PendingReconnect }, self.provider));
         }
         // The maker's stored ids are its meshes' rows on the shared root, written by each mesh's primary:
-        // held in memory here, never written again by this admin. A mesh keeps its id through a
-        // recovery, and an admin that deploys that mesh's births launches them with it.
+        // held in this admin's topology view (the one map of mesh ids, the last held winning), never
+        // written again by this admin. A mesh keeps its id through a recovery, and an admin that
+        // deploys that mesh's births launches them with it.
         for m in &read.stored {
-            if let Some(id) = &m.mesh_id {
-                self.records.meshes.lock().unwrap().entry(m.mesh.clone()).or_insert_with(|| id.clone());
-            }
+            channels.topology_view().digest_view.hold_mesh_id(&m.mesh, m.mesh_id.as_ref());
         }
-        // So are the ids the mesh topologies it installed name beside each mesh's name: a launched admin
-        // holds its meshes' ids from this hydration sync, never from the Build records (Q227).
+        // So are the ids the mesh topologies it installed name beside each mesh's name, after them: a
+        // launched admin holds its meshes' ids from this hydration sync, never from the Build records
+        // (Q227).
         for m in &read.fulls {
-            if let Some(id) = &m.mesh_id {
-                self.records.meshes.lock().unwrap().entry(m.mesh.clone()).or_insert_with(|| id.clone());
-            }
+            channels.topology_view().digest_view.hold_mesh_id(&m.mesh, m.mesh_id.as_ref());
         }
         // The mesh exists when the maker names another birth its primary, though its answer lists none
         // of the mesh's nodes (a maker that has published no aggregate of its own mesh yet answers it

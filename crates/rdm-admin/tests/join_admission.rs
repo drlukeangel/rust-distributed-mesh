@@ -546,7 +546,7 @@ fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
         let store = std::env::temp_dir().join(format!("join-atlas-{}", NodeId::mint()));
         std::fs::create_dir_all(&store).unwrap();
         let writer = rdm_admin::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &NodeId::mint(), &IncarnationId::mint(), &rdm_transport::clock::RafkaTime::unadopted());
-        let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&rdm_admin::store_root::StoreRoot::at(&store), &writer).await.unwrap());
+        let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&rdm_admin::store_root::StoreRoot::at(&store).unwrap(), &writer).await.unwrap());
         let row = rdm_node::nodes_storage::fixture_record(&rdm_core::PathName::new(dep.path.clone(), dep.name.clone()).unwrap(), &dep.r#type, dep.node_id.clone(), rdm_core::IncarnationId::mint(), rdm_admin::model::NodeStatus::Leaving);
         storage.put_node(&row).await.unwrap();
         let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");

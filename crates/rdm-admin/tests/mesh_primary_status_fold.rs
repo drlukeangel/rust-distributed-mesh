@@ -82,7 +82,7 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     let other_node = before_view.nodes.iter().find(|n| n.location() == rdm_core::PathName::new("mesh1.node", "2").unwrap()).unwrap();
     let other = (other_node.node_id.clone(), other_node.incarnation_id.clone().unwrap());
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
-    let root = rdm_admin::store_root::StoreRoot::at(&dir);
+    let root = rdm_admin::store_root::StoreRoot::at(&dir).unwrap();
     let a = stores(&root, &IncarnationId::mint()).await;
     { let mut r = a.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.state = MeshState::Ready; a.meshes.put_mesh(&r).await.unwrap(); }
     { let mut r = a.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), state: rdm_admin::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.state = rdm_admin::fabric_state::FabricState::Ready; a.fabric.put_fabric(&r).await.unwrap(); }

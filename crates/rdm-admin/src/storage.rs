@@ -381,7 +381,7 @@ mod tests {
     async fn the_meshes_store_line_is_frozen_byte_for_byte() {
         let d = crate::test_support::tempdir("meshes-store-layout");
         let writer = crate::store_log::LogWriter::mint();
-        let s = FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d), &writer).await.unwrap();
+        let s = FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d).unwrap(), &writer).await.unwrap();
         let mesh_id = MeshId::parse(&rdm_core::fixture_crockford60("mesh-1")).unwrap();
         s.put_mesh(&MeshRecord::new(mesh_id.clone(), "mesh1")).await.unwrap();
         let file = d.join(crate::store_root::MESHES_FILE);
@@ -458,7 +458,7 @@ mod tests {
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
         check(&mem.0, &mem.1, &mem.2, true).await;
         let connection_writer = crate::store_log::LogWriter::mint();
-        let (root, w): (_, IncarnationId) = (crate::store_root::StoreRoot::at(&d.join("root")), IncarnationId::mint());
+        let (root, w): (_, IncarnationId) = (crate::store_root::StoreRoot::at(&d.join("root")).unwrap(), IncarnationId::mint());
         let writer = || crate::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &crate::model::NodeId::mint(), &w, &rdm_transport::clock::RafkaTime::unadopted());
         check(&FileMeshStorage::open(&root, &writer()).await.unwrap(), &FileNodesStorage::open(&root, &writer()).await.unwrap(), &FileConnectionsStorage::open(&root, &connection_writer).await.unwrap(), true).await;
         let (m, n, c) = (FileMeshStorage::open(&root, &writer()).await.unwrap(), FileNodesStorage::open(&root, &writer()).await.unwrap(), FileConnectionsStorage::open(&root, &connection_writer).await.unwrap());
@@ -528,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn a_nodes_name_is_read_from_the_live_records_and_a_delete_frees_it() {
         let d = crate::test_support::tempdir("node-names");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let file = FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let mem = MemoryNodesStorage::default();
         for n in [&file as &dyn NodesStorage, &mem as &dyn NodesStorage] {
@@ -600,7 +600,7 @@ mod tests {
     async fn a_recreated_mesh_takes_its_names_over_the_dead_ones() {
         use crate::node_rows::RecordAt as _;
         let d = crate::test_support::tempdir("recreated-mesh");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let w = crate::store_log::LogWriter::mint();
         let (meshes, nodes) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&root, &w).await.unwrap());
         let admin: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
@@ -716,7 +716,7 @@ mod tests {
             assert_eq!(m.mesh(&first).await.unwrap(), Some(dead(&first)), "{store}: the deleted mesh's record stands, read by id");
         };
         check(&MemoryMeshStorage::default(), "memory").await;
-        check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &crate::store_log::LogWriter::mint()).await.unwrap(), "file").await;
+        check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")).unwrap(), &crate::store_log::LogWriter::mint()).await.unwrap(), "file").await;
         // The name is the records' (node-identity-and-state.md: the fabric-primary checks a mesh's name
         // against its records), never a lock: the file store's root holds no locks/name/.
         let names = d.join("root").join("locks").join("name");

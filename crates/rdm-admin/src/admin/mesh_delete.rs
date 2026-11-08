@@ -87,7 +87,7 @@ impl AdminRunner {
         match crate::mesh_delete::owner_resume(&steps, &outer.to_string()) {
             crate::mesh_delete::OwnerResume::Left => {
                 // Resumed after the departure was recorded: the receipt is the record.
-                self.forget_mesh_id(mesh);
+                self.forget_mesh_id(mesh, mesh_id);
                 return Ok(());
             }
             crate::mesh_delete::OwnerResume::Deleted => {
@@ -619,21 +619,21 @@ impl AdminRunner {
         tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.step, receipts = all.receipts.len(), roster = all.roster.len(), manifest = ?reference)
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
         self.digest_view.mesh_left(mesh, build_id.as_str(), self.lifecycle_events.now_rafka_ms());
-        self.forget_mesh_id(mesh);
+        self.forget_mesh_id(mesh, mesh_id);
         self.refresh_view().await;
         Ok(())
     }
 
     /// A mesh that has left keeps no id here: the MeshLeft receipt is the end of that mesh, and a
-    /// mesh of the same name created after it is a new mesh with a new id. The id is dropped at the
-    /// receipt, never left for a later sweep to find the mesh without a member.
-    fn forget_mesh_id(&self, mesh: &str) {
-        let forgot = self.records.meshes.lock().unwrap().remove(mesh);
-        if let Some(id) = forgot {
+    /// mesh of the same name created after it is a new mesh with a new id. The left mesh's exact id is
+    /// dropped from the topology view at the receipt, never left for a later sweep to find the mesh
+    /// without a member; a name the view already holds under the new mesh's id keeps it.
+    fn forget_mesh_id(&self, mesh: &str, mesh_id: &MeshId) {
+        if self.digest_view.forget_mesh_id(mesh, mesh_id) {
             // The projection reads the mesh ids held: the view's rebuild is due (Q254).
             self.records.inputs_moved();
-            self.records.deleted_meshes_forget(&id);
         }
+        self.records.deleted_meshes_forget(mesh_id);
     }
 
     /// `DeleteMesh` at the leaving mesh's primary: admit it and run the member workflows.
@@ -644,7 +644,7 @@ impl AdminRunner {
         let Some(me) = view.own(&self.node_id).cloned() else {
             return rdm_core::reply::status::not_ready(format!("{} holds no view of itself yet; delete-mesh for {mesh_id} is refused", self.node_id));
         };
-        let held = self.records.meshes.lock().unwrap().get(&me.mesh).cloned().or_else(|| view.meshes.iter().find(|m| m.name == me.mesh).and_then(|m| m.id.clone()));
+        let held = self.digest_view.mesh_id_of(&me.mesh).or_else(|| view.meshes.iter().find(|m| m.name == me.mesh).and_then(|m| m.id.clone()));
         match held {
             Some(h) if &h != mesh_id => return rdm_core::reply::status::rejected_stale_mesh(h),
             None => return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("an admin of the mesh {mesh_id}") }),
@@ -916,7 +916,7 @@ impl AdminRunner {
                 match self.builds.read_build(&build).await {
                     Ok(b) => {
                         // The final primary is the mesh's one node-admin its records hold and no event proves exited.
-                        let mesh = self.records.meshes.lock().unwrap().iter().find(|(_, id)| *id == mesh_id).map(|(m, _)| m.clone());
+                        let mesh = self.digest_view.mesh_ids().into_iter().find(|(_, id)| id == mesh_id).map(|(m, _)| m);
                         let roster = match &mesh {
                             Some(m) => self.stored_roster(m, mesh_id, &b.steps).await.unwrap_or_default(),
                             None => Vec::new(),
@@ -1271,10 +1271,10 @@ mod tests {
             .unwrap();
 
         // 1. `delete_mesh` resumes after `MeshDeleted` completion (`OwnerResume::Deleted`) and returns `Ok(())`.
-        records.meshes.lock().unwrap().insert("mesh2".into(), mesh2_id.clone());
+        runner.digest_view.hold_mesh_id("mesh2", Some(&mesh2_id));
         assert_eq!(runner.delete_mesh(&build_id, "mesh2", &mesh2_id).await, Ok(()));
 
-        // 2. `mesh_left_after_delete` records `MeshLeft` and drops `mesh2` from `records.meshes` once the final
+        // 2. `mesh_left_after_delete` records `MeshLeft` and drops mesh2's id from the topology view once the final
         //    primary's `TerminateRuntime` receipt is present on its `node.delete` Build.
         let del_op = rdm_core::OperationId::node("node.delete", &final_id);
         let term = TerminalReceipt {
@@ -1309,12 +1309,12 @@ mod tests {
         );
         runner.mesh_left_after_delete(&op).await;
         assert_eq!(runner.mesh_left_in(&op, &build_id, &outer, &mesh2_id).await, Ok("already-applied"));
-        assert!(!records.meshes.lock().unwrap().contains_key("mesh2"));
+        assert_eq!(runner.digest_view.mesh_id_of("mesh2"), None, "the left mesh keeps no id");
 
         // 3. `delete_mesh` also returns `Ok(())` when `OwnerResume::Left` is reached.
-        records.meshes.lock().unwrap().insert("mesh2".into(), mesh2_id.clone());
+        runner.digest_view.hold_mesh_id("mesh2", Some(&mesh2_id));
         assert_eq!(runner.delete_mesh(&build_id, "mesh2", &mesh2_id).await, Ok(()));
-        assert!(!records.meshes.lock().unwrap().contains_key("mesh2"));
+        assert_eq!(runner.digest_view.mesh_id_of("mesh2"), None, "the left mesh keeps no id");
 
         ep.close().await;
         let _ = std::fs::remove_dir_all(&dir);

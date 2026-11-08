@@ -85,7 +85,7 @@ impl DurableNode {
         let resolver = Arc::new(StaticResolver::new());
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(
             FileConnectionsStorage::open(
-                &StoreRoot::at(dir),
+                &StoreRoot::at(dir).unwrap(),
                 &rdm_node::store_log::LogWriter::new(&rdm_core::FabricId::mint(), &birth.node_id, &birth.incarnation, &rdm_transport::clock::RafkaTime::unadopted()),
             )
             .await

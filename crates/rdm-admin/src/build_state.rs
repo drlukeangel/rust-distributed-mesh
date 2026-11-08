@@ -1621,7 +1621,7 @@ mod store_layout_cells {
     async fn the_store_layout_is_frozen_byte_for_byte() {
         let d = std::env::temp_dir().join(format!("rdm-store-layout-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&d).unwrap();
-        let root = crate::store_root::StoreRoot::at(&d);
+        let root = crate::store_root::StoreRoot::at(&d).unwrap();
         let events: Arc<dyn EventsStorage> = Arc::new(crate::events_storage::MemoryEventsStorage::new());
         let writer = crate::store_log::LogWriter::mint();
         let j = FileJournal::open_on_root(&root, &writer, events).await.unwrap();

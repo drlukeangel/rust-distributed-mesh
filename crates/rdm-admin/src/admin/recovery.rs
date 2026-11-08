@@ -444,18 +444,48 @@ pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashS
 }
 
 /// `n`'s exact birth written dead by its mesh-primary (node-recovery.md step 3, Q393): an investigation
-/// run for `reason` concluded in failure. Held in this admin's view (`Records::offline`, shown `Dead`)
-/// and on the node's record ([`crate::node_rows::NodeRows::investigated`], on its own task), the reason
-/// kept for its re-create's event; the tick's recovery takes it at once ([`recovery_due`]).
-pub(crate) fn write_dead(records: &Records, recovery: &RecoverySubmitter, rows: Option<Arc<crate::node_rows::NodeRows>>, gate: &crate::stop_gate::StopGate, n: &Node, reason: crate::node_investigation::Reason) {
-    let Some(incarnation) = n.incarnation_id.clone() else { return };
-    recovery.reasons.lock().unwrap().insert((n.node_id.clone(), incarnation.clone()), reason);
-    if records.offline.lock().unwrap().insert((n.node_id.clone(), incarnation)) {
-        records.inputs_moved();
-    }
-    if let Some(rows) = rows {
-        let n = n.clone();
-        tokio::spawn(gate.until_stopped(async move { let _ = rows.investigated(&n, NodeStatus::Dead).await; }));
+/// run for `reason` concluded in failure. The node's record is written first
+/// ([`crate::node_rows::NodeRows::investigated`]) under one `Send` (Q344: the only retry); only once the
+/// store answers it `Ok` is the birth held in this admin's view (`Records::offline`, shown `Dead`) with
+/// the reason kept for its re-create's event, and the tick's recovery takes it ([`recovery_due`]). A
+/// write the store refuses by name, or one whose `Send` is spent, holds no mark: the view never shows
+/// a status the record does not hold, and the caller has the birth investigated again
+/// ([`crate::offline::OfflineTickle::unsettle`]). One `rdm.node_admin.node.update.via-dead-record` span
+/// names how the write ended. Whether the mark is held.
+pub(crate) async fn write_dead(records: &Records, reasons: &Mutex<HashMap<(NodeId, IncarnationId), crate::node_investigation::Reason>>, rows: Option<&crate::node_rows::NodeRows>, n: &Node, reason: crate::node_investigation::Reason) -> bool {
+    use crate::node_rows::RowRefused;
+    use rdm_transport::client::SendEnd;
+    let Some(incarnation) = n.incarnation_id.clone() else { return false };
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.update.via-dead-record",
+        node_id = %n.node_id, node_path = %n.path, node_name = %n.name, incarnation_id = %incarnation.as_str(), reason = reason.as_str(),
+        outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
+    );
+    let written = match rows {
+        None => Err(("no-rows-writer", "this admin holds no writer of node records: the dead state is not written".to_string())),
+        Some(rows) => {
+            let send = rdm_transport::client::Send::default();
+            let ran = tracing::Instrument::instrument(send.run(|e: &RowRefused| !matches!(e, RowRefused::Unwritten(_)), || rows.investigated(n, NodeStatus::Dead)), span.clone()).await;
+            ran.map_err(|end| match &end {
+                SendEnd::Answered(e) => (e.outcome(), end.to_string()),
+                SendEnd::Spent { .. } => ("send-spent", end.to_string()),
+            })
+        }
+    };
+    match written {
+        Ok(_) => {
+            span.record("outcome", "written");
+            reasons.lock().unwrap().insert((n.node_id.clone(), incarnation.clone()), reason);
+            if records.offline.lock().unwrap().insert((n.node_id.clone(), incarnation)) {
+                records.inputs_moved();
+            }
+            true
+        }
+        Err((outcome, detail)) => {
+            span.record("outcome", outcome).record("detail", detail.as_str());
+            span.in_scope(|| tracing::info!(node_id = %n.node_id, outcome, "the dead state was not written on the node's record: the birth is not marked dead, and it is investigated again"));
+            false
+        }
     }
 }
 

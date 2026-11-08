@@ -299,13 +299,12 @@ pub(crate) fn local_now_ms() -> u64 {
 }
 
 
-/// What this admin's pipelines published and removed, and the meshes its
-/// Builds created: merged into the topology projection.
+/// What this admin's pipelines published and removed: merged into the topology projection. The id of
+/// each mesh it holds is its topology view's ([`Records::mesh_id_of`]), held nowhere else.
 #[derive(Default)]
 pub struct Records {
     pub(crate) nodes: Mutex<BTreeMap<PathName, Node>>,
     pub(crate) removed: Mutex<std::collections::HashSet<(PathName, Option<IncarnationId>)>>,
-    pub(crate) meshes: Mutex<BTreeMap<String, MeshId>>,
     /// nodes.storage on the fabric's shared store root: the durable runtime rows a birth this admin
     /// never heard is adopted from, and the node rows the view reads a birth's name from when the
     /// birth does not publish it ([`RowNames`]).
@@ -638,6 +637,18 @@ impl Records {
     /// The topology view whose deleted births leave these records (set once, at start).
     pub fn set_digest_view(&self, digest_view: DigestView) {
         let _ = self.digest_view.set(digest_view);
+    }
+
+    /// The id of `mesh` this admin holds: its topology view's one map of mesh ids
+    /// ([`DigestView::mesh_id_of`]), the last id held for the name winning (a later mesh of the same
+    /// name has another). `None` before the view is set.
+    pub(crate) fn mesh_id_of(&self, mesh: &str) -> Option<MeshId> {
+        self.digest_view.get()?.mesh_id_of(mesh)
+    }
+
+    /// The id of every mesh this admin's topology view holds, by the mesh's name.
+    pub(crate) fn mesh_ids(&self) -> BTreeMap<String, MeshId> {
+        self.digest_view.get().map(DigestView::mesh_ids).unwrap_or_default()
     }
 
     /// Every birth `digest_view` holds deleted leaves these records, one part of the view's read phase

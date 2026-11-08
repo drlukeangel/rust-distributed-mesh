@@ -817,6 +817,14 @@ impl OfflineTickle {
         tickle
     }
 
+    /// `id`'s dead state was not written on its record ([`crate::admin::write_dead`]): it is not held
+    /// written dead, and its tickle has not settled, so the next pass investigates it again while it
+    /// stays silent (its window keeps running from when it was first seen).
+    pub(crate) fn unsettle(&mut self, id: &str) {
+        self.offline.remove(id);
+        self.settled.remove(id);
+    }
+
     /// Is this node written dead?
     #[cfg(test)]
     pub(crate) fn is_offline(&self, id: &str) -> bool {

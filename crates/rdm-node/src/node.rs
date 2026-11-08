@@ -1507,12 +1507,14 @@ fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, writ
     }
 }
 
-/// Write the state `declared` on this node's own record (Q356), through `writer`, before the declaration
-/// that reports it is sent. A write the store refuses is named on the writer's span; the declaration is
+/// Write the state `declared` on this node's own record (Q356), through `writer` under one `Send`
+/// ([`crate::node_records::NodePropertyWriter::write_status`]), before the declaration that reports it
+/// is sent. A refusal, or a `Send` spent, is named on the writer's `via-status` span; the declaration is
 /// still owed.
 pub async fn write_own_state(writer: &crate::node_records::NodePropertyWriter, declared: rdm_core::status::NodeState) {
-    let Some(initial) = writer.start_record() else { return };
-    let _ = writer.state(initial, status_of_declared(declared)).await;
+    if let Some(Err(end)) = writer.write_status(status_of_declared(declared)).await {
+        tracing::info!(declared = ?declared, %end, "the declared state is not written on this node's record; its declaration is still owed");
+    }
 }
 
 /// The record state of a declared state.

@@ -357,17 +357,20 @@ impl CurrentRuntimeAdoption {
         self.fact.as_ref().expect("AdoptCurrentRuntime set the fact")
     }
 
-    /// `PublishRuntimeFactAndCurrentRuntimeMetadata`: `publish` puts the fact
-    /// and this data dir into the projection the topology view publishes.
-    /// Its receipt is written on the blocking pool (`blocking::blocking_io`).
+    /// `PublishRuntimeFactAndCurrentRuntimeMetadata`: the fact is written as this data dir's runtime
+    /// record, and only then `publish` puts the fact and this data dir into the projection the topology
+    /// view publishes; a record that cannot be written fails the step by name and publishes nothing.
+    /// Its record and receipt are written on the blocking pool (`blocking::blocking_io`).
     pub async fn publish(self, publish: impl FnOnce(&RuntimeFact, String) + Send + 'static) -> Result<RuntimeFact, PipelineError> {
         crate::blocking::blocking_io(move || self.publish_on_disk(publish)).await
     }
 
     fn publish_on_disk(mut self, publish: impl FnOnce(&RuntimeFact, String)) -> Result<RuntimeFact, PipelineError> {
-        let (f, dir) = (self.fact().clone(), self.data_dir.display().to_string());
-        let _ = f.write_record(&self.data_dir);
-        self.step(AdoptStep::PublishRuntimeFactAndCurrentRuntimeMetadata, |_| {
+        let (f, dir, data_dir) = (self.fact().clone(), self.data_dir.display().to_string(), self.data_dir.clone());
+        // A fact is published only once it is recorded: an unwritten record fails the step by name,
+        // and nothing of it reaches the topology view or a Complete receipt.
+        self.step(AdoptStep::PublishRuntimeFactAndCurrentRuntimeMetadata, |at| {
+            f.write_record(&data_dir).map_err(|e| format!("path {:?}, name {:?}: the runtime fact is not recorded in {dir}, so it is not published: {e}", at.path, at.name))?;
             publish(&f, dir.clone());
             Ok((None, RuntimeEvidence { data_dir: Some(dir.clone()), ..RuntimeEvidence::of(&f) }))
         })?;
@@ -2816,6 +2819,27 @@ mod tests {
         std::fs::create_dir_all(dir.join(ADOPTION_RECEIPTS)).unwrap();
         let err = CurrentRuntimeAdoption::begin(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()).expect_err("an unwritten receipt is a failed step");
         assert!(err.reason.contains(ADOPTION_RECEIPTS), "{err}");
+    }
+
+    /// CONTRACT: docs/architecture/node-identity-and-state.md (records and hydration) and Q387: a birth's
+    /// runtime is taken from "this node's own launch" and recorded in its data dir. A Day-0 adoption
+    /// whose runtime record cannot be written fails its publication step by name, and publishes
+    /// nothing. Must NOT happen: the fact in the topology view and a `Complete` receipt over a data dir
+    /// that holds no runtime record, which the next start refuses.
+    #[tokio::test]
+    async fn an_adoption_whose_runtime_record_cannot_be_written_fails_its_step_and_publishes_nothing() {
+        let dir = tempdir("adopt-unrecorded");
+        let node = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
+        let a = CurrentRuntimeAdoption::begin(&node, &dir, &DeploymentId::mint()).await.unwrap();
+        // The record's path is a directory: the rename over it fails.
+        std::fs::create_dir_all(dir.join(rdm_core::runtime::RUNTIME_FILE).join("held")).unwrap();
+        let published = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let into = published.clone();
+        let err = a.publish(move |_, _| *into.lock().unwrap() = true).await.expect_err("an unrecorded runtime fails its step");
+        assert_eq!(err.step, AdoptStep::PublishRuntimeFactAndCurrentRuntimeMetadata.name(), "{err}");
+        assert!(err.reason.contains(rdm_core::runtime::RUNTIME_FILE), "the error names the record: {err}");
+        assert!(!*published.lock().unwrap(), "nothing is published of a fact that is not recorded");
+        assert_eq!(adoption_missing(&dir).await.unwrap(), vec!["PublishRuntimeFactAndCurrentRuntimeMetadata"], "the step's receipt is not Complete");
     }
 
     /// CONTRACT: the Ready gate reads the adoption receipts on the blocking pool.

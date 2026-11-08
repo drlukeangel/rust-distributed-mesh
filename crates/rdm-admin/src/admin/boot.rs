@@ -1355,16 +1355,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             if cfg.launch.is_none() {
                                 if let Some(named) = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology) {
                                     for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.is_deleted() && named.meshes.contains_key(&m.name)) {
-                                        records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
-                                        records.inputs_moved();
+                                        super::rows_writer::hold_mesh_id(&records, &m.name, &m.mesh_id);
                                     }
                                 }
                             }
-                                records
-                                    .meshes
-                                    .lock()
-                                    .unwrap()
-                                    .insert(cfg.mesh.clone(), mesh_id.clone());
+                                topology_view.digest_view.hold_mesh_id(&cfg.mesh, Some(&mesh_id));
                                 let digest_view = topology_view.digest_view.clone();
                                 let node_rpc_feed = node_rpc.feed(&digest_view, &node_id.to_string());
                                 let control = Arc::new(
@@ -1469,7 +1464,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // An owed push of a node's row up to the fabric-primary reads the view again on each send (Q235 P3).
                                 let _ = configs_slot.set(Arc::new(configs));
                                 {
-                                    let records_for_ids = records.clone();
+                                    let view_for_ids = digest_view.clone();
                                     let _ = status_service.set(Arc::new(crate::status_rpc::StatusService {
                                     topology_view: Some(topology_view.clone()),
                                     declaration_seam: wiring.declaration_seam.clone(),
@@ -1485,7 +1480,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     fabric_id: cfg.fabric_id.clone(),
                                     topology: control.topology.clone(),
                                     declared: records.declared.clone(),
-                                    mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
+                                    mesh_ids: Arc::new(move || view_for_ids.mesh_ids()),
                                     durable: records.durable.clone(),
                                     commands: commands.clone(),
                                     own: own_commands.clone(),
@@ -1988,7 +1983,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     let (held_digest_view, held_fabric, held_me, held_ids) = (held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
                                     Box::pin(async move {
                                         // The id this admin holds for each mesh it knows, a deleted mesh's none.
-                                        let mut ids = held_ids.meshes.lock().unwrap().clone();
+                                        let mut ids = held_digest_view.mesh_ids();
                                         let deleted = held_ids.deleted_meshes.lock().unwrap().clone();
                                         ids.retain(|_, id| !deleted.contains(id));
                                         let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = BTreeMap::new();
@@ -2464,8 +2459,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let d = digest.lock().unwrap();
                                                     (d.node.location(), d.node.mesh.clone(), d.status)
                                                 };
-                                                let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
-                                                let own_mesh_id = records.meshes.lock().unwrap().get(&mesh).cloned();
+                                                let mesh_ids: BTreeMap<String, String> = digest_view.mesh_ids().into_iter().map(|(k, v)| (k, v.to_string())).collect();
+                                                let own_mesh_id = digest_view.mesh_id_of(&mesh);
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
                                                 // The instant this admin's own MeshStatus holds for each state: what its publisher sent.
                                                 let own_mesh_changed_at = |state| {
@@ -2596,6 +2591,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             // The births whose inspection or submitted recovery is in flight. The tick never waits
                                             // on it.
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
+                                            // The births a self-heal's task found unanswered whose dead state was not written
+                                            // on their record ([`write_dead`]): investigated again from the next pass.
+                                            let unwritten_dead: Arc<Mutex<HashSet<String>>> = Arc::default();
                                             let mut tickle = crate::offline::OfflineTickle::observed_by(me_id.to_string(), stop.clone());
                                             let floor = rdm_core::cadence::staleness_floor();
                                             let mut heard_changes = recovery.digest_view.heard_changes();
@@ -2604,6 +2602,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
                                                 let turn = stop.turn("offline-tickle").await;
                                                 heard_changes.borrow_and_update();
+                                                for id in std::mem::take(&mut *unwritten_dead.lock().unwrap()) {
+                                                    tickle.unsettle(&id);
+                                                }
                                                 // The births written dead are shown `Dead` by the projection: a change of
                                                 // them this tick makes the view's rebuild due where it is made (Q254).
                                                 let offline_before = records.offline.lock().unwrap().clone();
@@ -2732,10 +2733,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 // An investigation concluded in failure: the birth is written dead on its record and
-                                                // in this admin's view, and its recovery follows at once (node-recovery.md step 3).
-                                                for id in &report.offline {
-                                                    if let (Some(n), Some((reason, _))) = (watched.get(id), listed.get(id).copied()) {
-                                                        write_dead(&records, &recovery, rows.clone(), &stop, n, reason);
+                                                // then in this admin's view, and its recovery follows at once (node-recovery.md step
+                                                // 3). A record the write left unwritten holds no mark: the birth is investigated again.
+                                                let written = futures_util::future::join_all(report.offline.iter().filter_map(|id| {
+                                                    let (n, (reason, _)) = (watched.get(id)?, listed.get(id).copied()?);
+                                                    let (records, reasons, rows) = (&records, &recovery.reasons, rows.as_deref());
+                                                    Some(async move { (id, write_dead(records, reasons, rows, n, reason).await) })
+                                                }))
+                                                .await;
+                                                for (id, marked) in written {
+                                                    if !marked {
+                                                        tickle.unsettle(id);
                                                     }
                                                 }
                                                 // A self-heal's `running` is commanded back through node.mesh.join and its
@@ -2745,7 +2753,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     for (id, start) in report.rejoin.iter().map(|id| (id, false)).chain(report.start.iter().map(|id| (id, true))) {
                                                         let (Some(n), Some((reason, status))) = (watched.get(id).cloned(), listed.get(id).copied()) else { continue };
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
-                                                        let (heard_again, records, recovery, rows, gate, observer) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), stop.clone(), me_id.to_string());
+                                                        let (heard_again, records, recovery, rows, observer, unwritten_dead) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), me_id.to_string(), unwritten_dead.clone());
                                                         tokio::spawn(stop.until_stopped(async move {
                                                             use crate::heard_again::SelfHealEnd;
                                                             use crate::wiring::NodeInvestigatedVerdict as V;
@@ -2761,7 +2769,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 let verdict = if start { "os-stopped" } else { "running" };
                                                                 tracing::info_span!("rdm.node_admin.node.update.via-dead", node_id = %n.node_id, node_path = %n.path, node_name = %n.name, verdict, detail = %how, reason = reason.as_str(), trigger = reason.trigger(), observer = %observer, "otel.kind" = "internal")
                                                                     .in_scope(|| tracing::info!(node_id = %n.node_id, verdict, "the self-heal's command went unanswered to the end of its attempts: the birth is written dead, and its recovery follows at once"));
-                                                                write_dead(&records, &recovery, rows, &gate, &n, reason);
+                                                                if !write_dead(&records, &recovery.reasons, rows.as_deref(), &n, reason).await {
+                                                                    unwritten_dead.lock().unwrap().insert(n.node_id.to_string());
+                                                                }
                                                             }
                                                         }));
                                                     }
@@ -3100,12 +3110,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // that has no member left keeps no recorded id (a name added again is a new mesh).
                                                 if let Some(Some(b)) = current {
                                                     topology_view.digest_view.set_accepted_meshes(b.topology.mesh_names());
-                                                    let forgot = {
-                                                        let mut meshes = records.meshes.lock().unwrap();
-                                                        let before = meshes.len();
-                                                        meshes.retain(|name, _| b.topology.meshes.contains_key(name) || t.births().any(|n| &n.mesh == name));
-                                                        meshes.len() < before
-                                                    };
+                                                    let mut forgot = false;
+                                                    for (name, id) in topology_view.digest_view.mesh_ids() {
+                                                        if !b.topology.meshes.contains_key(&name) && !t.births().any(|n| n.mesh == name) {
+                                                            forgot |= topology_view.digest_view.forget_mesh_id(&name, &id);
+                                                        }
+                                                    }
                                                     if forgot {
                                                         records.inputs_moved();
                                                     }

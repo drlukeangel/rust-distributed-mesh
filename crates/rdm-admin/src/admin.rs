@@ -315,7 +315,7 @@ mod tests {
         #[cfg(feature = "file-backend")]
         {
             let d = crate::test_support::tempdir(name);
-            let root = crate::store_root::StoreRoot::at(&d.join("root"));
+            let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
             stores.push(("file", Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap())));
         }
         let _ = name;
@@ -567,7 +567,7 @@ mod tests {
     #[tokio::test]
     async fn a_meshs_mesh_record_is_written_by_its_primary_alone_on_the_shared_root() {
         let d = crate::test_support::tempdir("mesh-record-ladder");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let nodes = Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap()), Default::default()));
         let (p_meshes, q_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
             (Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap()));
@@ -602,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_mesh_of_a_live_name_is_refused_by_name_and_writes_nothing() {
         let d = crate::test_support::tempdir("mesh-row-live");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let (a_meshes, b_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
             (Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap()));
         let (first, second) = (mesh_id("mesh2"), MeshId::mint());
@@ -642,6 +642,7 @@ mod tests {
     async fn create_mesh_writes_the_mesh_record_first_and_a_refused_name_holds_nothing_of_the_mesh() {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let records = Records::default();
+        records.set_digest_view(DigestView::default());
         let holder = MeshId::mint();
         let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), state: rdm_core::status::MeshState::Pending };
         assert_eq!(crate::storage::write_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshWritten::Written)));
@@ -652,13 +653,13 @@ mod tests {
         let minted = create_mesh(&records, &meshes, "100000000000", "mesh2", &carried).await.expect("a free name is written");
         assert_eq!(minted, carried, "the row is written for the id the operation carries");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Pending }), "mesh2's row is written under the carried id");
-        assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the written row's id is what the mesh's launches carry");
+        assert_eq!(records.mesh_id_of("mesh2").as_ref(), Some(&minted), "the written row's id is what the mesh's launches carry");
         assert_eq!(create_mesh(&records, &meshes, "100000000000", "mesh2", &carried).await, Ok(minted.clone()), "a re-run writes the same id");
         let refused = create_mesh(&records, &meshes, "100000000000", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
         let refused = refused.to_string();
         assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused write wrote nothing: mesh3's row is the holder's");
-        assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose row was refused: no launch of it can carry one");
+        assert_eq!(records.mesh_id_of("mesh3").as_ref(), None, "no id is held for a mesh whose row was refused: no launch of it can carry one");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String, String)> = spans
             .iter()
@@ -667,6 +668,32 @@ mod tests {
         let row = |mesh: &str, outcome: &str, holder: &str| ("100000000000".to_string(), mesh.to_string(), outcome.to_string(), holder.to_string());
         assert_eq!(said, vec![row("mesh2", "row-written", ""), row("mesh2", "row-held-by-mesh", ""), row("mesh3", "name-held", &holder.to_string())], "{spans:?}");
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
+    }
+
+    /// CONTRACT: `DigestView.mesh_ids`' doc ("A later mesh of the same name has another") and
+    /// `mesh_id_of`'s doc (the view, then the mesh's row): one id per mesh name, the view's, the last
+    /// held winning. An admin outside mesh2 that held mesh2's first id and never ran mesh2's delete
+    /// answers the id of the mesh created again under that name once it holds the new mesh's topology,
+    /// in its id answer and in its projection. Must NOT happen: the deleted mesh's id answered for the
+    /// name, so the launches and rows it makes for mesh2 name a mesh that is gone.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_mesh_created_again_under_a_new_id_is_answered_by_that_id_at_an_admin_outside_it() {
+        let digest_view = DigestView::default();
+        let records = Records::default();
+        records.set_digest_view(digest_view.clone());
+        let (first, second) = (MeshId::mint(), MeshId::mint());
+        // mesh2's first id, held as its hydration sync or its create held it, and its member heard.
+        crate::admin::rows_writer::hold_mesh_id(&records, "mesh2", &first);
+        digest_view.hold_mesh_id("mesh2", Some(&first));
+        assert!(digest_view.record(digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready)));
+        // mesh2 is deleted and created again under its name: this admin, outside it, runs no delete,
+        // and installs the new mesh's topology, which names the new id.
+        digest_view.hold_mesh_id("mesh2", Some(&second));
+        let topology = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records));
+        assert_eq!(topology.read().await.meshes.iter().find(|m| m.name == "mesh2").and_then(|m| m.id.clone()), Some(second.clone()), "the projection lists mesh2 under its new id");
+        let rows = crate::storage::MemoryMeshStorage::default();
+        assert_eq!(crate::admin::runner::mesh_id_of(&records, &topology, &rows, "mesh2").await, Ok(Some(second.to_string())), "the id a launch or a hand-off of mesh2 names is the new mesh's");
     }
 
     /// CONTRACT (node-identity-and-state.md §2.7: "Who mints it. The Build that creates a mesh's first
@@ -694,11 +721,13 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-rerun");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let (first, successor) = (Records::default(), Records::default());
+        first.set_digest_view(DigestView::default());
+        successor.set_digest_view(DigestView::default());
         let written = create_mesh(&first, &meshes, "100000000000", first_mesh, first_id).await.expect("the first run writes mesh2's row at its free name");
         assert_eq!(&written, minted, "the first run writes with the Build's MeshId");
         let rerun = create_mesh(&successor, &meshes, "200000000000", successor_mesh, successor_id).await;
         assert_eq!(rerun, Ok(written.clone()), "the successor's re-run of the same Build's create-mesh writes with the same MeshId and finds its own row");
-        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(&written), "the successor's launches of mesh2 carry the id mesh2's row holds");
+        assert_eq!(successor.mesh_id_of("mesh2").as_ref(), Some(&written), "the successor's launches of mesh2 carry the id mesh2's row holds");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(written.clone()), "mesh2's row is the first run's");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
@@ -748,6 +777,8 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-receipt");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let (first, successor) = (Records::default(), Records::default());
+        first.set_digest_view(DigestView::default());
+        successor.set_digest_view(DigestView::default());
         create_mesh_step(&first, &meshes, &stepping(&builds, false), "100000000000", &build_id, &op).await.expect("the first run writes mesh2's row at its free name");
         create_mesh_step(&successor, &meshes, &stepping(&builds, true), "200000000000", &build_id, &op).await.expect("the successor's run of the same step");
         assert_eq!(
@@ -755,7 +786,7 @@ mod tests {
             vec![("Complete".to_string(), crate::build_state::StepOutcome::Complete, "100000000000".to_string())],
             "the step's event is written once, by the run that executed it"
         );
-        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(mesh_id), "the successor's launches of mesh2 carry the id the Build carries");
+        assert_eq!(successor.mesh_id_of("mesh2").as_ref(), Some(mesh_id), "the successor's launches of mesh2 carry the id the Build carries");
         let writes = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let written: Vec<(String, String)> = writes.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
         assert_eq!(written, vec![("100000000000".to_string(), "row-written".to_string())], "the successor makes no second write: {writes:?}");
@@ -783,9 +814,10 @@ mod tests {
         create_mesh(&Records::default(), &meshes, "100000000000", mesh, mesh_id).await.expect("the lost fabric-primary's row");
         assert_eq!(steps_of(&builds, &build_id, &op.key()).await, vec![], "the lost run left no step event");
         let successor = Records::default();
+        successor.set_digest_view(DigestView::default());
         create_mesh_step(&successor, &meshes, &stepping(&builds, true), "200000000000", &build_id, &op).await.expect("the uncertain step settles by its natural key");
         assert_eq!(steps_of(&builds, &build_id, &op.key()).await, vec![("Complete".to_string(), crate::build_state::StepOutcome::Complete, "200000000000".to_string())]);
-        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(mesh_id));
+        assert_eq!(successor.mesh_id_of("mesh2").as_ref(), Some(mesh_id));
         let writes = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let written: Vec<(String, String)> = writes.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
         assert_eq!(written, vec![("100000000000".to_string(), "row-written".to_string()), ("200000000000".to_string(), "row-held-by-mesh".to_string())], "{writes:?}");
@@ -809,6 +841,7 @@ mod tests {
         let holder = MeshId::mint();
         crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Pending }).await.unwrap().unwrap();
         let records = Records::default();
+        records.set_digest_view(DigestView::default());
         let refused = create_mesh_step(&records, &meshes, &stepping(&builds, false), "100000000000", &build_id, &op).await.expect_err("mesh2's name is held by another mesh");
         assert!(refused.contains("create-mesh:mesh2") && refused.contains(&holder.to_string()), "{refused}");
         let steps = steps_of(&builds, &build_id, &op.key()).await;
@@ -816,7 +849,7 @@ mod tests {
         let (step, outcome, writer) = &steps[0];
         assert_eq!((step.as_str(), writer.as_str()), ("ClaimMeshName", "100000000000"));
         assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason, .. } if reason.contains(&holder.to_string())), "the failed step names the holder: {outcome:?}");
-        assert_eq!(records.meshes.lock().unwrap().get("mesh2"), None, "no id is held for a mesh whose row was refused");
+        assert_eq!(records.mesh_id_of("mesh2").as_ref(), None, "no id is held for a mesh whose row was refused");
     }
 
     /// A Build store over `0` whose step events are refused: nothing else differs.
@@ -958,7 +991,7 @@ mod tests {
     #[tokio::test]
     async fn a_mesh_removed_and_created_again_writes_its_record_over_the_dead_row() {
         let d = crate::test_support::tempdir("mesh-row-dead");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let meshes: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let (removed, recreated) = (mesh_id("mesh2"), MeshId::mint());
@@ -1808,6 +1841,50 @@ mod tests {
         let not_primary = crate::node_rows::NodeRows::new(own.node.location(), own.node.node_id.clone(), view.clone(), storage.clone());
         assert!(matches!(not_primary.investigated(&member, Dead).await, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "only the record's writer writes it");
         assert_eq!(state().await, Ready);
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-recovery.md step 3 (Q393: the birth "is written `dead`"
+    /// on its record by its mesh-primary; Q344: one `Send` on a store's write): the mesh-primary marks a
+    /// birth `Dead` in its view only once the record write is answered `Ok`. A nodes.storage that refuses
+    /// every write to the end of the `Send` leaves the record at its status and the view with no `Dead`
+    /// mark and no recovery reason. Must NOT happen: a view that shows `Dead` over a record that does not
+    /// hold it.
+    // @feature: node-recovery
+    #[tokio::test(start_paused = true)]
+    async fn the_dead_mark_is_held_only_once_the_record_holds_dead() {
+        use crate::storage::NodesStorage as _;
+        use rdm_core::model::NodeStatus::*;
+        let digest_view = DigestView::default();
+        let me = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "200000000000");
+        let own = with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "300000000000");
+        for d in [&me, &own] {
+            digest_view.record((*d).clone());
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        for n in view.nodes.iter_mut().filter(|n| n.node_id == me.node.node_id) {
+            n.is_primary = true;
+        }
+        let view = Arc::new(RwLock::new(view));
+        let member = view.read().await.births().find(|n| n.node_id == own.node.node_id).cloned().expect("the node is in the view");
+        let birth = (member.node_id.clone(), member.incarnation_id.clone().unwrap());
+        let record = rdm_node::nodes_storage::fixture_record(&member.location(), "node", member.node_id.clone(), member.incarnation_id.clone().unwrap(), PendingReconnect);
+        // A store that refuses every write.
+        let refusing = Arc::new(crate::workflows::node_config_update::tests::RefusingNodesStorage(crate::storage::MemoryNodesStorage::default()));
+        refusing.0.put_node(&record).await.unwrap();
+        let rows = crate::node_rows::NodeRows::new(me.node.location(), me.node.node_id.clone(), view.clone(), refusing.clone());
+        let (records, reasons) = (Records::default(), Mutex::new(HashMap::new()));
+        let marked = write_dead(&records, &reasons, Some(&rows), &member, crate::node_investigation::Reason::SelfHeal).await;
+        assert!(!marked, "a record write refused to the end of its Send holds no mark");
+        assert!(!records.offline.lock().unwrap().contains(&birth), "the view shows no Dead the record does not hold");
+        assert!(reasons.lock().unwrap().is_empty(), "no recovery reason is kept for a birth not written dead");
+        assert_eq!(refusing.0.node(&member.node_id).await.unwrap().unwrap().record.state, PendingReconnect, "the record keeps its status");
+        // A store that takes the write: the record holds Dead, and then the view does.
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        storage.put_node(&record).await.unwrap();
+        let rows = crate::node_rows::NodeRows::new(me.node.location(), me.node.node_id.clone(), view.clone(), storage.clone());
+        assert!(write_dead(&records, &reasons, Some(&rows), &member, crate::node_investigation::Reason::SelfHeal).await, "the record write answered Ok holds the mark");
+        assert_eq!(storage.node(&member.node_id).await.unwrap().unwrap().record.state, Dead, "the record holds Dead");
+        assert!(records.offline.lock().unwrap().contains(&birth), "and the view shows it Dead");
     }
 
     /// CONTRACT (i151.s2; node-rpc.md §43, Q311: "a call whose attempts end unanswered starts node
@@ -2870,7 +2947,7 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_birth_is_listed_at_its_records_name() {
         let d = crate::test_support::tempdir("row-name-view");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let written = crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let digest_view = DigestView::default();
@@ -2921,7 +2998,7 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_birth_whose_row_cannot_be_read_is_not_listed_and_the_refusal_is_spanned() {
         let d = crate::test_support::tempdir("row-name-unreadable");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
         let digest_view = DigestView::default();
         let held = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);
@@ -3036,7 +3113,7 @@ mod tests {
         let records = Records::default();
         for (mesh, state) in [("mesh1", MeshState::Deleting), ("mesh2", MeshState::Deleted), ("mesh3", MeshState::Ready)] {
             assert!(digest_view.record(digest(PathName::new(format!("{mesh}.node-admin"), "1").unwrap(), mesh, "node-admin", rdm_core::model::NodeStatus::Ready)));
-            records.meshes.lock().unwrap().insert(mesh.into(), mesh_id(mesh));
+            digest_view.hold_mesh_id(mesh, Some(&mesh_id(mesh)));
             records.declared.lock().unwrap().meshes.insert(mesh_id(mesh), state);
         }
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
@@ -3060,7 +3137,7 @@ mod tests {
         let digest_view = DigestView::default();
         let records = Records::default();
         assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Pending, "a mesh this admin holds no state for is new: Pending");
-        records.meshes.lock().unwrap().insert("mesh2".into(), mesh_id("mesh2"));
+        digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
         let pending = Frame::MeshStatus { mesh: "mesh2".into(), status: "pending".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&pending, &fabric1()));
         records.declared.lock().unwrap().meshes.insert(mesh_id("mesh2"), MeshState::Ready);
@@ -3242,7 +3319,7 @@ mod tests {
     #[cfg(feature = "file-backend")]
     async fn renamed_twice(cell: &str) -> (std::path::PathBuf, MeshDigest, Arc<ProbedRows>, Arc<RwLock<Topology>>, Arc<Records>, DigestView) {
         let d = crate::test_support::tempdir(cell);
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let root = crate::store_root::StoreRoot::at(&d.join("root")).unwrap();
         let written = crate::storage::FileNodesStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
         let digest_view = DigestView::default();
         let held = digest(PathName::new("mesh1.node", "7").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready);

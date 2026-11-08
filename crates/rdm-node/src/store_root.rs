@@ -148,10 +148,24 @@ impl StoreRoot {
     /// The root at `dir` itself, the fabric's directory already chosen and created by the caller (a
     /// cell's own directory, or a store an embedding app hands in), written directly. Nothing above
     /// `dir` is the root's: the fabrics' name index is `<dir>/fabrics/`.
-    /// The caller is the root's creator: a directory with no layout marker is given this build's.
-    pub fn at(dir: &Path) -> Self {
-        mark(dir);
-        Self { dir: dir.to_path_buf() }
+    /// The caller is the root's creator: a directory that is absent or empty is made by the one creator
+    /// [`Self::open`] uses (its marker written whole in a directory beside it, fsynced, renamed into
+    /// place, the parent fsynced), and the root is then checked as `open` checks it: a directory that
+    /// holds entries and no marker, or another layout's, is refused by name, and one that cannot be made
+    /// is refused naming its path.
+    pub fn at(dir: &Path) -> Result<Self, StorageError> {
+        let empty = match std::fs::read_dir(dir) {
+            Ok(mut entries) => entries.next().is_none(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(StorageError::Io { file: dir.display().to_string(), reason: format!("the store root cannot be listed: {e}") }),
+        };
+        if empty {
+            let parent = dir.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            std::fs::create_dir_all(parent).map_err(|e| StorageError::Io { file: parent.display().to_string(), reason: format!("the store root's directory cannot be made: {e}") })?;
+            create_root(parent, dir)?;
+        }
+        check_layout(dir)?;
+        Ok(Self { dir: dir.to_path_buf() })
     }
 
     /// `layout`: the root's layout marker (R-SR1).
@@ -189,16 +203,6 @@ impl StoreRoot {
 
 }
 
-/// Give the root `dir` a caller chose this build's layout marker when it holds none: created
-/// exclusively, so a marker another writer put there first stands.
-fn mark(dir: &Path) {
-    use std::io::Write as _;
-    let _ = std::fs::create_dir_all(dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(LAYOUT)) {
-        let _ = f.write_all(format!("{LAYOUT_VALUE}\n").as_bytes()).and_then(|()| f.sync_all());
-    }
-}
-
 /// Providers qualified for the shared store namespace (R14 item 6): the process provider
 /// supplies a host directory; the container provider bind-mounts that directory at the same
 /// absolute path in every runtime. `container_proof` proves item 5's guarantees across two
@@ -213,6 +217,32 @@ pub fn qualify(provider: crate::model::ProviderKind) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::model::FabricId;
+
+    /// CONTRACT (R-SR1: the marker is "written once by the root's creator, before any other entry of the
+    /// root exists"; a root that holds entries and no marker is refused by name, never migrated): a root
+    /// an embedding app hands in (`StoreRoot::at`) is made by the one creator `open` uses, its marker
+    /// written whole in one step, and a root that stands opens again. A directory holding entries and no
+    /// marker is refused by name with no marker written into it, and a directory that cannot be made is
+    /// refused naming its path. Must NOT happen: a marker stamped into an older root, or a root handed
+    /// back whatever its directory holds.
+    #[test]
+    fn a_root_handed_in_is_made_by_its_one_creator_or_refused_by_name() {
+        let d = crate::record_store::tempdir("store-root-at");
+        let fresh = d.join("fresh");
+        StoreRoot::at(&fresh).expect("a new root is made");
+        assert_eq!(read_layout(&fresh).unwrap().as_deref(), Some(LAYOUT_VALUE), "its marker is whole");
+        StoreRoot::at(&fresh).expect("a root that stands opens again");
+        let older = d.join("older");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::write(older.join(FABRIC_FILE), b"{}\n").unwrap();
+        let e = StoreRoot::at(&older).expect_err("entries and no marker are an older layout");
+        assert!(matches!(e, StorageError::Unrecognised { .. }), "{e}");
+        assert!(!older.join(LAYOUT).exists(), "no marker is stamped into an older root");
+        std::fs::write(d.join("plain-file"), b"").unwrap();
+        let unmade = d.join("plain-file").join("root");
+        let e = StoreRoot::at(&unmade).expect_err("a root under a plain file cannot be made");
+        assert!(matches!(e, StorageError::Io { .. }) && e.to_string().contains("plain-file"), "{e}");
+    }
 
     /// CONTRACT (R14 items 1 and 8): a node's boot opens its stores under `<store_dir>/<fabric_id>/`
     /// and nothing else: a `store_dir` that is missing, or is not a readable directory, fails the

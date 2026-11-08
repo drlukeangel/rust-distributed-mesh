@@ -4,13 +4,14 @@ use super::*;
 
 use crate::path_investigation::TargetOutcome;
 
-/// The exact id of `mesh` a launch or a hand-off names: what this admin created (`records`), else what
-/// its view holds from the mesh's members, else the mesh's own row, a point read by its name in
-/// `mesh_rows` (a mesh none of whose births the view still holds). `Ok(None)` when none of them holds
-/// one; a Dead row or a row that cannot be read is named. A recovery never mints one.
+/// The exact id of `mesh` a launch or a hand-off names: what its view holds (its topology view's one
+/// map of mesh ids, the last held winning: a mesh this admin created, or one whose topology it holds,
+/// [`Records::mesh_id_of`]; else the installed projection's), else the mesh's own row, a point read by
+/// its name in `mesh_rows` (a mesh none of whose births the view still holds). `Ok(None)` when none of
+/// them holds one; a Dead row or a row that cannot be read is named. A recovery never mints one.
 pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, mesh_rows: &dyn crate::storage::MeshStorage, mesh: &str) -> Result<Option<String>, String> {
     let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
-    if let Some(id) = records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
+    if let Some(id) = records.mesh_id_of(mesh).or(known) {
         return Ok(Some(id.to_string()));
     }
     match mesh_rows.mesh_named(mesh).await {
@@ -34,7 +35,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
 pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh: &str, state: rdm_core::status::MeshState) -> u64 {
     let heard = digest_view.statuses.mesh(mesh).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
     let declared = || {
-        let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned()?;
+        let mesh_id = digest_view.mesh_id_of(mesh)?;
         let declared = records.declared.lock().unwrap();
         (declared.meshes.get(&mesh_id) == Some(&state)).then(|| declared.mesh_changed_at.get(&mesh_id).copied()).flatten()
     };
@@ -43,7 +44,7 @@ pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, 
 
 pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
     let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
-    let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned();
+    let mesh_id = digest_view.mesh_id_of(mesh);
     let declared = mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
     heard.max(declared).unwrap_or(rdm_core::status::MeshState::Pending)
 }
@@ -532,8 +533,7 @@ impl AdminRunner {
     pub(crate) async fn held_runtimes(&self) -> Vec<crate::storage::NodeRecord> {
         let mut rows: BTreeMap<NodeId, crate::storage::NodeRecord> = BTreeMap::new();
         if let Some(store) = self.records.contacts.get() {
-            let meshes: Vec<String> = self.records.meshes.lock().unwrap().keys().cloned().collect();
-            for mesh in meshes {
+            for mesh in self.records.mesh_ids().into_keys() {
                 for r in store.nodes(&mesh).await.unwrap_or_default() {
                     rows.insert(r.node_id.clone(), r);
                 }

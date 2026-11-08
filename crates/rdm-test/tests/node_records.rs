@@ -247,7 +247,7 @@ fn own_update(estate: &Estate, v: &NodeView, value: &str) {
 /// `node`'s record: its latest line at its node id in the nodes store (query.md §1, Q323), read as the
 /// store answers it.
 async fn latest(estate: &Estate, node: &NodeId) -> Option<NodeRecord> {
-    let rows = rdm_node::nodes_storage::FileNodeRows::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root())).await.expect("the fabric's nodes store opens");
+    let rows = rdm_node::nodes_storage::FileNodeRows::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root()).unwrap()).await.expect("the fabric's nodes store opens");
     rows.node(node).await.unwrap_or_else(|e| panic!("the record of {node} is read: {e}")).map(|line| line.record)
 }
 
