@@ -1373,8 +1373,11 @@ impl Channels {
             let mut last_heartbeat: Option<Instant> = None;
             let mut stopped = me.mesh().stopped.subscribe();
             loop {
-                if !*me.mesh().stopped.borrow() {
-                    let d = digest();
+                let d = (!*me.mesh().stopped.borrow()).then(&digest);
+                // A birth Leaving publishes nothing in that state (node-mesh-leave.md: "the node
+                // publishes nothing in that state and nothing after it", R-ON1): its heartbeat ends
+                // with the status move, before its cut.
+                if let Some(d) = d.filter(|d| d.status != rdm_core::model::NodeStatus::Leaving) {
                     let _ = me.publish(&d).await;
                     if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
                         last_heartbeat = Some(Instant::now());

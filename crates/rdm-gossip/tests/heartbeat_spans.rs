@@ -98,3 +98,53 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         assert_eq!(stale[0]["attributes"]["member_id"], b_id.as_str());
     });
 }
+
+/// CONTRACT (node-mesh-leave.md: "the node publishes nothing in that state and nothing after it",
+/// R-ON1; node-stop.md step 4: "The node gossips nothing for this step"): a node whose status moves to
+/// Leaving stops publishing its Digest. Its peer holds it at the last status it published, Ready, and
+/// never hears it Leaving. Must NOT happen: the publish loop sending the Leaving Digest until the cut.
+#[test]
+fn a_node_leaving_publishes_no_digest_in_that_state() {
+    if crate::own_process::delegated(module_path!(), "a_node_leaving_publishes_no_digest_in_that_state") {
+        return;
+    }
+    let dir = crate::evidence_dir();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-leaving").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (a, b) = (node().await, node().await);
+        rdm_gossip::location::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
+        let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
+        let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
+        let (a_id, b_id) = (da.node.node_id.clone(), db.node.node_id.clone());
+        let ma = TopologyView::new(&fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
+        let ma_channels = rdm_gossip::channel::Channels::new(&a.gossip, &a.ep, &ma).unwrap();
+        ma_channels.join(rdm_gossip::channel::ChannelId::mesh(ma.fabric_id(), ma.mesh_id()), vec![]).await.unwrap();
+        let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
+        let mb = TopologyView::new(&fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
+        let mb_channels = rdm_gossip::channel::Channels::new(&b.gossip, &b.ep, &mb).unwrap();
+        mb_channels.join(rdm_gossip::channel::ChannelId::mesh(mb.fabric_id(), mb.mesh_id()), vec![seed]).await.unwrap();
+        let status = std::sync::Arc::new(std::sync::Mutex::new(NodeStatus::Ready));
+        let (pa, pb) = {
+            let s = status.clone();
+            let db = db.clone();
+            let seq = std::sync::atomic::AtomicU64::new(0);
+            (ma_channels.publish_every(Duration::from_millis(200), move || da.clone()), mb_channels.publish_every(Duration::from_millis(200), move || {
+                let mut d = db.clone();
+                d.status = *s.lock().unwrap();
+                d.digest_seq = seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                d
+            }))
+        };
+        let heard = |want: NodeStatus| ma.digest_view.get(b_id.as_str()).is_some_and(|(d, _)| d.status == want);
+        let t0 = std::time::Instant::now();
+        while !heard(NodeStatus::Ready) && t0.elapsed() < Duration::from_secs(10) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(heard(NodeStatus::Ready), "the peer hears the node Ready first");
+        *status.lock().unwrap() = NodeStatus::Leaving;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        pb.abort();
+        pa.abort();
+        assert!(heard(NodeStatus::Ready), "the peer holds the node at its last published status, Ready, never Leaving: {:?}", ma.digest_view.get(b_id.as_str()).map(|(d, _)| d.status));
+    });
+}

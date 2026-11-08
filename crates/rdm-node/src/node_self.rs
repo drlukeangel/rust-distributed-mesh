@@ -1269,8 +1269,10 @@ impl NodeSelf {
         // A command's stop streams its acknowledgement, `Leaving`, and its completion, `StopMeshLeft`
         // (Q205). A birth already left since it last started leaves nothing again and answers both.
         // Leaving is on its record once: the final delete's aggregate above wrote it already.
+        // Leaving goes on its record only: the node publishes nothing in that state (node-mesh-leave.md,
+        // R-ON1), and the final delete's aggregate above already carries it.
         if !leaving_recorded {
-            self.write_state(crate::model::NodeStatus::Leaving).await;
+            let _ = self.record_state(crate::model::NodeStatus::Leaving).await;
         }
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::Leaving { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await;
