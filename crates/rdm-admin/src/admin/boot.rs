@@ -2924,19 +2924,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             nodes_storage.clone(),
                                             records.caches.clone(),
                                             node_rpc.client.clone(),
-                                            // The fabric-primary's own renewal: the cert installed, then its dates written on
-                                            // its own record (Q356, node-cert-renew.md Row), as a renewal sent to an admin writes them.
+                                            // The fabric-primary's own renewal: the cert installed, then, only once it is, its
+                                            // dates written on its own record (Q356, node-cert-renew.md Row), as a renewal sent
+                                            // to an admin writes them.
                                             Arc::new(move |bytes: Vec<u8>, dates: rdm_core::certs::CertDates| {
-                                                if let Some(own) = own_cert.get() {
-                                                    let _ = own.renew_cert(&bytes);
-                                                }
-                                                if let Some(configs) = own_configs.get().cloned() {
-                                                    tokio::spawn(async move {
-                                                        if let Err(why) = configs.own_update(move |r| r.cert = Some(dates)).await {
-                                                            tracing::info_span!("rdm.node_admin.cert.update.via-own-record", outcome = "not-written", reason = %why).in_scope(|| tracing::info!("the renewed cert's dates are not on its own record"));
-                                                        }
-                                                    });
-                                                }
+                                                let installed = match own_cert.get() {
+                                                    Some(own) => own.renew_cert(&bytes),
+                                                    None => rdm_core::reply::status::not_ready("its own birth's node surface is not bound yet: it holds no connections registry to present a cert from".to_string()),
+                                                };
+                                                let configs = own_configs.get().cloned();
+                                                tokio::spawn(async move {
+                                                    crate::cert_renewal::write_own_renewal(installed, configs, dates).await;
+                                                });
                                             }),
                                         );
                                         renewals.set_fabric(fabric_storage.clone(), cfg.fabric_id.clone());

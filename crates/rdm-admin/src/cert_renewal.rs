@@ -51,6 +51,31 @@ pub fn dates_of(issue: &MemberIssue) -> CertDates {
     CertDates { issued_at: issue.issued_at, expires_at: issue.expires_at, issuer_expires_at: issue.issuer_expires_at, renew_at: issue.renew_at }
 }
 
+/// The fabric-primary's own renewal, once `installed` is what its own birth answered the cert's install
+/// (`NodeSelf::renew_cert`): the cert's `dates` are written on its own record through `configs` only
+/// when the cert was installed, `CertRenewed` (node-cert-renew.md "Row": "The node writes the cert's
+/// dates, `cert_dates`, on its own record when it installs the cert (Q356) … A renewal not answered
+/// writes nothing"). Any other answer, and a write refused, is named on
+/// `rdm.node_admin.cert.update.via-own-record`. Answers whether the dates were written.
+pub(crate) async fn write_own_renewal(installed: StatusReply, configs: Option<std::sync::Arc<crate::node_config::NodeConfigs>>, dates: CertDates) -> bool {
+    let span = |outcome: &str, reason: &str| tracing::info_span!("rdm.node_admin.cert.update.via-own-record", outcome, reason);
+    if !matches!(installed, StatusReply::CertRenewed { .. }) {
+        span("not-installed", &format!("{}: {installed:?}", installed.name())).in_scope(|| tracing::info!("the renewed cert is not installed on its own birth: its dates are not written, and its renew_at renews it on the next tick"));
+        return false;
+    }
+    let Some(configs) = configs else {
+        span("not-written", "its own property writer is not bound yet").in_scope(|| tracing::info!("the renewed cert's dates are not on its own record"));
+        return false;
+    };
+    match configs.own_update(move |r| r.cert = Some(dates)).await {
+        Ok(()) => true,
+        Err(why) => {
+            span("not-written", &why).in_scope(|| tracing::info!("the renewed cert's dates are not on its own record"));
+            false
+        }
+    }
+}
+
 /// The member cert dates a mesh-primary writes on its own record when it installs the cert `req`
 /// (`RenewCert`) carried to it, under `receiver`'s policy
 /// (`docs/architecture/lifecycles/node-cert-renew.md` Row: "A mesh-primary's own cert, issued by the
@@ -1145,5 +1170,38 @@ mod tests {
         assert_eq!(update.attributes.get("previous_issuer_expires_at").map(String::as_str), Some("30000"));
         let installed = &capture.named("rdm.node_admin.issuer.update.via-installed")[0];
         assert_eq!(installed.attributes.get("previous_issuer_expires_at").map(String::as_str), Some("30000"));
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:20
+    /// "| Row | The node writes the cert's dates, `cert_dates`, on its own record when it installs the cert (Q356), then answers `CertRenewed`. A renewal not answered writes nothing, and the record's `renew_at`, already passed, renews it on the next tick |"
+    /// The fabric-primary's own renewal writes the cert's dates on its own record only once its own birth
+    /// installed the cert (`CertRenewed`). A cert it refused, or a birth still starting (`NotReady`), writes
+    /// nothing. Must NOT happen: a record carrying the new dates while its connections present the old
+    /// cert, its `renew_at` then read as not passed and the old cert expiring unrenewed.
+    #[tokio::test]
+    async fn the_fabric_primarys_own_renewal_writes_its_dates_only_once_the_cert_is_installed() {
+        use crate::storage::NodesStorage as _;
+        let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        admin.incarnation_id = Some(IncarnationId::mint());
+        admin.endpoint_id = Some(crate::model::EndpointId("0".repeat(64)));
+        admin.transport_addr = Some("127.0.0.1:1".parse().unwrap());
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = std::sync::Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), std::sync::Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
+        let configs = std::sync::Arc::new(crate::node_config::NodeConfigs::new(client));
+        let records = std::sync::Arc::new(crate::storage::MemoryNodesStorage::default());
+        configs.uses_records(records.clone(), || "memory".into(), || None);
+        configs.bound_own(&admin, rdm_core::launch::InitialProperties::default(), rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("own-renewal")).unwrap(), (None, None)).await.unwrap();
+        let held = || async { records.node(&admin.node_id).await.unwrap().expect("its record").record.cert };
+        let dates = CertDates { issued_at: 1_000, expires_at: 9_000, issuer_expires_at: 20_000, renew_at: 6_000 };
+        let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
+        for refused in [rdm_core::reply::status::rejected_cert("the cert does not decode".into()), rdm_core::reply::status::not_ready("still starting: it holds no connections registry".into())] {
+            assert!(!write_own_renewal(refused.clone(), Some(configs.clone()), dates.clone()).await, "{refused:?} writes nothing");
+            assert_eq!(held().await, None, "a cert not installed leaves its record's dates as they were ({refused:?})");
+        }
+        let installed = StatusReply::CertRenewed { node_id, incarnation, expires_at: dates.expires_at };
+        assert!(write_own_renewal(installed, Some(configs.clone()), dates.clone()).await);
+        assert_eq!(held().await, Some(dates), "the installed cert's dates are on its own record");
+        ep.close().await;
     }
 }
