@@ -50,7 +50,17 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         want.extend((1..=*r).map(|i| rdm_core::PathName::new(format!("{m}.node"), i.to_string()).unwrap()));
     }
     want.sort();
-    let views = estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await;
+    estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await;
+    // A node type's primary reaches the asked admin as a record on gossip: the commanded first
+    // primary's Digest in its own mesh, its mesh-primary's next projection on the backbone for a peer
+    // mesh (Q407; gossip.md "A primary change on gossip"). The view is read once every node type of it
+    // advertises a primary.
+    let views = estate
+        .until_view(&format!("{shape}: every node type of the view advertises its primary"), Duration::from_secs(15), |views| {
+            let types: std::collections::BTreeSet<(String, String)> = views.iter().map(|n| (n.mesh(), n.r#type.clone())).collect();
+            types.iter().all(|t| views.iter().any(|n| (n.mesh(), n.r#type.clone()) == *t && n.is_primary)).then(|| views.to_vec())
+        })
+        .await;
     let nodes = Estate::values(&views);
     estate.artifact("nodes.json", &json!(nodes));
 
