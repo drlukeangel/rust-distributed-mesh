@@ -214,10 +214,11 @@ impl HeardAgain {
             let (_, _, deployed) = runner.stopped_birth_or_live(node).await.map_err(|why| format!("join-not-registered: {why}"))?;
             let _ = runner.joins.expect(deployed);
             let command = crate::node_commands::CommandKey { operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-            let _ = status_service.commands.open(command.clone());
+            // Open from the send until the call ends, a cancelled caller's included.
+            let call = status_service.commands.track(command);
             let req = StatusRequest::JoinMesh { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone(), primary: self.digest_view.primaries.mesh(&node.mesh) };
             let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
-            status_service.commands.close(&command);
+            drop(call);
             match out.reply() {
                 Some(r) => Ok(r.value().clone()),
                 None => Err(out.name().to_string()),
@@ -343,9 +344,10 @@ async fn command_mesh_join(
             return (format!("join-not-registered: {why}"), None);
         }
         // The command back is this authority's command to the birth, open from the send to the answer
-        // as every command of the authority is: the birth's lifecycle is the command's until then.
+        // as every command of the authority is, a cancelled caller's included: the birth's lifecycle is
+        // the command's until then.
         let command = crate::node_commands::CommandKey { operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let _ = status_service.commands.open(command.clone());
+        let call = status_service.commands.track(command);
         if let (Some(ids), Some((verdict, reason))) = (written, notice) {
             crate::node_investigation::write_node_investigated(investigated, ids, node, incarnation, verdict, crate::wiring::NodeInvestigatedNext::Rejoin, reason).await;
         }
@@ -358,7 +360,7 @@ async fn command_mesh_join(
             primary: digest_view.primaries.mesh(&node.mesh),
         };
         let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
-        status_service.commands.close(&command);
+        drop(call);
         match out.reply() {
             Some(r) => (r.value().name().to_string(), Some(true)),
             None => (out.name().to_string(), Some(false)),

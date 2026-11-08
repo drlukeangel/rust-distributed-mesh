@@ -1848,7 +1848,10 @@ impl StatusService {
         let key = crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: ctx.operation.clone() };
         // A mesh-primary that replied `blocked` issues no new command until it is unblocked (storage.md §2).
         self.commands.admitted().await;
-        let _ = self.commands.open(key.clone());
+        // The command is open from here until its carry ends, admitted or not, a cancelled carry
+        // included: its step receipt is the record (node-recovery.md step 2 reads "open" as from the
+        // send to the completion), and `mesh.block` waits for it.
+        let _call = self.commands.track(key.clone());
         let mut frames = if node.node_id == self.node_id {
             let Some(own) = self.own.get().cloned() else { return A::NotSent { reason: "the own birth has not joined".into(), code: Code::Unavailable }; };
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1971,11 +1974,6 @@ impl StatusService {
         }
         A::Indeterminate { code: Code::Unknown, reason: format!("{} ended without its terminal frame", request_name(start)) }
         }.await;
-        // The command is over with its carry, admitted or not: its step receipt is the record
-        // (node-recovery.md step 2 reads "open" as from the send to the completion).
-        if let Some(incarnation) = node.incarnation_id.clone() {
-            self.commands.close(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, operation: ctx.operation.clone() });
-        }
         (admission, unreachable)
     }
 

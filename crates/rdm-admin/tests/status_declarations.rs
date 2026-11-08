@@ -2321,6 +2321,57 @@ async fn status_stop_and_start_positions_are_refused_by_name_without_execution()
     }
 }
 
+// @feature: node-lifecycle
+/// CONTRACT (storage.md §2 "Changing it", steps 1 and 2, as `CommandView::block` quotes them: it
+/// "resolves once every command in flight has completed"; `CommandCall`: "open from its send until its
+/// call ends, its caller's cancellation included"): a stop or start carried to a birth and cancelled
+/// mid-stream (its pipeline step cancelled) is over: its command closes with it, and a later
+/// `mesh.block` resolves. Must NOT happen: a cancelled carry that holds its command open forever, so
+/// every later `mesh.block` of a storage change never answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_lifecycle_carry_closes_its_command_and_a_later_block_resolves() {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
+    use rdm_admin::deployment::pipeline::CommandContext;
+    for start in [false, true] {
+        let (rig, births) = rig().await;
+        let subject = births["rpc2"].node.clone();
+        let (accepted, finish) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let (a, f) = (accepted.clone(), finish.clone());
+        let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: Q, sink| {
+            let (a, f) = (a.clone(), f.clone());
+            async move {
+                let (node_id, incarnation) = req.subject();
+                let _sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
+                a.notify_one();
+                // The birth's stream stays open, mid-command, until the cell ends.
+                f.notified().await;
+                Ok(if start { N::NodeStarted } else { N::NodeStopped })
+            }
+        }).build(ServedBirth { node_id: subject.node_id.to_string(), incarnation: subject.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        let ep = rdm_transport::endpoint::bind(births["rpc2"].key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { mesh: subject.mesh.clone(), r#type: subject.r#type.clone(), node_id: subject.node_id.clone(), path: subject.path.clone(), name: subject.name.clone(), endpoint_id: births["rpc2"].key.public(), transport_addr: addr, incarnation: subject.incarnation_id.clone().unwrap() });
+        let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
+        assert!(rig.service.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client)).await)).is_ok());
+        let ctx = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
+        let key = rdm_admin::node_commands::CommandKey { node_id: subject.node_id.clone(), incarnation: subject.incarnation_id.clone().unwrap(), operation: ctx.operation.clone() };
+        let (service, target) = (rig.service.clone(), subject.clone());
+        let carry = tokio::spawn(async move { service.carry_lifecycle(&target, start, &ctx).await });
+        tokio::time::timeout(Duration::from_secs(5), accepted.notified()).await.expect("the birth accepted the command");
+        assert!(rig.service.commands.is_open(&key), "the carried command is open while its stream runs");
+        // The carry's step is cancelled mid-stream.
+        carry.abort();
+        assert!(carry.await.unwrap_err().is_cancelled());
+        assert!(!rig.service.commands.is_open(&key), "the cancelled carry's command is closed with it");
+        let in_flight = tokio::time::timeout(Duration::from_secs(5), rig.service.commands.block()).await.expect("mesh.block resolves: no command is left in flight");
+        assert_eq!(in_flight, 0, "the cancelled carry left no command in flight");
+        finish.notify_one();
+    }
+}
+
 /// Q47: the stream owner records only the node's frames, before recovery; the start's Ready
 /// record precedes its return to the Build. An accepted failure keeps its step, reason and code.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

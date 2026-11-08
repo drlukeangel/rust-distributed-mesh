@@ -118,6 +118,15 @@ impl Drop for CallerStream {
 pub struct CommandCall<'a> {
     commands: &'a CommandView,
     key: CommandKey,
+    /// Resolves to `true` once the command's completion is accepted ([`CommandView::complete`]).
+    completed: watch::Receiver<bool>,
+}
+
+impl CommandCall<'_> {
+    /// Resolves once the command's completion is accepted: `false` only if the view was dropped.
+    pub async fn completed(&mut self) -> bool {
+        self.completed.wait_for(|done| *done).await.is_ok()
+    }
 }
 
 impl Drop for CommandCall<'_> {
@@ -215,8 +224,8 @@ impl CommandView {
     /// Track a call: its command is open until the call ends, however it ends, a cancelled caller's
     /// included.
     pub fn track(&self, key: CommandKey) -> CommandCall<'_> {
-        let _ = self.open(key.clone());
-        CommandCall { commands: self, key }
+        let completed = self.open(key.clone());
+        CommandCall { commands: self, key, completed }
     }
 
     /// Open `key` before the command is sent (so a completion that races the reply finds it) and
@@ -321,8 +330,9 @@ pub async fn await_completion(commands: &CommandView, node: &Node, cmd: NodeComm
         return Completion::NotAwaited { admission: format!("{} has no known birth", node.node_id) };
     };
     let key = CommandKey { operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation };
-    let mut rx = commands.open(key);
-    let got = tokio::time::timeout(within, rx.wait_for(|done| *done)).await.is_ok_and(|r| r.is_ok());
+    // Open while it waits, and closed when the wait ends, however it ends.
+    let mut call = commands.track(key);
+    let got = tokio::time::timeout(within, call.completed()).await.unwrap_or(false);
     completion_span(node, cmd, ctx, got);
     if got {
         Completion::Received {}
