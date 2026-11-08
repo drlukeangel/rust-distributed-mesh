@@ -1480,21 +1480,20 @@ Build its Topology and Events chunks and its Build header.
 ## PrimaryUpdate, op `0x21`, rdm
 
 RDM owns this family. It carries [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md),
-which owns sequencing and the failure contract. Direction: the primary calls its successor's exact birth;
-only node-admins and the nodes of a type the mesh-primary commands serve it. Every call is server-streaming and not forwardable. Requests use the canonical target and
+which owns sequencing and the failure contract. Direction: the primary calls its successor's exact birth,
+and the mesh-primary's create calls a type's first node in its mesh (Q407); only node-admins and the nodes of a type the mesh-primary commands serve it. Every call is server-streaming and not forwardable. Requests use the canonical target and
 CallContext; replies use the canonical stream reply frames: `PrimaryUpdating` (Started), then `PrimaryUpdated { node_id }` or `Failed { step, reason, code }` (Terminal); a refusal is the stream's one frame. Field order and enum positions are the order
 shown. Births are exact identities, never names.
 
 ```text
 primary → successor   PrimaryUpdate { primaries: [(type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, operation }
-successor             becomes primary: installs the election's result in its topology view and announces it in its digest; the mesh-primary records it afterwards
+successor             becomes primary: installs the election's result in its topology view and announces it in its digest; it records it on its own row afterwards
 successor → primary   PrimaryUpdating (Started), then PrimaryUpdated { node_id } (Terminal)   (on that call's reply stream)
 ```
 
 `primaries` carries the election's result the successor installs, one entry or two: the fabric-primary
-is a second entry, node type `fabric`. For the `node-admin` type the successor records its own row on
-this call, after it answered; for every other type the mesh-primary records the successor's row from
-the successor's digest, the way it records every member fact it hears. The receiver refuses only:
+is a second entry, node type `fabric`. The successor records its own row on
+this call, after it answered, for every type (Q356). The receiver refuses only:
 
 - RejectedConflictingPayload: the same operation with different content; the row decides.
 

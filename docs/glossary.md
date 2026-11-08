@@ -28,8 +28,9 @@ Every term below links to the architecture pages that define it.
   rows in `nodes.storage`, and announces their lifecycle status.
 - **node-type primary** ([Elections](architecture/fabric-node-lifecycle-elections.md)): The
   elected primary among the `Ready` nodes of one type in one mesh. A primary stays primary
-  while it is heard; when unheard past the staleness floor (or when none is recorded), the eligible
-  `Ready` candidate in that mesh with the lowest complete `NodeId` wins, or the current primary
+  while it is heard; when unheard past the staleness floor, the eligible
+  `Ready` candidate in that mesh with the lowest complete `NodeId` wins (for the node-admin type also
+  when none is recorded; a node type's first primary is its first node, commanded at its create, Q407), or the current primary
   hands over via [`node.primary.update`](architecture/lifecycles/node-primary-update.md).
 
 ## Node identity and lifecycle

@@ -34,9 +34,9 @@ primary row, no move log, nothing to fold. The atlas of the node-admin that sent
 ## Numbered end-to-end sequence
 
 Mesh-primary NA1, successor NA2 for the `node-admin` type. For another type read B1/B2 for the primary
-and its successor and "the mesh-primary" for the commander, the announcer and the writer: the order is
-the same, command, then the successor becomes primary and announces, then the record. Becoming primary
-and recording it are separate for every type.
+and its successor and "the mesh-primary" for the commander: the order is the same, command, then the
+successor becomes primary and announces, then the successor's record. Becoming primary and recording it
+are separate for every type.
 
 1. The primary is commanded from above, by the node command that stops it or runs
    `node.connection.delete { scope: All }` on it, or as a step of the Build that deletes it.
@@ -97,8 +97,8 @@ As stored:
   contract), and it answers a named error or succeeds. The step completed on the acknowledgement of
   step 4 and the role is the election's, not the write's: a named error is handled as every storage
   error is, named on its span and surfaced, it fails nothing already completed, and the successor stays
-  what the election names it. The row is owed by its writer: the mesh-primary retries the write of the
-  row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes))
+  what the election names it. The row is owed by its writer, the node that took the role: it retries the
+  write of the row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes))
   until the store acknowledges it, on its own clock, never waiting for a digest, a birth or a primary
   change, and marks the row written only on that acknowledgement, while it is the writer. A write that
   never succeeds is surfaced as a stalled row; it blocks and reverses nothing. A writer dying before the rename changes nothing:
@@ -115,8 +115,8 @@ As stored:
 - **The successor is unheard after the update.** When node investigation's verdict is anything but
   reached, the step fails by name, `the successor is unheard after the update: <verdict>`, and the Build
   is Failed (R-BI4). The ordinary election then names whoever it names, the old primary included: the
-  lowest Ready node of that type in the mesh is primary, its digest carries it and the
-  mesh-primary records it. The successor's node goes through
+  lowest Ready node of that type in the mesh is primary: its own digest carries it and it records it on
+  its own record. The successor's node goes through
   [node recovery](node-recovery.md) like any unheard member. A caller's resubmit opens a new run, so a
   new update under its own key, which excludes the old primary.
 - **The commanded arm.** When a node.primary.update the fabric-primary commanded ends, the old primary
@@ -127,9 +127,8 @@ As stored:
   same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.
 - **The old primary lost after the update:** the successor and every reader take the primary from the
-  election; the successor's digest carries its role, and the mesh-primary (the successor itself for the
-  `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's
-  survival.
+  election; the successor's digest carries its role, and the successor records it on its own record.
+  Completion needs neither gossip delivery nor the old primary's survival.
 - **Discovery is not installation.** A later run that reads the record has discovered the update, not
   installed it. The commander obtains the primary's `node.primary.updated { node_id }` before the departing primary's destructive step is commanded; it installs nothing itself. A successor node investigation found unheard is handled above.
 - The workflow continues only after the result is installed and acknowledged: `node.primary.updated`
@@ -207,7 +206,7 @@ successor                 becomes primary: installs the election's result in its
   ← node.primary.updated { node_id }   (PrimaryUpdated)
 primary → commander  node.primary.updating, then node.primary.updated { node_id }; the next command goes to the node's mesh-primary as it stands after the update
 successor → mesh channel  its next Digest carries its role in primary (its normal announcement)
-mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next TopologyFull projection carries it
+successor                 records is_primary at the next revision on its own row; the mesh-primary's next TopologyFull projection carries it
 ```
 
 No gossip frame announces a primary change: the successor's `Digest` and the mesh-primary's `TopologyFull`

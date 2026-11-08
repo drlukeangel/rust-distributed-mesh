@@ -293,7 +293,7 @@ No timer expires it.
 #### A primary change on gossip
 
 [node.primary.update](lifecycles/node-primary-update.md) has no frame of its own. The successor's next `Digest` carries the role in `primary` (and the fabric-primary role when both moved) at the next revision, its normal announcement (Q392);
-the mesh-primary records it on the node's row and its next `TopologyFull` projection carries it, its normal
+the node records it on its own row, and the mesh-primary's next `TopologyFull` projection carries it, its normal
 publication. The election's result is the fact and the row records it; a node that hears a digest
 installs a member fact, never a primary by advertisement. A primary the staleness-floor rule elects is
 announced the same way. Best-effort dissemination: a stop does not wait for it (R-NS2).

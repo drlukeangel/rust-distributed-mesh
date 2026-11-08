@@ -19,7 +19,7 @@ There are no election ballots, terms, coordinator messages, quorum votes, or inc
 ~~~text
 the recorded primary (`is_primary` on the node rows) + current candidate facts
     -> the primary stays primary while it is heard
-    -> unheard past the staleness floor, or no primary: eligible candidates of that type in that mesh
+    -> unheard past the staleness floor, or, for the node-admin type, no primary: eligible candidates of that type in that mesh
     -> lowest complete NodeId
     -> the elected primary
 ~~~
@@ -288,10 +288,11 @@ Exact Rust names may differ. The contract does not:
 ~~~text
 the recorded primary, heard -> that primary
 the recorded primary, not yet heard -> it waits
-vacant (handed over, unheard past the floor, or no record)
+vacant (handed over, unheard past the floor, or, for the node-admin type, no record)
        -> current Ready candidates of that type in that mesh
        -> lowest complete NodeId
        -> one elected primary
+a type other than node-admin with no record: its first node is commanded by the mesh-primary's create (Q407)
 the node-admin type of a mesh whose unheard mesh-primary was also the fabric-primary (Q122)
        -> no node-admin is elected: the lowest Ready one runs fabric recovery instead;
           the fabric-primary stays assigned to the target's path and name, and the workflow restores the
