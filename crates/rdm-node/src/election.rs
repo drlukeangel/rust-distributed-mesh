@@ -31,7 +31,8 @@ pub enum Vacant {
     Gone,
     /// The view holds a later birth of the primary's node id.
     Replaced,
-    /// The pruner's sweep found the primary unheard past the staleness floor.
+    /// The pruner's sweep found the primary unheard past the staleness floor, and it has not been heard
+    /// since.
     Unheard,
 }
 
@@ -99,7 +100,7 @@ impl Elector {
             Vacant::Gone
         } else if digest_view.get(held.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation != held.incarnation) {
             Vacant::Replaced
-        } else if digest_view.is_silent(&held.node_id, &held.incarnation) {
+        } else if digest_view.is_silent(&held.node_id, &held.incarnation) && !self.heard_since_the_sweep(&held) {
             Vacant::Unheard
         } else {
             return None;
@@ -115,6 +116,15 @@ impl Elector {
         let candidates: Vec<Candidate<'_>> = inputs.iter().map(|(node_id, status)| Candidate { node_id, ready: *status == NodeStatus::Ready }).collect();
         let winner = elect(&candidates).map(|i| inputs[i].0.clone());
         Some(Vacancy { held, why, inputs, winner })
+    }
+
+    /// Whether `held`'s exact birth was heard within the staleness floor at this read: heard again since
+    /// the pruner's last sweep found it silent. The sweep marks when a birth falls silent (Q254); a birth
+    /// heard again is heard from that digest on, so the primary it names stays primary (elections §5:
+    /// "the primary stays primary while it is heard").
+    fn heard_since_the_sweep(&self, held: &Primary) -> bool {
+        let digest_view = &self.topology_view.digest_view;
+        digest_view.get(held.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == held.incarnation && unheard <= digest_view.staleness_floor())
     }
 
     /// The record this birth installs when it wins `vacancy`: itself, of its mesh, at the next revision
@@ -292,6 +302,33 @@ mod tests {
         assert_eq!(mesh.broker_primary(), Some(mesh.record(&me, 2)), "at the next revision");
         assert_eq!(mine.vacancy(), None, "its own record: no vacancy");
         assert_eq!(theirs.vacancy(), None, "the winner's record names a heard broker: no vacancy");
+    }
+
+    /// CONTRACT (elections §5: "the primary stays primary while it is heard"; §4.1, Q406): a broker
+    /// primary the pruner's sweep found silent past the floor, then heard again before the next sweep, is
+    /// heard: no broker elects. Must NOT happen: a broker installing itself over a primary it hears because
+    /// the last sweep still holds it silent (node_type_election, lane 5, 2026-11-07: after the partition
+    /// healed, phxc3y677jkx installed itself over wpxgf7bejqyr, `vacancy = unheard-past-the-floor`, its
+    /// own `inputs` listing wpxgf7bejqyr Ready).
+    // @feature: mesh-elections
+    #[tokio::test]
+    async fn a_primary_heard_again_after_the_sweep_found_it_silent_is_no_vacancy() {
+        let mesh = Mesh::new();
+        let floor = mesh.view.digest_view.staleness_floor();
+        let primary = mesh.digest("broker", "1", "100000000001", NodeStatus::Ready);
+        let me = mesh.digest("broker", "2", "300000000000", NodeStatus::Ready);
+        assert!(mesh.view.digest_view.record_at(primary.clone(), Instant::now().checked_sub(floor * 2).unwrap()));
+        mesh.heard(&me);
+        mesh.view.primaries().take(PrimaryRole::NodePrimary("broker".into()), &mesh.record(&primary, 1));
+        mesh.view.digest_view.mark_silence();
+        let mine = mesh.elector(&me, NodeStatus::Ready);
+        assert_eq!(mine.vacancy().map(|v| v.why), Some(Vacant::Unheard), "the sweep found the primary silent and it is unheard");
+        // The primary's next Digest, heard before the next sweep.
+        mesh.heard(&MeshDigest { digest_seq: 2, ..primary.clone() });
+        assert!(mesh.view.digest_view.is_silent(&primary.node.node_id, &primary.node.incarnation), "the last sweep still holds it silent");
+        assert_eq!(mine.vacancy(), None, "a heard primary: no vacancy");
+        assert!(!mine.elect_once(&mut None), "nothing installed");
+        assert_eq!(mesh.broker_primary(), Some(mesh.record(&primary, 1)));
     }
 
     /// CONTRACT (Q407: the create's command fills a type's first primary; elections §4.1): a node that

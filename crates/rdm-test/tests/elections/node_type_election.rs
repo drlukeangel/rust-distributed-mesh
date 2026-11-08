@@ -6,33 +6,46 @@
 //! lower-NodeId candidate that later becomes Ready never displaces it";
 //! silence past the staleness floor supersedes it; "restart preserves NodeId;
 //! a restarted node is a candidate for a later vacancy and never displaces the
-//! primary". A primary a
+//! primary". A node type's first primary in a mesh is its first node, commanded
+//! by the mesh-primary's create step (`node.primary.update`, Q407). A primary a
 //! Build stops, restarts or deletes yields first by node.primary.update to the
 //! node type's lowest Ready NodeId with the primary excluded (proposal
-//! node-primary-update-fabric-mesh-and-node-type.md Part C1 steps 1-2). From
+//! node-primary-update-fabric-mesh-and-node-type.md Part C1 steps 1-2). A node
+//! type's primary unheard past the staleness floor is superseded by the election
+//! the nodes of that type hold among themselves; the node-admins take no part
+//! (Q406). From
 //! public surfaces only (each admin's `node.get`), every sample advertises
 //! exactly one primary per node type and a living primary keeps its role. Through
 //! the matrix:
 //! - day 0: the one bootstrap admin holds the node-admin role, the mesh and
 //!   the fabric, by the same function (its own evidence says so);
+//! - settled MN: the node type's first node is commanded its primary at its create
+//!   (Q407);
 //! - settled, restart of a non-primary, grow, shrink: one primary per node type on
 //!   every sample, and a living primary keeps its role (a newcomer never wins it);
 //! - restart of the primary: node.primary.update moves its role to the
 //!   next-lowest ready NodeId first; the restarted node keeps its NodeId and
 //!   never takes the role back;
-//! - kill the primary (SIGKILL): the next-lowest ready NodeId succeeds; the
-//!   recreated path is a new NodeId and never displaces it;
-//! - legal removal of the primary: the next-lowest succeeds;
+//! - kill the primary (SIGKILL): the next-lowest ready NodeId, elected by the node
+//!   type's own nodes (Q406), succeeds; the recreated path is a new NodeId and never
+//!   displaces it;
+//! - legal removal of the primary: node.primary.update moves its role to the
+//!   next-lowest first;
 //! - UDP cut between two sides of the mesh (Q111, Q122; one host, one store): the side with an eligible
-//!   Ready successor supersedes the primary it no longer hears at the floor; each side
+//!   Ready successor supersedes the primary it no longer hears at the floor, the successor electing
+//!   itself (Q406); each side
 //!   re-creates only births node investigation did not reach; heal: every pre-cut (path, name) holds one
 //!   live Ready birth and every admin's view advertises the same roles. No side's outcome is
 //!   pinned.
 //!
-//! Evidence: each successor is announced by a
-//! `rdm.mesh.election.resolve.via-recompute` span (`election_level =
-//! type`, `winner_node_id`, `previous_node_id`, `election_key =
-//! node_id_crockford`); the mesh primary by `via-mesh-primary`.
+//! Evidence: a node type's first primary by the create's
+//! `rdm.node_admin.primary.update.via-create` span (`outcome = updated`); each
+//! elected successor by a `rdm.mesh.election.resolve.via-recompute` span
+//! (`election_level = node_type_primary`, `winner_node_id`, `previous_node_id`,
+//! `election_key = node_id_crockford`), for a type other than node-admin one of
+//! that type's own nodes' (`observer_type`), never a node-admin's; a commanded
+//! move by its successor's `rdm.node_admin.primary.update.via-primary-updated`;
+//! the mesh primary by `via-mesh-primary`.
 //!
 //! The partition drops UDP between the two sides' endpoint ports on loopback
 //! (`nft`, as root or through `sudo -n`). Where that is unavailable the
@@ -177,8 +190,8 @@ fn primary_updated(spans: &[Value], c: &NodeType, preceding: &str, node_id: &str
 }
 
 /// The successor to `gone_id` in `c`: the lowest NodeId among the node type's other ready members
-/// in `before` (the view just before the kill), announced by the mesh as the winner after
-/// `gone_id`. Decided from the pre-kill view and the announcement span, never from a polled
+/// in `before` (the view just before the kill), elected as the winner after `gone_id` (its
+/// election's span, [`announced`]). Decided from the pre-kill view and the election's span, never from a polled
 /// view: drift recovery rebirths the path within seconds, and a view polled after that already
 /// shows the re-born NodeId (a different birth) in the role.
 async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &NodeType, gone_id: &str) -> (PathName, String) {
@@ -188,11 +201,11 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Node
         .map(|n| (location(n), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
-    // The role vacates only on the provider's exited verdict, which node recovery takes at the gone
-    // birth's dead mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
-    // winner it elected and the birth it replaced; the election's span is the only place that fact
-    // lives (a view may already show the birth drift recovery brings back in the role's node type), so the
-    // span is awaited.
+    // The role vacates once the primary is unheard past the staleness floor or known gone (elections
+    // §4.1, §5), within `node_recovery_due`: for a type other than node-admin the type's own nodes
+    // elect its successor (Q406), for the node-admin type the node-admins. The election's span names
+    // the winner and the birth it replaced; it is the only place that fact lives (a view may already
+    // show the birth drift recovery brings back in the role's node type), so the span is awaited.
     wait_for(&format!("{name:?} ({id}) announced as the successor to {gone_id}"), crate::node_recovery_due(), || async {
         announced(&estate.spans(), c, &id, gone_id).then_some(())
     })
@@ -207,11 +220,13 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Node
     (name, id)
 }
 
-/// The node-type election span that announced `winner` for `c` after `previous` (NodeIds).
+/// The node-type election span that names `winner` for `c` after `previous` (NodeIds): for a type
+/// other than node-admin, the span of one of that type's own nodes (Q406).
 fn announced(spans: &[Value], c: &NodeType, winner: &str, previous: &str) -> bool {
     named(spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|s| {
         let a = &s["attributes"];
         a["election_level"] == "node_type_primary"
+            && (rdm_core::is_node_admin(&c.1) || a["observer_type"] == c.1.as_str())
             && a["election_key"] == "node_id_crockford"
             && a["mesh"] == c.0.as_str()
             && a["type"] == c.1.as_str()
@@ -282,8 +297,8 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let killed = primary_of(&nodes, &rpc).unwrap();
     let killed_id = killed.clone();
     // Until this kill the primary the restart's node.primary.update in its role lives; after it the vacancy is
-    // filled by the ordinary rule, which may role the restarted node (elections §5: "a restarted node is a
-    // candidate for a later vacancy").
+    // filled by the node type's own election (Q406), which may elect the restarted node (elections §5: "a
+    // restarted node is a candidate for a later vacancy").
     let primary_lived_until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_node(&location_of(&nodes, &killed)).await;
     let (_succ, succ_id) = successor(&estate, &admin1, &nodes, &rpc, &killed_id).await;
@@ -337,12 +352,16 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
         Ok(partition) => {
             let cut_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
             // Side A has an eligible Ready successor to the rpc primary it no longer hears: at the
-            // floor the election supersedes the stale primary (elections §4.1, §5).
+            // floor that node, of the type, elects itself and installs the role (elections §4.1, §5;
+            // Q406).
             let superseded = wait_for(&format!("side A supersedes the unheard rpc primary {rpc_now} with {lone_rpc}"), floor * 3 + Duration::from_secs(30), || {
                 let spans = estate.spans();
                 let found = named(&spans, "rdm.mesh.election.resolve.via-recompute")
                     .into_iter()
-                    .find(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_ns && sp["attributes"]["observer_node_id"] == admin_p.as_str() && sp["attributes"]["election_level"] == "node_type_primary" && sp["attributes"]["type"] == "node" && sp["attributes"]["winner_node_id"] == lone_rpc.as_str())
+                    .find(|sp| {
+                        let a = &sp["attributes"];
+                        sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_ns && a["observer_node_id"] == lone_rpc.as_str() && a["observer_type"] == "node" && a["election_level"] == "node_type_primary" && a["type"] == "node" && a["winner_node_id"] == lone_rpc.as_str() && a["outcome"] == "installed"
+                    })
                     .cloned();
                 async move { found }
             })
@@ -417,17 +436,38 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     assert!(own("rdm.mesh.election.resolve.via-recompute", "node_type_primary"), "day 0: node-admin type");
     assert!(own("rdm.mesh.election.resolve.via-mesh-primary", "mesh_primary"), "day 0: mesh primary");
     assert!(own("rdm.mesh.election.resolve.via-fabric-recompute", "fabric_primary"), "day 0: fabric primary");
-    assert!(announced(&spans, &rpc, &succ_id, &killed_id), "the successor to the killed primary was announced");
-    assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
+    // The node type's first primary is the node the mesh-primary's create commanded (Q407): the first
+    // create of the type to command one, at revision 1, commanded the primary the settled MN advertised.
+    let first = named(&spans, "rdm.node_admin.primary.update.via-create")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["type"] == "node" && sp["attributes"]["outcome"] == "updated")
+        .min_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(u64::MAX))
+        .map(|sp| (s(&sp["attributes"]["subject_id"]), s(&sp["attributes"]["revision"])));
+    assert_eq!(first, Some((rpc_p.clone(), "1".to_string())), "the type's first create commanded its first primary, the primary the settled MN advertised");
+    assert!(announced(&spans, &rpc, &succ_id, &killed_id), "the node type's own nodes elected the successor to the killed primary");
+    // The removal's node.primary.update moved the role to the next-lowest, which installed itself and
+    // answered (node-primary-update.md step 4): a commanded move, no election.
+    assert!(primary_updated(&spans, &rpc, "node.delete", &removed_id, &succ2_id).is_some(), "{succ2_id} installed itself as the node primary before the removal of {removed_id}");
+    // No node-admin computed the node type's election (Q406): each of its spans is a node's of the type.
+    let admins_elect: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().filter(|sp| sp["attributes"]["type"] == "node" && sp["attributes"]["observer_type"] != "node").collect();
+    assert!(admins_elect.is_empty(), "no node-admin elects the node type's primary: {admins_elect:#?}");
+    // A heard primary stays primary (elections §5): no election names a primary unheard past the floor
+    // that its own inputs, the digests it heard within the floor, list.
+    let over_heard: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-recompute")
+        .into_iter()
+        .filter(|sp| {
+            let a = &sp["attributes"];
+            a["vacancy"] == "unheard-past-the-floor" && s(&a["inputs"]).split(',').any(|i| i == format!("node_id={}", s(&a["previous_node_id"])))
+        })
+        .collect();
+    assert!(over_heard.is_empty(), "no node elects over a primary it hears: {over_heard:#?}");
     // The restart's node.primary.update moved the node primary to the next-lowest ready NodeId,
     // which installed itself and answered (node-primary-update.md step 4).
     let role_moved_at = primary_updated(&spans, &rpc, "node.stop", &rpc_p, &succ_r_id)
         .unwrap_or_else(|| panic!("{succ_r:?} ({succ_r_id}) installed itself as the node primary before the restart of {rpc_p}"));
     // The restarted node never took its role back while the primary lived: from the restart's role move
-    // until the kill. Before that move the node type's first election (no primary record) names the lowest
-    // ready NodeId as each member of the forming MN becomes ready, which may move the role from the
-    // restart's successor to the node restarted later; that is the formation's election, not a
-    // displacement (elections §5).
+    // until the kill (elections §5). The node type's first primary was commanded at its create (Q407);
+    // no election ran before the kill.
     let back = named(&spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|sp| {
         let a = &sp["attributes"];
         let at = sp["start_unix_nano"].as_u64().unwrap_or(0);
