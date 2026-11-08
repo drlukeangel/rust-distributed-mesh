@@ -1704,37 +1704,6 @@ impl DigestView {
         true
     }
 
-    /// The exact birth `removed` names is no longer listed by `mesh`'s topology (the `removed` of a
-    /// full's delta or of a differential, gossip.md §3.1 `TopologyDelta`: "`removed` a node's
-    /// identity"), heard on `channel` at `topology_version`: a birth of that mesh this view holds from
-    /// its topology at that incarnation leaves the view. It is removed, never held deleted: nothing holds it
-    /// deleted, and a later topology listing it holds it again. A birth this view holds from its own
-    /// Digest heard here (`Heard::Direct`) is not its topology's to remove. `false` when nothing left.
-    pub(crate) fn remove_unlisted(&self, mesh: &str, removed: &rdm_core::framing::Birth, channel: &str, topology_version: u64) -> bool {
-        let gone = {
-            let mut inner = self.inner.lock().unwrap();
-            let listed = inner.get(removed.node_id.as_str()).is_some_and(|(d, _, heard)| d.node.mesh == mesh && d.node.incarnation == removed.incarnation && *heard != Heard::Direct);
-            if listed { inner.remove(removed.node_id.as_str()) } else { None }
-        };
-        let Some((held, _, heard)) = gone else { return false };
-        tracing::info_span!(
-            "rdm.mesh.topology.remove.via-topology-removed",
-            observer = %self.observer_name.lock().unwrap(),
-            mesh,
-            node_path = %held.node.path, node_name = %held.node.name,
-            node_id = %held.node.node_id,
-            incarnation_id = %held.node.incarnation.as_str(),
-            held_status = ?held.status,
-            heard = ?heard,
-            channel,
-            topology_version,
-        )
-        .in_scope(|| tracing::info!("the mesh's topology no longer lists the exact birth: it leaves the view, removed, never held deleted"));
-        self.heard.send_modify(|v| *v += 1);
-        self.births.send_modify(|v| *v += 1);
-        true
-    }
-
     /// `Self::record_forwarded`, heard at `now`.
     pub fn record_forwarded_at(&self, d: MeshDigest, now: Instant) -> bool {
         self.record_forwarded_inner(d, now, Carried::Status)

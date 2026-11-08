@@ -3390,52 +3390,6 @@ mod tests {
         assert!(member.copies.lock().unwrap().desynced().is_empty());
     }
 
-    /// CONTRACT (gossip.md §3.1 `TopologyDelta`: "`removed` a node's identity"; `TopologyFull`: "each
-    /// later full only its delta"; Q409 A: one held copy per peer mesh): a birth its peer mesh's topology
-    /// no longer lists leaves the view at its exact incarnation, removed and never held deleted, whichever path
-    /// wrote the move. A mesh9 node holds mesh2 from its forwarder's differentials: v5 lists mesh2.node.1
-    /// and mesh2.node.2, v6 removes mesh2.node.2. A mesh9 node-admin holds mesh2 from the backbone: v5
-    /// lists both, v6 only mesh2.node.1. A third mesh9 node reads mesh2 at v5, then at v6. At each,
-    /// mesh2.node.2 is no longer held and is not held deleted, and mesh2.node.1 stays held. Must NOT
-    /// happen: a birth the copy dropped still held in the digest view, and routable there, until a
-    /// `deleted` listing of it (code audit 2026-11-08, gossip and core, G1).
-    #[test]
-    fn a_birth_its_peer_meshs_topology_no_longer_lists_leaves_the_view_and_is_never_held_deleted() {
-        let spans = OpenedSpans::default();
-        let _capture = rdm_transport::test_span_capture::install(spans.clone());
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let at = |path: &str, name: &str| rdm_core::PathName::new(path, name).unwrap();
-        let (forwarder, mp2) = (birth_at(at("mesh9.node-admin", "1"), "mesh9", "node-admin", 1), birth_at(at("mesh2.node-admin", "1"), "mesh2", "node-admin", 1));
-        let (n1, n2) = (birth_at(at("mesh2.node", "1"), "mesh2", "node", 1), birth_at(at("mesh2.node", "2"), "mesh2", "node", 1));
-        let holds = |v: &View, d: &MeshDigest| v.digest_view.get(d.node.node_id.as_str()).is_some();
-        let delta_path = test_view("mesh9", "mesh9.node.1");
-        let by = publisher_of(&forwarder);
-        assert!(hear(&mut delta_path.order.lock().unwrap(), &delta_path, &delta_of("mesh2", &by, 0, 5, 1, vec![mp2.clone(), n1.clone(), n2.clone()], vec![], vec![]), &fabric, Side::MeshChannel));
-        assert!(holds(&delta_path, &n2), "v5 lists mesh2.node.2");
-        assert!(hear(&mut delta_path.order.lock().unwrap(), &delta_path, &delta_of("mesh2", &by, 5, 6, 2, vec![], vec![], vec![n2.clone()]), &fabric, Side::MeshChannel));
-        let backbone = test_view("mesh9", "mesh9.node-admin.2");
-        let author = publisher_of(&mp2);
-        assert!(hear(&mut backbone.order.lock().unwrap(), &backbone, &aggregate_of("mesh2", &author, 5, vec![mp2.clone(), n1.clone(), n2.clone()]), &fabric, Side::Backbone));
-        assert!(holds(&backbone, &n2), "the backbone's v5 lists mesh2.node.2");
-        assert!(hear(&mut backbone.order.lock().unwrap(), &backbone, &aggregate_of("mesh2", &author, 6, vec![mp2.clone(), n1.clone()]), &fabric, Side::Backbone));
-        let read = test_view("mesh9", "mesh9.node.2");
-        assert!(matches!(read.take_read_chunk(read_of("mesh2", 5, 1, vec![mp2.clone(), n1.clone(), n2.clone()]), Side::ReadPeer, &fabric), crate::aggregate::Taken::Written(_)));
-        assert!(holds(&read, &n2), "the read at v5 lists mesh2.node.2");
-        assert!(matches!(read.take_read_chunk(read_of("mesh2", 6, 2, vec![mp2.clone(), n1.clone()]), Side::ReadPeer, &fabric), crate::aggregate::Taken::Written(_)));
-        for (path, view) in [("delta", &delta_path), ("backbone", &backbone), ("read", &read)] {
-            assert_eq!(view.copies.lock().unwrap().held_version("mesh2").map(|(_, v)| v), Some(6), "{path}: the copy is at v6");
-            assert!(!holds(view, &n2), "{path}: the birth v6 no longer lists has left the view");
-            assert!(!view.digest_view.is_deleted(n2.node.node_id.as_str()), "{path}: removed, never held deleted");
-            assert!(holds(view, &n1), "{path}: the birth v6 still lists stays held");
-        }
-        let removed = spans.named("rdm.mesh.topology.remove.via-topology-removed");
-        assert_eq!(
-            removed.iter().map(|f| (f["channel"].clone(), f["node_id"].clone(), f["topology_version"].clone())).collect::<Vec<_>>(),
-            ["mesh-channel", "backbone", "topology-read"].map(|c| (c.to_string(), n2.node.node_id.to_string(), "6".to_string())).to_vec(),
-            "{removed:#?}"
-        );
-    }
-
     /// CONTRACT (gossip.md "A node that missed a lifecycle event recovers it from `TopologyFull.in_flight`
     /// or `TopologyFull.deleted`, through the next delta, full or top-up"; Q390: a deletion is the node's
     /// status in a differential's `changed`): `rdm.mesh.topology.update.via-delta` records `deleted`, the

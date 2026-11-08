@@ -479,7 +479,6 @@ impl View {
                             deleted = held_full.map_or(0, |held| held.digests().iter().filter(|d| d.status == rdm_core::model::NodeStatus::Deleted).count()),
                         )
                         .in_scope(|| tracing::info!("a differential applied at exactly its base version, every chunk of it held"));
-                        self.remove_unlisted(mesh, &delta.removed, side, *topology_version);
                         let full = Full::new(moved);
                         let target = prior.target(&source, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
@@ -634,7 +633,6 @@ impl View {
         )
         .in_scope(|| tracing::debug!("a complete full written to the topology view: a mesh's first full adds it, a later one writes only its delta from the copy held"));
         let target = prior.target(&w.publisher.as_ref().map(ToString::to_string).unwrap_or_default(), side, w.topology_version, Some(&w.full));
-        self.remove_unlisted(&w.mesh, &w.delta.removed, side, w.topology_version);
         let carried = self.apply_full(&w.mesh, &w.full, Some(&w.full), fabric, side, &target, w.time_ms);
         let source = (side == Side::Backbone && w.mesh != self.mesh).then(|| Box::new(w.clone()));
         // A full with no nodes lists no birth of its author: it carries no rafka-time sample.
@@ -762,20 +760,6 @@ impl View {
             self.digest_view.depart_mesh_births(&mesh, &build_id, at_rafka_ms);
         }
         carried
-    }
-
-    /// The births a full or a differential of `mesh` wrote as `removed`, heard on `side` at
-    /// `topology_version`: each a peer mesh's topology no longer lists leaves the digest view at its
-    /// exact incarnation (gossip.md §3.1 `TopologyDelta`), as it left the one copy. An own-mesh birth's
-    /// liveness and status come from its own Digest (gossip.md §3.1 `Digest`): a copy of its mesh
-    /// removes nothing of it.
-    pub(crate) fn remove_unlisted(&self, mesh: &str, removed: &[rdm_core::framing::Birth], side: Side, topology_version: u64) {
-        if mesh == self.mesh {
-            return;
-        }
-        for b in removed {
-            self.digest_view.remove_unlisted(mesh, b, side.name(), topology_version);
-        }
     }
 
     /// A peer mesh's member whose own state this node now holds changed (or was first held saying
