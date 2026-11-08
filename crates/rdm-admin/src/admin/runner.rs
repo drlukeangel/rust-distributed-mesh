@@ -170,9 +170,31 @@ impl GossipLifecycle {
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-/// NodeStopped for `op`'s exact birth, published by its mesh-primary (node-stop.md step 5): the
-/// departure in this mesh's in-flight overlay, and this admin's view projected at once.
-pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, op: &rdm_core::LifecycleOp) {
+/// Whether `op`'s birth is of a deleted mesh (its mesh record deleted by name): the deleted mesh's
+/// last node-admin, whose node.delete the fabric-primary executes after mesh.deleted. For it the
+/// executor publishes nothing (gossip.md "Mesh delete", Q414). No deleter yet: no mesh is known deleted.
+pub(crate) async fn of_deleted_mesh(mesh_deleter: &crate::mesh_delete::MeshDeleterSlot, op: &rdm_core::LifecycleOp) -> bool {
+    match mesh_deleter.get() {
+        Some(mesh_deleter) => mesh_deleter.birth_of_deleted_mesh(op).await,
+        None => false,
+    }
+}
+
+/// NodeStopped for `op`'s exact birth, published by its mesh-primary (node-stop.md step 5) from either
+/// publisher (the status authority's, the executor's hook): the departure in this mesh's in-flight
+/// overlay, and this admin's view projected at once. For a birth of a deleted mesh the view is held and
+/// nothing is published: gossip.md "Mesh delete", for a deleted mesh's last node-admin the fabric-primary
+/// "publishes nothing for the mesh or that admin: no `NodeStopped`, no `NodeDeleted`" (R-RX4, Q414).
+pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, mesh_deleter: &crate::mesh_delete::MeshDeleterSlot, op: &rdm_core::LifecycleOp) {
+    if of_deleted_mesh(mesh_deleter, op).await {
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-deleted-mesh", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, mesh = %op.mesh, frame = "node-stopped", held = tracing::field::Empty);
+        span.record("held", backbone.hold_status_event(rdm_gossip::status::StatusEvent::Stopped, op));
+        if let Some(project) = project {
+            project().instrument(span.clone()).await;
+        }
+        span.in_scope(|| tracing::info!("the deleted mesh's last node-admin is stopped: held in this executor's own view, no NodeStopped is published; its node.delete departs it"));
+        return;
+    }
     let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
     async {
         backbone.publish_status_event(rdm_gossip::status::StatusEvent::Stopped, op).await;
@@ -188,11 +210,13 @@ pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&A
 /// The publisher of NodeStopped a status authority calls once it applies a birth's Leaving that names
 /// the operation which stopped it (i146 Q29, Q36): NodeStopped, the operation stamped with this
 /// admin's Rafka-time.
-pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
+pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, mesh_deleter: crate::mesh_delete::MeshDeleterSlot) -> crate::status_rpc::StoppedPublisher {
     Arc::new(move |row: crate::status_rpc::Declaration, operation: rdm_core::status::DeclaredOperation| {
-        let (topology_view, backbone, project) = (topology_view.clone(), backbone.clone(), project.clone());
+        let (topology_view, backbone, project, mesh_deleter) = (topology_view.clone(), backbone.clone(), project.clone(), mesh_deleter.clone());
         Box::pin(async move {
-            let op = rdm_core::LifecycleOp { r#type: row.r#type.clone(), mesh: topology_view.mesh_name().to_string(),
+            // The subject's mesh, as it declared it: a birth this admin commands in another mesh (a
+            // deleted mesh's last node-admin) is not of this admin's mesh.
+            let op = rdm_core::LifecycleOp { r#type: row.r#type.clone(), mesh: row.mesh.clone(),
                 build_id: rdm_core::LifecycleOp::NO_BUILD.into(),
                                 operation: operation.operation,
                 node_id: row.node_id,
@@ -202,7 +226,7 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
                 traceparent: None,
                 tracestate: None,
             };
-            publish_node_stopped(&backbone, project.as_ref(), &op).await;
+            publish_node_stopped(&backbone, project.as_ref(), &mesh_deleter, &op).await;
         })
     })
 }
@@ -213,6 +237,14 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         self.channels.topology_view().clock().now_rafka_ms()
     }
     async fn deleting(&self, op: &rdm_core::LifecycleOp) {
+        if of_deleted_mesh(&self.mesh_deleter, op).await {
+            // gossip.md "Mesh delete": the fabric-primary "publishes nothing for the mesh or that admin"
+            // (R-RX4, Q414); the removal under way is held in its own view, as the publication would hold it.
+            let span = tracing::info_span!("rdm.node_admin.node.update.via-deleted-mesh", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, mesh = %op.mesh, frame = "node-deleting", held = tracing::field::Empty);
+            span.record("held", self.backbone.hold_status_event(rdm_gossip::status::StatusEvent::Deleting, op));
+            span.in_scope(|| tracing::info!("the deleted mesh's last node-admin is being removed: held in this executor's own view, no NodeDeleting is published"));
+            return;
+        }
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
             self.backbone.publish_status_event(rdm_gossip::status::StatusEvent::Deleting, op).await;
@@ -226,7 +258,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             Some(_) => {
                 // The command stream's owner already recorded NodeStopped before recovery.
             }
-            None => publish_node_stopped(&self.backbone, self.project.as_ref(), op).await,
+            None => publish_node_stopped(&self.backbone, self.project.as_ref(), &self.mesh_deleter, op).await,
         }
     }
     async fn joined(&self, op: &rdm_core::LifecycleOp) {
@@ -241,15 +273,40 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     }
     async fn deleted(&self, op: &rdm_core::LifecycleOp) {
         let f = rdm_gossip::status::Status::node_deleted(op.clone()).frame();
-        let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
-        async {
-            if let Err(e) = self.channels.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
+        if of_deleted_mesh(&self.mesh_deleter, op).await {
+            // gossip.md "Mesh delete": for a deleted mesh's last node-admin the fabric-primary "publishes
+            // nothing for the mesh or that admin: no `NodeStopped`, no `NodeDeleted`" (R-RX4); the
+            // executor's own view takes the completion it executed (R-NS2), the local half of the
+            // publication and nothing on the wire (Q414).
+            let span = tracing::info_span!("rdm.node_admin.node.remove.via-deleted-mesh", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, mesh = %op.mesh, held = tracing::field::Empty);
+            let digest_view = &self.channels.topology_view().digest_view;
+            let held = if digest_view.is_deleted(op.node_id.as_str()) {
+                // Its final mesh topology, the mesh deleted and itself deleting, held it deleted first; the
+                // completion is this executor's all the same.
+                digest_view.note_executed_deletion(op);
+                true
+            } else {
+                match span.in_scope(|| self.channels.hold_lifecycle(&f, "executed")) {
+                    Ok(_) => digest_view.is_deleted(op.node_id.as_str()),
+                    Err(e) => {
+                        span.in_scope(|| tracing::info!(error = %e, "the NodeDeleted frame could not be authored: this view holds nothing of it"));
+                        false
+                    }
+                }
+            };
+            span.record("held", held);
+            span.in_scope(|| tracing::info!("the exact birth is proven terminal, the last of a deleted mesh: held in this executor's own view, no NodeDeleted is published"));
+        } else {
+            let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
+            async {
+                if let Err(e) = self.channels.publish_lifecycle(&f).await {
+                    tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
+                }
+                tracing::info!("the exact birth is proven terminal: it has left");
             }
-            tracing::info!("the exact birth is proven terminal: it has left");
+            .instrument(span)
+            .await;
         }
-        .instrument(span)
-        .await;
         if let Some(mesh_deleter) = self.mesh_deleter.get().cloned() {
             mesh_deleter.birth_deleted(op).await;
         }

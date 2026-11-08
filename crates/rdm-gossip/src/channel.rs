@@ -1218,13 +1218,21 @@ impl Channels {
     /// mesh's topology carries it on the backbone for the retention, so the deleted birth's own mesh
     /// takes it when the birth was in a peer mesh (gossip.md §6.1).
     pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
+        let authored = self.hold_lifecycle(f, "mesh-channel")?;
+        self.mesh().broadcast(&authored).await
+    }
+
+    /// The local half of [`Self::publish_lifecycle`]: `f`, authored by this node, taken into this
+    /// node's own view as `via`, and broadcast to nobody. A lifecycle event its executor holds and
+    /// never publishes, a deleted mesh's last node-admin's NodeDeleted (gossip.md "Mesh delete", Q414),
+    /// stops here.
+    pub fn hold_lifecycle(&self, f: &Frame, via: &'static str) -> Result<Frame> {
         if let Frame::NodeDeleted { op, forwarded_by: None } = f {
             self.topology_view.digest_view.note_executed_deletion(op);
         }
         let authored = self.mesh().authored(f)?;
-        let f = &authored;
-        let _ = self.topology_view.view.take(f, &self.topology_view.fabric, "mesh-channel");
-        self.mesh().broadcast(f).await
+        let _ = self.topology_view.view.take(&authored, &self.topology_view.fabric, via);
+        Ok(authored)
     }
 
     /// One chunk of a topology read from another node. Once every chunk of the mesh's full is held it

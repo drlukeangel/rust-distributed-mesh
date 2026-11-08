@@ -544,6 +544,22 @@ impl Backbone {
         }
     }
 
+    /// The local half of [`Self::publish_status_event`] for an event this admin executed on a birth of
+    /// another mesh: applied to its own view and broadcast to nobody. A deleted mesh's last node-admin's
+    /// stop and its removal under way stop here (gossip.md "Mesh delete", Q414). Whether the view holds the
+    /// fact after it: applied now; a stop already held from the birth's declaration, which reaches this
+    /// admin first, or a removal already in flight; or the birth is already held deleted, its final mesh topology (the mesh deleted and itself deleting) having
+    /// reached this admin before its stop's receipt, and a departure is never undone by a stop.
+    pub fn hold_status_event(&self, kind: StatusEvent, op: &LifecycleOp) -> bool {
+        let digest_view = &self.channels.topology_view.digest_view;
+        let applied = self.channels.topology_view.view.apply_status_event(kind, op, None, "executed");
+        applied
+            || match kind {
+                StatusEvent::Stopped => digest_view.holds_stopped(op.node_id.as_str(), &op.incarnation) || digest_view.is_deleted(op.node_id.as_str()),
+                StatusEvent::Deleting => digest_view.in_flight().iter().any(|held| held.key() == op.key()) || digest_view.is_deleted(op.node_id.as_str()),
+            }
+    }
+
     /// Publish the status event `kind` of `op`'s birth, which this admin executed (R-HB1 "The version
     /// field": "Each status fact carries its subject's `topology_version`"; §A.2: "A status fact
     /// carries the `topology_version` at which its subject changed"). The event is applied to this

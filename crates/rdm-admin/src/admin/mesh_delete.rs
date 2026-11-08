@@ -39,6 +39,9 @@ impl MeshDeleter for MeshDeleteService {
     async fn birth_deleted(&self, op: &rdm_core::LifecycleOp) {
         self.runner.mesh_left_after_delete(op).await
     }
+    async fn birth_of_deleted_mesh(&self, op: &rdm_core::LifecycleOp) -> bool {
+        self.runner.mesh_record_deleted(&op.mesh).await
+    }
 }
 
 impl AdminRunner {
@@ -558,7 +561,7 @@ impl AdminRunner {
     /// the final primary's own node.delete is a Build of its own, accepted after it, so the current Build
     /// is not it. `None` when no such mesh.delete is open.
     async fn mesh_deleted_of(&self, op: &rdm_core::LifecycleOp) -> Result<Option<(crate::build::BuildId, rdm_core::OperationId, MeshId)>, String> {
-        let deleted: Vec<MeshId> = self.mesh_storage.meshes().await.map_err(|e| format!("the mesh records could not be read for {}: {e}", op.mesh))?.into_iter().filter(|m| m.name == op.mesh && m.state == rdm_core::status::MeshState::Deleted).map(|m| m.mesh_id).collect();
+        let deleted = self.deleted_mesh_ids(&op.mesh).await?;
         if deleted.is_empty() {
             return Ok(None);
         }
@@ -577,6 +580,28 @@ impl AdminRunner {
             }
         }
         Ok(None)
+    }
+
+    /// The ids of the deleted meshes named `mesh` (`MeshState::Deleted` records). A mesh is created once:
+    /// a later mesh of the same name is another mesh, known by its id (gossip.md "Mesh delete").
+    async fn deleted_mesh_ids(&self, mesh: &str) -> Result<Vec<MeshId>, String> {
+        Ok(self.mesh_storage.meshes().await.map_err(|e| format!("the mesh records could not be read for {mesh}: {e}"))?.into_iter().filter(|m| m.name == mesh && m.state == rdm_core::status::MeshState::Deleted).map(|m| m.mesh_id).collect())
+    }
+
+    /// Whether a mesh named `mesh` has a deleted record: the one fact that decides this executor publishes
+    /// no `NodeStopped` and no `NodeDeleted` for a birth of it (gossip.md "Mesh delete": after mesh.deleted
+    /// the fabric-primary "publishes nothing for the mesh or that admin"; Q414). A record read that fails
+    /// is spanned by name and decides nothing: the mesh is not known deleted.
+    pub(super) async fn mesh_record_deleted(&self, mesh: &str) -> bool {
+        match self.deleted_mesh_ids(mesh).await {
+            Ok(deleted) => !deleted.is_empty(),
+            Err(reason) => {
+                let me = self.held_name();
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-record-read", node_path = %me.path, node_name = %me.name, mesh = %mesh, reason = %reason)
+                    .in_scope(|| tracing::info!("the mesh is not known deleted: its record could not be read"));
+                false
+            }
+        }
     }
 
     async fn mesh_left_in(&self, op: &rdm_core::LifecycleOp, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId, mesh_id: &MeshId) -> Result<&'static str, String> {

@@ -1703,7 +1703,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), {
                                     let project = Some(view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone()));
                                     if let Some(status) = status_service.get() {
-                                        let _ = status.stopped.set(super::runner::stopped_publisher(topology_view.clone(), backbone.clone(), project.clone()));
+                                        let _ = status.stopped.set(super::runner::stopped_publisher(topology_view.clone(), backbone.clone(), project.clone(), mesh_deleter.clone()));
                                     }
                                     Arc::new(GossipLifecycle { channels: channels.clone(), backbone: backbone.clone(), me_path: name.path.clone(), me_name: name.name.clone(), mesh_deleter: mesh_deleter.clone(), project, status_service: status_service.clone() })
                                 }),

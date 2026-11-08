@@ -1115,9 +1115,15 @@ pub trait MeshDeleter: Send + Sync {
     async fn delete_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// `MeshDeleted` from `sender`: validate the handoff.
     async fn mesh_deleted(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
-    /// This admin, as an executor, published `op`'s birth deleted (NodeDeleted, from the provider's
-    /// exact exited verdict).
+    /// This admin, as an executor, proved `op`'s birth deleted (the provider's exact exited verdict,
+    /// NodeDeleted published unless the birth is of a deleted mesh).
     async fn birth_deleted(&self, _op: &rdm_core::LifecycleOp) {}
+    /// Whether `op`'s birth is of a mesh whose record is deleted: after mesh.deleted, the mesh's last
+    /// node-admin, for which its executor publishes no `NodeStopped` and no `NodeDeleted` (gossip.md
+    /// "Mesh delete", Q414). Decided from the mesh record alone. Nothing to read: no.
+    async fn birth_of_deleted_mesh(&self, _op: &rdm_core::LifecycleOp) -> bool {
+        false
+    }
 }
 
 /// The `MeshDeleteService` a running admin fills once its runner exists.
