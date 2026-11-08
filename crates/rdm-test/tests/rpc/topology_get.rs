@@ -97,14 +97,18 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let member_id = node_id(&nodes, &member_location);
     // The member learns each mesh's topology by gossip, not from the admin's settled view: the reads are
     // made once the member's own held view of each mesh holds every settled birth ready (the
-    // `witness_holds_birth` precondition), so the version it answers with is the one it keeps.
+    // `witness_holds_birth` precondition) and each node type's first primary, which the mesh-primary's
+    // create step commands after the birth is Ready (Q407) and which moves the mesh's version, so the
+    // version it answers with is the one it keeps.
     let member_view = nodes.iter().find(|n| n.location() == member_location).expect("the member is in the view").clone();
     let peers = estate.peers().await;
     for mesh in ["mesh1", "mesh2"] {
         let births: Vec<_> = nodes.iter().filter(|n| n.mesh() == mesh).map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
+        let types: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n.mesh() == mesh && n.r#type != "node-admin").map(|n| n.r#type.clone()).collect();
         peers
-            .fact(&member_view, mesh, &format!("{member_location:?} holds every settled birth of {mesh} ready"), |v| {
+            .fact(&member_view, mesh, &format!("{member_location:?} holds every settled birth of {mesh} ready and each node type's primary"), |v| {
                 births.iter().all(|(id, inc)| v.birth(id).is_some_and(|d| Some(&d.node.incarnation) == inc.as_ref() && d.status == rdm_core::model::NodeStatus::Ready))
+                    && types.iter().all(|t| v.members.iter().any(|d| d.primary.iter().any(|r| r.role == rdm_core::PrimaryRole::NodePrimary(t.clone()))))
             })
             .await;
     }
