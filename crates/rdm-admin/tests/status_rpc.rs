@@ -154,6 +154,8 @@ struct Rig {
     service: Arc<StatusService>,
     /// The router's ready gate: open unless a cell closes it.
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Holds the next `Status` reply once applied, until the cell releases it.
+    hold: Arc<rdm_admin::status_rpc::StatusReplyHold>,
 }
 
 async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>) -> Rig {
@@ -193,7 +195,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         own: Arc::new(OnceLock::new()),
         mesh_deleter: Arc::new(OnceLock::new()),
         primary_commands: Default::default(),
-        storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        storage_changes: Default::default(), 
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
@@ -213,7 +215,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         Ok(PingReply::Pong { payload })
     });
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let server = rdm_admin::status_rpc::serve(core, slot)
+    let hold = Arc::new(rdm_admin::status_rpc::StatusReplyHold::default());
+    let server = rdm_admin::status_rpc::serve_holding(core, slot, Some(hold.clone()))
         .with_ready_gate(ready.clone())
         .build(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
@@ -227,7 +230,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         transport_addr: addr,
         incarnation: me.node.incarnation_id.clone().unwrap(),
     };
-    Rig { me, server, _router: router, resolved, service, ready }
+    Rig { me, server, _router: router, resolved, service, ready, hold }
 }
 
 /// `b`'s one client, over its one endpoint, resolving the rig's authority.
@@ -283,8 +286,9 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
     // Applied, its reply lost: Indeterminate at the caller, and the state is held once.
-    rig.service.hold_next_reply.store(true, Ordering::SeqCst);
+    rig.hold.arm();
     let lost = call(&rig, &fabric_primary, &pending, &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
+    rig.hold.release();
     assert!(matches!(lost, RpcOutcome::Indeterminate(_)), "{lost:?}");
     let held_after_lost = rig.service.declared.lock().unwrap().meshes.clone();
     assert_eq!(held_after_lost.get(&mesh2), Some(&MeshState::Pending), "applied before the reply was lost");
@@ -389,8 +393,9 @@ async fn connections_deleting_status_service(capture: &Capture, cell: &str, dir:
     let not_sent = command_admission(&cut);
     assert!(matches!(not_sent, CommandAdmission::NotSent { .. }), "{not_sent:?}");
     // Indeterminate: decided, the reply lost.
-    rig.service.hold_next_reply.store(true, Ordering::SeqCst);
+    rig.hold.arm();
     let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
+    rig.hold.release();
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
     // Deadline: the delete pipeline's AwaitNodeLeft over an admitted command that never completes. For
@@ -1022,9 +1027,10 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let mesh_id3 = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id3.clone())].into_iter().collect();
         let r3 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], ids).await;
-        r3.service.hold_next_reply.store(true, Ordering::SeqCst);
+        r3.hold.arm();
         let t3 = std::time::Instant::now();
         let e3 = handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect_err("a lost reply is not certainty: the step fails and is not retried inside");
+        r3.hold.release();
         let lost_reply_wall = t3.elapsed();
         assert!(e3.contains("Indeterminate") && e3.contains("Pending is not certain"), "{e3}");
         assert_eq!(r3.service.declared.lock().unwrap().meshes.get(&mesh_id3), Some(&MeshState::Pending), "applied once");

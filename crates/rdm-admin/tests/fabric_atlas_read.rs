@@ -202,7 +202,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(AtomicBool::new(false)),
+            storage_changes: Default::default(), 
             wake: Default::default(),
             fabric_states: Default::default(),
             atlas: atlas_slot.clone(),

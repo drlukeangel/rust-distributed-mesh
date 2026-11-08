@@ -171,7 +171,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
         commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
-        storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        storage_changes: Default::default(), 
         wake: Default::default(),
         fabric_states: Default::default(),
         atlas: slot,

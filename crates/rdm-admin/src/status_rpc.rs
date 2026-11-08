@@ -527,9 +527,6 @@ pub struct StatusService {
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
     /// The node commands this admin runs as the primary above a node, for a caller (D40; Q342).
     pub primary_commands: crate::node_commands::PrimaryCommandsSlot,
-    /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
-    /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
-    pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
     /// This admin's storage changes (storage.md §2 "Changing it"): the one it runs as fabric-primary,
     /// requested by `fabric.storage.update`, and the `mesh.block` and `mesh.unblock` it serves as a
     /// mesh-primary. Set once at its boot.
@@ -2486,8 +2483,40 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
 /// (i144 R22). `service` is filled once the admin holds a view; until then a declaration is
 /// `NotReady` by name.
 pub fn serve(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>>>) -> ServerBuilder {
+    serve_holding(b, service, None)
+}
+
+/// Test seam: holds the reply of the next `Status` call after it is applied, until the cell releases
+/// it (a reply lost past the caller's time limit: `Indeterminate`, and the same request again is
+/// `AlreadyApplied`). Nothing in the product holds one; an unarmed hold changes nothing.
+#[derive(Default)]
+pub struct StatusReplyHold {
+    armed: std::sync::atomic::AtomicBool,
+    released: tokio::sync::Notify,
+}
+
+impl StatusReplyHold {
+    /// Hold the reply of the next `Status` call once it is applied.
+    pub fn arm(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Let the held reply go (or the next one, held after this).
+    pub fn release(&self) {
+        self.released.notify_one();
+    }
+
+    async fn hold(&self) {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.released.notified().await;
+        }
+    }
+}
+
+/// [`serve`], with `hold` holding a `Status` reply a cell armed it for.
+pub fn serve_holding(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>>>, hold: Option<Arc<StatusReplyHold>>) -> ServerBuilder {
     serve_node_command(b, service.clone()).serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
-        let service = service.clone();
+        let (service, hold) = (service.clone(), hold.clone());
         async move {
             let Some(service) = service.get().cloned() else {
                 return Ok(rdm_core::reply::status::not_ready("this admin holds no view yet".into()));
@@ -2495,8 +2524,8 @@ pub fn serve(b: ServerBuilder, service: Arc<OnceLock<Arc<StatusService>>>) -> Se
             let peer_id = EndpointId(peer.endpoint_id.to_string());
             let sender = service.sender_of(&peer_id).await;
             let reply = service.apply_from(Some(peer.endpoint_id), sender, &req).await;
-            if service.hold_next_reply.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            if let Some(hold) = &hold {
+                hold.hold().await;
             }
             Ok(reply)
         }
@@ -2839,7 +2868,7 @@ mod tests {
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), 
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
@@ -2924,7 +2953,7 @@ mod tests {
             commands: Arc::new(crate::node_commands::CommandView::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), 
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status,
@@ -3200,7 +3229,7 @@ mod tests {
             commands: Default::default(),
             own: Default::default(),
             mesh_deleter: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Default::default(),
+            storage_changes: Default::default(), 
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
@@ -3598,7 +3627,7 @@ mod tests {
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
             primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), 
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             nodes_storage: status.clone(),

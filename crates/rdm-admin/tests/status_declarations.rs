@@ -145,7 +145,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_gossip::digest_view::Diges
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
         primary_commands: Default::default(),
-        storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        storage_changes: Default::default(), 
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
@@ -384,8 +384,10 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.service.declared.lock().unwrap().nodes.is_empty());
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
-    rig.service.hold_next_reply.store(true, Ordering::SeqCst);
+    // The server's reply seam holds the reply past the caller's time limit, and the cell releases it.
+    rig.withhold.arm();
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
+    rig.withhold.release();
     assert!(matches!(out, RpcOutcome::Indeterminate(_)), "{out:?}");
     assert!(ev.unwrap().committed);
     assert_eq!(rig.service.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "applied before the reply was lost");
@@ -1059,7 +1061,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),
         primary_commands: Default::default(),
-        storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        storage_changes: Default::default(), 
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
@@ -2165,7 +2167,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 own: Arc::new(std::sync::OnceLock::new()),
                 mesh_deleter: Arc::new(std::sync::OnceLock::new()),
                 primary_commands: Default::default(),
-                storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                storage_changes: Default::default(), 
                 wake: Default::default(),
                 fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
                 configs: Default::default(),

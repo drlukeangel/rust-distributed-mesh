@@ -1487,7 +1487,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     certs: Some(issuer.clone()),
                                     mesh_deleter: mesh_deleter.clone(),
                                     primary_commands: primary_commands.clone(),
-                                    storage_changes: { let slot: Arc<std::sync::OnceLock<_>> = Default::default(); let _ = slot.set(storage_changes.clone()); slot }, hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                    storage_changes: { let slot: Arc<std::sync::OnceLock<_>> = Default::default(); let _ = slot.set(storage_changes.clone()); slot }, 
                                     wake: records.wake.clone(),
                                     fabric_states: states_slot.clone(), atlas: Arc::new(std::sync::OnceLock::from(control.atlas.clone())), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))),
                                     configs: configs_slot.clone(),

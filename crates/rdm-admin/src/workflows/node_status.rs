@@ -244,7 +244,7 @@ mod tests {
             own: Arc::new(std::sync::OnceLock::new()),
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),
             primary_commands: Default::default(),
-            storage_changes: Default::default(), hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage_changes: Default::default(), 
             wake: Default::default(),
             fabric_states: Default::default(),
             atlas: Default::default(),
