@@ -82,8 +82,9 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
 }
 
 // @feature: node-lifecycle
-/// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets its
-/// status"; gossip.md §3.1: a Digest "carries no status"): a member's `DeclareNodeState` applied by its
+/// CONTRACT (node-status.md "Status report": "A node writes its status on its own record (Q356) and
+/// reports it to its mesh's primary"; gossip.md §3.1 `Digest`: its mesh-primary "takes it from the
+/// node's reports ... never from gossip (Q197)"): a member's `DeclareNodeState` applied by its
 /// mesh-primary's status authority sets the member's status in that primary's view, which its member
 /// projection carries: its Ready (node.started), then its ConnectionsDeleting (a node-admin frozen by the
 /// fabric shutdown says it so, and the shutdown's freeze barrier reads it from the projection). A

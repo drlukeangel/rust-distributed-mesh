@@ -191,10 +191,11 @@ impl Elector {
 
 /// Run `elector`'s election at each change of what it decides from: a record held, a birth held,
 /// changed or heard again, a birth found silent past the floor by the pruner's sweep, a departure taken
-/// (`DigestView::routing_watch`). Nothing is polled. The task ends when it is aborted.
+/// (`DigestView::routing_watch`, which holds the primaries watch). Nothing is polled. The task ends
+/// when it is aborted.
 pub fn spawn(elector: Elector) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut moved = elector.topology_view.digest_view.routing_watch().watching("primaries", elector.topology_view.primaries().subscribe());
+        let mut moved = elector.topology_view.digest_view.routing_watch();
         let mut last: Option<(Primary, Option<NodeId>)> = None;
         loop {
             moved.seen();

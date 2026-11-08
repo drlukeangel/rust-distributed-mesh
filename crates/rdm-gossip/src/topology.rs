@@ -1834,6 +1834,49 @@ mod tests {
         assert_eq!(moved_named(&mut w).await, Some("accepted"), "a mesh added");
     }
 
+    /// CONTRACT (Q406, Q407: a node-type primary gossips its role in its own Digest's `primary`, and
+    /// that Digest moves no member's birth or status): holding a primary record moves the routing
+    /// watch, named `primaries`, whether the record is taken on its own or from the role a Digest of
+    /// its birth carries; the same record again, or one it does not supersede, moves nothing; the
+    /// other watches still name themselves. Must NOT happen: a routing waiter (the type's election, an
+    /// admin's view rebuild, an application's forward) that does not wake when a primary record is
+    /// held, so it learns the new primary only when something else moves.
+    #[tokio::test]
+    async fn holding_a_new_primary_record_moves_the_routing_watch_and_a_record_not_held_moves_nothing() {
+        let digest_view = DigestView::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let record = |revision| Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision };
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        assert!(matches!(digest_view.primaries.take(PrimaryRole::MeshPrimary, &record(2)), RoleTaken::Held { .. }));
+        assert_eq!(moved_named(&mut w).await, Some("primaries"), "a record held moves the routing watch");
+        w.seen();
+        assert_eq!(digest_view.primaries.take(PrimaryRole::MeshPrimary, &record(2)), RoleTaken::Same);
+        assert_eq!(moved_named(&mut w).await, None, "the record already held moves nothing");
+        assert!(matches!(digest_view.primaries.take(PrimaryRole::MeshPrimary, &record(1)), RoleTaken::Refused { .. }));
+        assert_eq!(moved_named(&mut w).await, None, "a record that does not supersede the one held moves nothing");
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
+        assert_eq!(moved_named(&mut w).await, Some("meshes"), "a mesh status taken still names its own watch");
+
+        // The type's election reaches every node as the role on the new primary's own Digest: the
+        // birth is held already, so the Digest moves no birth or status, only the record.
+        let digest_view = DigestView::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 10)));
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        let mut elected = digest(&id, &inc, None, NodeStatus::Ready, 11);
+        elected.primary = rdm_core::RoleRevision::of_type("node", Some(1), None);
+        assert!(digest_view.record(elected));
+        assert_eq!(digest_view.primaries.node_type_primary("mesh1", "node").map(|p| (p.node_id, p.revision)), Some((id.clone(), 1)), "the role the Digest carries is held");
+        assert_eq!(moved_named(&mut w).await, Some("primaries"), "the record the Digest carries moves the routing watch, and nothing else does");
+        w.seen();
+        let mut again = digest(&id, &inc, None, NodeStatus::Ready, 12);
+        again.primary = rdm_core::RoleRevision::of_type("node", Some(1), None);
+        assert!(digest_view.record(again));
+        assert_eq!(moved_named(&mut w).await, None, "its next Digest, the same role at the same revision, moves nothing");
+    }
+
     /// CONTRACT (rdm#172): a watch of the routing watch whose sender is gone leaves the wait, and the
     /// others still wake it. Must NOT happen: one closed watch holding the wait for good, so that no
     /// fact any other watch moves wakes the view's rebuild again.

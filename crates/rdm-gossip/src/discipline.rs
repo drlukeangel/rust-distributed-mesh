@@ -12,8 +12,8 @@
 //!
 //! A stamp is offered only when the authority is `Ready` ("No node is ready
 //! before it has rafka-time", origin-ordering.md), because a pending publisher may not hold the
-//! lineage's time yet: the status the node's view holds for it, from its own projection (a heartbeat
-//! carries no status). A digest the view did not admit as newer is not a sample either.
+//! lineage's time yet: the status the node's view holds for it (a member's, from the primary's own
+//! Digest, gossip.md §3.1 `Digest`). A digest the view did not admit as newer is not a sample either.
 //!
 //! The stamps are publication time: `MeshDigest::emitted_at_rafka_ms` is read from the composed
 //! clock inside [`crate::topology::TopologyView::publish`] as the frame is built, and

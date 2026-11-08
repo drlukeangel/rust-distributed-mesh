@@ -302,10 +302,12 @@ impl Default for DigestView {
 /// The routing facts a view holds, watched: a held member first held, its birth or status changed,
 /// heard again after silence; a held birth silent past the staleness floor, marked by the pruner's
 /// sweep ([`DigestView::mark_silence`]); a lifecycle overlay opened or closed; a departure taken or
-/// forgotten; a mesh status taken; the meshes the accepted Build names. What application
-/// routing's view rebuild wakes on, so a fact is applied on receipt (states.md "Routing"); a caller
-/// adds the watches of its own inputs ([`Self::watching`]). A local observation of the view; nothing
-/// is sent.
+/// forgotten; a mesh status taken; the meshes the accepted Build names; a primary record held
+/// ([`crate::primary::PrimaryView::subscribe`]: a node-type primary gossips its role in its own
+/// Digest's `primary`, and a Digest that changes only its roles moves no other watch, Q406, Q407).
+/// What application routing's view rebuild wakes on, so a fact is applied on receipt (states.md
+/// "Routing"); a caller adds the watches of its own inputs ([`Self::watching`]). A local observation
+/// of the view; nothing is sent.
 pub struct RoutingWatch {
     /// Each watch by the name a wake reports. A watch whose sender is gone moves nothing again and
     /// leaves the list; the others are still waited on.
@@ -328,9 +330,9 @@ impl RoutingWatch {
     }
 
     /// Returns when a fact moved since [`RoutingWatch::seen`], naming the watch that moved (`heard`,
-    /// `births`, `overlays`, `meshes`, `silence`, `accepted`, or a name given to [`Self::watching`]). A
-    /// watch whose sender is gone leaves the wait and the others are waited on; with every one gone,
-    /// nothing can move, and this never returns.
+    /// `births`, `overlays`, `meshes`, `silence`, `accepted`, `primaries`, or a name given to
+    /// [`Self::watching`]). A watch whose sender is gone leaves the wait and the others are waited on;
+    /// with every one gone, nothing can move, and this never returns.
     pub async fn moved(&mut self) -> &'static str {
         loop {
             if self.watches.is_empty() {
@@ -890,9 +892,10 @@ impl DigestView {
     /// mesh `op` names, and sets that birth `status` (states.md "Who sets each state": node
     /// connections-deleting at "the admission of `node.connection.delete { scope: All }`; inside
     /// node.stop the visible status is stopping", node stopping at "the stop call's admission"): held
-    /// for the birth, so its projection carries it from its next publication. No heartbeat says it (gossip.md
-    /// §3.1: a Digest "carries no status"). `false` when the birth is not of this view's own mesh or
-    /// this view holds no digest of exactly that birth.
+    /// for the birth, so its projection carries it from its next publication. The birth's own Digest
+    /// does not move it here: a mesh-primary takes its own mesh's statuses from the node's reports and
+    /// the commands it admits, never from gossip (gossip.md §3.1 `Digest`, Q197). `false` when the
+    /// birth is not of this view's own mesh or this view holds no digest of exactly that birth.
     pub fn admitted(&self, op: &LifecycleOp, status: rdm_core::model::NodeStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let held = !own_mesh.is_empty() && op.mesh == own_mesh && self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == op.incarnation);
@@ -1524,13 +1527,15 @@ impl DigestView {
         self.record_at(d, Instant::now())
     }
 
-    /// [`Self::record`], heard at `now`. `d` is a heartbeat: the member's liveness, endpoints and
-    /// runtime fact. A heartbeat of a stopped birth is refused by name. For a birth of this view's own
-    /// mesh, its status is the mesh-primary's (gossip.md §3.1: a Digest "carries no status: a member's
-    /// status comes only from its mesh-primary"): the held status is the one this view holds for the
-    /// birth (`Self::projected_status`), which the primary sets from node.joined, node.started and
-    /// the commands it admits, and every other member takes from its primary's projection. No
-    /// heartbeat moves it, at the primary or anywhere.
+    /// [`Self::record`], heard at `now`. `d` is the node's own Digest: its liveness, its details, the
+    /// status the node writes on its own record (Q356) and the primary roles it holds, each with its
+    /// revision (gossip.md §3.1 `Digest`, Q392). A Digest of a stopped birth is refused by name. The
+    /// status taken is the Digest's, ordered by `digest_seq`, except at its own mesh's primary: there a
+    /// birth already held at that incarnation keeps the status the node's reports and the commands
+    /// the primary admits set on it (`Self::author_status`), never one from gossip (Q197); a birth it
+    /// holds no Digest of at that incarnation takes the Digest's. An own-mesh node's status that moves
+    /// is named (`rdm.mesh.topology.update.via-digest-status`). The roles it carries are held as
+    /// primary records where they supersede the ones held (`Self::take_primaries`).
     pub fn record_at(&self, d: MeshDigest, now: Instant) -> bool {
         let node = self.observer_name.lock().unwrap().clone();
         self.record_with(d, now, &node, "local")
@@ -1756,7 +1761,8 @@ impl DigestView {
         self.births.subscribe()
     }
 
-    /// The routing facts this view holds, watched ([`RoutingWatch`]).
+    /// The routing facts this view holds, watched ([`RoutingWatch`]), the primary records it holds
+    /// among them.
     pub fn routing_watch(&self) -> RoutingWatch {
         RoutingWatch {
             watches: vec![
@@ -1766,6 +1772,7 @@ impl DigestView {
                 ("meshes", self.statuses.mesh_changes()),
                 ("silence", self.silence.subscribe()),
                 ("accepted", self.accepted.subscribe()),
+                ("primaries", self.primaries.subscribe()),
             ],
         }
     }

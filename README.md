@@ -58,10 +58,11 @@ Build the Day-0 [`rdm-node-admin`](docs/architecture/node-admin-lifecycle.md) bi
 cargo build -p rdm-admin --bin rdm-node-admin -p rdm-test --bin rdm-rpc-probe
 ```
 
-Start a Day-0 [node-admin](docs/architecture/node-admin-lifecycle.md) (`mesh1.admin.1`), wait for it
-to print its birth record (`RDM_NODE_BIRTH`), and read
-its live [topology](docs/architecture/lifecycles/node-topology-get.md) over
-[Node RPC](docs/architecture/node-rpc-envelope.md):
+Start a Day-0 [node-admin](docs/architecture/node-admin-lifecycle.md) (path `mesh1.node-admin`, name
+`1`), wait for it to print its birth record (`RDM_NODE_BIRTH`), and read its live
+[topology](docs/architecture/lifecycles/node-topology-get.md) over
+[Node RPC](docs/architecture/node-rpc-envelope.md). The birth line comes a moment before the admin
+answers its first read, so the read is asked again until it answers:
 
 ```bash
 ROOT=$(mktemp -d)
@@ -77,7 +78,12 @@ for _ in $(seq 1 40); do
 done
 grep '^RDM_NODE_' "$ROOT/admin.log"
 BIRTH=$(grep '^RDM_NODE_BIRTH=' "$ROOT/admin.log" | cut -d= -f2-)
-./target/debug/rdm-rpc-probe --admin-birth "$BIRTH" topology --target path:mesh1.admin.1 2>/dev/null
+for _ in $(seq 1 40); do
+  OUT=$(./target/debug/rdm-rpc-probe --admin-birth "$BIRTH" topology \
+    --target 'path:{"path":"mesh1.node-admin","name":"1"}' 2>/dev/null) && break
+  sleep 0.25
+done
+echo "$OUT"
 kill "$PID" && wait "$PID" 2>/dev/null || true
 rm -rf "$ROOT"
 ```
@@ -85,8 +91,8 @@ rm -rf "$ROOT"
 Output:
 
 ```text
-RDM_NODE_BIRTH={"node_id":"hp3fh7v6wf8j","name":"mesh1.admin.1","endpoint_id":"281aec62378f3ba09bd85557bc48e11775aa899a44355b176ef7503dd2bce3a3","transport_addr":"127.0.0.1:51742","incarnation":"3bbtwqd0gwsx","supersedes":null,"runtime":{"deployment_id":"jsdc78afasar","provider":"process","control_domain":"process:b9454213-c995-438d-a30c-b3ee338ce38a:4026531836","locator":{"kind":"process","pid":2237731,"start":3519619}}}
-{"frames":[{"detail":"Started","frame":"started"},{"chunk_count":1,"chunk_index":0,"deleted":0,"frame":"snapshot","in_flight":0,"members":["mesh1.admin.1"],"mesh":"mesh1","publisher_incarnation":"3bbtwqd0gwsx","publisher_node":"mesh1.admin.1","publisher_node_id":"hp3fh7v6wf8j","snapshot_id":1,"topology_version":1},{"detail":"Primaries { kind: MeshPrimary, primary: Primary { mesh: \"mesh1\", node_id: NodeId(\"hp3fh7v6wf8j\"), incarnation: IncarnationId(\"3bbtwqd0gwsx\"), revision: 1 }, gone: false }","frame":"primaries"},{"detail":"Primaries { kind: FabricPrimary, primary: Primary { mesh: \"mesh1\", node_id: NodeId(\"hp3fh7v6wf8j\"), incarnation: IncarnationId(\"3bbtwqd0gwsx\"), revision: 1 }, gone: false }","frame":"primaries"},{"detail":"RafkaTime { ms: 1793269551338, kind: Some(FabricPrimary) }","frame":"rafka-time"},{"frame":"end","meshes":1}],"outcome":"Reply"}
+RDM_NODE_BIRTH={"mesh":"mesh1","type":"node-admin","node_id":"9zfcbqgbc2ba","path":"mesh1.node-admin","name":"1","endpoint_id":"7e943b8a3bd274289a2bf25c8c4370d6d8cb28e3227b517e715d782c8a073d6e","transport_addr":"127.0.0.1:52291","incarnation":"zywaemhqgv1w","supersedes":null}
+{"frames":[{"detail":"Started","frame":"started"},{"chunk_count":1,"chunk_index":0,"frame":"snapshot","members":["9zfcbqgbc2ba"],"mesh":"mesh1","statuses":["ready"],"topology_version":1},{"detail":"Primaries { kind: MeshPrimary, primary: Primary { mesh: \"mesh1\", node_id: NodeId(\"9zfcbqgbc2ba\"), incarnation: IncarnationId(\"zywaemhqgv1w\"), revision: 1 }, gone: false }","frame":"primaries"},{"detail":"Primaries { kind: FabricPrimary, primary: Primary { mesh: \"mesh1\", node_id: NodeId(\"9zfcbqgbc2ba\"), incarnation: IncarnationId(\"zywaemhqgv1w\"), revision: 1 }, gone: false }","frame":"primaries"},{"detail":"RafkaTime { ms: 1794121312305, kind: Some(FabricPrimary) }","frame":"rafka-time"},{"frame":"end","meshes":1}],"outcome":"Reply"}
 ```
 
 ## Where next

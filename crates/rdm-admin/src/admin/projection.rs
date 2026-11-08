@@ -606,9 +606,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
 /// (Q254: no timer, no poll; a sleep is a timer). The digest view's routing watch (a birth's status,
 /// held or held only from its mesh-primary's projection; an overlay or a stop mark; a departure taken
 /// or forgotten; a mesh status; the meshes the accepted Build names: states.md "Routing", applied on
-/// receipt; and a birth silent past the staleness floor, marked by the pruner's sweep, the one clock the
-/// projection reads), the records' inputs ([`Records::inputs`]), the primary records the election reads
-/// ([`rdm_gossip::primary::PrimaryView::subscribe`]), the states this admin applied
+/// receipt; a birth silent past the staleness floor, marked by the pruner's sweep, the one clock the
+/// projection reads; and the primary records the election reads), the records' inputs
+/// ([`Records::inputs`]), the states this admin applied
 /// ([`crate::status_rpc::Declared::subscribe`]) and the node rows this admin writes
 /// ([`crate::node_rows::WrittenRows::subscribe_names`]). A watch whose sender is gone leaves the wait;
 /// the others are still waited on ([`rdm_gossip::digest_view::RoutingWatch::moved`]).
@@ -623,7 +623,6 @@ impl ViewWake {
         let inputs = digest_view
             .routing_watch()
             .watching("records", records.subscribe_inputs())
-            .watching("primaries", digest_view.primaries.subscribe())
             .watching("declared", declared);
         Self { inputs }
     }
