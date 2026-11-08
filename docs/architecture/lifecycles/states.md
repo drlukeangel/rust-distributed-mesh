@@ -95,8 +95,9 @@ selection resumes only when the start gates complete, the node and mesh are read
 and no active routing-stop overlay remains. A late ready digest or stopped overlay
 cannot restore a deleted identity or a member of a deleted mesh.
 Peers may observe a mesh's final primary go directly from running to Gone when its
-NodeDeleted arrives before its NodeStopped; observing Stopped is not a prerequisite to
-accepting the provider's `Exited`.
+final mesh topology, the mesh deleted and itself deleting, arrives: the fabric-primary
+publishes no NodeStopped and no NodeDeleted for it ([gossip.md "Mesh delete"](../gossip.md#mesh-delete));
+observing Stopped is not a prerequisite to accepting the provider's `Exited`.
 
 Application eligibility does not prevent lifecycle/control calls to a retained
 endpoint: a stopped process remains reachable for start, update and delete. Only whoever
