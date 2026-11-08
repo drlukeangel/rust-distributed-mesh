@@ -65,7 +65,7 @@ own. A recovery that ends failed is run again by the next check that finds the n
 
 1. The investigation ends in a verdict other than `reached`, and the mesh-primary (for a lost mesh-primary, the successor its election names; the fabric-primary only when no successor takes the role) runs the recovery of the target birth `(node.id, incarnation)` itself,
    recording each step on the node record. A birth already recovered or deleted is not recovered again: never a second recovery. Another step on the same node runs
-   before or after it at the mesh-primary, never beside it.
+   before or after it at the mesh-primary, never beside it: a caller's command naming a node its primary already runs a command or step on is refused `Busy` at once, and the caller's `Send` sends it again (Q413).
 2. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the target instance, as a target with
    no RPC to the old process and no stop frames. Its first step is
    `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime handle recorded at launch,
