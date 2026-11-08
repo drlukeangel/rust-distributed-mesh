@@ -84,9 +84,6 @@ pub(crate) struct View {
     pub(crate) forwarder: Arc<Mutex<Forwarder>>,
     /// Wakes the top-up when a source of the Mesh channel desynchronizes.
     pub(crate) desync: Arc<tokio::sync::Notify>,
-    /// Whether this node is on the backbone (a node-admin, set when it joins it): its copy of each peer
-    /// mesh follows the backbone's complete fulls alone (gossip.md §3.3).
-    pub(crate) on_backbone: Arc<AtomicBool>,
     /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), the same cell as its
     /// digest view's (`DigestView.held_name`); `None` while the birth holds its launch name (`node`).
     pub(crate) held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
@@ -131,15 +128,13 @@ impl View {
         // One flag: the view replays as its mesh's primary while the digest view authors its members' statuses.
         view.primary = view.digest_view.primary.clone();
         view.forwarder.lock().unwrap().set_own_mesh(mesh);
-        // One floor per mesh, read from the one copy of it (gossip.md receive rules).
+        // Each mesh's topology is ordered by the version its one copy holds, read from the copy.
         *view.order.lock().unwrap() = crate::receive_order::ReceiveOrder::of(view.copies.clone());
         // The MeshLeft receipt is the end of that mesh: the forwarder forgets what it forwarded of it, and
-        // the one copy of it and its floor are forgotten, so no read is served a mesh that left and nothing
-        // of it orders a frame (gossip.md "External topology when a mesh is deleted": "they hold the mesh
-        // for the deleted retention and then nothing"). Called with no gossip lock held.
-        let (order, forwarder, copies) = (view.order.clone(), view.forwarder.clone(), view.copies.clone());
+        // the one copy of it is forgotten, so no read is served a mesh that left (gossip.md "External
+        // topology when a mesh is deleted": "they hold the mesh for the deleted retention and then nothing").
+        let (forwarder, copies) = (view.forwarder.clone(), view.copies.clone());
         *view.digest_view.on_mesh_deleted.0.lock().unwrap() = Some(Arc::new(move |m: &str| {
-            order.lock().unwrap().forget(m);
             forwarder.lock().unwrap().remove(m);
             copies.lock().unwrap().remove(m);
         }));
@@ -272,11 +267,11 @@ impl View {
             (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) => {
                 let kind = if status.status() == "deleting" { StatusEvent::Deleting } else { StatusEvent::Stopped };
                 let op = &traced_by_envelope(f, op);
-                // The mesh-primary that published it, for spans: its envelope's source. Its carried
-                // version was checked against its mesh's floor once, in the receive path
-                // ([`crate::receive_order::ReceiveOrder::admit`]), before this handler reads it.
+                // The mesh-primary that published it, for spans: its envelope's source.
                 let publisher = f.context().map(|c| format!("{}@{}", c.source.node, c.source.incarnation)).unwrap_or_default();
-                self.apply_status_event(kind, op, Some((publisher, *topology_version)), via);
+                if !self.refuses_status_event(kind, op, &publisher, *topology_version, via) {
+                    self.apply_status_event(kind, op, Some((publisher, *topology_version)), via);
+                }
                 Vec::new()
             }
             (StatusSubject::Node(op), _) => {
@@ -303,6 +298,52 @@ impl View {
                 Vec::new()
             }
         }
+    }
+
+    /// Whether the status event `kind` of `op`'s birth, published by `publisher` at
+    /// `topology_version` and heard through `via`, is refused. Whoever published it, the event is
+    /// taken for what it carries (R-RX1): an event published before the newest of its mesh was
+    /// already ignored by the receive path (R-RX3, [`crate::receive_order`]). A `NodeStopped` older
+    /// than a held projection of its mesh that lists the exact birth without the stop is refused
+    /// (node-status-heartbeat-connections.md §C "late stopped after starting"): the projection is the
+    /// mesh's later word on the birth, and the mesh's version orders them, whichever of its
+    /// mesh-primaries or executors published either (Q389, Q391). Only a projection strictly newer than
+    /// the stop's version refuses it: an executor that is not the mesh's primary stamps the version it
+    /// holds of the mesh, which the projection at that version predates, and a mesh-primary's
+    /// projection at its stop's version already carries the stop.
+    pub(crate) fn refuses_status_event(&self, kind: StatusEvent, op: &LifecycleOp, publisher: &str, topology_version: u64, via: &'static str) -> bool {
+        let mesh = op.mesh.as_str();
+        if kind != StatusEvent::Stopped {
+            return false;
+        }
+        let key = (op.node_id.to_string(), op.incarnation.to_string());
+        let copies = self.copies.lock().unwrap();
+        let Some((_, held_version)) = copies.held_version(mesh) else { return false };
+        if held_version <= topology_version {
+            return false;
+        }
+        let Some(full) = copies.held_full(mesh) else { return false };
+        let listed = full.digests().iter().any(|d| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation);
+        if !listed || Target::stops_of(Some(full)).contains(&key) {
+            return false;
+        }
+        drop(copies);
+        crate::receive_order::reject_lifecycle_version(kind.name(), mesh, held_version, topology_version);
+        tracing::info_span!(
+            "rdm.mesh.topology.reject.via-stop-older-than-projection",
+            node = %self.current_name(),
+            subject_path = %op.path, subject_name = %op.name,
+            subject_id = %op.node_id,
+            incarnation_id = %op.incarnation.as_str(),
+            build_id = %op.build_id,
+            operation = %op.operation.action, operation_subject = ?op.operation.subject,
+            publisher = %publisher,
+            topology_version,
+            held_version,
+            via,
+        )
+        .in_scope(|| tracing::info!("a NodeStopped older than the held projection of its mesh, which lists the birth without the stop: refused, the birth started after it"));
+        true
     }
 
     /// Apply the status event `kind` of `op`'s birth to the view: the frame its publisher sent
@@ -419,10 +460,6 @@ impl View {
                 if self.outside_build(mesh, side) {
                     return TopologyFrameTaken::default();
                 }
-                if self.on_backbone.load(Ordering::Relaxed) {
-                    self.backbone_copy_delta(mesh, &source, *base_version, *topology_version);
-                    return TopologyFrameTaken::default();
-                }
                 let mut rx = self.copies.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
                 let moved = rx.take_delta_chunk(chunk);
@@ -482,29 +519,6 @@ impl View {
             }
             _ => TopologyFrameTaken::default(),
         }
-    }
-
-    /// A differential of the peer mesh `mesh` from `source`, on the mesh channel of a node on the backbone.
-    /// A node-admin holds every source Mesh from the backbone's complete `TopologyFull` aggregates (gossip.md
-    /// §3.3), so its copy follows the backbone alone: the differential is a copy of the version the
-    /// backbone wrote here (`via-duplicate`) or ahead of it. Either way it writes nothing, is never a
-    /// gap and starts no top-up: the backbone's next full writes the copy.
-    fn backbone_copy_delta(&self, mesh: &str, source: &str, base_version: u64, topology_version: u64) {
-        let held = self.copies.lock().unwrap().held_version(mesh).map(|(_, v)| v);
-        if held == Some(topology_version) {
-            crate::receive_order::publication_duplicate("mesh-topology-delta", &format!("{mesh} {source} base_version={base_version} topology_version={topology_version}"));
-            return;
-        }
-        tracing::info_span!(
-            "rdm.mesh.topology.reject.via-copy-follows-backbone",
-            node = %self.current_name(),
-            mesh,
-            source,
-            base_version,
-            topology_version,
-            held_version = held.map_or(-1, |v| v as i64),
-        )
-        .in_scope(|| tracing::info!("a node-admin's copy of a peer mesh follows the backbone alone: a differential ahead of it writes nothing and starts no top-up"));
     }
 
     /// Whether a full or delta of the peer mesh `mesh` writes nothing: the accepted Build is the

@@ -3262,15 +3262,7 @@ mod tests {
         let before = member.digest_view.in_flight().len();
         assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop", &other, 5), &fabric, Side::MeshChannel), "a fact of mesh1 at v5 after its v8 is ignored");
         assert_eq!(member.digest_view.in_flight().len(), before, "nothing moved");
-        // The same operation carried above the floor is taken once: its version-refused copy ran no
-        // effect, and its repeat runs none twice (the overlay's own record, `admit_overlay`).
-        let again = event(StatusEvent::Stopped, &s4, "node.stop", &primary, 9);
-        assert!(hear(&mut channel, &member, &again, &fabric, Side::MeshChannel), "the operation carried at v9, above the floor, passes the receive path");
-        let held = member.digest_view.in_flight().len();
-        assert!(member.digest_view.in_flight().iter().any(|op| op.node_id == s4.node.node_id), "its effect runs once");
-        assert!(hear(&mut channel, &member, &again, &fabric, Side::MeshChannel));
-        assert_eq!(member.digest_view.in_flight().len(), held, "its repeat runs no effect twice");
-        assert!(spans.named("rdm.mesh.topology.update.via-duplicate").iter().any(|f| f.get("frame").map(String::as_str) == Some("node-stopped") && f.get("node_id").map(String::as_str) == Some(s4.node.node_id.as_str())), "the repeat is named a duplicate");
+        assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop", &primary, 9), &fabric, Side::MeshChannel), "the version-refused identity is already seen, whoever carries its repeat");
         // A new operation, above the mesh's newest, is taken whoever publishes it.
         let mut fresh_op = op_of(&s4, "node.stop");
         fresh_op.operation = fresh_op.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint());
@@ -3283,18 +3275,16 @@ mod tests {
     }
 
     /// CONTRACT (node-status-heartbeat-connections.md §C "late stopped after starting": "a NodeStopped
-    /// older than the starting fact (lower `topology_version`) is refused"; gossip.md receive rules: "a
-    /// frame received out of order is ignored by one check in the gossip receive path, for every frame
-    /// kind", a lifecycle fact's "carried `topology_version` is data, checked against the subject mesh's
-    /// floor"; Q389): a node-admin holds mesh1's aggregate v5 (on the backbone, the one channel an
-    /// aggregate travels on, Q387) listing mesh1.node.1 again after its start. A `NodeStopped` of that
-    /// birth stamped v4 arrives late: the receive path ignores it by name (`via-stale`, the floor v5
-    /// against v4) before any handler reads it, and the birth stays held. A `NodeDeleting` of it stamped
-    /// v4 is ignored the same way. The stop stamped v6 is taken; so is the fabric-primary's stop stamped
-    /// v5, the version it holds of mesh1. Must NOT happen: a late stop or removal dropping a started
-    /// birth; a fact at the floor refused.
+    /// older than the starting fact (lower `topology_version`) is refused"; gossip.md `NodeStopped`:
+    /// "`topology_version` the version of the subject's mesh at which the subject changed"; Q389): a
+    /// node-admin holds mesh1's aggregate v5 (on the backbone, the one channel an aggregate travels on,
+    /// Q387) listing mesh1.node.1 again after its start. A `NodeStopped` of that birth stamped v4 arrives
+    /// late: it is refused by name, naming the held version, and the birth stays held. The same event
+    /// stamped v6 (after the held projection) is taken; so is the fabric-primary's stop stamped v5, the
+    /// version it holds of mesh1: the projection at v5 predates it. Must NOT happen: a late stop dropping
+    /// a started birth; a stop at the held version refused.
     #[test]
-    fn a_lifecycle_fact_older_than_its_meshs_floor_is_ignored_in_the_receive_path_and_one_at_the_floor_is_taken() {
+    fn a_node_stopped_older_than_the_held_projection_of_its_mesh_listing_the_birth_is_refused_by_name() {
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -3302,48 +3292,39 @@ mod tests {
         let (primary, fabric_primary) = (birth_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 1), birth_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 1));
         let rpc = birth_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 3);
         let stop = op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &rpc.node.node_id, &rpc.node.incarnation, "node.stop");
-        let removal = op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &rpc.node.node_id, &rpc.node.incarnation, "node.delete");
         let member = |name: &str| {
             let v = test_view("mesh9", name);
             v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
             v.digest_view.primaries.take(PrimaryRole::FabricPrimary, &primary_of(&fabric_primary, 1));
-            assert!(hear(&mut v.order.lock().unwrap(), &v, &aggregate_of("mesh1", &publisher_of(&primary), 5, vec![primary.clone(), rpc.clone()]), &fabric, Side::Backbone));
+            v.take_topology_frame(&aggregate_of("mesh1", &publisher_of(&primary), 5, vec![primary.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut v.order.lock().unwrap());
             assert!(v.digest_view.get(rpc.node.node_id.as_str()).is_some(), "the birth is held from the projection");
             v
         };
-        let hears = |v: &View, f: &Frame| hear(&mut v.order.lock().unwrap(), v, f, &fabric, Side::MeshChannel);
         let late = member("mesh1.node.7");
-        assert!(!hears(&late, &event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&primary), 4)), "a stop older than the floor is ignored by the receive path");
-        assert!(!hears(&late, &event_by(StatusEvent::Deleting, removal.clone(), &publisher_of(&primary), 4)), "a removal older than the floor is ignored the same way");
-        assert!(late.digest_view.in_flight().is_empty() && late.digest_view.get(rpc.node.node_id.as_str()).is_some(), "the birth stays held");
+        late.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&primary), 4), &fabric, "mesh-channel");
+        assert!(late.digest_view.in_flight().is_empty() && late.digest_view.get(rpc.node.node_id.as_str()).is_some(), "a stop older than the projection listing the birth is refused; the birth stays held");
         let newer = member("mesh1.node.8");
-        assert!(hears(&newer, &event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&primary), 6)));
-        assert_eq!(newer.digest_view.in_flight(), vec![stop.clone()], "a stop above the floor is taken");
+        newer.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&primary), 6), &fabric, "mesh-channel");
+        assert_eq!(newer.digest_view.in_flight(), vec![stop.clone()], "a stop newer than the held projection is taken");
         let executor = member("mesh1.node.9");
-        assert!(hears(&executor, &event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&fabric_primary), 5)));
-        assert_eq!(executor.digest_view.in_flight(), vec![stop.clone()], "a stop at the floor is taken");
-        let stale: Vec<(String, String, String, String)> = spans
-            .named("rdm.mesh.topology.reject.via-stale")
-            .into_iter()
-            .filter(|f| matches!(f.get("frame").map(String::as_str), Some("node-stopped" | "node-deleting")))
-            .map(|f| (f["node"].clone(), f["frame"].clone(), f["held_key"].clone(), f["frame_key"].clone()))
-            .collect();
-        let at = |frame: &str| ("mesh1.node.7".to_string(), frame.to_string(), "topology_version=5".to_string(), "topology_version=4".to_string());
-        assert_eq!(stale, vec![at("node-stopped"), at("node-deleting")], "{stale:#?}");
+        executor.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&fabric_primary), 5), &fabric, "mesh-channel");
+        assert_eq!(executor.digest_view.in_flight(), vec![stop.clone()], "a stop at the held version is newer than the projection at it: taken");
+        let refused = spans.named("rdm.mesh.topology.reject.via-stop-older-than-projection");
+        assert_eq!(refused.iter().map(|f| (f["node"].clone(), f["topology_version"].clone(), f["held_version"].clone())).collect::<Vec<_>>(), vec![("mesh1.node.7".to_string(), "4".to_string(), "5".to_string())], "{refused:#?}");
     }
 
     /// CONTRACT (node-status-heartbeat-connections.md §C "late stopped after starting"; gossip.md receive
-    /// rules: a lifecycle fact's "carried `topology_version` is data, checked against the subject mesh's
-    /// floor"; Q390, Q391): mesh2.node-admin.2 holds mesh2.node.2 stopped from a read of its predecessor's
-    /// view at v10, which lists it stopped with no operation identity. As mesh2's new primary it publishes
-    /// mesh2 at v13, and its start's `node.joined` ends the stop. The predecessor's `NodeStopped` of the
-    /// same stop, stamped v10, then arrives late under its own operation identity: it is below the mesh's
-    /// floor, v13, so the receive path ignores it before any handler reads it, and the birth stays held. A
-    /// stop of the birth stamped v14, a later stop, is taken. Must NOT happen: the late stop taken, and
-    /// every later Digest of the started birth refused as a stopped birth's (node_stop
+    /// rules, an operation fact's "effect is reconciled against the same operation's completion and the
+    /// exact birth"; Q390): mesh2.node-admin.2 holds mesh2 from a read of its predecessor's aggregate v10,
+    /// which lists mesh2.node.2 stopped (its own mesh's backbone full lists no stop here, gossip.md
+    /// `TopologyFull`). The start's `node.joined` ends that stop. The predecessor's `NodeStopped` of
+    /// the same birth, stamped v10, then arrives late under its own operation identity: it is the same
+    /// stop, so it opens nothing (`via-lifecycle-reconciled`) and the birth stays held. A stop of the birth
+    /// stamped v11, a later stop, is taken. Must NOT happen: the late stop taken, and every later Digest of
+    /// the started birth refused as a stopped birth's (node_stop
     /// `a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_primary`, red at 397f3848c).
     #[test]
-    fn a_stop_ended_at_the_start_is_not_reopened_by_its_late_node_stopped_below_the_new_primarys_floor() {
+    fn a_stop_listed_in_an_aggregate_and_ended_at_the_start_is_not_reopened_by_its_late_node_stopped() {
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -3359,20 +3340,18 @@ mod tests {
             v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&predecessor, 1));
             assert!(matches!(v.take_read_chunk(read_of("mesh2", 10, 10, vec![predecessor.clone(), stopped.clone()]), Side::Read, &fabric), Taken::Written(_)));
             assert!(v.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation), "the read's listing holds the birth stopped");
-            v.order.lock().unwrap().published("mesh2", 13);
             assert!(v.digest_view.joined(&start), "the start's node.joined ends the stop");
             assert!(!v.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation));
             v
         };
-        let hears = |v: &View, f: &Frame| hear(&mut v.order.lock().unwrap(), v, f, &fabric, Side::MeshChannel);
         let late = admin();
-        assert!(!hears(&late, &event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&predecessor), 10)), "the late NodeStopped is below the floor its new primary published: ignored");
+        late.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&predecessor), 10), &fabric, "mesh-channel");
         assert!(!late.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation) && late.digest_view.in_flight().is_empty(), "the late NodeStopped of the ended stop opens nothing");
         let later = admin();
-        assert!(hears(&later, &event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&predecessor), 14)));
-        assert!(later.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation), "a stop stamped above the floor is a later stop: taken");
-        let stale: Vec<(String, String)> = spans.named("rdm.mesh.topology.reject.via-stale").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("node-stopped")).map(|f| (f["held_key"].clone(), f["frame_key"].clone())).collect();
-        assert_eq!(stale, vec![("topology_version=13".to_string(), "topology_version=10".to_string())], "{stale:#?}");
+        later.take(&event_by(StatusEvent::Stopped, stop.clone(), &publisher_of(&predecessor), 11), &fabric, "mesh-channel");
+        assert!(later.digest_view.holds_stopped(stopped.node.node_id.as_str(), &stopped.node.incarnation), "a stop stamped after the ended one is a later stop: taken");
+        let reconciled = spans.named("rdm.mesh.topology.update.via-lifecycle-reconciled");
+        assert_eq!(reconciled.iter().filter(|f| f["node_id"] == stopped.node.node_id.as_str() && f["evidence"] == "operation-ended").count(), 1, "{reconciled:#?}");
     }
 
     /// CONTRACT (gossip.md `NodeStopped`: "`topology_version` the version of the subject's mesh at which
@@ -3414,7 +3393,7 @@ mod tests {
     /// lists both, v6 only mesh2.node.1. A third mesh9 node reads mesh2 at v5, then at v6. At each,
     /// mesh2.node.2 is no longer held and is not held deleted, and mesh2.node.1 stays held. Must NOT
     /// happen: a birth the copy dropped still held in the digest view, and routable there, until a
-    /// `deleted` listing of it (code audit 2026-11-08 round 2, G1).
+    /// `deleted` listing of it (code audit 2026-11-08, gossip and core, G1).
     #[test]
     fn a_birth_its_peer_meshs_topology_no_longer_lists_leaves_the_view_and_is_never_held_deleted() {
         let spans = OpenedSpans::default();
@@ -3460,8 +3439,8 @@ mod tests {
     /// from their own Digests. Its mesh-primary's backbone full at v6 lists mesh1.node.1 ready,
     /// mesh1.node.2 deleted and mesh1.node.3 stopped: the stop of mesh1.node.1 stands, and mesh1.node.2 and
     /// mesh1.node.3 stay held, neither held deleted nor stopped. Must NOT happen: an own-mesh birth's stop
-    /// ended, or a birth held deleted or stopped, by its mesh's backbone full (code audit 2026-11-08
-    /// round 2, G4).
+    /// ended, or a birth held deleted or stopped, by its mesh's backbone full (code audit 2026-11-08,
+    /// gossip and core, G4).
     #[test]
     fn a_non_primary_admins_own_mesh_backbone_full_opens_and_ends_no_lifecycle_of_its_own_mesh() {
         let fabric = FabricId::parse("fab000000001").unwrap();
@@ -3485,45 +3464,11 @@ mod tests {
         assert!(!admin.digest_view.holds_stopped(n3.node.node_id.as_str(), &n3.node.incarnation) && admin.digest_view.get(n3.node.node_id.as_str()).is_some(), "mesh1.node.3 stops by its NodeStopped, never by the full");
     }
 
-    /// CONTRACT (gossip.md §3.3: "A node-admin holds every source Mesh from the backbone's complete
-    /// `TopologyFull` aggregates, which carry no base: after a lost one, the source's next publication
-    /// writes its delta from the version held"): mesh1.node-admin.2, on the backbone and not its mesh's
-    /// primary, holds mesh2 at 42 from the backbone. Its primary, which missed 42, forwards mesh2's move
-    /// 41 -> 43 into mesh1 before the backbone's 43 reaches this admin: the differential writes nothing,
-    /// is no gap and starts no top-up (`via-copy-follows-backbone`). The backbone's 43 then writes the
-    /// copy, and the primary's next differential of 43 is a duplicate. Must NOT happen: the copy
-    /// desynchronized by the forwarder's base, its read service stopped and a top-up of the primary
-    /// started (code audit 2026-11-08 round 2, N1).
-    #[test]
-    fn a_node_admins_copy_of_a_peer_mesh_follows_the_backbone_and_its_mesh_channel_delta_is_no_gap() {
-        let spans = OpenedSpans::default();
-        let _capture = rdm_transport::test_span_capture::install(spans.clone());
-        let fabric = FabricId::parse("fab000000001").unwrap();
-        let (mesh2_primary, forwarder) = (publisher_of(&born("mesh2", "node-admin", 1, 1)), publisher_of(&born("mesh1", "node-admin", 1, 1)));
-        let (v41, v43) = mesh2_at_41_and_43();
-        let admin = test_view("mesh1", "mesh1.node-admin.2");
-        admin.on_backbone.store(true, Ordering::Relaxed);
-        let hears = |f: &Frame, side: Side| hear(&mut admin.order.lock().unwrap(), &admin, f, &fabric, side);
-        assert!(hears(&aggregate_of("mesh2", &mesh2_primary, 42, v41.clone()), Side::Backbone));
-        let ahead = delta_of("mesh2", &forwarder, 41, 43, 43, v43.iter().filter(|d| !v41.iter().any(|h| h.node == d.node)).cloned().collect(), vec![], vec![]);
-        assert!(hears(&ahead, Side::MeshChannel), "the differential passes the one ordering check: 43 is above the held 42");
-        assert_eq!(admin.copies.lock().unwrap().held_version("mesh2").map(|(_, v)| v), Some(42), "the differential wrote nothing");
-        assert!(admin.copies.lock().unwrap().desynced().is_empty(), "no gap: nothing is topped up");
-        assert!(hears(&aggregate_of("mesh2", &mesh2_primary, 43, v43.clone()), Side::Backbone));
-        assert_eq!(admin.copies.lock().unwrap().held_version("mesh2").map(|(_, v)| v), Some(43), "the backbone's 43 writes the copy");
-        assert!(hears(&delta_of("mesh2", &forwarder, 42, 43, 44, vec![], vec![], vec![]), Side::MeshChannel));
-        assert!(admin.copies.lock().unwrap().desynced().is_empty());
-        let followed = spans.named("rdm.mesh.topology.reject.via-copy-follows-backbone");
-        assert_eq!(followed.iter().map(|f| (f["base_version"].clone(), f["topology_version"].clone(), f["held_version"].clone())).collect::<Vec<_>>(), vec![("41".to_string(), "43".to_string(), "42".to_string())], "{followed:#?}");
-        assert!(spans.named("rdm.mesh.topology.update.via-gap").is_empty(), "no differential desynchronized the copy");
-        assert!(spans.named("rdm.mesh.topology.update.via-duplicate").iter().any(|f| f["frame"] == "mesh-topology-delta" && f["identity"].ends_with("topology_version=43")), "the copy of 43 is a duplicate");
-    }
-
     /// CONTRACT (gossip.md receive rules: "the operation cannot reopen after completion"; one record of
     /// an ended operation, held for the deleted retention as a departure is): a stop that ended is
     /// recorded once, and its record is forgotten once the deleted retention of local age has passed.
     /// Must NOT happen: an ended operation's record kept for the life of the process (code audit
-    /// 2026-11-08 round 2, N2).
+    /// 2026-11-08, gossip and core, N2).
     #[test]
     fn an_ended_operations_record_is_forgotten_after_the_deleted_retention() {
         let digest_view = DigestView::with_retention(Duration::from_millis(50));

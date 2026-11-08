@@ -13,24 +13,25 @@
 //! The primary's separately held membership status is not heartbeat content. A refused or
 //! repeated digest supplies no address and no clock observation to its caller.
 //!
-//! [`ReceiveOrder`] is the one floor of each mesh, shared by all channels and topology reads
-//! (gossip.md receive rules: "a frame received out of order is ignored by one check in the gossip
-//! receive path, for every frame kind"): the higher of the version the mesh's one copy in the topology
-//! view holds, the version this node published of its own mesh, and the newest `topology_version` a
-//! lifecycle fact of the mesh carried, whichever mesh-primary, executor or read carried each (Q389,
-//! Q391). A `TopologyFull`, a `TopologyDelta`, a topology read, a `NodeStopped` and a `NodeDeleting`
-//! below it are ignored by name (`via-stale`) before any handler reads them.
-//! - TopologyFull and TopologyDelta: AggregateReceiver, which holds the copy, compares complete
-//!   normalized projection content, chunk identity and delta content under its hold: duplicates
-//!   write nothing; conflicts are inconsistent.
+//! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
+//! and topology reads:
+//! - TopologyFull and TopologyDelta: the mesh's version orders its topology, whichever mesh-primary
+//!   sent it (Q389): the floor is the version the mesh's one copy in the topology view holds, read
+//!   from the copy, written by any channel or a topology read, and a node's own publications are its
+//!   floor for its own mesh ([`ReceiveOrder::published`]). AggregateReceiver, which holds that copy,
+//!   compares complete normalized projection content, chunk identity and delta content under its
+//!   hold: duplicates write nothing; conflicts are inconsistent.
 //!   An aggregate's chunk set is its (mesh, version, author) from the envelope, and a publication is
 //!   that set at one envelope `time`; equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
 //!   the exact repeated publication never completes repair. A new publication at the same material
 //!   version carries fresh hearing evidence. A directed topology read can resume the held version.
-//! - NodeDeleting and NodeStopped: the carried `topology_version` is data, checked against the subject
-//!   mesh's floor, and a fact taken raises the floor to it. The operation identity is the overlay's
-//!   ([`admit_overlay`]): a repeat of a held overlay is `via-duplicate`, one of an ended operation
-//!   `via-lifecycle-reconciled`, and neither runs its effect again.
+//! - NodeDeleting and NodeStopped: operation identity is recorded before the
+//!   existing topology-version check per subject mesh, whichever mesh-primary published the fact
+//!   (Q389, Q391: a mesh-primary taking the role continues the mesh's version). A carried revision
+//!   refused with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs
+//!   no handler. The carried revision is still judged independently, even for a repeated operation:
+//!   an admissible higher revision advances the mesh's floor without replaying the fact. An identity
+//!   is held seen for the deleted retention of local age, as an ended operation is, then forgotten.
 //!
 //! Distinct equal-key chunks of an unfinished publication remain admissible; an exact repeat is
 //! ignored without discarding its other chunks. Publication state advances only when a complete
@@ -56,6 +57,7 @@
 use crate::frame::Frame;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Reserved page positions have one receive outcome. Inspect only the kind, before any view,
 /// identity receipt, ordinary apply span or completion carrier can run.
@@ -272,9 +274,9 @@ pub(crate) fn reject_lifecycle_version(frame: &str, subject: &str, held: u64, of
     ).in_scope(|| tracing::info!("the lifecycle frame's carried projection revision is below the held one: refused"));
 }
 
-/// The frame's name in spans, the mesh whose floor orders it, its `topology_version` and the mesh's
-/// id as the frame names it beside the mesh's name; `None` for a frame with no `topology_version`.
-/// A full's or a differential's version is its envelope's `sequence` (Q389).
+/// The frame's name in spans, the mesh that orders it, its `topology_version` and the mesh's id as
+/// the frame names it beside the mesh's name; `None` for a frame with no `topology_version`. A full's
+/// or a differential's version is its envelope's `sequence` (Q389).
 fn order_of(f: &Frame) -> Option<(&'static str, &str, u64, Option<rdm_core::MeshId>)> {
     match f.data() {
         Frame::TopologyFull { mesh, mesh_id, .. } => Some(("mesh-topology", mesh, f.aggregate_version()?, mesh_id.clone())),
@@ -290,60 +292,91 @@ fn order_of(f: &Frame) -> Option<(&'static str, &str, u64, Option<rdm_core::Mesh
 pub(crate) struct Earlier {
     /// The frame's name.
     pub frame: &'static str,
-    /// The mesh whose floor orders it.
+    /// The source its key orders within.
     pub source: String,
-    /// The mesh's floor.
+    /// The newest key this channel holds for the source.
     pub held: String,
-    /// The frame's `topology_version`.
+    /// The frame's key.
     pub offered: String,
 }
 
-/// The one floor of each mesh at one node, shared by every channel it hears and by its topology reads
-/// (gossip.md receive rules: "ignored by one check in the gossip receive path, for every frame kind";
-/// a lifecycle fact's "carried `topology_version` is data, checked against the subject mesh's floor"):
-/// the higher of the version the mesh's one copy in the topology view holds
-/// ([`crate::aggregate::AggregateReceiver`], Q409), the version this node published of its own mesh,
-/// and the newest `topology_version` a lifecycle fact of the mesh carried, whichever mesh-primary,
-/// executor or read carried each (Q389, Q391). It keeps versions only, never a copy of a mesh.
+/// The newest `topology_version` one node holds of each mesh's lifecycle facts, the lifecycle
+/// operations it has seen, and the version of each mesh its topology is ordered by: one for the node,
+/// shared by every channel it hears and by its topology reads. It keeps versions and order keys only,
+/// never a copy of a mesh: the version a mesh's topology is ordered by is read from the one copy in the
+/// topology view ([`crate::aggregate::AggregateReceiver`], Q409), against which a frame's content is
+/// compared.
 #[derive(Debug, Default)]
 pub(crate) struct ReceiveOrder {
     /// The one copy of each mesh in the topology view: the version it holds is read, never kept here.
     copies: Arc<Mutex<crate::aggregate::AggregateReceiver>>,
-    /// The newest `topology_version` a `NodeStopped` or `NodeDeleting` of each mesh carried, with the id
-    /// of the mesh its copy held then: a later mesh of the same name is another mesh, which it orders
-    /// nothing of.
-    lifecycle: HashMap<String, (u64, Option<rdm_core::MeshId>)>,
+    /// The newest `topology_version` a `NodeStopped` or `NodeDeleting` of each mesh carried, whichever
+    /// of its mesh-primaries published it.
+    lifecycle: HashMap<String, u64>,
+    /// Operation receipt is independent of projection admission: even a version-refused frame is
+    /// seen, so another publisher or a higher carried version cannot replay its operation effect.
+    /// Each identity is held with when it was first seen, for the deleted retention of local age, as an
+    /// ended operation is ([`crate::digest_view::DigestView::ended_overlays`]), then forgotten.
+    lifecycle_seen: HashMap<LifecycleIdentity, Instant>,
     /// The version this node published last of each mesh it publishes, under its exact birth: its
     /// own publications are its floor for its own source, a read included.
     published: HashMap<String, u64>,
 }
 
 impl ReceiveOrder {
-    /// The floor of the meshes whose one copy each `copies` holds: the topology view's.
+    /// The order of the meshes whose one copy each `copies` holds: the topology view's.
     pub(crate) fn of(copies: Arc<Mutex<crate::aggregate::AggregateReceiver>>) -> Self {
         Self { copies, ..Self::default() }
     }
 
-    /// Whether `f` is taken: `Err` names the frame ignored, its mesh, the floor and the frame's version.
-    /// A `TopologyFull`, a `TopologyDelta`, a `NodeStopped` or a `NodeDeleting` whose `topology_version`
-    /// is below its mesh's floor ([`Self::floor`]) is ignored, whoever sent it (Q389). A lifecycle fact
-    /// taken raises its mesh's floor to the version it carried; a full or a delta moves the floor only
-    /// when it writes the copy.
-    pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
-        let Some((frame, mesh, version, mesh_id)) = order_of(f) else { return Ok(()) };
-        self.below_floor(frame, mesh, version, mesh_id.as_ref())?;
-        if matches!(f.data(), Frame::NodeStopped { .. } | Frame::NodeDeleting { .. }) {
-            let held_id = self.copies.lock().unwrap().held_full(mesh).and_then(crate::aggregate::Full::mesh_id);
-            let key = self.lifecycle.entry(mesh.to_string()).or_insert((version, held_id.clone()));
-            if version > key.0 || crate::aggregate::another_mesh(key.1.as_ref(), held_id.as_ref()) {
-                *key = (version, held_id);
+    /// Record a lifecycle identity before its projection revision is judged. No handler runs on
+    /// repeat, even when the first receipt's carried revision was refused. This identity is shared
+    /// by every channel, and contains the exact birth but neither publisher nor event timestamp.
+    pub(crate) fn admit_lifecycle_identity(&mut self, f: &Frame) -> bool {
+        self.admit_lifecycle_identity_at(f, Instant::now())
+    }
+
+    /// [`Self::admit_lifecycle_identity`] at `now`: an identity first seen longer than the deleted
+    /// retention before `now` is forgotten first.
+    pub(crate) fn admit_lifecycle_identity_at(&mut self, f: &Frame, now: Instant) -> bool {
+        let (frame, op) = match f.data() {
+            Frame::NodeDeleting { op, .. } => ("node-deleting", op),
+            Frame::NodeStopped { op, .. } => ("node-stopped", op),
+            _ => return true,
+        };
+        self.lifecycle_seen.retain(|_, seen| now.duration_since(*seen) < rdm_core::DELETED_RETENTION);
+        match self.lifecycle_seen.entry(LifecycleIdentity::of(op)) {
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(now);
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                duplicate_lifecycle(frame, op);
+                false
             }
         }
+    }
+
+    /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A
+    /// `TopologyFull` or `TopologyDelta` is ordered by its mesh's floor alone ([`Self::floor`]), which
+    /// moves when a full or a read writes the copy or a delta applies, whichever mesh-primary sent it
+    /// (Q389). A `NodeStopped` or `NodeDeleting` is ordered by the newest `topology_version` a lifecycle
+    /// fact of its mesh carried, and a taken one newer than that is held.
+    pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
+        let Some((frame, mesh, version, mesh_id)) = order_of(f) else { return Ok(()) };
+        if !matches!(f.data(), Frame::NodeStopped { .. } | Frame::NodeDeleting { .. }) {
+            return self.below_floor(frame, mesh, version, mesh_id.as_ref());
+        }
+        if let Some(held) = self.lifecycle.get(mesh).filter(|held| version < **held) {
+            return Err(Earlier { frame, source: mesh.to_string(), held: format!("topology_version={held}"), offered: format!("topology_version={version}") });
+        }
+        let newest = self.lifecycle.entry(mesh.to_string()).or_insert(version);
+        *newest = (*newest).max(version);
         Ok(())
     }
 
     /// Whether a chunk of a topology read of `mesh` (whose node-admins' entries carry `mesh_id`) at
-    /// `topology_version` is taken: the mesh's floor orders it.
+    /// `topology_version` is taken: only the floor of the mesh orders it.
     pub(crate) fn admit_read(&self, mesh: &str, topology_version: u64, mesh_id: Option<&rdm_core::MeshId>) -> Result<(), Earlier> {
         self.below_floor("topology-read", mesh, topology_version, mesh_id)
     }
@@ -356,22 +389,17 @@ impl ReceiveOrder {
         }
     }
 
-    /// The floor of `mesh`, whichever mesh-primary or executor sent what made it (Q389): the higher of
-    /// the version its one copy holds, the version this node published of it, and the newest a
-    /// lifecycle fact of it carried. `None` when none is held. A later mesh of the same name (`mesh_id`
-    /// another id than the held one's) is another mesh: the held versions order nothing of it.
+    /// The version of `mesh` that orders its publications and reads here, whichever mesh-primary sent
+    /// them (Q389): the higher of the version its one copy holds, read from the copy, and the version
+    /// this node published itself. `None` when neither is held. A later mesh of the same name
+    /// (`mesh_id` another id than the held one's) is another mesh: the held version orders nothing of it.
     pub(crate) fn floor(&self, mesh: &str, mesh_id: Option<&rdm_core::MeshId>) -> Option<u64> {
-        let (copy, copy_id) = {
+        let copy = {
             let copies = self.copies.lock().unwrap();
-            (copies.held_version(mesh).map(|(_, v)| v), copies.held_full(mesh).and_then(crate::aggregate::Full::mesh_id))
+            let copy_id = copies.held_full(mesh).and_then(crate::aggregate::Full::mesh_id);
+            copies.held_version(mesh).map(|(_, v)| v).filter(|_| !crate::aggregate::another_mesh(copy_id.as_ref(), mesh_id))
         };
-        let copy = copy.filter(|_| !crate::aggregate::another_mesh(copy_id.as_ref(), mesh_id));
-        let lifecycle = self
-            .lifecycle
-            .get(mesh)
-            .filter(|(_, id)| !crate::aggregate::another_mesh(id.as_ref(), mesh_id) && !crate::aggregate::another_mesh(id.as_ref(), copy_id.as_ref()))
-            .map(|(v, _)| *v);
-        copy.max(self.published.get(mesh).copied()).max(lifecycle)
+        copy.max(self.published.get(mesh).copied())
     }
 
     /// This node published `mesh` at `topology_version`: from now on its floor for that mesh (gossip.md
@@ -380,12 +408,6 @@ impl ReceiveOrder {
     pub(crate) fn published(&mut self, mesh: &str, topology_version: u64) {
         let v = self.published.entry(mesh.to_string()).or_insert(topology_version);
         *v = (*v).max(topology_version);
-    }
-
-    /// `mesh` left (its `MeshLeft` receipt): the newest version its lifecycle facts carried is forgotten
-    /// with its one copy, so nothing of the mesh that left orders anything here.
-    pub(crate) fn forget(&mut self, mesh: &str) {
-        self.lifecycle.remove(mesh);
     }
 
     /// Test seam: the copy of `mesh` written at `version`, of the mesh whose id is `mesh_id`, as a read
@@ -663,6 +685,28 @@ mod tests {
         assert_eq!(order.admit(&event(StatusEvent::Stopped, op(&a, "node.stop"), &successor, 9)), Ok(()), "the successor's fact above the held version is taken");
         assert_eq!(order.admit(&event(StatusEvent::Stopped, op(&c, "node.stop"), &other_mesh, 2)), Ok(()), "a fact of another mesh is another source");
         assert_eq!(order.admit(&event(StatusEvent::Deleting, op(&c, "node.delete"), &other_mesh, 1)).map_err(|e| e.source), Err("mesh3".to_string()));
+    }
+
+    /// CONTRACT (gossip.md receive rules, `NodeDeleting`, `NodeStopped`: "a repeat runs no effect twice,
+    /// including when the carried version is refused"; held for the deleted retention, as an ended
+    /// operation is): a lifecycle operation first seen is taken, and a repeat of it within the deleted
+    /// retention is a duplicate, whoever carries it. Once the deleted retention of local age has passed
+    /// since it was first seen, its record is forgotten, and so are the others older than that. Must NOT
+    /// happen: a seen operation's record kept for the life of the process.
+    #[test]
+    fn a_seen_lifecycle_operations_record_is_forgotten_after_the_deleted_retention() {
+        let mut order = ReceiveOrder::default();
+        let (primary, successor) = (publisher("mesh1.node-admin.1"), publisher("mesh1.node-admin.2"));
+        let (a, b) = (birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node"), birth(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node"));
+        let at = Instant::now();
+        let later = at + rdm_core::DELETED_RETENTION;
+        assert!(order.admit_lifecycle_identity_at(&event(StatusEvent::Stopped, op(&a, "node.stop"), &primary, 3), at), "first seen: taken");
+        assert!(order.admit_lifecycle_identity_at(&event(StatusEvent::Deleting, op(&b, "node.delete"), &primary, 3), at), "another operation: taken");
+        let within = later - std::time::Duration::from_millis(1);
+        assert!(!order.admit_lifecycle_identity_at(&event(StatusEvent::Stopped, op(&a, "node.stop"), &successor, 9), within), "its repeat within the retention, whoever carries it, is a duplicate");
+        assert_eq!(order.lifecycle_seen.len(), 2);
+        assert!(order.admit_lifecycle_identity_at(&event(StatusEvent::Stopped, op(&a, "node.stop"), &primary, 3), later), "past the retention since it was first seen, its record is forgotten");
+        assert_eq!(order.lifecycle_seen.len(), 1, "the other operation's record, as old, is forgotten too; only the one just seen is held");
     }
 
     /// CONTRACT (R-RX3): a frame with no order key (a status, a NodeDeleted) is taken however often

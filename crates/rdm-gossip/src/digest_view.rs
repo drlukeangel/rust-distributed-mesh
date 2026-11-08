@@ -248,13 +248,18 @@ pub struct DigestView {
     /// entry of the same birth moves nothing of it, and a version that no longer lists it is no
     /// departure. The member's own digest supersedes it; its departure or stop removes it.
     pub(crate) projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
-    /// The lifecycle operations that ended here, by complete operation identity and exact birth, with
-    /// when each ended: the one record of an ended operation (gossip.md receive rules: "the operation
-    /// cannot reopen after completion"). A later copy of the same overlay (an aggregate built before
-    /// the rejoin, the primary's publication re-applying an operation whose `Complete` is not receipted
-    /// yet, a repeat of its frame) opens nothing. Held for `retention` of local age, as a departure is,
-    /// then forgotten.
+    /// The lifecycle overlays that ended here, by complete operation identity and exact birth, with
+    /// when each ended: a later copy of the same overlay (an aggregate built before the rejoin, the
+    /// primary's publication re-applying an operation whose `Complete` is not receipted yet) opens
+    /// nothing. Each is held for `retention` of local age, as a departure is, then forgotten.
     pub(crate) ended_overlays: Arc<Mutex<HashMap<crate::receive_order::LifecycleIdentity, Instant>>>,
+    /// The stops that ended here, by exact birth, with the version of the birth's mesh at which a
+    /// projection or a `NodeStopped` carried each: a `NodeStopped` of that birth stamped at or below it
+    /// is the same stop under another identity (an aggregate or a read lists a stop with no operation
+    /// identity, Q390), so it opens nothing again (gossip.md receive rules: an operation fact's "effect is
+    /// reconciled against the same operation's completion and the exact birth"; node-status-heartbeat-
+    /// connections.md §C "late stopped after starting").
+    pub(crate) ended_stops: Arc<Mutex<HashMap<String, (IncarnationId, u64)>>>,
     /// The path name of the node holding this view, named by the refusals it writes.
     pub(crate) observer_name: Arc<Mutex<String>>,
     /// The name the mesh-primary's row last gave this birth (`UpdateName`, R12), the same cell as its
@@ -428,7 +433,7 @@ impl DigestView {
             own: Arc::default(),
             projected: Arc::default(),
             ended_overlays: Arc::default(),
-
+            ended_stops: Arc::default(),
             observer_name: Arc::default(),
             own_predecessor: Arc::default(),
             held_name: Arc::default(),
@@ -639,6 +644,14 @@ impl DigestView {
         true
     }
 
+    /// Whether `op`'s stop, carried at `carried`'s version, is a stop of the exact birth that already ended
+    /// here at or above that version ([`Self::ended_stops`]): the same stop, arriving late under another
+    /// identity. A stop of the birth carried above it is a later stop.
+    fn same_stop_ended(&self, op: &LifecycleOp, carried: Option<&(String, u64)>) -> bool {
+        let Some((_, version)) = carried else { return false };
+        self.ended_stops.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(incarnation, ended_at)| *incarnation == op.incarnation && version <= ended_at)
+    }
+
     /// Accept a stopped birth (`op` is `node.stop:<path>`, naming the birth that stopped): the node
     /// leaves the view and is not routable, and no heartbeat of that birth is taken again
     /// (`stopped_refuses`). Only the mesh-primary's `node.joined` ([`Self::joined`]), its projection
@@ -675,7 +688,8 @@ impl DigestView {
         let held_stopped = self.holds_stopped(op.node_id.as_str(), &op.incarnation);
         let new = {
             let mut held = self.in_flight.lock().unwrap();
-            let ended = self.ended_overlays.lock().unwrap().contains_key(&crate::receive_order::LifecycleIdentity::of(&op));
+            let ended = self.ended_overlays.lock().unwrap().contains_key(&crate::receive_order::LifecycleIdentity::of(&op))
+                || self.same_stop_ended(&op, carried.as_ref());
             if crate::receive_order::admit_overlay("node-stopped", &op, held.get(&op.key()), ended) {
                 held.insert(op.key(), op.clone());
                 true
@@ -1269,7 +1283,11 @@ impl DigestView {
     /// The stop of `node_id` is over (its mesh-primary took node.joined, a later birth was heard, or
     /// it deleted): its overlay and mark clear.
     pub(crate) fn end_stop(&self, node_id: &str) {
-        let unmarked = self.stopped_marks.lock().unwrap().remove(node_id).is_some();
+        let mark = self.stopped_marks.lock().unwrap().remove(node_id);
+        if let Some(StopMark { incarnation, carried: Some((_, version)), .. }) = &mark {
+            self.ended_stops.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), *version));
+        }
+        let unmarked = mark.is_some();
         let cleared = {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();

@@ -251,15 +251,14 @@ pub(crate) struct Channel {
     pub(crate) clock: SharedClock,
 }
 
-/// The one ordering check of the receive path (gossip.md receive rules): a frame whose
-/// `topology_version` is below its mesh's floor ([`crate::receive_order::ReceiveOrder`]) is ignored by
-/// name (`via-stale`) before any handler reads it, for every kind that carries one. A lifecycle fact's
-/// repeat runs no effect twice: its handler holds the operation's record
-/// ([`crate::receive_order::admit_overlay`]). Digest is classified once, against its held content
-/// under the digest view's lock; it has no second receive-history floor.
+/// Classify the families whose ordering state ReceiveOrder holds. Lifecycle identities are
+/// recorded before their carried revision is judged, even on a revision refusal. Digest is
+/// classified once, against its held content under the digest view's lock; it has no
+/// second receive-history floor. Every ordering refusal is named via-stale.
 pub(crate) fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str) -> bool {
+    let first_fact = order.admit_lifecycle_identity(f);
     match order.admit(f) {
-        Ok(()) => true,
+        Ok(()) => first_fact,
         Err(e) => {
             tracing::info_span!(
                 "rdm.mesh.topology.reject.via-stale",
@@ -367,10 +366,10 @@ impl Channel {
                                         }
                                         received.fetch_add(1, Ordering::Relaxed);
                                         // The one ordering check of the receive path (R-RX3), against the
-                                        // node's one floor per mesh, shared by every channel and the
-                                        // topology reads: a frame received after a newer one of its mesh is
-                                        // ignored, by name, before any handler reads it. The check and what
-                                        // the handler writes are one hold of it.
+                                        // node's one held version per source, shared by every channel and
+                                        // the topology reads: a frame received after a newer one of its
+                                        // source is ignored, by name, before any handler reads it. The
+                                        // check and what the handler writes are one hold of it.
                                         let receipt = match f.data() {
                                             Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
                                                 "rdm.mesh.topology.update.via-lifecycle-receipt",

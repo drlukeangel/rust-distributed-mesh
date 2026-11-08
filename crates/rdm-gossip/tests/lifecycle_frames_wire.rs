@@ -69,7 +69,7 @@ fn node_command_frames_match_the_frozen_wire_schema() {
 /// backbone onto its own channel, preserving the op and naming itself; the fact's own mesh hears the
 /// original and forwards nothing. No reserved frame (`NodeConnectionsDeleting`, `NodeConnectionsDeleted`,
 /// `NodeLeaving`, `NodeLeft`, `NodeRestarting`) is ever forwarded. Must NOT happen: a reserved frame
-/// forwarded into a mesh (code audit 2026-11-08 round 2, N7).
+/// forwarded into a mesh (code audit 2026-11-08, gossip and core, N7).
 #[test]
 fn a_peer_mesh_primary_forwards_a_lifecycle_fact_and_no_reserved_frame() {
     let original = Frame::NodeStopped { op: op("node.stop"), forwarded_by: None, topology_version: 3 };
