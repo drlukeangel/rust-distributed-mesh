@@ -1,8 +1,8 @@
 //! `node.topology.get` (op `0x1E`): read the topology a node holds, every mesh or one, and read it again
 //! cheaply after a reconnect (node-rpc-envelope.md, the topology read).
 //!
-//! The read streams `Started`, then for each mesh the node holds one snapshot in chunks (the mesh, the
-//! publisher, its `topology_version`, and the nodes with the status the mesh-primary holds for each),
+//! The read streams `Started`, then for each mesh the node holds one snapshot in chunks (the mesh, its
+//! `topology_version`, and the nodes with the status the mesh-primary holds for each),
 //! then `End`. A caller that already holds a mesh's version names it in `since`; a node holding the same
 //! version answers `Unchanged` for that mesh instead of the snapshot. That is the read an application
 //! makes after it reconnects: one call says whether what it holds is still current.
@@ -44,11 +44,11 @@ async fn main() -> Result<()> {
     let mut held: Vec<(String, SourceVersion)> = Vec::new();
     for frame in rpc.topology_get(&target, None, None, &CallOptions::default()).await? {
         match frame {
-            TopologyReply::Snapshot { mesh, publisher, topology_version, chunk_index, chunk_count, nodes, .. } => {
+            TopologyReply::Snapshot { mesh, topology_version, chunk_index, chunk_count, nodes, .. } => {
                 let nodes: Vec<String> = nodes.into_iter().map(|n| format!("path {:?}, name {:?} {:?}", n.path, n.name, n.status)).collect();
-                println!("{mesh} v{topology_version} from {publisher} (chunk {}/{chunk_count}): {nodes:?}", chunk_index + 1);
+                println!("{mesh} v{topology_version} (chunk {}/{chunk_count}): {nodes:?}", chunk_index + 1);
                 if chunk_index == 0 {
-                    held.push((mesh, SourceVersion { publisher, topology_version }));
+                    held.push((mesh, SourceVersion { topology_version }));
                 }
             }
             TopologyReply::End { meshes } => println!("end: {meshes} mesh(es)"),
