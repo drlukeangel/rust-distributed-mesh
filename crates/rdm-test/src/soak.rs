@@ -602,7 +602,10 @@ fn serves_testkit_store(n: &Value) -> bool {
 /// that is not the fabric-primary may instead hold a peer mesh unheard whole (every node of it
 /// `pending-reconnect`, its pruner's mark) and agree on the rest. Returns the live admins that
 /// agree and, per admin, the peer meshes it holds unheard.
-async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Option<(Vec<Admin>, BTreeMap<rdm_core::NodeId, BTreeSet<String>>)> {
+/// Every live admin's view against the expected shape and against the entry admin's births, or why
+/// not, by name: which check failed, the counts it saw against the shape it expected, the admin whose
+/// births differ and which. The reason is the round's `waiting_on`.
+async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Result<(Vec<Admin>, BTreeMap<rdm_core::NodeId, BTreeSet<String>>), String> {
     let nodes = estate.node_values().await;
     let shape_ok = |nodes: &[Value]| {
         expected.iter().all(|(m, counts)| {
@@ -612,14 +615,36 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
         })
     };
     let births = |nodes: &[Value]| -> BTreeSet<(String, String)> { nodes.iter().filter(|n| n["state"] == "ready").map(|n| (s(&n["node_id"]), s(&n["incarnation"]))).collect() };
+    // The counts `nodes` shows of each expected (mesh, type): ready, then every node not dead.
+    let counts = |nodes: &[Value]| -> String {
+        let mut out = Vec::new();
+        for (m, kinds) in expected {
+            for (kind, want) in kinds {
+                let ready = nodes.iter().filter(|n| crate::estate::mesh_of(&n) == m.as_str() && n["type"] == *kind && n["state"] == "ready").count();
+                let all = nodes.iter().filter(|n| crate::estate::mesh_of(&n) == m.as_str() && n["type"] == *kind && !matches!(n["state"].as_str(), Some("dead"))).count();
+                if ready as u32 != *want || all as u32 != *want {
+                    let states: Vec<String> = nodes.iter().filter(|n| crate::estate::mesh_of(&n) == m.as_str() && n["type"] == *kind).map(|n| format!("{}:{}", s(&n["name"]), s(&n["state"]))).collect();
+                    out.push(format!("{m}.{kind} expected {want}, ready {ready}, not dead {all} [{}]", states.join(" ")));
+                }
+            }
+        }
+        out.join("; ")
+    };
+    let birth_diff = |want: &BTreeSet<(String, String)>, theirs: &BTreeSet<(String, String)>| -> String {
+        let missing: Vec<String> = want.difference(theirs).map(|(i, c)| format!("{i}/{c}")).collect();
+        let extra: Vec<String> = theirs.difference(want).map(|(i, c)| format!("{i}/{c}")).collect();
+        format!("births the entry admin holds ready and it does not: {missing:?}; it holds ready and the entry admin does not: {extra:?}")
+    };
     if !shape_ok(&nodes) {
-        return None;
+        return Err(format!("the entry admin's view is not the expected shape: {}", counts(&nodes)));
     }
     let want = births(&nodes);
     let mut agreeing = Vec::new();
     let mut unheard_at: BTreeMap<rdm_core::NodeId, BTreeSet<String>> = BTreeMap::new();
     for admin in admins_of(&nodes) {
-        let theirs = views_at(estate, &admin).await?;
+        let Some(theirs) = views_at(estate, &admin).await else {
+            return Err(format!("{:?} does not answer node.get", admin.name));
+        };
         if shape_ok(&theirs) && births(&theirs) == want {
             agreeing.push(admin);
             continue;
@@ -639,7 +664,7 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
             .cloned()
             .collect();
         if is_fp || unheard.is_empty() {
-            return None;
+            return Err(format!("{:?} (fabric-primary: {is_fp}) disagrees: {}; {}", admin.name, counts(&theirs), birth_diff(&want, &births(&theirs))));
         }
         let heard = |ns: &[Value]| -> Vec<Value> { ns.iter().filter(|n| !unheard.contains(&s(&crate::estate::mesh_of(&n)))).cloned().collect() };
         let (mine, theirs_heard) = (heard(&nodes), heard(&theirs));
@@ -652,12 +677,12 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
             })
         };
         if !shape_heard(&theirs_heard) || births(&theirs_heard) != births(&mine) {
-            return None;
+            return Err(format!("{:?}, holding {unheard:?} unheard, disagrees on what it heard: {}; {}", admin.name, counts(&theirs_heard), birth_diff(&births(&mine), &births(&theirs_heard))));
         }
         unheard_at.insert(admin.node_id.clone(), unheard);
         agreeing.push(admin);
     }
-    Some((agreeing, unheard_at))
+    Ok((agreeing, unheard_at))
 }
 
 /// How the driver reads Build `id` as the fabric's Build records and its events hold it, as the JSON the
@@ -1032,7 +1057,7 @@ impl Driver {
         let want: BTreeMap<(String, String), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), class.type_name().to_string()), *n as usize))).collect();
         estate.settles_to_counts(want, Duration::from_secs(60)).await;
         let expected = expected_counts(&initial);
-        wait_for("every live admin holds the same births", cfg.floor * 2 + cfg.backbone * 2 + Duration::from_secs(60), || converged_everywhere(&estate, &expected)).await;
+        wait_for("every live admin holds the same births", cfg.floor * 2 + cfg.backbone * 2 + Duration::from_secs(60), || async { converged_everywhere(&estate, &expected).await.ok() }).await;
         let known = admins_of(&estate.node_values().await);
         let progress = Arc::new(Mutex::new(Progress { executed: Vec::new(), initial: Some(initial.clone()) }));
         let shared = Arc::new(Shared { op_view: Mutex::new(OpView::default()), view: Mutex::new(View::default()), stop: AtomicBool::new(false) });
@@ -1513,7 +1538,11 @@ impl Driver {
                     (None, _, None) => true,
                 };
                 if sequence_done {
-                    if let Some((agreeing, unheard_at)) = converged_everywhere(&self.estate, &expected).await {
+                    let converged = converged_everywhere(&self.estate, &expected).await;
+                    if let Err(why) = &converged {
+                        entry["waiting_on"] = json!(why);
+                    }
+                    if let Ok((agreeing, unheard_at)) = converged {
                         if !unheard_at.is_empty() {
                             entry["peer_mesh_unheard_at"] = json!(unheard_at);
                         }
