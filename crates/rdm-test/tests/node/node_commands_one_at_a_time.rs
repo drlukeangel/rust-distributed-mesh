@@ -96,7 +96,18 @@ fn a_second_command_naming_a_node_its_primary_runs_a_start_on_is_refused_busy_an
         let never = rdm_core::ConnectionId::mint();
         let second = {
             let (nodes, node, scope) = (estate.nodes_obj().await, node.clone(), rdm_core::status::ConnectionScope::Connections(vec![never.clone()]));
-            tokio::spawn(async move { frames(nodes.delete_connections(&node, &scope).await.unwrap_or_else(|e| panic!("node.connection.delete of {node:?} was refused: {e}"))).await })
+            // A caller that must go after the start: its Send spent `busy` while the start still holds
+            // the node (its pre_node_ready can take longer than the Send's delays), it sends again (Q413).
+            tokio::spawn(async move {
+                let until = tokio::time::Instant::now() + SETTLE;
+                loop {
+                    match nodes.delete_connections(&node, &scope).await {
+                        Ok(stream) => break frames(stream).await,
+                        Err(rdm_client::CallEnd::Rejected { reason, .. }) if reason == "busy" && tokio::time::Instant::now() < until => {}
+                        Err(e) => panic!("node.connection.delete of {node:?} was refused: {e}"),
+                    }
+                }
+            })
         };
         let busy = tokio::time::timeout(ANSWERED, client_spans.recorded("rdm.node_rpc.stream.update.via-received-frame", |f| f.get("detail").is_some_and(|d| d == "busy"))).await.is_ok();
 

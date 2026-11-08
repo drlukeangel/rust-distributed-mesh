@@ -549,15 +549,16 @@ fn refused(call: &str, end: CallEnd) -> Broken {
     broken("topology-action-accepted", format!("{call}: {end}"))
 }
 
-/// The bound of [`after_build_in_progress`]: as long as a round waits for its Build.
+/// The bound of [`after_work_in_flight`]: as long as a round waits for its Build.
 const BUILD_IN_PROGRESS_BOUND: Duration = Duration::from_secs(120);
 
 /// `submit`, submitted again while it is refused `build-in-progress` (one Build at a time, build.md
-/// §1): a caller that must go after the Build in flight follows it to its end and submits again
-/// (`CallEnd::BuildInProgress`). A Build another caller submitted between rounds is that Build in
+/// §1) or `busy` (one command or step on a node at a time at its primary, node-recovery.md step 1,
+/// Q413, once the call's own Send is spent): a caller that must go after the work in flight follows
+/// it to its end and submits again. A Build another caller submitted between rounds is that Build in
 /// flight. A domain answer: asked again after the one schedule's next delay (node-rpc.md §43), within
 /// [`BUILD_IN_PROGRESS_BOUND`]; any other refusal, or the bound passed, is the call's.
-async fn after_build_in_progress<T, F, Fut>(mut submit: F) -> Result<T, CallEnd>
+async fn after_work_in_flight<T, F, Fut>(mut submit: F) -> Result<T, CallEnd>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, CallEnd>>,
@@ -570,6 +571,7 @@ where
         let after = pacing.after(turn);
         match submit().await {
             Err(CallEnd::BuildInProgress { .. }) if Instant::now() + after < until => tokio::time::sleep(after).await,
+            Err(CallEnd::Rejected { reason, .. }) if reason == "busy" && Instant::now() + after < until => tokio::time::sleep(after).await,
             other => return other,
         }
     }
@@ -1333,13 +1335,13 @@ impl Driver {
         match action {
             Action::Grow { mesh, class } => {
                 let kind = class.type_name();
-                let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, class.type_name())).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
+                let spawn = after_work_in_flight(|| self.estate.create_node(&mesh, class.type_name())).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
                 entry["accepted"] = accepted_json(spawn.accepted());
                 entry["build"] = self.await_build(spawn).await?;
             }
             Action::Shrink { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node:?} is not in the view")))?;
-                let delete = after_build_in_progress(|| async { self.estate.delete_node(&node.clone()).await }).await.map_err(|end| refused(&format!("node.delete {node:?}"), end))?;
+                let delete = after_work_in_flight(|| async { self.estate.delete_node(&node.clone()).await }).await.map_err(|end| refused(&format!("node.delete {node:?}"), end))?;
                 entry["accepted"] = accepted_json(delete.accepted());
                 entry["build"] = self.await_build(delete).await?;
                 gone = Some(node.clone());
@@ -1349,11 +1351,11 @@ impl Driver {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node:?} is not in the view")))?;
                 // A restart is node.stop then node.start (Q183): the birth is kept, the same node id and
                 // incarnation start again on the live process; nothing is replaced.
-                let stop = after_build_in_progress(|| async { self.estate.nodes_obj().await.stop(&node.clone()).await }).await.map_err(|end| refused(&format!("node.stop {node:?}"), end))?;
+                let stop = after_work_in_flight(|| async { self.estate.nodes_obj().await.stop(&node.clone()).await }).await.map_err(|end| refused(&format!("node.stop {node:?}"), end))?;
                 entry["accepted"] = accepted_json(stop.accepted());
                 self.await_build(stop).await?;
                 self.estate.until_stopped_at_the_fabric_primary(&node.clone()).await;
-                let start = after_build_in_progress(|| async { self.estate.nodes_obj().await.start(&node.clone()).await }).await.map_err(|end| refused(&format!("node.start {node:?}"), end))?;
+                let start = after_work_in_flight(|| async { self.estate.nodes_obj().await.start(&node.clone()).await }).await.map_err(|end| refused(&format!("node.start {node:?}"), end))?;
                 entry["accepted_start"] = accepted_json(start.accepted());
                 self.await_build(start).await?;
                 restarted = Some((node.clone(), (s(&n["node_id"]), s(&n["incarnation"]))));
@@ -1643,7 +1645,7 @@ impl Driver {
         let r#type: String = serde_json::from_value(n["type"].clone()).unwrap_or_else(|e| panic!("{path:?}: the view's type {} is no node type: {e}", n["type"]));
         let nodes = self.estate.nodes_obj().await;
         let target = rdm_core::NodeId::parse(&s(&n["node_id"])).unwrap_or_else(|e| panic!("{path:?}: the view's node_id {} is no node.id: {e}", n["node_id"]));
-        let delete = after_build_in_progress(|| nodes.delete(vec![target.clone()])).await.map_err(|end| refused(&format!("node.delete {path:?}"), end))?;
+        let delete = after_work_in_flight(|| nodes.delete(vec![target.clone()])).await.map_err(|end| refused(&format!("node.delete {path:?}"), end))?;
         entry["accepted"] = accepted_json(delete.accepted());
         entry["build"] = self.await_build(delete).await?;
         // A deleted fabric-primary or entry admin takes the entry with it: the create goes to the admin
@@ -1651,7 +1653,7 @@ impl Driver {
         if relocate_control(&mut self.estate, &self.known).await.is_none() {
             return Err(broken("control-api-answers", format!("after node.delete {path:?}, no admin answers fabric.get: {:?}", self.known.iter().map(|a| &a.name).collect::<Vec<_>>())));
         }
-        let spawn = after_build_in_progress(|| self.estate.create_node(&mesh, &r#type)).await.map_err(|end| refused(&format!("node.create {:?} in {mesh}", r#type), end))?;
+        let spawn = after_work_in_flight(|| self.estate.create_node(&mesh, &r#type)).await.map_err(|end| refused(&format!("node.create {:?} in {mesh}", r#type), end))?;
         entry["regrow"] = accepted_json(spawn.accepted());
         let build = spawn.accepted().expect("a create opens a Build").build_id.to_string();
         self.await_build(spawn).await?;
@@ -2303,14 +2305,14 @@ mod tests {
     async fn a_call_refused_build_in_progress_is_submitted_again_and_any_other_refusal_is_the_calls() {
         let current = rdm_client::BuildId::parse(&rdm_core::fixture_crockford60("inflight")).unwrap();
         let tries = std::sync::atomic::AtomicU32::new(0);
-        let accepted = after_build_in_progress(|| {
+        let accepted = after_work_in_flight(|| {
             let n = tries.fetch_add(1, Ordering::SeqCst);
             let current = current.clone();
             async move { if n < 3 { Err(CallEnd::BuildInProgress { current }) } else { Ok(n) } }
         })
         .await;
         assert_eq!(accepted.ok(), Some(3), "accepted on the fourth submit, after three build-in-progress refusals");
-        let other = after_build_in_progress(|| async { Err::<u32, _>(CallEnd::Rejected { reason: "unknown-node".into(), detail: String::new() }) }).await;
+        let other = after_work_in_flight(|| async { Err::<u32, _>(CallEnd::Rejected { reason: "unknown-node".into(), detail: String::new() }) }).await;
         assert!(matches!(other, Err(CallEnd::Rejected { ref reason, .. }) if reason == "unknown-node"), "{other:?}");
     }
 

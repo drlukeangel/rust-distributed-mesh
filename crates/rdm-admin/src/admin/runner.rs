@@ -864,8 +864,7 @@ impl AdminRunner {
     /// node is serialized at its mesh-primary): a node command, a repair and a Build's step on that node
     /// run one after the other, never beside each other.
     pub(crate) async fn node_work(&self, node_id: &crate::model::NodeId) -> tokio::sync::OwnedMutexGuard<()> {
-        let turn = self.node_work.lock().unwrap().entry(node_id.clone()).or_default().clone();
-        turn.lock_owned().await
+        self.node_turn(node_id).lock_owned().await
     }
 
     /// The work turn of the node `node_id` at this primary if no other work holds it, never waiting
@@ -873,8 +872,12 @@ impl AdminRunner {
     /// command or step on is refused `Busy` at once (Q413; node-recovery.md step 1), and the caller's
     /// `Send` sends it again. `None` while the turn is held.
     pub(crate) fn try_node_work(&self, node_id: &crate::model::NodeId) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        let turn = self.node_work.lock().unwrap().entry(node_id.clone()).or_default().clone();
-        turn.try_lock_owned().ok()
+        self.node_turn(node_id).try_lock_owned().ok()
+    }
+
+    /// The one work turn of the node `node_id` that [`Self::node_work`] and [`Self::try_node_work`] take.
+    fn node_turn(&self, node_id: &crate::model::NodeId) -> Arc<tokio::sync::Mutex<()>> {
+        self.node_work.lock().unwrap().entry(node_id.clone()).or_default().clone()
     }
 
     /// The termination of the deleted birth `(node_id, from_incarnation)` at `node`, heard again (Q128): its

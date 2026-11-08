@@ -58,10 +58,14 @@ impl crate::node_commands::PrimaryCommands for NodeCommandService {
         );
         let reply = self.run_command(&req, &node_id, &incarnation, &operation, kind, &mut frames).instrument(span.clone()).await;
         span.record("outcome", reply.name());
-        if let NodeCommandReply::Rejected { detail, .. } | NodeCommandReply::Failed { reason: detail, .. } = &reply {
+        if let NodeCommandReply::Rejected { detail, .. } | NodeCommandReply::Failed { reason: detail, .. } | NodeCommandReply::Busy { reason: detail } = &reply {
             span.record("detail", detail.as_str());
         }
-        span.in_scope(|| tracing::info!("a caller's node command was run by the primary above the node, never a Build"));
+        match &reply {
+            NodeCommandReply::Busy { .. } => span.in_scope(|| tracing::info!("a caller's node command was refused Busy: its primary runs another command or step on the node, and the caller's Send sends it again (Q413)")),
+            NodeCommandReply::PrimaryUpdated { .. } => span.in_scope(|| tracing::info!("a caller's node command moved the node's roles and was answered PrimaryUpdated: the caller sends it to the new mesh-primary (Q413)")),
+            _ => span.in_scope(|| tracing::info!("a caller's node command was run by the primary above the node, never a Build")),
+        }
         reply
     }
 }
@@ -122,7 +126,13 @@ impl NodeCommandService {
         // is admitted or any role moves, and the caller's `Send` sends it again (Q413): never a second
         // live call waiting beside the first.
         let Some(_turn) = self.runner.try_node_work(node_id) else {
-            return rdm_core::reply::node_command::busy(format!("node {node_id}: its primary {} runs another command or step on it; {} is refused, and its caller's Send sends it again", self.runner.node_id, req.op()));
+            // A command admission refuses by name is answered that refusal, never `Busy`: sent again,
+            // it would be refused the same.
+            return match self.control.admit_node_command(node_id, incarnation, kind).await {
+                Err(CommandRefusal { reason: "rejected-stale-incarnation", held: Some(held), .. }) => rdm_core::reply::node_command::rejected_stale_incarnation(held),
+                Err(r) => rdm_core::reply::node_command::rejected(r.reason, r.detail),
+                Ok(_) => rdm_core::reply::node_command::busy(format!("node {node_id}: its primary {} runs another command or step on it; {} is refused, and its caller's Send sends it again", self.runner.node_id, req.op())),
+            };
         };
         let start = kind == ActionKind::Start;
         let named = match req {

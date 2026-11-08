@@ -112,14 +112,15 @@ async fn a_busy_primary_is_sent_the_command_again_until_it_runs_it() {
 // @feature: node-lifecycle
 /// CONTRACT (Q413: "After the attempts are spent, the call ends `Rejected` with the busy reason"): a
 /// primary answering `Busy` to every attempt is sent the command `Send::default()`'s attempts times, and
-/// the call ends `Rejected { reason: "busy" }`, naming the primary's reason. Must NOT happen: a fourth
+/// the call answers `Rejected { reason: "busy" }`, naming the primary's reason, in the shape of every
+/// other refusal of the primary. Must NOT happen: a fourth
 /// send, or an end that is not by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_primary_busy_past_the_calls_attempts_ends_it_rejected_busy() {
     let p = primary(vec![Answer::Busy]).await;
     let (client, _ep) = caller(&[&p]).await;
     let (out, _) = delete(&client, &p.node_id, &ConnectionId::mint()).await;
-    assert!(matches!(&out, Err(rdm_client::CallEnd::Rejected { reason, detail }) if reason == "busy" && detail.contains("runs another command or step on the node")), "its Send spent, the call ends Rejected busy with the primary's reason: {out:?}");
+    assert!(matches!(&out, Ok(NodeCommandReply::Rejected { reason, detail }) if reason == "busy" && detail.contains("runs another command or step on the node")), "its Send spent, the call answers Rejected busy by name with the primary's reason, as every refusal of the primary: {out:?}");
     assert_eq!(p.sent.lock().unwrap().len(), usize::from(rdm_transport::Send::default().attempts), "one send per attempt of the call's Send");
 }
 
@@ -153,6 +154,28 @@ async fn a_second_primary_updated_ends_the_call_by_name_never_a_loop() {
     let a = primary(vec![Answer::PrimaryUpdated(b.node_id.clone())]).await;
     let (client, _ep) = caller(&[&a, &b, &c]).await;
     let (out, _) = delete(&client, &a.node_id, &ConnectionId::mint()).await;
-    assert!(matches!(&out, Err(rdm_client::CallEnd::Rejected { reason, .. }) if reason == "primary-updated-again"), "the second PrimaryUpdated ends the call by name: {out:?}");
+    assert!(matches!(&out, Ok(NodeCommandReply::Rejected { reason, .. }) if reason == "primary-updated-again"), "the second PrimaryUpdated ends the call by name, a refusal as every other: {out:?}");
     assert_eq!((a.sent.lock().unwrap().len(), b.sent.lock().unwrap().len(), c.sent.lock().unwrap().len()), (1, 1, 0), "one call to A, one to B, none to C");
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (node-stop.md "Caller / executor": "an unreachable mesh-primary ends the call `NotSent` by
+/// name"; Q413): a caller's command to a primary no process serves ends `NotSent` with its reachability
+/// cause, its own Send spent, never `Indeterminate` because the Send that sends it again on `Busy` cut
+/// one attempt short. Must NOT happen: an `Indeterminate` "before the primary's first frame".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_to_an_unreachable_primary_ends_not_sent_by_name() {
+    let gone = primary(vec![Answer::Runs]).await;
+    let resolved = gone.resolved.clone();
+    drop(gone);
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(resolved.clone());
+    let client = NodeRpcClient::new(ep, resolver);
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(NodeId::mint()), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let scope = ConnectionScope::Connections(vec![ConnectionId::mint()]);
+    let send = rdm_transport::Send { attempts: 2, time_limit: rdm_transport::TimeLimit(Duration::from_secs(3)) };
+    let opts = CallOptions { send, ..CallOptions::default() };
+    let out = tokio::time::timeout(Duration::from_secs(60), rdm_client::NodeRpc::new(&client).connections_delete(&resolved.node_id, &birth, &scope, &opts)).await.expect("the call ends within its bound");
+    assert!(matches!(&out, Err(rdm_client::CallEnd::NotSent { .. })), "an unreachable primary ends the call NotSent by name: {out:?}");
 }

@@ -331,42 +331,6 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// `node.stop` (NodeCommand 0x22 `StopNode`) of the exact birth `birth`, sent to `birth.target`:
-    /// the birth itself, from its mesh-primary, or the node's mesh-primary (the fabric-primary for a
-    /// mesh-primary), from a caller (D40). `operation` is the stop's identity, keyed on the node.id. The
-    /// command stream reports acceptance, the All closure's receipt as Data, then NodeStopped. A birth
-    /// already stopped reports its held closure and completion on the new invocation. The primary above
-    /// the node may answer first `Busy` or `PrimaryUpdated` (Q413): [`Self::primary_command`] sends a
-    /// caller's command again on either.
-    pub async fn stop(&self, birth: &ExactBirth, operation: &rdm_core::OperationId, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
-        let req = rdm_core::node_command::NodeCommandRequest::StopNode {
-            node_id: birth.node_id.clone(),
-            incarnation: birth.incarnation.clone(),
-            operation: operation.clone(),
-        };
-        match self.client.call_stream::<rdm_core::node_command::NodeCommand>(&birth.target, &req, opts).await {
-            Ok((stream, _)) => Ok(stream),
-            Err((out, _)) => Err(out),
-        }
-    }
-
-    /// `node.start` (NodeCommand 0x22 `StartNode`) of the stopped exact birth `birth`, sent to
-    /// `birth.target` as [`Self::stop`]: the birth rejoins as itself. The call is held until the birth
-    /// reports NodeJoined after joining, then NodeStarted after every gate, or Failed with its step,
-    /// reason and code. The primary above the node may answer first `Busy` (Q413), as for
-    /// [`Self::stop`].
-    pub async fn start(&self, birth: &ExactBirth, operation: &rdm_core::OperationId, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
-        let req = rdm_core::node_command::NodeCommandRequest::StartNode {
-            node_id: birth.node_id.clone(),
-            incarnation: birth.incarnation.clone(),
-            operation: operation.clone(),
-        };
-        match self.client.call_stream::<rdm_core::node_command::NodeCommand>(&birth.target, &req, opts).await {
-            Ok((stream, _)) => Ok(stream),
-            Err((out, _)) => Err(out),
-        }
-    }
-
     /// `node.config.update` (Q367): put the birth's whole config, NodeCommand 0x22 `UpdateConfig` to the
     /// fabric-primary `receiver`, directly. The fabric-primary sends the command to the node's
     /// mesh-primary, which sends it to the node; the node writes the map on its own record and each
@@ -494,7 +458,13 @@ impl<'a> NodeRpc<'a> {
                 }
             }
         };
-        match opts.send.run(|e: &NotOpened| matches!(e, NotOpened::Ended(_)), attempt).await {
+        // One attempt is one call to the primary up to its first frame, made under `opts.send` itself
+        // (its own attempts and time limit; an unreachable primary ends it `NotSent` by name). The Send
+        // that sends the call again on `Busy` has the same attempts, and bounds one attempt by that whole
+        // budget, never by one transport attempt's limit.
+        let attempts = opts.send.attempts.max(1);
+        let busy = rdm_transport::Send { attempts, time_limit: rdm_transport::TimeLimit(opts.send.time_limit.0 * u32::from(attempts) + rdm_transport::TRANSPORT_LIMIT) };
+        match busy.run(|e: &NotOpened| matches!(e, NotOpened::Ended(_)), attempt).await {
             Ok(answer) => Ok(answer),
             Err(rdm_transport::SendEnd::Answered(NotOpened::Ended(end)) | rdm_transport::SendEnd::Spent { last: Some(NotOpened::Ended(end)), .. }) => Err(end),
             Err(rdm_transport::SendEnd::Answered(NotOpened::Busy(reason)) | rdm_transport::SendEnd::Spent { last: Some(NotOpened::Busy(reason)), .. }) => {
@@ -534,7 +504,13 @@ impl<'a> NodeRpc<'a> {
         let req = NodeCommandRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
         let span = NodeOp::ConnectionsDelete.span();
         let call = async {
-            let PrimaryAnswer { stream, first, primary: mesh_primary } = self.primary_command(mesh_primary, &req, opts).await?;
+            let PrimaryAnswer { stream, first, primary: mesh_primary } = match self.primary_command(mesh_primary, &req, opts).await {
+                Ok(answer) => answer,
+                // A `Busy` past the Send's attempts and a second `PrimaryUpdated` are refusals by name, the
+                // answer's own shape, as every other refusal of the primary is.
+                Err(CallEnd::Rejected { reason, detail }) => return Ok(rdm_core::node_command::NodeCommandReply::Rejected { reason, detail }),
+                Err(end) => return Err(end),
+            };
             let (Some(mut stream), false) = (stream, matches!(NodeCommand::frame_kind(&first), FrameKind::Terminal | FrameKind::Refusal(_))) else {
                 return Ok(first);
             };
