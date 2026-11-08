@@ -660,7 +660,7 @@ pub(crate) fn ended(ev: Option<Result<Event, iroh_gossip::api::ApiError>>) -> Op
     }
 }
 
-/// Which channel an aggregate frame arrived on.
+/// Which channel a mesh topology frame (an aggregate or a delta) arrived on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Side {
     /// The node-admin backbone: every source Mesh complete, loads included.
@@ -1009,7 +1009,7 @@ impl Channels {
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
             let mut digest_fresh = false;
             let carried = match frame.data() {
-                Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel, order).carried,
+                Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => v.take_topology_frame(&frame, &f, Side::MeshChannel, order).carried,
                 _ => {
                     let (carried, fresh) = v.take_with(&frame, &f, "mesh-channel");
                     digest_fresh = fresh;

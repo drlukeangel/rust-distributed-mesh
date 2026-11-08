@@ -153,7 +153,7 @@ impl Backbone {
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
             let me = m.topology_view.view.current_name();
             if matches!(frame.data(), Frame::TopologyFull { .. } | Frame::TopologyDelta { .. }) {
-                let taken = m.topology_view.view.take_snapshot(&frame, &m.topology_view.fabric, Side::Backbone, order);
+                let taken = m.topology_view.view.take_topology_frame(&frame, &m.topology_view.fabric, Side::Backbone, order);
                 // A mesh primary's clock follows its current fabric-primary's mesh topology.
                 if let Some(p) = &taken.publication {
                     let verdict = crate::discipline::from_fabric_primary_members(&me, m.topology_view.view.primary.load(Ordering::Relaxed), &m.topology_view.view.digest_view.primaries, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);

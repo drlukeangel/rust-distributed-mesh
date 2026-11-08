@@ -1376,7 +1376,7 @@ mod tests {
         let mut other = digest(&gone, &gone_inc, None, NodeStatus::Ready, 4);
         { let at = rdm_core::PathName::new("mesh1.node", "2").unwrap(); other.node.path = at.path; other.node.name = at.name; }
         other.node.mesh = "mesh1".into();
-        view.take_snapshot(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        view.take_topology_frame(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         let first_held_by = Instant::now();
         assert!(view.digest_view.get(id.as_str()).is_none(), "a projection is no liveness: no digest of the member is held");
         let held = |now: Instant| view.digest_view.projected_at(id.as_str(), now).map(|(d, unheard)| (d.node.incarnation.clone(), now.checked_sub(unheard)));
@@ -1384,15 +1384,15 @@ mod tests {
         assert_eq!(incarnation, inc);
         assert!(since.is_some_and(|s| s <= first_held_by), "unheard since it was first held");
         std::thread::sleep(Duration::from_millis(20));
-        view.take_snapshot(&mesh_topology(2, vec![member.clone(), other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        view.take_topology_frame(&mesh_topology(2, vec![member.clone(), other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "a later version listing it again does not refresh its silence");
-        view.take_snapshot(&mesh_topology(3, vec![other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        view.take_topology_frame(&mesh_topology(3, vec![other.clone()], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "the primary dropping the silent member from its projection is no departure: the birth stays held");
         let listed: Vec<rdm_core::PathName> = view.digest_view.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d.node.location()).collect();
         assert_eq!(listed.len(), 2, "both projected births are held: {listed:?}");
         assert!(view.digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 5)), "the member's own digest is taken");
         assert!(view.digest_view.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
-        view.take_snapshot(&mesh_topology(4, vec![], vec![other.clone()]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        view.take_topology_frame(&mesh_topology(4, vec![], vec![other.clone()]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(view.digest_view.is_deleted(gone.as_str()), "the node listed deleted departs");
         assert!(view.digest_view.projected_at(gone.as_str(), Instant::now()).is_none(), "a departure removes the projected birth");
         assert!(view.digest_view.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
@@ -1443,7 +1443,7 @@ mod tests {
         assert!(view.digest_view.record(digest(&id, &inc, None, NodeStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
         let late = Frame::aggregate("mesh1", None, &author_of(&predecessor), 9, 9, 0, 1, vec![digest(&id, &inc, None, NodeStatus::ConnectionsDeleting, 6)]);
-        view.take_snapshot(&late, &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        view.take_topology_frame(&late, &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((NodeStatus::Ready, 5)), "the authored status stands");
         assert_eq!(view.digest_view.member_status(&id, &inc), Some(NodeStatus::Ready));
     }
@@ -2126,7 +2126,7 @@ mod tests {
         let id = NodeId::mint();
         let d = digest(&id, &IncarnationId::mint(), None, NodeStatus::Ready, 100);
         assert!(view.digest_view.record(d.clone()));
-        let _ = view.take_snapshot(&mesh_topology("mesh1", vec![d]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        let _ = view.take_topology_frame(&mesh_topology("mesh1", vec![d]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         let (_, at, forwarded) = view.digest_view.inner.lock().unwrap().get(id.as_str()).cloned().unwrap();
         assert!(forwarded == Heard::Direct, "its own mesh's member is held as heard directly, never forwarded");
         let _ = at;
@@ -2135,7 +2135,7 @@ mod tests {
         let mut p = digest(&peer, &IncarnationId::mint(), None, NodeStatus::Ready, 100);
         { let at = rdm_core::PathName::new("mesh2.node", "1").unwrap(); p.node.path = at.path; p.node.name = at.name; }
         p.node.mesh = "mesh2".into();
-        let _ = view.take_snapshot(&mesh_topology("mesh2", vec![p]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        let _ = view.take_topology_frame(&mesh_topology("mesh2", vec![p]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
         assert!(view.digest_view.inner.lock().unwrap().get(peer.as_str()).unwrap().2 == Heard::Forwarded, "a peer mesh's member is forwarded");
     }
 
@@ -2177,7 +2177,7 @@ mod tests {
         };
         for v in 2..=LAST {
             let delta = delta_of("mesh2", &publisher, v - 1, v, v, vec![at(v)], vec![], vec![]);
-            let _ = view.take_snapshot(&delta, &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
+            let _ = view.take_topology_frame(&delta, &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         }
         stop.store(true, Ordering::Relaxed);
         let behind = reader.join().unwrap();
@@ -2284,7 +2284,7 @@ mod tests {
         // As a peer receives it: authored by its publisher.
         primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, NodeStatus::ConnectionsDeleting), said(&leaving, NodeStatus::Leaving)])] {
-            let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
+            let taken = primary.take_topology_frame(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, v, full) = taken.source.expect("a complete source aggregate");
             let _ = primary.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, v, &full, version);
         }
@@ -2303,7 +2303,7 @@ mod tests {
         for f in &replay {
             match f.data() {
                 Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => {
-                    joiner.take_snapshot(f, &fabric, Side::MeshChannel, &mut joiner.order.lock().unwrap());
+                    joiner.take_topology_frame(f, &fabric, Side::MeshChannel, &mut joiner.order.lock().unwrap());
                 }
                 _ => {
                     joiner.take(f, &fabric, "mesh-channel");
@@ -2348,7 +2348,7 @@ mod tests {
         let member = test_view("mesh2", "mesh2.node.1");
         // What the primary puts into its Mesh for a mesh topology it installed from the backbone (backbone.rs).
         let forward = |frame: &Frame| -> Vec<Frame> {
-            let taken = primary.take_snapshot(frame, &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
+            let taken = primary.take_topology_frame(frame, &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, version, full) = taken.source.expect("a complete source aggregate");
             let held = primary.forwarder.lock().unwrap().published_version(&mesh);
             assert_eq!(held, (version > 1).then_some(1), "the install leaves what the forwarder last published of {mesh}");
@@ -2363,7 +2363,7 @@ mod tests {
         let first = forward(&mesh_topology(1, vec![admin.clone(), rpc.clone()]));
         assert_eq!(base_of(&first), vec![(0, 1)], "mesh1's first differential into the Mesh is from 0");
         for f in &first {
-            member.take_snapshot(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
+            member.take_topology_frame(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
         }
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(1));
 
@@ -2373,7 +2373,7 @@ mod tests {
         assert_eq!(base_of(&last_one), vec![(1, 2)], "the final differential is from the version last published, never from 0");
         assert!(primary.digest_view.is_deleted(admin.node.node_id.as_str()), "the primary's install holds the last admin deleted");
         for f in &last_one {
-            member.take_snapshot(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
+            member.take_topology_frame(f, &fabric, Side::MeshChannel, &mut member.order.lock().unwrap());
         }
         assert!(spans.named("rdm.mesh.topology.update.via-gap").is_empty(), "no node of the Mesh takes a version gap: {:?}", spans.named("rdm.mesh.topology.update.via-gap"));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(2), "the member applied the final differential at its base");
@@ -2763,7 +2763,7 @@ mod tests {
         }
         match f.data() {
             Frame::TopologyFull { .. } | Frame::TopologyDelta { .. } => {
-                view.take_snapshot(f, fabric, side, order);
+                view.take_topology_frame(f, fabric, side, order);
             }
             _ => {
                 view.take(f, fabric, side.name());
@@ -3191,7 +3191,7 @@ mod tests {
             let v = test_view("mesh9", name);
             v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
             v.digest_view.primaries.take(PrimaryRole::FabricPrimary, &primary_of(&fabric_primary, 1));
-            v.take_snapshot(&aggregate_of("mesh1", &publisher_of(&primary), 5, vec![primary.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut v.order.lock().unwrap());
+            v.take_topology_frame(&aggregate_of("mesh1", &publisher_of(&primary), 5, vec![primary.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut v.order.lock().unwrap());
             assert!(v.digest_view.get(rpc.node.node_id.as_str()).is_some(), "the birth is held from the projection");
             v
         };
@@ -3834,7 +3834,7 @@ mod tests {
         let fp = TopologyView::new(&fabric, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         fp.view.primary.store(true, Ordering::Relaxed);
         fp.view.forwarder.lock().unwrap().set_author(test_author());
-        let taken = fp.view.take_snapshot(&Frame::aggregate("mesh1", None, &author_of(&publisher_of(&lost)), 7, 70, 0, 1, vec![lost.clone(), x.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut fp.view.order.lock().unwrap());
+        let taken = fp.view.take_topology_frame(&Frame::aggregate("mesh1", None, &author_of(&publisher_of(&lost)), 7, 70, 0, 1, vec![lost.clone(), x.clone(), rpc.clone()]), &fabric, Side::Backbone, &mut fp.view.order.lock().unwrap());
         let (mesh, v, full) = taken.source.expect("a complete peer aggregate");
         let _ = fp.view.forwarder.lock().unwrap().source("mesh2.node-admin.1", &mesh, v, &full, 70);
         // mesh1's mesh-primary is lost; the fabric-primary deletes mesh1.node.1 (node recovery, Q335).

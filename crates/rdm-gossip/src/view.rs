@@ -12,9 +12,9 @@ use std::time::Instant;
 
 use crate::{frame::*, status::*, primary::*, channel::*, digest_view::*};
 
-/// What an aggregate frame left behind.
+/// What a mesh topology frame (an aggregate or a delta) left behind.
 #[derive(Default)]
-pub(crate) struct SnapshotTaken {
+pub(crate) struct TopologyFrameTaken {
     /// The digests applied to the view, for their addresses.
     pub(crate) carried: Vec<MeshDigest>,
     /// A complete backbone aggregate of a peer Mesh: `(mesh, version, full)`, for the forwarding
@@ -209,8 +209,8 @@ impl View {
         tracing::info!("a mesh status is held: application routing selects the mesh's births only while it is ready");
     }
 
-    /// Hold what `f` carries; the digests it carries (for their addresses). An aggregate frame is
-    /// not taken here: see [`View::take_snapshot`].
+    /// Hold what `f` carries; the digests it carries (for their addresses). A mesh topology frame is
+    /// not taken here: see [`View::take_topology_frame`].
     pub(crate) fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         self.take_with(f, fabric, via).0
     }
@@ -394,11 +394,11 @@ impl View {
         true
     }
 
-    pub(crate) fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side, order: &mut crate::receive_order::ReceiveOrder) -> SnapshotTaken {
+    pub(crate) fn take_topology_frame(&self, f: &Frame, fabric: &FabricId, side: Side, order: &mut crate::receive_order::ReceiveOrder) -> TopologyFrameTaken {
         match f.data() {
             Frame::TopologyFull { mesh, mesh_id, chunk_index, chunk_count, nodes } => {
                 // The envelope names the aggregate's author, the mesh's version and the time (Q389).
-                let Some((author, version, time_ms)) = f.context().and_then(|c| Some((c.source.clone(), c.version()?, c.time_ms))) else { return SnapshotTaken::default() };
+                let Some((author, version, time_ms)) = f.context().and_then(|c| Some((c.source.clone(), c.version()?, c.time_ms))) else { return TopologyFrameTaken::default() };
                 if side != Side::Backbone {
                     tracing::info_span!(
                         "rdm.mesh.topology.reject.via-members-on-wrong-channel",
@@ -409,10 +409,10 @@ impl View {
                         forwarded_by = "",
                     )
                     .in_scope(|| tracing::warn!("a TopologyFull off the backbone, the one channel an aggregate travels on: refused"));
-                    return SnapshotTaken::default();
+                    return TopologyFrameTaken::default();
                 }
                 if self.outside_build(mesh, side) {
-                    return SnapshotTaken::default();
+                    return TopologyFrameTaken::default();
                 }
                 let chunk = Chunk {
                     mesh: mesh.clone(),
@@ -432,8 +432,8 @@ impl View {
                 let prior = Prior::of(&rx, mesh);
                 let taken = rx.take_chunk_against(chunk, false, order.installed_aggregate(mesh));
                 match taken {
-                    Taken::Waiting { .. } => SnapshotTaken::default(),
-                    Taken::Refused(crate::aggregate::Refusal::Duplicate | crate::aggregate::Refusal::Inconsistent | crate::aggregate::Refusal::OlderThanHeld { .. } | crate::aggregate::Refusal::OlderThanPending { .. }) => SnapshotTaken::default(),
+                    Taken::Waiting { .. } => TopologyFrameTaken::default(),
+                    Taken::Refused(crate::aggregate::Refusal::Duplicate | crate::aggregate::Refusal::Inconsistent | crate::aggregate::Refusal::OlderThanHeld { .. } | crate::aggregate::Refusal::OlderThanPending { .. }) => TopologyFrameTaken::default(),
                     Taken::Refused(r) => {
                         drop(rx);
                         tracing::info_span!(
@@ -447,7 +447,7 @@ impl View {
                             reason = ?r,
                         )
                         .in_scope(|| tracing::info!("an aggregate chunk refused: the held list stands"));
-                        SnapshotTaken::default()
+                        TopologyFrameTaken::default()
                     }
                     Taken::Installed(i) => {
                         let installed = self.installed(&i, fabric, side, prior);
@@ -460,19 +460,19 @@ impl View {
             Frame::TopologyDelta { mesh, base_version, chunk_count, .. } => {
                 // The forwarding mesh-primary that authored it, and the version it moves the mesh to:
                 // its envelope's `source` and `sequence` (Q389).
-                let Some(chunk) = DeltaChunk::of_frame(f) else { return SnapshotTaken::default() };
+                let Some(chunk) = DeltaChunk::of_frame(f) else { return TopologyFrameTaken::default() };
                 let (author, topology_version) = (chunk.author.clone(), &chunk.version.clone());
                 let source = author.uri();
                 if side == Side::Backbone {
                     tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source, forwarded_by = "")
                         .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete aggregates travel: refused"));
-                    return SnapshotTaken::default();
+                    return TopologyFrameTaken::default();
                 }
                 if self.own_mesh_on_its_channel(mesh, side, &source, "mesh-topology-delta") {
-                    return SnapshotTaken::default();
+                    return TopologyFrameTaken::default();
                 }
                 if self.outside_build(mesh, side) {
-                    return SnapshotTaken::default();
+                    return TopologyFrameTaken::default();
                 }
                 let mut rx = self.mesh_rx.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
@@ -500,14 +500,14 @@ impl View {
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
                         order.installed_projection(mesh, Some(&crate::aggregate::sent_by(&author)), *topology_version, &installed_full, None);
-                        SnapshotTaken { carried, ..SnapshotTaken::default() }
+                        TopologyFrameTaken { carried, ..TopologyFrameTaken::default() }
                     }
-                    Moved::Waiting { .. } | Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
+                    Moved::Waiting { .. } | Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => TopologyFrameTaken::default(),
                     Moved::Malformed { chunk_index, chunk_count } => {
                         drop(rx);
                         tracing::info_span!("rdm.mesh.topology.reject.via-malformed-chunk", node = %self.current_name(), mesh = %mesh, source = %source, base_version = *base_version, topology_version = *topology_version, chunk_index, chunk_count)
                             .in_scope(|| tracing::info!("a differential chunk whose index is outside its count, or whose count is not its differential's: refused"));
-                        SnapshotTaken::default()
+                        TopologyFrameTaken::default()
                     }
                     Moved::Desynced { gap, .. } => {
                         drop(rx);
@@ -528,11 +528,11 @@ impl View {
                         )
                         .in_scope(|| tracing::info!("the delta does not follow what is held: this source is desynchronized and tops up from its own primary"));
                         self.desync.notify_one();
-                        SnapshotTaken::default()
+                        TopologyFrameTaken::default()
                     }
                 }
             }
-            _ => SnapshotTaken::default(),
+            _ => TopologyFrameTaken::default(),
         }
     }
 
@@ -635,7 +635,7 @@ impl View {
 
     /// A complete list of nodes is held: apply it to the view. `prior` is what the receiver held of the
     /// source before it.
-    pub(crate) fn installed(&self, i: &Install, fabric: &FabricId, side: Side, prior: Prior) -> SnapshotTaken {
+    pub(crate) fn installed(&self, i: &Install, fabric: &FabricId, side: Side, prior: Prior) -> TopologyFrameTaken {
         let count = |status: rdm_core::model::NodeStatus| i.full.digests().iter().filter(|d| d.status == status).count();
         tracing::info_span!(
             "rdm.mesh.topology.update.via-aggregate-installed",
@@ -663,7 +663,7 @@ impl View {
             publisher,
             published_at_rafka_ms: i.time_ms,
         });
-        SnapshotTaken { carried, source, publication }
+        TopologyFrameTaken { carried, source, publication }
     }
 
     /// Apply the nodes of an aggregate, a read or a delta to the view, each by its status (Q390): a node
