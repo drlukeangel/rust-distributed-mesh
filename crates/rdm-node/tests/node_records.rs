@@ -179,7 +179,7 @@ async fn an_unrecognised_record_is_not_answered_as_absent() {
     let store = file_store(&dir).await;
     store.put_node(&node).await.unwrap();
     drop(store);
-    let file = dir.join(rdm_node::store_root::NODES_FILE);
+    let file = dir.join("store").join(rdm_node::store_root::NODES_FILE);
     let mut bytes = std::fs::read(&file).unwrap();
     // Damage a complete committed line without manufacturing another valid record.
     let at = bytes.iter().position(|b| *b == b'{').unwrap();
@@ -210,7 +210,7 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
     let initial = properties();
     let shown = Arc::new(Mutex::new(Vec::new()));
     let cut = rdm_node::store_log::write_cut::arm(
-        &dir.join(rdm_node::store_root::NODES_FILE),
+        &dir.join("store").join(rdm_node::store_root::NODES_FILE),
         initial.node_id.as_str(),
     );
     let (first, seed, published) = (writer.clone(), initial.clone(), shown.clone());
