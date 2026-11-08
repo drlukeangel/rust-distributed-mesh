@@ -716,6 +716,38 @@ async fn a_lost_ack_of_a_response_frame_is_repaired_by_its_resend() {
     assert!(get(&cd.stats().responses_of_completed) >= 1, "the repeat of a completed invocation's frame is acked and dropped");
 }
 
+/// Cell 10b. CONTRACT (Q412 A; node-rpc.md §43: "Sending again stops on the ack, ... or when the
+/// attempts are spent"): a response to a caller, a client no view holds, that exited while its
+/// handler ran is sent again until `Send`'s TimeLimit and then dropped: the responder owes nothing
+/// afterwards. Must NOT happen: the frame kept and sent again for as long as the responder runs.
+#[test]
+fn a_response_to_a_caller_no_view_holds_is_dropped_at_the_send_time_limit() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-time-limit").expect("the cell's evidence file can be created");
+    let resent = capture.run(4, async {
+        let s = served().await;
+        let (client, _) = client_of(&[&s.node]).await;
+        let ep = client.endpoint().clone();
+        let call = tokio::spawn({
+            let target = s.target();
+            async move { client.call::<Command>(&target, &run(10, Mode::AcceptThenHold), &budget(Duration::from_secs(5))).await.0 }
+        });
+        eventually("the request is accepted", Duration::from_secs(2), || get(&s.stats.dispatched) == 1).await;
+        // The caller exits while its handler runs: the response is written to no one, and nothing
+        // can ever ack it.
+        call.abort();
+        ep.close().await;
+        s.release();
+        eventually("the response is owed to the caller that exited", Duration::from_secs(3), || s.delivery.owed_frames() > 0).await;
+        assert_eq!(s.runs.load(Ordering::SeqCst), 1);
+        let limit = rdm_transport::client::Send::default().time_limit.0;
+        eventually("the response is dropped at the Send's time limit", limit + Duration::from_secs(15), || s.delivery.owed_frames() == 0).await;
+    });
+    let _ = resent;
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let ended: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.delivery.update.via-response-resend" && s["attributes"]["outcome"] == "time-limit-spent").collect();
+    assert_eq!(ended.len(), 1, "one resend span ends on the Send's time limit: {ended:#?}");
+}
+
 /// Cell 11. CONTRACT: a response written after the request's connection is gone is delivered on a
 /// new stream once the caller reconnects; the handler ran once. Its trace: the responder's
 /// `via-response-resend`, its cause named, ending `acked`, in the caller's trace. The cut races the

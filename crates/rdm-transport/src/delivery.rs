@@ -885,6 +885,13 @@ impl Delivery {
         tokio::spawn(push_loop(Arc::downgrade(&self.inner), id.clone(), why.to_string(), parent));
     }
 
+    /// Whether no view this process holds knows `birth`'s node: it has no resolver, or its resolver
+    /// answers `Unknown` (a client that is no node, never in a view).
+    fn held_by_no_view(&self, birth: &Birth) -> bool {
+        let Some(resolver) = self.inner.resolver.lock().unwrap().clone() else { return true };
+        matches!(resolver.resolve(&NodeTarget::ExactNode(birth.node_id.clone())), Err(rdm_core::outcome::ResolveFailure::Unknown))
+    }
+
     fn birth_ended(&self, birth: &Birth) -> Option<String> {
         let resolver = self.inner.resolver.lock().unwrap().clone()?;
         match resolver.resolve(&NodeTarget::ExactNode(birth.node_id.clone())) {
@@ -1081,11 +1088,21 @@ impl Delivery {
 async fn push_loop(weak: std::sync::Weak<Inner>, id: DeliveryId, why: String, parent: Option<(String, Option<String>)>) {
     let span = tracing::info_span!("rdm.node_rpc.delivery.update.via-response-resend", delivery_id = %id, reason = %why, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
     parent_on(&span, parent.as_ref());
+    // Q412 A (node-rpc.md §43, "Sending again stops on the ack, ... or when the attempts are spent"): a
+    // response to a caller no view holds (a client that is no node) ends on `Send`'s TimeLimit, so one
+    // that exited with its ack lost is not sent again for the life of this process, and one that
+    // reconnects within the limit still gets its frames. A caller a view holds ends when its birth does.
+    let limit = crate::client::Send::default().time_limit.0;
+    let started = std::time::Instant::now();
     let mut attempt = 0u32;
     let outcome = loop {
         let Some(inner) = weak.upgrade() else { break "process-ended" };
         let d = Delivery { inner };
         attempt += 1;
+        if started.elapsed() >= limit && d.held_by_no_view(&id.sender) {
+            d.inner.st.lock().unwrap().owed.remove(&id);
+            break "time-limit-spent";
+        }
         let (kick, mut conns) = match d.push_resend(&id, attempt, &span).await {
             Ok(w) => w,
             Err(outcome) => break outcome,
