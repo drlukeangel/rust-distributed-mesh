@@ -2,11 +2,13 @@
 
 ## Nothing lands without these two (Luke, 2026-11-08)
 
-1. **An adversarial code review of the work.** Before `lane-land.sh`, the lead reads the unit's diff against what
-   its ruling says must be true when it is done, and checks that in the code itself. For example, for a "one copy"
-   ruling, every copy of that state is shown gone or shown to be the one. The lead also runs the `code-review` skill
-   on the lane's branch against origin/main and reads every finding. Each finding is fixed in the lane or answered
-   before the landing. A green gate is not the review, and neither is a seat's report or a diff summary.
+1. **An adversarial code review of the work, once, on the lead lane.** Units land into the lead lane's branch, not
+   one by one onto main. When the batch is in, the lead reads the merged diff against what each ruling says must be
+   true when it is done, and checks that in the code itself. For example, for a "one copy" ruling, every copy of
+   that state is shown gone or shown to be the one. The lead then runs one review or audit there (the `code-review`
+   or `code-audit` skill) on the lead lane against origin/main, never one per branch, and reads every finding. Each
+   finding is fixed on the lead lane or answered before it goes to main. A green gate is not the review, and neither
+   is a seat's report or a diff summary.
 2. **Jaeger flames that prove it works.** Every behaviour fix carries a flame: the trace link from an exported run
    (http://192.168.68.99:16687/trace/<id>) and the span lines that show the fix working. The lead reads it before
    the landing. Local span files and a green cell are not the proof. A gossip or mesh change carries a flame from
