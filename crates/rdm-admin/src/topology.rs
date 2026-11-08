@@ -159,13 +159,6 @@ impl Topology {
         self.births().filter(move |n| n.mesh == mesh && n.r#type == r#type)
     }
 
-    /// The types of the members of `mesh`, `node-admin` first, then by name.
-    pub fn types_in(&self, mesh: &str) -> Vec<String> {
-        let mut all: Vec<String> = self.births().filter(|n| n.mesh == mesh).map(|n| n.r#type.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        all.sort_by_key(|t| !rdm_core::is_node_admin(t));
-        all
-    }
-
     /// Whether a node.create of the node-admin `node` makes it its mesh's first admin: it is a node-admin
     /// and no OTHER node-admin of its mesh is live, a live birth the view holds at its own path (a
     /// view that has not heard the mesh lost, or the exited birth a recovery creates over) never

@@ -461,6 +461,14 @@ pub trait NodeObserver: Send + Sync {
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer awaits no completion of a command to {}", node.node_id) }
     }
+    /// The create's command of a node type's first primary in its mesh (Q407; node-create.md): `node`,
+    /// Ready, commanded `node.primary.update` by its mesh-primary when no primary of its type is held there,
+    /// the create completing on its `node.primary.updated`. `Ok(true)` when it was commanded and answered,
+    /// `Ok(false)` when nothing was commanded; `Err` names how the call ended without the answer. An
+    /// observer that holds no node.primary.update commands nothing.
+    async fn command_first_primary(&self, _node: &Node, _ctx: &CommandContext) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 /// The runtime part of a birth's digest: what its validated report carries, and what was made
@@ -1528,7 +1536,11 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(req.build_id.as_ref(), &location, req.operation.clone()).await?;
         let mut created = self.create_to_ready(&mut run, req, of, pre_node_ready, before_launch).await?;
         created.node.status = NodeStatus::Ready;
-        self.step(&mut run, CreateStep::Complete.name(), async {
+        let ctx = CommandContext { build_id: build_log(run.build_id), operation: run.operation.clone() };
+        self.step_with(&mut run, CreateStep::Complete.name(), async {
+            // A type's first node in its mesh is commanded its first primary once Ready (Q407): the
+            // create completes on its node.primary.updated.
+            self.observer.command_first_primary(&created.node, &ctx).await.map_err(|why| StepFailure::coded(rdm_core::outcome::Code::Unavailable, why))?;
             self.sink.publish(created.node.clone());
             Ok(())
         })

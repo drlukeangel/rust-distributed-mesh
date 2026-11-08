@@ -1969,6 +1969,12 @@ impl DigestView {
         moved
     }
 
+    /// Whether the pruner's last sweep ([`Self::mark_silence_at`]) found the exact birth silent past the
+    /// staleness floor: the one clock of a held birth's silence (Q254), moved with the `silence` watch.
+    pub fn is_silent(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.silent.lock().unwrap().contains(&(node_id.to_string(), incarnation.as_str().to_string()))
+    }
+
     /// The node ids of the births of `mesh` held, read under the lock: no digest is copied, only its id
     /// (Q268: a count of a mesh's births never copies the view).
     pub fn node_ids_of_mesh(&self, mesh: &str) -> Vec<String> {

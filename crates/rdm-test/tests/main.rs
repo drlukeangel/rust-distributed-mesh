@@ -164,6 +164,8 @@ mod fabric_primary_loss;
 mod late_lower_node_id_admin;
 #[path = "elections/role_election.rs"]
 mod role_election;
+#[path = "elections/first_primary.rs"]
+mod first_primary;
 #[path = "elections/node_primary_update.rs"]
 mod node_primary_update;
 #[path = "mesh/canonical_ids.rs"]

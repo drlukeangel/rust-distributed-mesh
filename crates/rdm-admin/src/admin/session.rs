@@ -270,6 +270,14 @@ impl NodeObserver for TopologyObserver {
         crate::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
     }
 
+    /// Through this admin's `PrimaryUpdate` ([`crate::primary_update::PrimaryUpdate::command_first_primary`]):
+    /// as its mesh's mesh-primary it commands a type's first node its first primary (Q407).
+    async fn command_first_primary(&self, node: &Node, ctx: &crate::deployment::pipeline::CommandContext) -> Result<bool, String> {
+        let Some(primary_update) = self.primary_update.get() else {
+            return if rdm_core::is_node_admin(&node.r#type) { Ok(false) } else { Err(format!("this admin holds no node.primary.update yet to command {}'s first primary", node.node_id)) };
+        };
+        primary_update.command_first_primary(node, &ctx.build_id, &ctx.operation).await
+    }
 }
 
 /// The admission of a carried `node.connection.delete { All }` (i144 R22), and the reachability

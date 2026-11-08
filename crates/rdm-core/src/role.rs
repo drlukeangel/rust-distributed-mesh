@@ -24,8 +24,9 @@ pub enum PrimaryRole {
     /// Position 1 on the wire.
     FabricPrimary,
     /// The node-type primary of the primary's mesh for this type, every type but `node-admin`
-    /// (whose role is [`PrimaryRole::MeshPrimary`]): its mesh's primary writes and announces its record
-    /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
+    /// (whose role is [`PrimaryRole::MeshPrimary`]): the nodes of the type elect it among themselves
+    /// (Q406), its first commanded by the mesh-primary's create step (Q407); the primary records it on its
+    /// own record and its Digest carries it (Q392).
     ///
     /// Position 2 on the wire.
     NodePrimary(String),

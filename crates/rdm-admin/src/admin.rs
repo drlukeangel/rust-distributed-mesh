@@ -2520,64 +2520,102 @@ mod tests {
         assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6)], "the successor of a deleted mesh-primary is its mesh's primary at the next revision (decided against {:?})", decided.meshes);
     }
 
-    /// CONTRACT (lifecycles/node-primary-update.md "Writer": "for every other type the mesh-primary
-    /// records the node's row"; the mesh-primary is the sole author of member status): a mesh-primary announces the role of each other node type of its mesh the election fills
-    /// with a birth its record does not name (a first election, a primary proven gone), at the next
-    /// revision over that record, and nothing while the record names the living primary. No other admin
-    /// announces a node-type primary role. Must NOT happen: a node-type primary role that no record holds, so a
-    /// lower NodeId that later becomes Ready displaces the living primary.
+    /// CONTRACT (Q406, Luke: "elections take place internally by the nodes themselves of that type. MP/NA
+    /// don't have anything to do with it minus their own NA elections"; elections §4.1): a node-admin
+    /// computes no broker election and announces no broker role, the mesh-primary included. Its view marks
+    /// the broker the record it holds names, learnt from that broker's Digest like any peer, whatever its
+    /// status: unheard past the floor it stays named until the record its brokers' winner gossips replaces
+    /// it; known gone, no broker is named. With no record, no broker is named: the create's command fills
+    /// a type's first primary (Q407). Its election log names no broker. Must NOT happen: a node-admin
+    /// filling the broker type with its lowest Ready node, or announcing a broker role.
+    // @feature: mesh-elections
     #[tokio::test]
-    async fn a_mesh_primary_announces_each_node_type_primary_the_election_fills_in_its_mesh() {
+    async fn a_node_admin_computes_no_broker_election() {
         use rdm_core::model::NodeStatus::*;
         use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary, NodePrimary};
+        let capture = crate::span_capture::Capture::new("a-node-admin-computes-no-broker-election");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
         let digest_view = DigestView::default();
         let records = Records::default();
         let me = with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "500000000000");
         let sibling = with_id(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", Ready), "800000000000");
-        let rpc1 = with_id(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", Ready), "100000000000");
-        let rpc2 = with_id(digest(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", Ready), "300000000000");
-        for d in [&me, &sibling, &rpc1, &rpc2] {
+        let broker1 = with_id(digest(PathName::new("mesh1.broker", "1").unwrap(), "mesh1", "broker", Ready), "100000000000");
+        let broker2 = with_id(digest(PathName::new("mesh1.broker", "2").unwrap(), "mesh1", "broker", Ready), "300000000000");
+        for d in [&me, &sibling, &broker1, &broker2] {
             digest_view.record((*d).clone());
         }
         digest_view.primaries.take(MeshPrimary, &primary_of(&me, 1));
         digest_view.primaries.take(FabricPrimary, &primary_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
-        let node_type_said = |said: &[(rdm_core::PrimaryRole, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, NodePrimary(_))).map(|(s, h)| (s.clone(), h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
-        // A first election: no record of the node type, the lowest Ready fills it at revision 1.
-        let decided = incumbency_of(&digest_view, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = role_announcements(&t, "mesh1", me_birth, &decided);
-        assert_eq!(node_type_said(&said), vec![(NodePrimary("node".into()), rpc1.node.node_id.to_string(), 1)], "the mesh-primary roles mesh1.node.1: {said:?}");
-        let sib = role_announcements(&t, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
-        assert!(node_type_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no node-type primary role: {sib:?}");
-        // The record names the living mesh1.node.2: it keeps the role over the lower Ready NodeId and nothing is said.
-        digest_view.primaries.take(NodePrimary("node".into()), &primary_of(&rpc2, 3));
-        let decided = incumbency_of(&digest_view, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        assert_eq!(t.node_type_primary("mesh1", "node").map(|n| n.location()), Some(PathName::new("mesh1.node", "2").unwrap()));
-        assert!(node_type_said(&role_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded primary is not announced again");
-        // mesh1.node.2 proven exited: the role goes to the lowest Ready, announced at the next revision.
-        depart(&digest_view, &records, &rpc2).await;
-        let decided = incumbency_of(&digest_view, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = role_announcements(&t, "mesh1", me_birth, &decided);
-        assert_eq!(node_type_said(&said), vec![(NodePrimary("node".into()), rpc1.node.node_id.to_string(), 4)], "{said:?}");
+        let broker_said = |said: &[(rdm_core::PrimaryRole, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, NodePrimary(_))).cloned().collect::<Vec<_>>();
+        let broker_primary = |t: &Topology| t.node_type_primary("mesh1", "broker").map(|n| n.location());
+        let decide = |digest_view: &DigestView| {
+            let decided = incumbency_of(digest_view, &records);
+            let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
+            (decided, t)
+        };
+        let log = crate::election::ElectionLog::new(me.node.node_id.clone());
+        // No record of the broker type: no broker is named, though two are Ready, and nothing is said.
+        let (decided, t) = decide(&digest_view);
+        log.observe(&t);
+        assert_eq!(broker_primary(&t), None, "with no record, the node-admin names no broker primary");
+        assert!(broker_said(&role_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "the mesh-primary announces no broker role");
+        assert!(broker_said(&role_announcements(&t, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided)).is_empty(), "nor does another node-admin");
+        assert_eq!(t.node_type_primary("mesh1", "node-admin").map(|n| n.location()), Some(PathName::new("mesh1.node-admin", "1").unwrap()), "the node-admins' own election stands");
+        // mesh1.broker.2's Digest carries its role (its brokers elected it, or the create commanded it): the
+        // node-admin takes the record from the Digest and names it over the lower Ready mesh1.broker.1.
+        let mut carried = broker2.clone();
+        carried.set_primary(Some(1));
+        carried.digest_seq += 1;
+        digest_view.record(carried);
+        let (decided, t) = decide(&digest_view);
+        log.observe(&t);
+        assert_eq!(broker_primary(&t), Some(PathName::new("mesh1.broker", "2").unwrap()), "the broker its record names, from that broker's Digest");
+        assert!(broker_said(&role_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "nothing is announced");
+        // Unheard past the floor (PendingReconnect at its mesh-primary): still the one named; the node-admin elects no successor.
+        let silent = with_id(digest(PathName::new("mesh1.broker", "2").unwrap(), "mesh1", "broker", PendingReconnect), "300000000000");
+        let mut t = t.clone();
+        for n in t.nodes.iter_mut().filter(|n| n.node_id == silent.node.node_id) {
+            n.status = PendingReconnect;
+        }
+        let mut nodes: Vec<crate::model::Node> = t.nodes.clone();
+        crate::election::resolve_with(&mut nodes, &decided);
+        assert_eq!(nodes.iter().find(|n| n.is_primary && n.r#type == "broker").map(|n| n.location()), Some(PathName::new("mesh1.broker", "2").unwrap()), "a primary unheard past the floor stays named until its brokers' winner replaces it");
+        // Known gone: no broker is named and none is elected here.
+        depart(&digest_view, &records, &broker2).await;
+        let (decided, t) = decide(&digest_view);
+        log.observe(&t);
+        assert_eq!(broker_primary(&t), None, "the record's birth gone: the node-admin names none and elects none");
+        assert!(broker_said(&role_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "nothing is announced");
+        let spans = capture.named("rdm.mesh.election.resolve.via-recompute");
+        assert!(spans.iter().all(|s| s.attributes.get("type").map(String::as_str) == Some("node-admin")), "the node-admin's election log names only the node-admin type: {spans:?}");
+        assert!(!spans.is_empty(), "it names its own type's election: {spans:?}");
     }
 
+    /// CONTRACT (elections §4.1, §4.3; Q406): with no record held, the projection elects each mesh's
+    /// lowest Ready node-admin its mesh-primary and the lowest Ready mesh-primary the fabric-primary; a
+    /// pending member is never primary. Another node type's primary is the one its own Digest carries
+    /// (its nodes elect it): the projection marks it and elects none.
     #[test]
-    fn the_projection_elects_the_lowest_ready_node_id_per_node_type_and_across_mesh_primaries() {
+    fn the_projection_elects_the_lowest_ready_node_admin_per_mesh_and_across_mesh_primaries() {
         use rdm_core::model::NodeStatus::*;
+        let carrying = |mut d: MeshDigest| {
+            d.set_primary(Some(1));
+            d
+        };
         let t = view(&[
             with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", Ready), "200000000000"),
-            with_id(digest(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", Ready), "700000000000"),
+            carrying(with_id(digest(PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node", Ready), "700000000000")),
             with_id(digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", Pending), "000000000001"),
             with_id(digest(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", Ready), "300000000000"),
-            with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Ready), "400000000000"),
-            with_id(digest(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", Ready), "500000000000"),
+            with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", Pending), "100000000000"),
+            with_id(digest(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", Ready), "400000000000"),
+            carrying(with_id(digest(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", Ready), "500000000000")),
+            with_id(digest(PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", Ready), "000000000002"),
         ]);
         let mut primaries: Vec<PathName> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.location()).collect();
         primaries.sort();
-        assert_eq!(primaries, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()], "a pending member is never primary");
+        assert_eq!(primaries, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()], "a pending node-admin is never primary; each other type's primary is the one its Digest carries, never a lower Ready id");
         assert_eq!(t.fabric_primary().map(|n| n.location()), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "not the lowest-named mesh");
         assert!(t.violations().is_empty(), "{:?}", t.violations());
         assert_eq!(t.mesh_view("mesh2").unwrap().id, Some(mesh_id("mesh2")));
@@ -2588,13 +2626,14 @@ mod tests {
     fn ready_since_and_ordinal_never_change_a_winner() {
         // The ready time no digest carries any more (Q203: a digest carries no config map).
         let at = |name: PathName, mesh: &str, r#type: &str, id: &str, _since: u64| with_id(digest(name, mesh, r#type, rdm_core::model::NodeStatus::Ready), id);
-        // rpc.3 has the highest ordinal and the latest ready time, and the lowest id.
-        let a = view(&[at(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "100000000000", 10), at(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "900000000000", 1), at(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "800000000000", 2), at(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "200000000000", 900)]);
-        let b = view(&[at(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "100000000000", 999), at(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "900000000000", 900), at(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "800000000000", 800), at(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "200000000000", 1)]);
+        // node-admin.3 has the highest ordinal and the latest ready time, and the lowest id (the node-admins'
+        // own election; another type's primary is its own nodes', Q406).
+        let a = view(&[at(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", 1), at(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "800000000000", 2), at(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "200000000000", 900)]);
+        let b = view(&[at(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", 900), at(PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", "800000000000", 800), at(PathName::new("mesh1.node-admin", "3").unwrap(), "mesh1", "node-admin", "200000000000", 1)]);
         for t in [a, b] {
             let mut primaries: Vec<PathName> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.location()).collect();
             primaries.sort();
-            assert_eq!(primaries, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap()]);
+            assert_eq!(primaries, [PathName::new("mesh1.node-admin", "3").unwrap()]);
         }
     }
 

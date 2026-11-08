@@ -61,6 +61,7 @@ pub mod connection_reconnect;
 pub mod connections_writer;
 pub mod held_name;
 pub mod join;
+pub mod election;
 pub mod leadership;
 pub mod member_handover;
 pub mod node;

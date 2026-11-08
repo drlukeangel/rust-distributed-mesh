@@ -620,9 +620,10 @@ impl Backbone {
         (publisher, version)
     }
 
-    /// This admin was elected primary, or, as its mesh's primary, recorded another node type's
-    /// primary (R-MT1 Q3): it holds the record. No frame announces it: its next `Digest` carries it,
-    /// and the mesh-primary's `TopologyFull` projection.
+    /// This admin was elected primary, or, as its mesh's primary, holds the answer of the
+    /// node.primary.update its create sent a node type's first node (Q407, Q355): it holds the record. No
+    /// frame announces it: the primary's next `Digest` carries its role, and the mesh-primary's
+    /// `TopologyFull` projection.
     pub fn hold_primary(&self, role: PrimaryRole, primary: Primary) {
         self.channels.topology_view.view.note_primary(role, &primary, "own");
     }

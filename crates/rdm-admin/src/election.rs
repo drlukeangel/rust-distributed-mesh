@@ -1,4 +1,4 @@
-//! Elections (`docs/architecture/fabric-node-lifecycle-elections.md`; ruling R-A2).
+//! Elections (`docs/architecture/fabric-node-lifecycle-elections.md`; ruling R-A2; Q406, Q407).
 //!
 //! An election is a projection of converged facts, not a voting protocol: no ballot, term, quorum,
 //! timer or election message exists. A role stays with its primary until that primary yields, is known gone or
@@ -6,7 +6,15 @@
 //! PRIMARY RECORDS this observer holds ([`Incumbency`]: a role's exact birth, gossiped when a role
 //! changes hands and handed to a joiner in its entry), and the births known gone.
 //!
-//! The rules, one function ([`resolve_with`]):
+//! Node-admins hold the node-admins' elections, here: each mesh's mesh-primary (the primary of its
+//! node-admin type) and the fabric-primary. Every other node type's primary is elected by the nodes of
+//! that type in its mesh among themselves (Q406; rdm-node's `election`): its first primary is its first
+//! node in the mesh, commanded by the mesh-primary's create step (`node.primary.update`, Q407), and a
+//! node-admin learns who holds it from that primary's Digest like any peer: [`resolve_with`] marks the
+//! birth the type's record names while that exact birth is in the view and not known gone, and elects
+//! none. Commanded moves (`node.primary.update` from the mesh-primary) are the same for every type.
+//!
+//! The rules of the node-admins' elections, one function ([`resolve_with`]):
 //! - A primary that lives keeps its role. A lower NodeId never displaces it. Lives means the record's
 //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not known gone,
 //!   whatever its status: a `ConnectionsDeleting` or `Leaving` primary keeps the role until its
@@ -20,17 +28,16 @@
 //!   the id is random and its order means nothing but itself.
 //! - One exception, fabric recovery (§3, Q122): while the fabric record names a birth that is not a
 //!   heard primary, nobody is fabric-primary and no node-admin of that mesh is elected; the mesh's other
-//!   types elect as ever. The workflow restores the node re-created at the target's path and name, whose
+//!   types' primaries are untouched. The workflow restores the node re-created at the target's path and name, whose
 //!   record then names it ([`fabric_recovery_target`], [`fabric_recovery_executor`]).
 //! - A role with no record (a fabric's first election) is filled by the lowest Ready NodeId.
 //!
 //! Ready time, ordinal, path, mesh name, MeshId, FabricId, incarnation order and transport identity
-//! are not election inputs. Every other node type (rpc, gateway, ...) is elected by the same rules over
-//! its own primary record (`Incumbency::node_type_primaries`), which its mesh's primary writes (R-MT1 Q3).
+//! are not election inputs.
 //!
 //! The hierarchy:
-//! - node-type election: the nodes of one kind in one mesh; node-admin owns
-//!   the elections of its own mesh's node types, ordinary nodes only publish their facts;
+//! - node-type election: the nodes of one type in one mesh elect its primary among themselves; the
+//!   node-admins take no part in another type's (Q406);
 //! - mesh primary: the primary of the mesh's node-admin primary, the same role (no second election);
 //! - fabric-primary election: the candidates are the mesh primaries, mesh primaries own it.
 //!
@@ -40,7 +47,7 @@
 //! vacant, and it holds none until a vacancy finds it the lowest Ready.
 //!
 //! An admin reports each change it owns (`ElectionLog`):
-//! `rdm.mesh.election.resolve.via-recompute` (its mesh's node types),
+//! `rdm.mesh.election.resolve.via-recompute` (its mesh's node-admin type),
 //! `rdm.mesh.election.resolve.via-mesh-primary` (its mesh's primary), and,
 //! while it is a mesh primary, `rdm.mesh.election.resolve.via-fabric-recompute`: on each change
 //! of the fabric-primary role, and on becoming a mesh primary, when it takes ownership of the role it was
@@ -67,8 +74,9 @@ pub struct Incumbency {
     /// Each mesh's node-admin primary record, by mesh name.
     pub meshes: BTreeMap<String, Primary>,
     /// The primary record of every other (mesh, node type) node-type primary role, by (mesh, kind)
-    /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1). Written by
-    /// the mesh's primary, the mesh's one row writer (R-MT1 Q3).
+    /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1), as this observer
+    /// learnt it from that primary's Digest, a topology read or the answer of a node.primary.update it
+    /// commanded: the type's nodes elect it (Q406).
     pub node_type_primaries: BTreeMap<(String, String), Primary>,
     /// Exact births known gone, by incarnation (an incarnation names one birth of one node): a
     /// departure was heard, or a later birth announced it replaced them.
@@ -104,6 +112,17 @@ fn holding(nodes: &[Node], h: &Primary, inc: &Incumbency) -> Holding {
     Holding::Living(i)
 }
 
+/// The birth a node type's record names, while that exact birth is in the view and not known gone,
+/// whatever its status: a node type other than `node-admin` as a node-admin holds it, learnt from its
+/// primary's Digest like any peer (Q406). A primary its type's nodes supersede is replaced here by the
+/// record the winner's Digest carries.
+fn recorded_birth(nodes: &[Node], h: &Primary, inc: &Incumbency) -> Option<usize> {
+    if inc.lost.contains(&h.incarnation) {
+        return None;
+    }
+    nodes.iter().position(|n| n.node_id == h.node_id && n.incarnation_id.as_ref() == Some(&h.incarnation))
+}
+
 /// The fabric-primary record fabric recovery restores (elections §3, Q122): the fabric record, while
 /// the birth it names is not a heard primary in `nodes` (unheard past the floor, known gone, replaced or
 /// not in the view). `None` with no record, or while its primary is heard.
@@ -126,14 +145,15 @@ fn lowest_ready(nodes: &[Node], members: &[usize], inc: &Incumbency) -> Option<u
     elect(&c).map(|k| members[k])
 }
 
-/// Mark each node type's primary and the fabric primary in `nodes`, with no primary record held: a
-/// fabric's first election, and a hypothetical (a successor asked for before any connections delete).
+/// Mark each mesh's mesh-primary and the fabric primary in `nodes`, with no primary record held: a
+/// fabric's first election, and a hypothetical (a successor asked for before any connections delete). With
+/// no record, no other node type's primary is marked: its nodes elect it (Q406, Q407).
 pub fn resolve(nodes: &mut [Node]) {
     resolve_with(nodes, &Incumbency::default())
 }
 
-/// Mark each node type's primary and the fabric primary in `nodes` by the rules in the module docs,
-/// given the primaries held and the births known gone.
+/// Mark each mesh's mesh-primary and the fabric primary in `nodes` by the rules in the module docs, and
+/// each other node type's primary its record names, given the primaries held and the births known gone.
 pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for n in nodes.iter_mut() {
         n.is_primary = false;
@@ -147,16 +167,22 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for (i, n) in nodes.iter().enumerate() {
         node_types.entry((n.mesh.clone(), n.r#type.clone())).or_default().push(i);
     }
-    // Every node type by the one rule: its recorded primary while it lives, vacant while the view has not
-    // heard the recorded birth, else the lowest Ready. The node-admin type's role is the mesh primary.
+    // The node-admin type by the one rule: its recorded primary while it lives, vacant while the view has
+    // not heard the recorded birth, else the lowest Ready; its role is the mesh primary. Every other type's
+    // primary is its own nodes' to elect (Q406): this view marks the birth its record names and elects none.
     let mut winners = Vec::new();
     let mut mesh_primary: BTreeMap<String, usize> = BTreeMap::new();
     for ((mesh, r#type), members) in &node_types {
-        if rdm_core::is_node_admin(&r#type) && recovering.as_deref() == Some(mesh.as_str()) {
+        if !rdm_core::is_node_admin(&r#type) {
+            if let Some(i) = inc.node_type_primaries.get(&(mesh.clone(), r#type.clone())).and_then(|h| recorded_birth(nodes, h, inc)).filter(|&i| nodes[i].r#type == *r#type && nodes[i].mesh == *mesh) {
+                winners.push(i);
+            }
             continue;
         }
-        let record = if rdm_core::is_node_admin(&r#type) { inc.meshes.get(mesh) } else { inc.node_type_primaries.get(&(mesh.clone(), r#type.clone())) };
-        let winner = match record {
+        if recovering.as_deref() == Some(mesh.as_str()) {
+            continue;
+        }
+        let winner = match inc.meshes.get(mesh) {
             Some(h) => match holding(nodes, h, inc) {
                 Holding::Living(i) if nodes[i].r#type == *r#type => (nodes[i].mesh == *mesh).then_some(i),
                 Holding::Unseen => None,
@@ -166,9 +192,7 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
         };
         if let Some(i) = winner {
             winners.push(i);
-            if rdm_core::is_node_admin(&r#type) {
-                mesh_primary.insert(mesh.clone(), i);
-            }
+            mesh_primary.insert(mesh.clone(), i);
         }
     }
     for &i in &winners {
@@ -354,7 +378,9 @@ where
     s.as_ref().map(|s| f(s).to_string()).unwrap_or_default()
 }
 
-/// What one admin last saw of the names it owns; reports every change.
+/// What one admin last saw of the elections it owns, the node-admins' (its mesh's mesh-primary and the
+/// fabric-primary); reports every change. Another node type's primary is its own nodes' to elect (Q406),
+/// and this log reports none.
 pub struct ElectionLog {
     /// This admin's globally unique node ID.
     observer: NodeId,
@@ -372,8 +398,8 @@ impl ElectionLog {
         Self { observer, last: Mutex::new(BTreeMap::new()), last_mesh: Mutex::new(None), last_fabric: Mutex::new(None), owned_fabric: Mutex::new(false) }
     }
 
-    /// Record `t`'s winners. Each change of a role this admin owns, and each
-    /// first resolution, emits one span.
+    /// Record `t`'s node-admin winners. Each change of a role this admin owns, and each first
+    /// resolution, emits one span.
     pub fn observe(&self, t: &Topology) {
         self.observe_as(&self.observer, t)
     }
@@ -383,7 +409,8 @@ impl ElectionLog {
         let Some(mesh) = t.own(observer).map(|n| n.mesh.clone()) else { return };
         let mut last = self.last.lock().unwrap();
         let mut now: BTreeMap<String, Option<PrimaryBirth>> = BTreeMap::new();
-        for n in t.births().filter(|n| n.mesh == mesh) {
+        // The node-admin type only: the mesh's other types elect their own primaries (Q406).
+        for n in t.births().filter(|n| n.mesh == mesh && rdm_core::is_node_admin(&n.r#type)) {
             let e = now.entry(n.r#type.clone()).or_default();
             if n.is_primary {
                 *e = Some(PrimaryBirth::of(n));
@@ -573,7 +600,7 @@ mod tests {
         resolve(&mut nodes);
         let mut p = primaries(&nodes);
         p.sort();
-        assert_eq!(p, [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh2.node", "2").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh3.node-admin", "2").unwrap()]);
+        assert_eq!(p, [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh3.node-admin", "2").unwrap()], "each mesh's lowest Ready node-admin; no record names a node-type primary, which its nodes elect (Q406)");
         assert_eq!(fabric(&nodes), [PathName::new("mesh3.node-admin", "2").unwrap()], "the lowest mesh-primary NodeId holds the fabric");
     }
 
@@ -784,16 +811,17 @@ mod tests {
 
     /// CONTRACT (elections §3 and §10, Q122): while fabric recovery restores the fabric-primary, no other
     /// node becomes fabric-primary or node-admin primary of that mesh, whether the recorded birth is
-    /// unheard past the floor, known gone, or no longer in the view; the mesh's other types elect as
-    /// ever, and another mesh keeps its own primary. Must NOT happen: mesh1's standby, or mesh2's primary,
-    /// named fabric-primary or mesh1's primary while the target is restored.
+    /// unheard past the floor, known gone, or no longer in the view; the mesh's other types' primaries are
+    /// the ones their records name (their own nodes elect them, Q406), and another mesh keeps its own
+    /// primary. Must NOT happen: mesh1's standby, or mesh2's primary, named fabric-primary or mesh1's
+    /// primary while the target is restored.
     #[test]
     fn while_fabric_recovery_restores_the_fabric_primary_no_other_node_takes_either_role() {
         let (inc, mut nodes) = recovering();
         let check = |nodes: &[Node], case: &str| {
             assert_eq!(fabric_name(nodes), None, "{case}: nobody is fabric-primary");
             assert_eq!(mesh_primary(nodes, "mesh1"), None, "{case}: no node-admin of mesh1 is elected");
-            assert_eq!(rpc_primary(nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()), "{case}: mesh1's nodes elect as ever");
+            assert_eq!(rpc_primary(nodes, "mesh1"), Some(PathName::new("mesh1.node", "2").unwrap()), "{case}: mesh1's node type keeps the primary its record names");
             assert_eq!(mesh_primary(nodes, "mesh2"), Some(PathName::new("mesh2.node-admin", "1").unwrap()), "{case}: mesh2 keeps its primary");
         };
         resolve_with(&mut nodes, &inc);
@@ -941,10 +969,11 @@ mod tests {
             resolve_with(&mut nodes, &inc);
             assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "2").unwrap()), "{status:?}");
         }
-        // Unheard past the floor it is superseded by the lowest Ready node of its type (elections §4.1).
+        // Unheard past the floor its own nodes elect its successor (Q406), never a node-admin: this view
+        // names the recorded primary until the winner's record reaches it.
         nodes[2].status = PendingReconnect;
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()));
+        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "2").unwrap()));
     }
 
     /// CONTRACT (module docs, "A primary whose record names a birth this view has not heard keeps its
@@ -959,20 +988,25 @@ mod tests {
         assert_eq!(rpc_primary(&nodes, "mesh1"), None);
     }
 
-    /// CONTRACT (elections §5: "a primary that yields or whose exact birth is known gone hands the role
-    /// to the lowest Ready NodeId of its own mesh"; "restart preserves NodeId; a restarted
-    /// node ... never displaces the primary"): the recorded rpc primary known gone, or replaced by a later
-    /// birth of its NodeId, hands the role to the node type's lowest Ready NodeId.
+    /// CONTRACT (Q406: "MP/NA don't have anything to do with it minus their own NA elections"; elections
+    /// §5: "restart preserves NodeId; a restarted node ... never displaces the primary"): the recorded rpc
+    /// primary known gone, or replaced by a later birth of its NodeId, leaves the type with no primary in
+    /// a node-admin's view: its own nodes elect the successor and its Digest carries the role. Must NOT
+    /// happen: the node-admin filling the role with the type's lowest Ready NodeId.
     #[test]
-    fn an_rpc_primary_proven_gone_or_restarted_hands_over_to_the_lowest_ready() {
+    fn an_rpc_primary_known_gone_or_restarted_leaves_the_type_to_its_own_nodes() {
         let mut inc = with_rpc_primary(primary("mesh1", "100000000000", "r1", 2));
         let mut nodes = vec![born(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", "900000000000", "a1", Ready), born(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", "100000000000", "r1", Ready), born(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "500000000000", "r2", Ready), born(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", "300000000000", "r3", Ready)];
         lose(&mut inc, "100000000000", "r1");
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "3").unwrap()), "known gone: the lowest Ready of the rest");
+        assert_eq!(rpc_primary(&nodes, "mesh1"), None, "known gone: no node-admin elects the rest's lowest Ready");
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
         nodes[2] = born(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "500000000000", "r9", Ready);
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "1").unwrap()), "a later birth of the primary's NodeId holds no primary role");
+        assert_eq!(rpc_primary(&nodes, "mesh1"), None, "a later birth of the primary's NodeId holds no primary role, and none is elected here");
+        // The winner's Digest carries its role at the next revision: the view names it.
+        let inc = with_rpc_primary(primary("mesh1", "300000000000", "r3", 3));
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(rpc_primary(&nodes, "mesh1"), Some(PathName::new("mesh1.node", "3").unwrap()));
     }
 }

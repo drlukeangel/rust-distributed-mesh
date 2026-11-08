@@ -84,6 +84,9 @@ pub struct RunningNode {
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     declare_loop: tokio::task::JoinHandle<()>,
+    /// Its type's election, held by the nodes of its type among themselves ([`crate::election`], Q406):
+    /// it ends at the node's stop, as `declare_loop` does.
+    election: tokio::task::JoinHandle<()>,
     /// The node's one connections reconciler (connections.md §9.4): it ends at the node's stop, as
     /// `declare_loop` does, so a stopped node dials no recovery attempt (states.md "Stopped nodes").
     reconciler: tokio::task::JoinHandle<()>,
@@ -177,6 +180,7 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        self.election.abort();
         self.reconciler.abort();
         for r in self.routers {
             let _ = r.shutdown().await;
@@ -202,6 +206,7 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        self.election.abort();
         self.reconciler.abort();
         for r in self.routers {
             let _ = r.shutdown().await;
@@ -234,6 +239,7 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        self.election.abort();
         self.reconciler.abort();
         let me = self.own.node_id.to_string();
         let started = std::time::Instant::now();
@@ -890,6 +896,16 @@ async fn start_booted(
                                     }
                                 })
                             };
+                            // Its type's election (Q406): the nodes of its type elect a primary unheard past the
+                            // staleness floor or known gone among themselves; its first is the create's command (Q407).
+                            let election = crate::election::spawn(crate::election::Elector {
+                                topology_view: topology_view.clone(),
+                                node_id: launch.node_id.clone(),
+                                incarnation: launch.incarnation.clone(),
+                                mesh: digest.node.mesh.clone(),
+                                r#type: launch.r#type.clone(),
+                                status: status.clone(),
+                            });
                             let becoming = Becoming {
                                 channels: channels.clone(),
                                 boot: boot.clone(),
@@ -932,7 +948,7 @@ async fn start_booted(
                                     property_writer: property_writer.clone(),
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, channels: channels.clone(), server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, reconciler, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone(), property_writer: property_writer.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, channels: channels.clone(), server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, election, reconciler, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone(), property_writer: property_writer.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },

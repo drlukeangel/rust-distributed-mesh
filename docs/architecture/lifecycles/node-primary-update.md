@@ -9,10 +9,7 @@ down: the fabric-primary commands a mesh-primary, and a mesh-primary commands th
 mesh's other node types. No node commands its own primary. A stop, delete or
 `node.connection.delete { scope: All }` of a primary runs it first.
 
-Who is primary is the [election](../fabric-node-lifecycle-elections.md)'s result, computed by every
-node-admin from the facts it holds. Becoming primary and recording it are separate: the successor
-installs itself from the election and the mesh-primary announces the change; the successor records it on its own record, as `is_primary`, and as `is_fabric_primary` for the
-fabric-primary. **The write records the role; it does not grant it.** The mesh-primary and the
+A node type's first primary in a mesh is its first node: the mesh-primary's create step commands it by `node.primary.update` once it is Ready (Q407). After that the role moves by `node.primary.update`, or, with the primary unheard past the staleness floor, by the [election](../fabric-node-lifecycle-elections.md) the nodes of that type hold among themselves (Q406); the mesh-primary and the fabric-primary are elected by the node-admins. Becoming primary and recording it are separate: the node that takes the role installs itself, records it on its own record, as `is_primary`, and as `is_fabric_primary` for the fabric-primary, and gossips it in its Digest's `primary`. **The write records the role; it does not grant it.** The mesh-primary and the
 fabric-primary move together and are never separated. A fabric-primary unheard past the staleness floor
 is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path and name (Q122). Under
 mesh.delete the fabric-primary hands over to another mesh first

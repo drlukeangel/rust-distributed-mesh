@@ -3,11 +3,13 @@
 //! One fabric, `{node-admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
 //! - every node type of each mesh advertises exactly one primary (`roles_as_expected`), a node type like rpc
 //!   nodes;
-//! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
-//!   `rdm.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
-//!   primary is that successor, which keeps its role over the birth drift recovery brings back at the
-//!   killed path whatever NodeId it drew (elections §5) — read the way a product reads it, by
-//!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
+//! - kill the broker primary (SIGKILL): unheard past the staleness floor, it is superseded by the
+//!   next-lowest ready broker, elected by the brokers themselves (Q406): a
+//!   `rdm.mesh.election.resolve.via-recompute` span with `type = broker` whose observer is a broker,
+//!   and none from a node-admin; the winner records the role on its own record at the next revision; the
+//!   view's one broker primary is that successor, which keeps its role over the birth drift recovery
+//!   brings back at the killed path whatever NodeId it drew (elections §5) — read the way a product
+//!   reads it, by `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_test::elections::{advertised_primaries, primaries_as_expected, NodeType};
@@ -63,17 +65,28 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
         .map(|n| (rdm_test::estate::location(&n), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
+    // The brokers elect from the facts they hold (Q406): the primary they supersede is the one they
+    // heard, its role on its own Digest. Each other broker holds it before it is killed.
+    let killed_node_id = rdm_core::NodeId::parse(&killed_id).unwrap();
+    let role = rdm_core::PrimaryRole::NodePrimary("broker".into());
+    for broker in nodes.iter().filter(|n| n["type"] == "broker" && n["node_id"] != killed_id.as_str()).map(|n| rdm_test::estate::location(&n)) {
+        wait_for(&format!("{broker:?} holds {killed_id} as the broker primary from its Digest"), Duration::from_secs(10), || async {
+            let held = estate.held_topology_at(&broker).await?;
+            held.members.iter().any(|m| m.node.node_id == killed_node_id && m.primary.iter().any(|r| r.role == role)).then_some(())
+        })
+        .await;
+    }
     estate.kill_node(&killed).await;
-    // The role vacates only on the provider's exited verdict, which node recovery takes at the killed
-    // birth's dead mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
-    // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
-    // so the span is awaited.
-    wait_for(&format!("{succ:?} ({succ_id}) announced as the broker successor to {killed_id}"), crate::node_recovery_due(), || async {
+    // The brokers elect once the killed primary is unheard past the staleness floor (Q406; elections
+    // §4.1), within node recovery's bound (`node_recovery_due`). The winner's own span names the winner,
+    // the birth it replaced and that it installed itself: the election's span is the only place that fact
+    // lives, so the span is awaited.
+    wait_for(&format!("{succ:?} ({succ_id}) elected itself the broker successor to {killed_id}"), crate::node_recovery_due(), || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-recompute")
             .iter()
             .any(|sp| {
                 let a = &sp["attributes"];
-                a["election_level"] == "node_type_primary" && a["mesh"] == "mesh1" && a["type"] == "broker" && a["winner_node_id"] == succ_id.as_str() && a["previous_node_id"] == killed_id.as_str()
+                a["election_level"] == "node_type_primary" && a["mesh"] == "mesh1" && a["type"] == "broker" && a["winner_node_id"] == succ_id.as_str() && a["previous_node_id"] == killed_id.as_str() && a["observer_node_id"] == succ_id.as_str() && a["outcome"] == "installed"
             })
             .then_some(())
     })
@@ -93,8 +106,16 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
         })
         .await;
     estate.artifact("view-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "successor": succ, "view": view}));
+    // The winner records the role on its own record at the next revision over the killed primary's.
+    let announced_revision = || named(&estate.spans(), "rdm.mesh.election.resolve.via-recompute").into_iter().find(|sp| sp["attributes"]["observer_node_id"] == succ_id.as_str() && sp["attributes"]["outcome"] == "installed").and_then(|sp| sp["attributes"]["previous_revision"].to_string().trim_matches('"').parse::<u64>().ok());
+    let previous = announced_revision().expect("the winner's span names the revision it superseded");
+    let succ_node_id = rdm_core::NodeId::parse(&succ_id).unwrap();
+    wait_for(&format!("{succ_id}'s own record holds is_primary {}", previous + 1), Duration::from_secs(10), || async { (estate.record(&succ_node_id).and_then(|r| r.is_primary) == Some(previous + 1)).then_some(()) }).await;
     estate.stop().await;
     let spans = estate.spans();
-    let announced = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().find(|sp| sp["attributes"]["type"] == "broker" && sp["attributes"]["winner_node_id"] == succ_id.as_str()).cloned().unwrap();
+    // Elected by the brokers: every broker election span is a broker's, none a node-admin's.
+    let broker_elections: Vec<_> = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().filter(|sp| sp["attributes"]["type"] == "broker").collect();
+    assert!(broker_elections.iter().all(|sp| sp["attributes"]["observer_type"] == "broker"), "no node-admin computes the broker election: {broker_elections:#?}");
+    let announced = broker_elections.into_iter().find(|sp| sp["attributes"]["winner_node_id"] == succ_id.as_str() && sp["attributes"]["outcome"] == "installed").cloned().unwrap();
     estate.record_trace_url(announced["trace_id"].as_str().unwrap_or(""));
 }

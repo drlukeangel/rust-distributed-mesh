@@ -100,14 +100,11 @@ anywhere else.
 ### 4.1 The nodes of one type in one mesh
 
 For the nodes of every type in every mesh, the one election applies the same eligibility/key rule. A
-node's type is its `type` field ([node identity](node-identity-and-state.md)), never its name. That
-type's primary in that mesh is the node-type primary, and that node's `is_primary`, which the
-mesh-primary records on its row.
+node's type is its `type` field ([node identity](node-identity-and-state.md)), never its name. That type's primary in that mesh is the node-type primary, and that node's `is_primary`, which it records on its own row and gossips in its Digest's `primary`.
 
-Ordinary nodes publish current facts. They do not author election outcomes.
+A type's first node in a mesh is its first primary, commanded by the mesh-primary's create step (`node.primary.update`, Q407). After that the nodes of the type hold its election among themselves, each from the facts it holds; the mesh-primary and the other node-admins take no part (Q406).
 
-A primary unheard past the staleness floor is superseded by the lowest Ready node of its type
-in its mesh; the mesh-primary announces and records it ([node.primary.update](lifecycles/node-primary-update.md)). Its first act is to publish its mesh's aggregate on the backbone naming itself mesh-primary, and the update to its own mesh asynchronously; then it investigates the lost birth as any member of its mesh.
+A primary unheard past the staleness floor is superseded by the lowest Ready node of its type in its mesh, which installs itself and gossips the role in its Digest. A node-admin that succeeds as mesh-primary first publishes its mesh's aggregate on the backbone naming itself mesh-primary, and the update to its own mesh asynchronously; then it investigates the lost birth as any member of its mesh.
 For a node-admin the questions are, in order: am I a node-admin; am I the lowest Ready one;
 was the former mesh-primary also the fabric-primary? No: I am mesh-primary now. Yes: I take no primary
 role and run [fabric recovery](lifecycles/fabric-recovery.md) (Q122).

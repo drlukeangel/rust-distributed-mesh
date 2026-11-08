@@ -1,6 +1,8 @@
 //! The leadership election's one rule (fabric-node-lifecycle-elections.md §3, §10): among the eligible
-//! candidates, the lowest complete NodeId. RDM's node-admin computes every election from the facts it
-//! holds; a primary of any node type computes its successor by the same rule, with itself excluded
+//! candidates, the lowest complete NodeId. RDM's node-admins compute their own elections (each mesh's
+//! mesh-primary, the fabric-primary) from the facts they hold; the nodes of every other type compute
+//! their type's election among themselves by the same rule (Q406; rdm-node's `election`); the
+//! mesh-primary's pre-check names a commanded successor by it, the primary excluded
 //! (lifecycles/node-primary-update.md step 2).
 
 use crate::ids::NodeId;

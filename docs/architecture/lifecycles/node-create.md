@@ -55,7 +55,7 @@ topology, never by looking whether a channel exists and then creating it.
    from the validated report, never from gossip. A JoinNode after deployment abandonment is
    refused by name.
 6. The rest of the composed [start](node-start.md#end-to-end-sequence) runs from the join
-   answer through `node.started`. Create then ends with `node.created`.
+   answer through `node.started`. The first node of its type in its mesh is commanded `node.primary.update` by the mesh-primary (Q407); the create completes on `node.primary.updated`. Create then ends with `node.created`.
 
 A fabric-primary recovering from its durable map follows the separate
 [Fabric recovery](fabric-recovery.md) workflow. It has no maker call. Ordinary

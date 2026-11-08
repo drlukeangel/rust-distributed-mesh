@@ -1,7 +1,7 @@
-//! Leadership, as a product sees it (i143.e11.s4): a node-type primary role is the one election,
-//! node-admin's (`rafka-node-admin-core` `election.rs`, lowest Ready NodeId per
-//! `(mesh, kind)` node type). A product reads the primary from node-admin's public view and never
-//! computes it: nothing here orders NodeIds.
+//! Leadership, as a product sees it (i143.e11.s4): a node-type primary role is the one election, held
+//! by the nodes of that type in its mesh among themselves ([`crate::election`], Q406; lowest Ready
+//! NodeId per `(mesh, type)`), its first commanded by the mesh-primary's create (Q407). A product reads
+//! the primary from RDM's view and never computes it: nothing here orders NodeIds.
 
 
 use rdm_client::NodeView;

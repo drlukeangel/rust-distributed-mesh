@@ -75,6 +75,9 @@ pub struct UpdateLocks {
     serving: tokio::sync::Mutex<()>,
     /// The primary's update.
     updating: tokio::sync::Mutex<()>,
+    /// The mesh-primary's command of a type's first primary (Q407): a Build's creates run at once (Q245),
+    /// and the second create of a type finds the record the first one's answer held.
+    first: tokio::sync::Mutex<()>,
 }
 
 /// The updates this admin holds node.primary.updated for, by operation: it answered the call as the
@@ -702,6 +705,68 @@ impl PrimaryUpdate {
                 refused("commander", "unanswered", &reason, operation);
                 Err(rdm_core::reply::handover::bounded_failed(STEP, &reason, rdm_core::outcome::Code::Unavailable))
             }
+        }
+    }
+}
+
+// ---- the mesh-primary commanding a type's first primary (Q407) ----
+
+impl PrimaryUpdate {
+    /// The create step's command of a node type's first primary in its mesh (Q407; node-create.md):
+    /// `node`, of a type other than node-admin, which this admin's create made Ready, is commanded
+    /// `node.primary.update` when this admin, its mesh's mesh-primary, holds no primary of its type: no
+    /// record, or a record whose birth is known gone. The call is the one a successor answers,
+    /// `PrimaryUpdate` on the node's exact birth (lifecycles/node-primary-update.md step 4): one entry
+    /// naming the node at the next revision over the record held (1 with none), in the entry's primary
+    /// place too, as no primary precedes it. The node installs the role, records `is_primary` on its own
+    /// record and its next Digest carries it (Q392). On its `node.primary.updated` this admin holds the
+    /// record it sent, the answer it obtained as the commander (Q355). `Ok(false)`: nothing is commanded
+    /// (a node-admin, a node of a mesh this admin is not the mesh-primary of, a type that holds a primary).
+    /// `Err` names how the call ended without the answer: the create's `Complete` fails with it.
+    pub async fn command_first_primary(&self, node: &crate::model::Node, build_id: &str, operation: &rdm_core::OperationId) -> Result<bool, String> {
+        if rdm_core::is_node_admin(&node.r#type) {
+            return Ok(false);
+        }
+        let me = self.held_name();
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-create", node_path = %me.path, node_name = %me.name, subject_path = %node.path, subject_name = %node.name, subject_id = %node.node_id, "type" = %node.r#type, mesh = %node.mesh, build_id, operation = %operation.action, operation_subject = ?operation.subject, revision = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let r = self.command_first_primary_in(node, build_id, operation).instrument(span.clone()).await;
+        match &r {
+            Ok(Some(revision)) => span.record("outcome", "updated").record("revision", *revision),
+            Ok(None) => &span,
+            Err(how) => span.record("outcome", "unanswered").record("detail", how.as_str()),
+        };
+        span.in_scope(|| tracing::info!("the create's command of a node type's first primary in its mesh ended"));
+        r.map(|revision| revision.is_some())
+    }
+
+    async fn command_first_primary_in(&self, node: &crate::model::Node, build_id: &str, operation: &rdm_core::OperationId) -> Result<Option<u64>, String> {
+        let _one_at_a_time = self.locks.first.lock().await;
+        let primary_view = self.topology_view.primaries();
+        if self.topology_view.mesh_name() != node.mesh || !primary_view.mesh(&node.mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
+            tracing::Span::current().record("outcome", "not-mesh-primary");
+            return Ok(None);
+        }
+        // A record whose birth is gone holds no primary: the node created after it is commanded. The type's
+        // own nodes elect at the same revision when they held that record (Q406); the supersede rule
+        // settles the two on one birth, and a type whose nodes never held it is healed here.
+        let held = primary_view.node_type_primary(&node.mesh, &node.r#type);
+        if let Some(h) = held.as_ref().filter(|h| !self.incumbency().lost.contains(&h.incarnation)) {
+            tracing::Span::current().record("outcome", "held").record("detail", h.to_string().as_str());
+            return Ok(None);
+        }
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth to command", node.node_id))?;
+        let revision = held.map_or(1, |h| h.revision + 1);
+        let birth = Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+        let entries = vec![(node.r#type.clone(), birth.clone(), birth, revision)];
+        let role = PrimaryRole::of_type(&node.r#type);
+        let update = update_operation(role.clone(), operation);
+        match call_successor(&self.client, &node.node_id, &entries, build_id, &update).await {
+            Ok(_) => {
+                self.backbone.hold_primary(role, rdm_core::Primary { mesh: node.mesh.clone(), node_id: node.node_id.clone(), incarnation, revision });
+                (self.project_view)().await;
+                Ok(Some(revision))
+            }
+            Err(how) => Err(format!("{}'s node.primary.update as its type's first primary in {} ended without node.primary.updated: {how}", node.node_id, node.mesh)),
         }
     }
 }

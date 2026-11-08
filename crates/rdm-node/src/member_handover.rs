@@ -198,11 +198,12 @@ pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries:
 
 // ---- a node of a type that is not node-admin ----
 
-/// The 0x21 service of a node that is not a node-admin. As the successor it installs the election's result
-/// the call carries and answers node.primary.updated (step 4). As its type's primary, commanded by its
+/// The 0x21 service of a node that is not a node-admin. As the successor, or as its type's first node in
+/// its mesh commanded by its mesh-primary's create (Q407), it installs the election's result the call
+/// carries and answers node.primary.updated (step 4). As its type's primary, commanded by its
 /// mesh-primary, it calls the successor the command names (the mesh-primary's pre-check, step 2; no
-/// election of its own, Q129) and answers with its node.primary.updated. It writes no row: its
-/// mesh-primary records the change from the successor's digest (step 5).
+/// election of its own, Q129) and answers with its node.primary.updated. The role it takes or gives up is
+/// on its own record (`node_records::write_own_roles`, Q356) and its next Digest carries it (Q392).
 pub struct NodePrimaryUpdateService {
     me_path: String,
     /// This node's name, beside its path.
