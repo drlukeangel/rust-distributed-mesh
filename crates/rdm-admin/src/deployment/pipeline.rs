@@ -5,12 +5,12 @@
 //! create: AllocateIdentity -> PrepareStorage -> PrepareNetwork
 //!   -> DeployRuntime -> RegisterExactRuntimeHandle -> ResolveProviderControlDomain
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
-//!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
-//!   -> WaitForNodeReady -> Complete
+//!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> ApplyMeshPending (a mesh's first
+//!   admin only) -> WaitForMeshJoin -> WaitForNodeReady -> Complete
 //! delete: StopNode (stop-node to the exact birth: its node.connection.delete { All }, then its
 //!   transport cut; the `Stopped` reply carries the All's ConnectionsReceipt)
 //!   -> AwaitNodeLeft (its `Stopped` reply, bounded; a deadline is an arm, never a failure)
-//!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
+//!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` ends it)
 //!   -> RemoveTopologyMembership -> Complete
 //! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exited verdict, nothing sent)
 //!   -> NodeDeleted (from the mesh-primary's recorded exited verdict) -> RemoveTopologyMembership -> Complete
@@ -99,7 +99,8 @@ pub enum CreateStep {
     /// is heard or asked to be Ready (e4.s11): a peer mesh's admin is heard on the backbone only
     /// once it is its mesh's primary, which needs Ready, which needs this.
     ApplyMeshPending,
-    /// Wait for the birth's own digest to reach the admin's topology view.
+    /// Wait for the validated join report of exactly this birth, carrying its runtime fact and data dir
+    /// (node-create.md step 5; `NodeObserver::joined`), never for its digest on gossip.
     WaitForMeshJoin,
     /// Wait for the birth to declare itself ready.
     WaitForNodeReady,
@@ -198,7 +199,9 @@ pub enum DeleteStep {
     /// `node.connection.delete { All }` to the exact birth through its mesh-primary: graceful
     /// closure of every open connection; the process keeps running.
     DeleteConnections,
-    /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit connections delete.
+    /// `stop-node` to the exact birth: its node.stop runs its own `node.connection.delete { All }`
+    /// (node-connections-delete.md: "node.stop calls it"), then leaves its mesh; its `Stopped` reply
+    /// carries that delete's receipt.
     StopNode,
     /// Wait, bounded, for node-left: the `Stopped` reply of the birth's `stop-node` call (R-ON1;
     /// the birth makes no upward node-left call).
@@ -654,7 +657,7 @@ pub fn command_admission(out: &rdm_core::outcome::RpcOutcome<rdm_core::status::S
 
 /// Whether the exact birth's completion (its `node.connections.deleted`, or node-left: the `Stopped`
 /// reply of its `stop-node` call) reached this admin: the AwaitNodeLeft step's receipt for a stop. A missing completion is indeterminate, never
-/// success; the provider's terminal proof is what ends a stop.
+/// success; the provider's terminal verdict is what ends a stop.
 ///
 /// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
 /// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
@@ -690,7 +693,7 @@ pub struct TerminalReceipt {
     pub incarnation_id: String,
     /// The runtime that exited, by fingerprint; `None` when the handle names no exact runtime.
     pub runtime: Option<RuntimeIdentity>,
-    /// The exit code, when the provider's record proves one.
+    /// The exit code, when the provider's record holds one.
     pub exit_code: Option<i32>,
     /// An unreached birth's delete (node-recovery.md step 3): what the provider read of the runtime at
     /// the step's own instant, `running` (then terminated), `exited`, `os-stopped` or `unavailable`.
@@ -953,7 +956,7 @@ pub struct DeleteRequest {
     pub handle: DeploymentHandle,
     /// An unreached birth (node-recovery.md sequence step 3): node investigation's verdict was not
     /// `reached`. Nothing is sent to it: `TerminateRuntime` first when its runtime runs at the step's
-    /// instant, then node.deleted, waiting for no proof of termination. `false`: a live or stopped
+    /// instant, then node.deleted, waiting for no verdict of termination. `false`: a live or stopped
     /// target.
     pub unreached: bool,
 }
@@ -972,7 +975,7 @@ pub struct StartRequest {
 }
 
 /// What follows a stop's `stopped`: the process stays stopped (a standalone stop), or the
-/// provider ends it and proves the exit (a delete, a mesh leave). `publish_stopped` is
+/// provider ends it and reports the exit (a delete, a mesh leave). `publish_stopped` is
 /// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: every whole node.stop
 /// does (node-stop.md step 5), a delete's and a mesh leave member's included.
 #[derive(Debug, Clone, Copy)]
@@ -984,7 +987,7 @@ pub(crate) enum StopEnd {
 /// When a `TerminateRuntime` step fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Terminate {
-    /// On any runtime that is not exited: a delete's terminate, whose `Exited` is the proof
+    /// On any runtime that is not exited: a delete's terminate, whose `Exited` is the verdict
     /// node.deleted is published from.
     Always,
     /// Only on a runtime the provider reads `Running` at the step's instant: an unreached birth's
@@ -1007,10 +1010,10 @@ pub(crate) enum Terminate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RequiredCompletion {
     /// Whatever the birth answered: the shutdown leg of a delete or a mesh leave member, which the
-    /// provider's terminal proof judges.
+    /// provider's terminal verdict judges.
     Lenient,
     /// stop-node admitted and `stopped` received, or the step fails by name: a whole node.stop, a
-    /// standalone one (a Build's stop included), whose only proof is
+    /// standalone one (a Build's stop included), whose only verdict is
     /// that reply (node-stop.md "Completion": the matching `node.stopped`).
     Stopped,
 }
@@ -1865,7 +1868,7 @@ impl DeploymentPipeline<'_> {
             .step_with(run, CreateStep::DeployRuntime.name(), async {
                 let spec = spec_for(rdm_transport::current_traceparent());
                 // One deadline for the step's provider calls (Q304): the find that resolves this exact
-                // launch and the spawn spend the same budget, and a call past it fails the step by
+                // launch and the spawn spend the same time limit, and a call past it fails the step by
                 // name, its outcome unknown.
                 let deadline = super::deadline::Deadline::step();
                 if let Some(h) = self.provider.find(&spec, deadline).await.map_err(StepFailure::from)?.running() {
@@ -1990,7 +1993,7 @@ impl DeploymentPipeline<'_> {
         node.status = NodeStatus::Pending;
         // One coherent birth projection: the node record (topology and data
         // dir) here; the fact itself the birth reports in its JoinNode digest,
-        // which the accepting authority validated against exactly this fact and
+        // which the accepting primary validated against exactly this fact and
         // data dir before it was admitted.
         self.step(run, CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), async {
             self.sink.publish(node.clone());
@@ -1999,7 +2002,7 @@ impl DeploymentPipeline<'_> {
         .await?;
         // Every create records this step: a mesh's first admin receives the fabric primary's
         // Pending here; any other birth (the admin created for an existing mesh included) records
-        // that none was owed, so the Build facts say so.
+        // that none was due, so the Build facts say so.
         let target = node.clone();
         let _: serde_json::Value = self
             .step(run, CreateStep::ApplyMeshPending.name(), async {
@@ -2009,7 +2012,7 @@ impl DeploymentPipeline<'_> {
                 }
             })
             .await?;
-        // The validated report of this exact birth, the one the accepting authority admitted
+        // The validated report of this exact birth, the one the accepting primary admitted
         // (node-create.md step 5): never a digest gossip carried. On a run that reused WaitForBind's
         // receipt the report is the one this admin kept when the earlier run ended (`Joins::end`)
         // or, this process having restarted since, the one kept durable at admission.
@@ -2235,7 +2238,7 @@ impl DeploymentPipeline<'_> {
     ///
     /// Its stop steps are done ("For a crashed process those stop steps are already done", and a
     /// stopped one already sent its `stopped`): it is sent no command. Only the provider's matching
-    /// Exited is the proof, and the executor publishes NodeDeleted from it. Storage is kept: "It
+    /// Exited is the verdict, and the executor publishes NodeDeleted from it. Storage is kept: "It
     /// releases node.id and name, not storage". The lifecycle events name the birth as its own
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
     pub fn delete_stopped<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
@@ -2293,7 +2296,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// Delete `req.node` through every step (node.delete): the provider's exact terminal receipt of
-    /// the birth's runtime, the proof its NodeDeleted was published from.
+    /// the birth's runtime, the verdict its NodeDeleted was published from.
     pub fn delete_node<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("delete", req.build_id.as_ref(), &req.node.location());
@@ -2346,7 +2349,7 @@ impl DeploymentPipeline<'_> {
         let terminal = if req.unreached || run.done.contains_key(DeleteStep::TerminateRuntime.name()) {
             // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
             // reply or receipt is fabricated; `TerminateRuntime` first when its runtime runs at the
-            // step's instant, and nothing waits for a proof of termination. A delete handed its exact
+            // step's instant, and nothing waits for a verdict of termination. A delete handed its exact
             // Exited runs on from it: the exited verdict is a step already taken, and nothing is stopped.
             self.terminate_step_when(&mut run, &node, handle, unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
         } else if node.stopped {
@@ -2357,14 +2360,14 @@ impl DeploymentPipeline<'_> {
             self.terminate_step(&mut run, &node, handle).await?
         } else if self.stop_skipped_os_stopped(&run, &node, handle).await {
             // An OS-suspended target (node-delete.md): it answers no call, so no stop is sent; the
-            // delete begins at TerminateRuntime on the exact handle, whose Exited is the proof. A
+            // delete begins at TerminateRuntime on the exact handle, whose Exited is the verdict. A
             // suspended runtime runs no handler, so the terminate is Immediate: no graceful wait, and
             // nothing of it is resumed (i144 R23).
             self.terminate_step_when(&mut run, &node, handle, Terminate::Always, TerminationMode::Immediate).await?
         } else {
             // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
             // node.connection.delete and its node.connections.deleted, then stop-node, its node-left reply and the provider's
-            // terminal proof.
+            // terminal verdict.
             self.stop_steps_with(&mut run, &mut node, handle, RequiredCompletion::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
         // An explicit delete of an unreached birth whose mesh's rows this executor does not write, read at the
@@ -2519,10 +2522,10 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
-    /// connections delete), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
+    /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (its node.stop runs its
+    /// own `node.connection.delete { All }`), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
     /// `NodeStopped` from that matching reply, then, by `end`, the stopped process or the provider's
-    /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `required` says
+    /// stop and inspection of the exact runtime, whose `Exited` alone ends it. `required` says
     /// what the wait step must have seen to complete (a standalone
     /// stop fails it by name unless stop-node was admitted and the
     /// birth's `stopped` reply received).
@@ -2603,8 +2606,8 @@ impl DeploymentPipeline<'_> {
     }
 
     /// `TerminateRuntime`: the provider's stop and inspection of the exact runtime; only its `Exited`
-    /// is terminal proof, and the receipt binds the exact birth and runtime. A delete of a birth the
-    /// provider already proves terminal asks only this.
+    /// is the terminal verdict, and the receipt binds the exact birth and runtime. A delete of a birth the
+    /// provider already reports terminal asks only this.
     pub(crate) async fn terminate_step(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         self.terminate_step_when(run, node, handle, Terminate::Always, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await
     }
@@ -2668,7 +2671,7 @@ impl DeploymentPipeline<'_> {
             if let Err(e) = self.provider.terminate(handle, mode, deadline).await {
                 return Err(StepFailure::from(e));
             }
-            // Only an exact inspection that says the runtime exited is terminal proof.
+            // Only an exact inspection that says the runtime exited is the terminal verdict.
             let exit_code = match self.provider.inspect(handle, deadline).await {
                 DeploymentStatus::Running => return Err(StepFailure::from(format!("path {name_path:?}, name {name_name:?} still runs after the stop ladder", name_path = &name.path, name_name = &name.name))),
                 DeploymentStatus::OsStopped => return Err(StepFailure::from(format!("path {name_path:?}, name {name_name:?}: the operating system holds its runtime suspended after the stop ladder (os-stopped)", name_path = &name.path, name_name = &name.name))),
@@ -3070,7 +3073,7 @@ mod tests {
     /// (`caller = delete`, `os-stopped`), the skip is named (`rdm.node_admin.node.delete.via-os-stopped`),
     /// and the run's receipts are NodeDeleting, TerminateRuntime, NodeDeleted,
     /// RemoveTopologyMembership, Complete: one terminate of the exact runtime, whose `Exited` is the
-    /// proof. Must NOT happen: a `stop-node` or `node.connection.delete` sent to the suspended birth, a
+    /// verdict. Must NOT happen: a `stop-node` or `node.connection.delete` sent to the suspended birth, a
     /// StopNode or AwaitNodeLeft receipt.
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:14
     /// "`node.delete`, step 2: before sending `node.stop`, the executor inspects the birth's runtime.
@@ -3102,7 +3105,7 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             pipeline.delete_node(&req).await.expect("the delete of an os-stopped birth completes")
         };
-        assert_eq!(terminal.exit_code, Some(137), "the terminate's Exited is the proof: {terminal:?}");
+        assert_eq!(terminal.exit_code, Some(137), "the terminate's Exited is the verdict: {terminal:?}");
         assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the suspended birth: {:?}", observer.sent.lock().unwrap());
         assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 1, "one terminate of the exact runtime");
         let inspected = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
@@ -3127,7 +3130,7 @@ mod tests {
     /// a birth no call reaches (a member of a mesh deleted in process under fabric.delete, a mesh.delete's
     /// lost or silent birth) whose provider reads its exact runtime `OsStopped` sends it no command and
     /// terminates that runtime once, `Immediate`; the receipt names the `os-stopped` read and carries the
-    /// terminate's `Exited` code, and NodeDeleted follows that proof. Must NOT happen: the os-stopped birth
+    /// terminate's `Exited` code, and NodeDeleted follows that verdict. Must NOT happen: the os-stopped birth
     /// receipted and written deleted with nothing terminated (node recovery's rule, which leaves an
     /// os-stopped runtime as it is), a graceful terminate of a suspended runtime, or a command sent to it.
     // @feature: node-lifecycle
@@ -3390,10 +3393,10 @@ mod tests {
         }
     }
 
-    /// CONTRACT (node-create.md step 5: on acceptance the authority "completes WaitForBind /
+    /// CONTRACT (node-create.md step 5: on acceptance the mesh-primary "completes WaitForBind /
     /// WaitForMeshJoin from the validated report, never from gossip"; "Join completion and failure
     /// evidence": "Only an accepted full report completes the deployment's bind/join waits ... a
-    /// digest ... is insufficient"): a birth whose JoinNode the accepting authority admitted
+    /// digest ... is insufficient"): a birth whose JoinNode the accepting primary admitted
     /// completes WaitForMeshJoin while no digest of it reached any view, and the create goes on to
     /// WaitForNodeReady, where nothing answers Ready. Must NOT happen: WaitForMeshJoin waiting past
     /// its deadline for a topology digest of a birth whose report was accepted.
