@@ -50,23 +50,6 @@ pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
     }
 }
 
-fn scope_status(s: crate::model::ScopeStatus) -> ScopeStatus {
-    use crate::model::ScopeStatus as S;
-    match s {
-        S::Pending => ScopeStatus::Pending,
-        S::Ready => ScopeStatus::Ready,
-        S::Leaving => ScopeStatus::Leaving,
-        S::Dead => ScopeStatus::Dead,
-    }
-}
-
-fn provider(p: crate::model::ProviderKind) -> ProviderKind {
-    match p {
-        crate::model::ProviderKind::Process => ProviderKind::Process,
-        crate::model::ProviderKind::Container => ProviderKind::Container,
-    }
-}
-
 /// `n` as a `node.get` answer carries it before its record is read, with the load and gossip stats its
 /// latest digest carried and `tags` and `config` (Q203: config is never gossiped): the view's fields under
 /// the record's names; a record overlays every field it holds ([`record_view`]).
@@ -95,7 +78,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
 }
 
 fn mesh_view(m: crate::topology::MeshView) -> MeshView {
-    MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, nodes: m.nodes }
+    MeshView { renewals: None, id: m.id, name: m.name, status: m.status, primary_admin: m.primary_admin, nodes: m.nodes }
 }
 
 /// `n` with `load` and `gossip`, and every field its node record `row` holds (Q366), under the record's
@@ -286,8 +269,8 @@ pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
     FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(),
         id: f.id,
         name: f.name,
-        status: scope_status(f.status),
-        provider: provider(f.provider),
+        status: f.status,
+        provider: f.provider,
         fabric_primary: f.fabric_primary,
         meshes: f.meshes.into_iter().map(mesh_view).collect(),
         build_id,

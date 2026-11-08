@@ -2355,7 +2355,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 Box::pin(async move {
                                                     // Its own record first (Q356): the state it declares is on its record before any
                                                     // primary hears it; a refused write is named and the declaration still owed.
-                                                    if let Some(Err(e)) = match configs.get() { Some(c) => Some(c.own_state(rdm_node::node::status_of_declared(state)).await), None => None } {
+                                                    if let Some(Err(e)) = match configs.get() { Some(c) => Some(c.own_state(rdm_core::model::NodeStatus::from(state)).await), None => None } {
                                                         tracing::info!(error = %e, "this admin's own record's declared state is not written");
                                                     }
                                                     let view = topology.read().await.clone();

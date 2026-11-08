@@ -2394,17 +2394,6 @@ fn row_status_span_as(me: &crate::model::PathName, subject: &crate::model::PathN
         .in_scope(|| tracing::info!("the node's status is written on its record"));
 }
 
-/// The status a node's row carries for the state its birth declared.
-pub fn node_status_of(s: NodeState) -> crate::model::NodeStatus {
-    use crate::model::NodeStatus as S;
-    match s {
-        NodeState::Pending => S::Pending,
-        NodeState::Ready => S::Ready,
-        NodeState::ConnectionsDeleting => S::ConnectionsDeleting,
-        NodeState::Stopped => S::Stopped,
-    }
-}
-
 /// What a node is now, in the declaration vocabulary.
 pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
     use crate::model::NodeStatus as S;

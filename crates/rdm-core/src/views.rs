@@ -77,41 +77,9 @@ pub enum NodeStatus {
     Left,
 }
 
-/// The lifecycle state of a mesh or of a fabric.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ScopeStatus {
-    /// Created and not yet ready.
-    ///
-    /// Position 0 on the wire; serialized as `pending`; `name()` is `pending`.
-    Pending,
-    /// Ready: it takes traffic.
-    ///
-    /// Position 1 on the wire; serialized as `ready`; `name()` is `ready`.
-    Ready,
-    /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
-    ///
-    /// Position 2 on the wire; serialized as `leaving`; `name()` is `leaving`.
-    Leaving,
-    /// Dead: a mesh every one of whose births was proven exited; final.
-    ///
-    /// Position 3 on the wire; serialized as `dead`; `name()` is `dead`.
-    Dead,
-}
-
-/// The deployment provider that runs a fabric's nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    /// Each node is an OS process.
-    ///
-    /// Position 0 on the wire.
-    Process,
-    /// Each node is a container.
-    ///
-    /// Position 1 on the wire.
-    Container,
-}
+/// The lifecycle state of a mesh or of a fabric, and the deployment provider that runs a fabric's
+/// nodes: one enum each, the model's (its positions on the wire are pinned by `tests/status_wire.rs`).
+pub use crate::model::{ProviderKind, ScopeStatus};
 
 /// One node as `node.get` answers it: the node record's fields under its names (Q366), each from the
 /// node's record at its node id, and, when the answering node is the node itself, its own live sample

@@ -64,6 +64,19 @@ pub enum NodeState {
     Stopped,
 }
 
+/// The status a node's record holds for a declared state: the one mapping, for the node writing its own
+/// record and for its node-admin applying the declaration.
+impl From<NodeState> for crate::model::NodeStatus {
+    fn from(declared: NodeState) -> Self {
+        match declared {
+            NodeState::Pending => Self::Pending,
+            NodeState::Ready => Self::Ready,
+            NodeState::ConnectionsDeleting => Self::ConnectionsDeleting,
+            NodeState::Stopped => Self::Stopped,
+        }
+    }
+}
+
 /// A Mesh's state (the Meshes schema's `state`): `pending`, `ready`, `deleting` or `deleted`, set
 /// only by RDM, each move an event in the events store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

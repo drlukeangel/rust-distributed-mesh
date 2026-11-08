@@ -1510,21 +1510,10 @@ fn start_record(launch: &rdm_core::launch::Launch, topology: &TopologyView, writ
 /// Write the state `declared` on this node's own record (Q356), through `writer` under one `Send`
 /// ([`crate::node_records::NodePropertyWriter::write_status`]), before the declaration that reports it
 /// is sent. A refusal, or a `Send` spent, is named on the writer's `via-status` span; the declaration is
-/// still owed.
+/// still sent.
 pub async fn write_own_state(writer: &crate::node_records::NodePropertyWriter, declared: rdm_core::status::NodeState) {
-    if let Some(Err(end)) = writer.write_status(status_of_declared(declared)).await {
-        tracing::info!(declared = ?declared, %end, "the declared state is not written on this node's record; its declaration is still owed");
-    }
-}
-
-/// The record state of a declared state.
-pub fn status_of_declared(declared: rdm_core::status::NodeState) -> crate::model::NodeStatus {
-    use rdm_core::status::NodeState as D;
-    match declared {
-        D::Pending => crate::model::NodeStatus::Pending,
-        D::Ready => crate::model::NodeStatus::Ready,
-        D::ConnectionsDeleting => crate::model::NodeStatus::ConnectionsDeleting,
-        D::Stopped => crate::model::NodeStatus::Stopped,
+    if let Some(Err(end)) = writer.write_status(declared.into()).await {
+        tracing::info!(declared = ?declared, %end, "the declared state is not written on this node's record; its declaration is still sent");
     }
 }
 
