@@ -1555,7 +1555,7 @@ StartNode { node_id, incarnation, operation }
   ← NodeJoined (Data; appended reply 13)
   ← NodeStarted (Terminal; appended reply 14)
 before acceptance, a command whose subject's roles moved:
-  ← PrimaryUpdated { node_id } (Terminal; appended reply 29, OK; the caller sends the command to node_id, Q413)
+  ← PrimaryUpdated { node_id } (the one frame before acceptance, as a refusal is; appended reply 29, OK; the caller sends the command to node_id, Q413)
 after StopNode or StartNode acceptance:
   ← Failed { step, reason, code } (Terminal; appended reply 15)
 before lifecycle acceptance:
