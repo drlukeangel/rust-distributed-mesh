@@ -1060,14 +1060,20 @@ impl StatusService {
             return Carried::NotDone(format!("{} is another birth now", subject.node_id));
         }
         let command = NodeCommandRequest::StorageStep { node_id: node_id.clone(), incarnation: incarnation.clone(), change_id: change_id.clone(), provider: provider.to_string() };
-        // A decoration holding the command (the testkit's cut): it is carried once released, its answer
-        // dropped, and the move is not done now.
+        // A decoration holding the command (the testkit's cut): it is carried once released, its end
+        // named on its own span, and the move is not done now.
         if let (Some(release), Some(configs)) = (self.command_frame_seam.as_ref().and_then(|seam| seam.hold_storage_step(&subject.location(), change_id)), self.configs.get()) {
             if *node_id != self.node_id {
                 let (client, commands, node) = (configs.client_arc(), self.commands.clone(), node_id.clone());
+                let span = tracing::info_span!("rdm.node_admin.storage.update.via-held-step", node_id = %node, change_id = %change_id, outcome = tracing::field::Empty, "otel.kind" = "internal");
                 tokio::spawn(async move {
                     release.await;
-                    let _ = crate::storage_change::command(&client, &commands, &node, &command).await;
+                    let ended = tracing::Instrument::instrument(crate::storage_change::command(&client, &commands, &node, &command), span.clone()).await;
+                    match &ended {
+                        Ok(reply) => span.record("outcome", reply.name()),
+                        Err(why) => span.record("outcome", why.as_str()),
+                    };
+                    span.in_scope(|| tracing::info!("the held storage step, released, was carried to its birth"));
                 });
                 return Carried::NotDone(format!("path {me_name_path:?}, name {me_name_name:?} holds the move of {} until its release", subject.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name));
             }
