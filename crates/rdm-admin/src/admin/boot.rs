@@ -2245,7 +2245,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         // Its record moved past Ready (a stop admitted): its start after the stop makes its Ready.
                                                         break;
                                                     }
-                                                    let _ = channels.publish(&d_ready).await;
+                                                    // Best-effort dissemination (R-NS2): a refused publish is named on the boot
+                                                    // span, and its heartbeats carry the Ready.
+                                                    if let Err(e) = channels.publish(&d_ready).await {
+                                                        tracing::info!(parent: &boot, error = %e, "the Ready digest was not published: its heartbeats carry it");
+                                                    }
                                                     let reads = ViewReads::read(&me, &digest_view, &records, &fabric_id).await;
                                                     let decided = incumbency_of(&digest_view, &records);
                                                     let t = project_decided(&fabric_name, &fabric_id, view_provider, &digest_view, &records, &decided, &reads);
@@ -2304,7 +2308,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let (channels, digest) = (channels.clone(), digest.clone());
                                             Box::pin(async move {
                                                 let d = digest.lock().unwrap().clone();
-                                                let _ = channels.publish(&d).await;
+                                                if let Err(e) = channels.publish(&d).await {
+                                                    tracing::info!(error = %e, "the digest carrying the config was not published: its heartbeats carry it");
+                                                }
                                             })
                                         }));
                                     }
@@ -2340,7 +2346,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         d.clone()
                                                     };
                                                     if !crate::node_self::process_stop().is_stopped() {
-                                                        let _ = channels.publish(&d).await;
+                                                        if let Err(e) = channels.publish(&d).await {
+                                                            tracing::info!(error = %e, "the digest carrying the name was not published: its heartbeats carry it");
+                                                        }
                                                     }
                                                 }
                                                 (held, decision)
