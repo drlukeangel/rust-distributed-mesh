@@ -2350,6 +2350,7 @@ mod tests {
         primary.digest_view.mesh_left("mesh1", "b9", 9);
         assert_eq!(primary.forwarder.lock().unwrap().forwarded_version("mesh1"), None, "at MeshLeft the forwarder forgets what it forwarded of mesh1");
         assert_eq!(primary.copies.lock().unwrap().held_version("mesh1"), None, "at MeshLeft the copy of mesh1 is forgotten");
+        assert_eq!(primary.order.lock().unwrap().floor("mesh1", None), None, "at MeshLeft nothing of mesh1 orders a frame here: its floor goes with its copy");
         assert!(primary.held_sources_of(Some("mesh1")).is_empty(), "a read of the primary is served nothing of mesh1");
     }
 
@@ -3511,6 +3512,23 @@ mod tests {
         assert_eq!(followed.iter().map(|f| (f["base_version"].clone(), f["topology_version"].clone(), f["held_version"].clone())).collect::<Vec<_>>(), vec![("41".to_string(), "43".to_string(), "42".to_string())], "{followed:#?}");
         assert!(spans.named("rdm.mesh.topology.update.via-gap").is_empty(), "no differential desynchronized the copy");
         assert!(spans.named("rdm.mesh.topology.update.via-duplicate").iter().any(|f| f["frame"] == "mesh-topology-delta" && f["identity"].ends_with("topology_version=43")), "the copy of 43 is a duplicate");
+    }
+
+    /// CONTRACT (gossip.md receive rules: "the operation cannot reopen after completion"; one record of
+    /// an ended operation, held for the deleted retention as a departure is): a stop that ended is
+    /// recorded once, and its record is forgotten once the deleted retention of local age has passed.
+    /// Must NOT happen: an ended operation's record kept for the life of the process (code audit
+    /// 2026-11-08 round 2, N2).
+    #[test]
+    fn an_ended_operations_record_is_forgotten_after_the_deleted_retention() {
+        let digest_view = DigestView::with_retention(Duration::from_millis(50));
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record(digest(&id, &inc, None, NodeStatus::Ready, 1)));
+        assert!(digest_view.stopped(op(&id, &inc, "node.stop")));
+        digest_view.end_stop(id.as_str());
+        assert_eq!(digest_view.ended_overlays.lock().unwrap().len(), 1, "the ended stop is recorded once");
+        digest_view.expire_deleted_at(Instant::now() + Duration::from_millis(100));
+        assert_eq!(digest_view.ended_overlays.lock().unwrap().len(), 0, "its record is forgotten after the deleted retention");
     }
 
     /// CONTRACT (gossip.md "A node that missed a lifecycle event recovers it from `TopologyFull.in_flight`
