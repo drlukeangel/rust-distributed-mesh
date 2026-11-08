@@ -18,7 +18,13 @@ RETIRED = {"drain", "drains", "draining", "drained", "park", "parked", "parking"
            "edge", "edges",
            # i152 s7: the provider's inspect answer (node.runtime.inspect) is the one mechanism; a thing is named
            # for what it is, never a proof. `unproven`, the investigation's verdict, is its own word and stays (D46)
-           "proof", "proofs", "prove", "proves", "proved", "proven", "proving"}
+           "proof", "proofs", "prove", "proves", "proved", "proven", "proving",
+           # CLAUDE.md's bans the set lacked (lead note 0001 G, 2026-11-08): a partition is a cut, a primary
+           # has no holder, a revision is no epoch, a retry is a Send (Q344: never owed or resent, a TimeLimit
+           # is no budget), a copy is no snapshot (Q408), and nothing is a tree or an authority
+           "partition", "partitions", "partitioned", "tree", "trees", "epoch", "epochs", "holder", "holders",
+           "authorize", "authorized", "authorizing", "owed", "resend", "resends", "resent", "budget", "budgets",
+           "snapshot", "snapshots"}
 DEF = re.compile(r'\b(?:fn|struct|enum|mod|trait|type|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)')
 def words(name):
     parts = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower().split('_')

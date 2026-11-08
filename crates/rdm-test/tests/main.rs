@@ -127,7 +127,7 @@ mod node_heard_again;
 mod spent_call_investigation;
 #[path = "node/primary_spent_call_report.rs"]
 mod primary_spent_call_report;
-mod resend;
+mod call_send;
 #[path = "node/node_recovery_under_cut.rs"]
 mod node_recovery_under_cut;
 #[path = "node/silent_node_view.rs"]
