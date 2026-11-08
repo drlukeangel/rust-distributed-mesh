@@ -28,4 +28,4 @@ pub(crate) mod view;
 pub mod digest_view;
 pub mod backbone;
 pub(crate) mod receive_order;
-pub mod snapshot;
+pub mod aggregate;

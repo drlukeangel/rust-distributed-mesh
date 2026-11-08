@@ -346,7 +346,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
 | node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path and name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from shared records: current pair resolution reads the node records by path and name, then the node's record at its node.id (Q323); a record read error is named, never a cached predecessor | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
-| [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
+| [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source aggregate read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the fabric-primary and down through the node's mesh-primary to the node; `UpdateName` on [0x22](#nodecommand-op-0x22-rdm) at every hop, then a live node's `JoinMesh`; the node holds no connection, and a live node rejoins its mesh under the new name | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`, `NameNotApplied` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
 | node.connection.get { node } / [node.connection.delete](lifecycles/node-connections-delete.md) | `node.connection.get { node }` answers the exact birth's own connections from its connections log, the node (id, incarnation) the read's address and the filter over id, destination, kind and state, [Read 0x23](#read-op-0x23-rdm) `GetConnections { node, incarnation, filter }`, streamed in `Connections` frames; `node.connection.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connection.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller sends it to the node's mesh-primary directly on [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `DeleteConnections`, refused by name with `Rejected { reason, detail }`, reason `node-not-live`, `last-admin` or `rejected-connection-scope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connection.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
 | node.tag.get/create/delete | A node's tags are its own property, not config. `node.tag.get` answers the node's labels; `node.tag.create { label \\| [labels] }` adds one label or a list; `node.tag.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connection.delete`. One item or a list, uniform: a single item is the same as a list of one. The node's serialized property writer adds or removes labels in its own part of its durable record. Adding an existing label is AlreadyApplied and creates no duplicate; deletion preserves other owned fields. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
@@ -1130,7 +1130,7 @@ pub enum TopologyRequest {
 }
 
 pub enum TopologyReply {
-    Snapshot {
+    Aggregate {
         mesh: String,
         mesh_id: Option<MeshId>,
         topology_version: u64,
@@ -1173,10 +1173,10 @@ Each `ReadNode` is a node's identity, endpoint and lineage, its status and prima
 
 `mesh=None` asks for every held or eligible stored mesh; Some(m) asks for one mesh.
 A matching held source version answers Unchanged. Accepted reads stream Started, then
-Snapshot, Unchanged or Stored frames, then End. Snapshot carries the mesh's one list of nodes,
+Aggregate, Unchanged or Stored frames, then End. Aggregate carries the mesh's one list of nodes,
 chunked as gossip TopologyFull is; a mesh is installed atomically only after every chunk of the
 answer at its topology_version is present. End.meshes counts each answered mesh once.
-A mesh with no published snapshot is absent unless the answerer writes its records or holds its
+A mesh with no published aggregate is absent unless the answerer writes its records or holds its
 births (Stored). NotReady means the readiness gate is closed, with the cause named. No answer reads the
 store on the reader's behalf at its start (Q227); OwnRow is served from the node's
 record (Q237, Q323). A mesh neither held, written nor in the answerer's durable topology answers
@@ -1186,8 +1186,8 @@ Stored is reply position 11; REPLY_VARIANTS is 15. Stored is data-class, built f
 births the answerer's view holds (its durable topology included), never
 from the store,
 and carries up to 24 nodes per frame; End.meshes counts a stored mesh once across frames.
-It serves only a mesh the maker holds no snapshot of, never the maker's own mesh. A held
-snapshot wins. The reader never installs Stored as topology: it uses the map only to reach
+It serves only a mesh the maker holds no aggregate of, never the maker's own mesh. A held
+aggregate wins. The reader never installs Stored as topology: it uses the map only to reach
 a live node of its own mesh. A read from a node of another mesh installs topology only for
 other meshes and holds none of the reader's own mesh as heard.
 
@@ -1209,7 +1209,7 @@ Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
 
 Caller span: `rdm.node_rpc.request.update.via-call`, op=0x1E. Server:
 `rdm.node_rpc.request.serve.via-direct`, child `rdm.mesh.topology.serve.via-read`, with
-`meshes`, `snapshots`, `unchanged`, `stored`, `bytes`. Caller installation emits
+`meshes`, `aggregates`, `unchanged`, `stored`, `bytes`. Caller installation emits
 `rdm.mesh.topology.update.via-read-install` per mesh, with publisher, topology_version
 and target node. Complete state installation is evidence in addition to trace ancestry.
 
@@ -1275,7 +1275,7 @@ The stream is Started, then the data frames `Nodes`, `Meshes`, `Fabrics` or `Con
 the read's every matching row, captured once in its stable order (by path and name, by name), from the
 selected shared records as [query.md](query.md) states, or carried to the primary that holds it (Q224,
 Q243) on this same op; it is never bounded as one frame. The rows are packed in order into data frames
-that each fit the frame ceiling, by the one packer the Build facts and topology snapshots share. A row
+that each fit the frame ceiling, by the one packer the Build facts and topology aggregates share. A row
 that fits no frame alone is `ReadOverBound` naming it (`RESOURCE_EXHAUSTED`), and nothing of the read is
 sent: no row is ever left out. An unknown pair is `RejectedFilter` naming it (`INVALID_ARGUMENT`). The
 caller counts the read only when End arrives and the rows it holds number `End.rows` across

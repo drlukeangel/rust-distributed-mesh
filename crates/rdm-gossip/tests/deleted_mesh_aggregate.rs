@@ -2,11 +2,11 @@
 //! listed `deleting` (gossip.md "Mesh delete": "the mesh deleted and itself deleting"; Q390: a removal is
 //! the node's status); receivers apply it, emit `via-node-deleting` and `via-member-state`
 //! (`routable=false`), and hold the last admin deleted for `DELETED_RETENTION` while keeping the final
-//! mesh topology in `SnapshotReceiver` and `Forwarder`.
+//! mesh topology in `AggregateReceiver` and `Forwarder`.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_gossip::frame::Frame;
-use rdm_gossip::snapshot::SnapshotReceiver;
+use rdm_gossip::aggregate::AggregateReceiver;
 
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
@@ -35,7 +35,7 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
 fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_itself_deleting() {
     let m3_a1 = digest(rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", 29301);
     let author = rdm_gossip::envelope::Birth::publisher(&fabric(), &PublisherId { incarnation: m3_a1.node.incarnation.clone(), node_id: m3_a1.node.node_id.clone() });
-    let mut rx = SnapshotReceiver::default();
+    let mut rx = AggregateReceiver::default();
     // The deleted mesh's id rides its aggregate beside its name; the last admin is its only node,
     // listed deleting.
     let mesh3_id = MeshId::mint();
@@ -44,7 +44,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_itself_deleting()
     let Frame::TopologyFull { nodes, mesh_id, .. } = frame.data() else { panic!("not TopologyFull") };
     assert_eq!(mesh_id.as_ref(), Some(&mesh3_id));
     assert_eq!(nodes.iter().map(|n| (n.node_id.clone(), n.status)).collect::<Vec<_>>(), vec![(m3_a1.node.node_id.clone(), NodeStatus::Deleting)], "its one node, the last admin, deleting");
-    let chunk = rdm_gossip::snapshot::Chunk {
+    let chunk = rdm_gossip::aggregate::Chunk {
         mesh: "mesh3".into(),
         mesh_id: Some(mesh3_id),
         author: Some(author),
@@ -56,5 +56,5 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_itself_deleting()
         runtimes: Vec::new(),
     };
     let taken = rx.take_chunk(chunk);
-    assert!(matches!(taken, rdm_gossip::snapshot::Taken::Installed(_)));
+    assert!(matches!(taken, rdm_gossip::aggregate::Taken::Installed(_)));
 }

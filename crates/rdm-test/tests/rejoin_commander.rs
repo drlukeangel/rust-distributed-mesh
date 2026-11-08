@@ -35,7 +35,7 @@ pub(crate) async fn read_until(running: &node::RunningNode, primary: &crate::com
             let served = primary.observer.topology_view.held_topology(&primary.own_digest());
             if let Some(s) = served.iter().find(|s| s.mesh == "mesh1") {
                 // One chunk, as the read serves it: it names no author.
-                let chunk = rdm_gossip::snapshot::Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: s.topology_version, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() };
+                let chunk = rdm_gossip::aggregate::Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: s.topology_version, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() };
                 let _ = running.channels.take_read_chunk(chunk, "mesh1");
             }
             if holds(running) {

@@ -2,7 +2,7 @@
 //! a full topology, a delta and a status into the digest view (gossip.md §3.1, §3.3).
 
 
-use crate::snapshot::{Chunk, DeltaChunk, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, Taken};
+use crate::aggregate::{Chunk, DeltaChunk, Forwarder, Full, Gap, Install, Moved, PublisherId, AggregateReceiver, HeldAggregate, Taken};
 use rdm_core::{FabricId, LifecycleOp, MeshDigest, Primary, PrimaryRole};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use crate::{frame::*, status::*, primary::*, channel::*, digest_view::*};
 
-/// What a snapshot frame left behind.
+/// What an aggregate frame left behind.
 #[derive(Default)]
 pub(crate) struct SnapshotTaken {
     /// The digests applied to the view, for their addresses.
@@ -20,8 +20,8 @@ pub(crate) struct SnapshotTaken {
     /// A complete backbone aggregate of a peer Mesh: `(mesh, version, full)`, for the forwarding
     /// primary.
     pub(crate) source: Option<(String, u64, Full)>,
-    /// A complete snapshot installed from the backbone: who published it, when, and the
-    /// publisher's own digest as the snapshot lists it. Evidence for the clock's discipline.
+    /// A complete aggregate installed from the backbone: who published it, when, and the
+    /// publisher's own digest as the aggregate lists it. Evidence for the clock's discipline.
     pub(crate) publication: Option<Publication>,
 }
 
@@ -32,7 +32,7 @@ pub(crate) struct Prior {
 }
 
 impl Prior {
-    pub(crate) fn of(rx: &SnapshotReceiver, mesh: &str) -> Self {
+    pub(crate) fn of(rx: &AggregateReceiver, mesh: &str) -> Self {
         Self { held: rx.held_version(mesh), stops: Target::stops_of(rx.held_full(mesh)) }
     }
 
@@ -55,7 +55,7 @@ pub(crate) struct Publication {
     pub(crate) publisher: PublisherId,
     /// The author's rafka-time when it published (the `TopologyFull` envelope's `time`).
     pub(crate) published_at_rafka_ms: u64,
-    /// The publisher's own digest in the snapshot, matched by its exact birth.
+    /// The publisher's own digest in the aggregate, matched by its exact birth.
     pub(crate) publisher_digest: Option<MeshDigest>,
 }
 
@@ -73,9 +73,9 @@ pub(crate) struct View {
     pub(crate) primary: Arc<AtomicBool>,
     pub(crate) via: Arc<Mutex<HashMap<String, &'static str>>>,
     /// The cross-Mesh projection the backbone carries: each source complete, loads included.
-    pub(crate) backbone_rx: Arc<Mutex<SnapshotReceiver>>,
+    pub(crate) backbone_rx: Arc<Mutex<AggregateReceiver>>,
     /// The cross-Mesh projection this Mesh's own channel carries: what the local primary forwards.
-    pub(crate) mesh_rx: Arc<Mutex<SnapshotReceiver>>,
+    pub(crate) mesh_rx: Arc<Mutex<AggregateReceiver>>,
     /// The one version this node holds per source (R-RX3): consulted by the backbone's and the mesh
     /// channel's receive paths and by the topology-read install, and moved by what each installs.
     pub(crate) order: Arc<Mutex<crate::receive_order::ReceiveOrder>>,
@@ -108,17 +108,17 @@ impl View {
     /// the backbone and, forwarded, on its mesh channel; a forwarded frame the backbone already moved
     /// past is ignored, so the mesh channel's copy can stay behind the version the node holds (rdm#154).
     /// `mesh`'s alone when one is named: no other mesh's source is copied.
-    pub(crate) fn held_sources_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
+    pub(crate) fn held_sources_of(&self, mesh: Option<&str>) -> Vec<HeldAggregate> {
         if self.primary.load(Ordering::Relaxed) {
-            return self.forwarder.lock().unwrap().snapshots_of(mesh);
+            return self.forwarder.lock().unwrap().aggregates_of(mesh);
         }
-        let channel = self.mesh_rx.lock().unwrap().snapshots_of(mesh);
-        let backbone = self.backbone_rx.lock().unwrap().snapshots_of(mesh);
+        let channel = self.mesh_rx.lock().unwrap().aggregates_of(mesh);
+        let backbone = self.backbone_rx.lock().unwrap().aggregates_of(mesh);
         let order = self.order.lock().unwrap();
-        let mut by_mesh: std::collections::BTreeMap<String, SourceSnapshot> = Default::default();
+        let mut by_mesh: std::collections::BTreeMap<String, HeldAggregate> = Default::default();
         for s in channel.into_iter().chain(backbone) {
-            let held = order.installed_snapshot(&s.mesh).map(|(_, version, ..)| version);
-            let is_held = |c: &SourceSnapshot| held == Some(c.topology_version);
+            let held = order.installed_aggregate(&s.mesh).map(|(_, version, ..)| version);
+            let is_held = |c: &HeldAggregate| held == Some(c.topology_version);
             match by_mesh.entry(s.mesh.clone()) {
                 std::collections::btree_map::Entry::Vacant(e) => {
                     e.insert(s);
@@ -209,7 +209,7 @@ impl View {
         tracing::info!("a mesh status is held: application routing selects the mesh's births only while it is ready");
     }
 
-    /// Hold what `f` carries; the digests it carries (for their addresses). A snapshot frame is
+    /// Hold what `f` carries; the digests it carries (for their addresses). An aggregate frame is
     /// not taken here: see [`View::take_snapshot`].
     pub(crate) fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         self.take_with(f, fabric, via).0
@@ -231,7 +231,7 @@ impl View {
                     // A node held stopped heard again: its mesh-primary's view is pulled (a sync issue).
                     // Each such Digest pulls again until a read moves past the stop.
                     if self.digest_view.stopped_heard_again(digest) {
-                        if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::StoppedBirthHeard) {
+                        if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::aggregate::Gap::StoppedBirthHeard) {
                             tracing::info_span!("rdm.mesh.topology.update.via-stopped-birth-heard", node = %self.current_name(), node_id = %digest.node.node_id, incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq)
                                 .in_scope(|| tracing::info!("a node held stopped is heard again: its mesh-primary's view is pulled"));
                         }
@@ -250,7 +250,7 @@ impl View {
                     && !self.digest_view.holds_runtime_fact(&digest.node.node_id, &digest.node.incarnation)
                     && self.reads_runtime_facts()
                 {
-                    if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::snapshot::Gap::NoRuntimeFact) {
+                    if self.mesh_rx.lock().unwrap().mark_desynced(&self.mesh, crate::aggregate::Gap::NoRuntimeFact) {
                         tracing::info_span!("rdm.mesh.topology.update.via-no-runtime-fact", node = %self.current_name(), node_id = %digest.node.node_id, incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq)
                             .in_scope(|| tracing::info!("a node-admin holds a birth of its mesh with no runtime fact of it: its mesh-primary's view is read"));
                     }
@@ -430,14 +430,14 @@ impl View {
                 // the held version never sees a version ahead of the view it describes.
                 let mut rx = self.receiver(side).lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
-                let taken = rx.take_chunk_against(chunk, false, order.installed_snapshot(mesh));
+                let taken = rx.take_chunk_against(chunk, false, order.installed_aggregate(mesh));
                 match taken {
                     Taken::Waiting { .. } => SnapshotTaken::default(),
-                    Taken::Refused(crate::snapshot::Refusal::Duplicate | crate::snapshot::Refusal::Inconsistent | crate::snapshot::Refusal::OlderThanHeld { .. } | crate::snapshot::Refusal::OlderThanPending { .. }) => SnapshotTaken::default(),
+                    Taken::Refused(crate::aggregate::Refusal::Duplicate | crate::aggregate::Refusal::Inconsistent | crate::aggregate::Refusal::OlderThanHeld { .. } | crate::aggregate::Refusal::OlderThanPending { .. }) => SnapshotTaken::default(),
                     Taken::Refused(r) => {
                         drop(rx);
                         tracing::info_span!(
-                            "rdm.mesh.topology.reject.via-snapshot",
+                            "rdm.mesh.topology.reject.via-aggregate",
                             node = %self.current_name(),
                             channel = side.name(),
                             mesh = %mesh,
@@ -465,7 +465,7 @@ impl View {
                 let source = author.uri();
                 if side == Side::Backbone {
                     tracing::info_span!("rdm.mesh.topology.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source, forwarded_by = "")
-                        .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete snapshots travel: refused"));
+                        .in_scope(|| tracing::warn!("a TopologyDelta on the backbone, where only complete aggregates travel: refused"));
                     return SnapshotTaken::default();
                 }
                 if self.own_mesh_on_its_channel(mesh, side, &source, "mesh-topology-delta") {
@@ -476,7 +476,7 @@ impl View {
                 }
                 let mut rx = self.mesh_rx.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
-                let moved = rx.take_delta_chunk_against(chunk, order.installed_snapshot(mesh));
+                let moved = rx.take_delta_chunk_against(chunk, order.installed_aggregate(mesh));
                 match moved {
                     Moved::Applied { delta, moved, .. } => {
                         let held_full = rx.held_full(mesh);
@@ -499,7 +499,7 @@ impl View {
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &target, f.context().map(|c| c.time_ms).unwrap_or_default());
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
-                        order.installed_projection(mesh, Some(&crate::snapshot::sent_by(&author)), *topology_version, &installed_full, None);
+                        order.installed_projection(mesh, Some(&crate::aggregate::sent_by(&author)), *topology_version, &installed_full, None);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
                     Moved::Waiting { .. } | Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
@@ -536,7 +536,7 @@ impl View {
         }
     }
 
-    /// Whether a snapshot or delta of the peer mesh `mesh` installs nothing: the accepted Build is
+    /// Whether an aggregate or delta of the peer mesh `mesh` installs nothing: the accepted Build is
     /// the authority on which meshes the fabric has, and a mesh it does not name, of which this
     /// node holds no source projection, is not a mesh this node takes members of from an old
     /// mesh topology. A source this node holds is a mesh it still tracks (a Leaving mesh) and is
@@ -556,7 +556,7 @@ impl View {
     /// One chunk of a topology read, heard on `side` (`Read` from this node's own mesh, `ReadPeer`
     /// from another's): consulted against the one held version of its source first (R-RX3), so a
     /// chunk below the source version this node installed is ignored by name before the receiver
-    /// reads it; a snapshot that completes installs through the Mesh channel's receiver and moves the
+    /// reads it; an aggregate that completes installs through the Mesh channel's receiver and moves the
     /// held source version (gossip.md §3.1).
     pub(crate) fn take_read_chunk(&self, chunk: Chunk, side: Side, fabric: &FabricId) -> Taken {
         // The runtime and data dir of each exact birth the read serves: what a node-admin manages the
@@ -594,11 +594,11 @@ impl View {
             let held_version = order.floor(&chunk.mesh, offered_id.as_ref()).unwrap_or_default();
             drop(order);
             record_own(own_digests);
-            return Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: chunk.topology_version });
+            return Taken::Refused(crate::aggregate::Refusal::OlderThanHeld { held_version, offered_version: chunk.topology_version });
         }
         let mut rx = self.mesh_rx.lock().unwrap();
         let prior = Prior::of(&rx, &chunk.mesh);
-        let installed = order.installed_snapshot(&chunk.mesh);
+        let installed = order.installed_aggregate(&chunk.mesh);
         let taken = rx.take_chunk_against(chunk, true, installed);
         if let Taken::Installed(i) = &taken {
             if side == Side::ReadPeer {
@@ -626,7 +626,7 @@ impl View {
         taken
     }
 
-    pub(crate) fn receiver(&self, side: Side) -> &Arc<Mutex<SnapshotReceiver>> {
+    pub(crate) fn receiver(&self, side: Side) -> &Arc<Mutex<AggregateReceiver>> {
         match side {
             Side::Backbone => &self.backbone_rx,
             Side::MeshChannel | Side::Read | Side::ReadPeer => &self.mesh_rx,
@@ -638,7 +638,7 @@ impl View {
     pub(crate) fn installed(&self, i: &Install, fabric: &FabricId, side: Side, prior: Prior) -> SnapshotTaken {
         let count = |status: rdm_core::model::NodeStatus| i.full.digests().iter().filter(|d| d.status == status).count();
         tracing::info_span!(
-            "rdm.mesh.topology.update.via-snapshot-installed",
+            "rdm.mesh.topology.update.via-aggregate-installed",
             node = %self.current_name(),
             channel = side.name(),
             mesh = %i.mesh,

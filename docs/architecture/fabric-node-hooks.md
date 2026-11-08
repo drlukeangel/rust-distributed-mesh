@@ -57,7 +57,7 @@ next to the hook it governs; nothing for it goes on node.create or the type decl
 [Node start](lifecycles/node-start.md#end-to-end-sequence) step 3 calls the hook before the node
 reaches Ready: after the join supplies the cert and rafka-time and the mesh channel is joined;
 topology is installed only after the hook returns `Ok`. The hook subscribes the app's kind channels
-through that channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so
+through that channel and needs no topology aggregate. FirstStart and AfterStop run the same hook, and so
 does a node its mesh-primary held `PendingReconnect` when it is heard again: commanded back through
 node.mesh.join, it answers the tickle `Current { pending }` while its start runs (`Pending` while its
 hook answers `Pending`), and is published ready only once the hook answers `Ok`. Every entry to

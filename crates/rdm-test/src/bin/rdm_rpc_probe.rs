@@ -686,8 +686,8 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             while let Some(item) = stream.next().await {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
-                        TopologyReply::Snapshot { mesh, topology_version, chunk_index, chunk_count, nodes, .. } => json!({
-                            "frame": "snapshot", "mesh": mesh, "topology_version": topology_version,
+                        TopologyReply::Aggregate { mesh, topology_version, chunk_index, chunk_count, nodes, .. } => json!({
+                            "frame": "aggregate", "mesh": mesh, "topology_version": topology_version,
                             "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": nodes.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(),
                             "statuses": nodes.iter().map(|n| n.status).collect::<Vec<_>>(),

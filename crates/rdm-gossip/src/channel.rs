@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use rdm_core::cadence::{backbone_gossip_interval, staleness_floor};
 use crate::{frame::*, location::*, digest_view::*, backbone::*, topology::*};
 use crate::forward_path::{ForwardPath, ForwardRx};
-use crate::snapshot::{Chunk, Gap, PublisherId, Taken};
+use crate::aggregate::{Chunk, Gap, PublisherId, Taken};
 use rdm_core::{FabricId, IncarnationId, MeshDigest, MeshId};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -660,7 +660,7 @@ pub(crate) fn ended(ev: Option<Result<Event, iroh_gossip::api::ApiError>>) -> Op
     }
 }
 
-/// Which channel a snapshot frame arrived on.
+/// Which channel an aggregate frame arrived on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Side {
     /// The node-admin backbone: every source Mesh complete, loads included.
@@ -1230,9 +1230,9 @@ impl Channels {
     }
 
     /// One chunk of a topology read from another node. The mesh installs atomically once every
-    /// chunk of its snapshot is held, through the same receiver the Mesh channel's snapshots
+    /// chunk of its aggregate is held, through the same receiver the Mesh channel's aggregates
     /// install into; a source it ends the desynchronization of is resumed. Every member the
-    /// snapshot carries is held as heard and its location registered.
+    /// aggregate carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let side = if answerer_mesh == self.topology_view.view.mesh { Side::Read } else { Side::ReadPeer };
         let own_digests = (side == Side::Read && chunk.mesh == self.topology_view.view.mesh).then(|| chunk.digests.clone());

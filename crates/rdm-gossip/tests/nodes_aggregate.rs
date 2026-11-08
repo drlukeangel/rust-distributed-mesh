@@ -3,7 +3,7 @@
 //! cell leaves `result.json` (its direct observations) and `spans.json` (every span the cell's
 //! own threads emitted, captured by its `EvidenceCapture`) there.
 //!
-//! CONTRACT: a receiving admin installs a chunked `TopologyFull` snapshot only once it holds EVERY
+//! CONTRACT: a receiving admin installs a chunked `TopologyFull` aggregate only once it holds EVERY
 //! chunk of it, and only then advances the held source version; chunks interleaved, duplicated
 //! or missed never produce a partial install, a version move or a delta. The source Mesh's
 //! `topology_version` bumps on a material change of the normalized projection (a birth, an
@@ -21,14 +21,14 @@ use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDiges
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::{Frame, MAX_FRAME};
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::snapshot::{chunks_of, Chunk, Delta, DeltaChunk, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
+use rdm_gossip::aggregate::{chunks_of, Chunk, Delta, DeltaChunk, Forward, Forwarder, Full, Gap, Moved, PublisherId, AggregateReceiver, HeldAggregate, SourceVersion, Taken};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// Members in the receiver cell's snapshot: enough to span more than two gossip messages.
+/// Members in the receiver cell's aggregate: enough to span more than two gossip messages.
 const BIG: u32 = 150;
 
-const CELL: &str = "members_receiver_commits_complete_snapshot_before_advancing_version";
+const CELL: &str = "members_receiver_commits_complete_aggregate_before_advancing_version";
 
 fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
@@ -122,21 +122,21 @@ fn delta_of(frames: &[Frame]) -> (String, rdm_gossip::envelope::Birth, u64, u64,
     (first.mesh, first.author, first.base_version, first.version, Delta::joined(chunks.into_iter().map(|c| c.delta)))
 }
 
-/// A top-up baseline as a topology read delivers it: the chunks of one snapshot.
-fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
+/// A top-up baseline as a topology read delivers it: the chunks of one aggregate.
+fn read_baseline(rx: &mut AggregateReceiver, s: &HeldAggregate) -> Taken {
     let mut last = None;
     let p = PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
     for f in topology_full_chunks(&s.full(), &p, s.topology_version, 0) {
         // A read names no author.
         last = Some(rx.take_read_chunk(Chunk { author: None, ..chunk_of(&f) }));
     }
-    last.expect("a snapshot has at least one chunk")
+    last.expect("an aggregate has at least one chunk")
 }
 
-fn installed(t: Taken) -> rdm_gossip::snapshot::Install {
+fn installed(t: Taken) -> rdm_gossip::aggregate::Install {
     match t {
         Taken::Installed(i) => *i,
-        other => panic!("expected an installed snapshot: {other:?}"),
+        other => panic!("expected an installed aggregate: {other:?}"),
     }
 }
 
@@ -175,7 +175,7 @@ async fn wait<T, Fut: std::future::Future<Output = Option<T>>>(what: &str, mut p
 }
 
 #[test]
-fn members_receiver_commits_complete_snapshot_before_advancing_version() {
+fn members_receiver_commits_complete_aggregate_before_advancing_version() {
     let dir = crate::evidence_dir();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-acceptance").expect("the cell's evidence file can be created");
     capture.run(4, async {
@@ -226,10 +226,10 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
         }
         let empty = topology_full_chunks(&Full::default(), &p, 1, 1);
-        assert_eq!(empty.len(), 1, "an empty Mesh is one empty chunk, a complete snapshot");
+        assert_eq!(empty.len(), 1, "an empty Mesh is one empty chunk, a complete aggregate");
         result.insert("chunks_of_a_hundred_nodes".into(), json!({ "chunks": hundred_chunks.len(), "largest_chunk_bytes": hundred_chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
 
-        // The receiver below needs a snapshot that spans more than two chunks.
+        // The receiver below needs an aggregate that spans more than two chunks.
         let big = Mesh::new("mesh2", BIG);
         let big_full = with_removals(&big, 3);
         let chunks = topology_full_chunks(&big_full, &p, 5, 9);
@@ -237,41 +237,41 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         for c in &chunks {
             assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
         }
-        result.insert("chunks_of_receiver_snapshot".into(), json!({ "members": BIG, "chunks": chunks.len(), "largest_chunk_bytes": chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
+        result.insert("chunks_of_receiver_aggregate".into(), json!({ "members": BIG, "chunks": chunks.len(), "largest_chunk_bytes": chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
 
         // ---- 3. the receiver: no partial install, no version move, no delta from a partial ----
-        let mut rx = SnapshotReceiver::default();
+        let mut rx = AggregateReceiver::default();
         let held_before = rx.held_version("mesh2");
         // Missed and duplicated chunks: 0 and the LAST, then 0 again.
         let last = chunks.len() - 1;
         assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Waiting { held: 1, .. }));
         assert!(matches!(rx.take_chunk(chunk_of(&chunks[last])), Taken::Waiting { held: 2, .. }));
-        assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Refused(rdm_gossip::snapshot::Refusal::Duplicate)), "a duplicate chunk is ignored by name and adds nothing");
-        assert_eq!(rx.held_version("mesh2"), held_before, "a partial snapshot moves no version");
-        assert!(rx.held_full("mesh2").is_none(), "a partial snapshot installs nothing");
+        assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Refused(rdm_gossip::aggregate::Refusal::Duplicate)), "a duplicate chunk is ignored by name and adds nothing");
+        assert_eq!(rx.held_version("mesh2"), held_before, "a partial aggregate moves no version");
+        assert!(rx.held_full("mesh2").is_none(), "a partial aggregate installs nothing");
         // A delta derived from the incomplete one is not applied either.
         let a_delta = Delta { added: vec![big.digests(4)[0].clone()], ..Default::default() };
-        assert!(matches!(rx.take_delta("mesh2", &author_of(&p), 4, 5, &a_delta), Moved::Desynced { gap: Gap::NoBaseline, .. }), "no delta is derived from an incomplete snapshot");
-        // The chunks between arrive: the snapshot completes with the last of them, and not before.
+        assert!(matches!(rx.take_delta("mesh2", &author_of(&p), 4, 5, &a_delta), Moved::Desynced { gap: Gap::NoBaseline, .. }), "no delta is derived from an incomplete aggregate");
+        // The chunks between arrive: the aggregate completes with the last of them, and not before.
         for (offset, c) in chunks[1..last - 1].iter().enumerate() {
             assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { held, .. } if held == offset as u32 + 3), "the duplicate retained exactly the original two chunks");
             assert_eq!(rx.held_version("mesh2"), held_before, "still nothing installed, no version moved");
         }
-        // The delta above desynchronized the source; the complete snapshot resumes it.
+        // The delta above desynchronized the source; the complete aggregate resumes it.
         let i = installed(rx.take_chunk(chunk_of(&chunks[last - 1])));
         assert_eq!((i.topology_version, i.full.member_count(), i.resumed), (5, BIG as usize, true));
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 5)));
         assert!(i.full.same_topology(&big_full), "the installed projection is exactly the published one");
         assert!(rx.desynced().is_empty());
 
-        // Interleaved snapshots of one source: the newer one wins, the stale partial never installs.
+        // Interleaved aggregates of one source: the newer one wins, the stale partial never installs.
         let newer = topology_full_chunks(&Full::new(big.digests(5), vec![], vec![]), &p, 7, 11);
         let older = topology_full_chunks(&Full::new(big.digests(4), vec![], vec![]), &p, 6, 10);
         assert!(older.len() > 1 && newer.len() > 1);
         assert!(matches!(rx.take_chunk(chunk_of(&older[0])), Taken::Waiting { .. }));
-        assert!(matches!(rx.take_chunk(chunk_of(&newer[0])), Taken::Waiting { .. }), "a newer snapshot drops the stale partial");
+        assert!(matches!(rx.take_chunk(chunk_of(&newer[0])), Taken::Waiting { .. }), "a newer aggregate drops the stale partial");
         let stale = rx.take_chunk(chunk_of(&older[1]));
-        assert!(matches!(stale, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanPending { .. })), "a chunk of the dropped snapshot is refused by name: {stale:?}");
+        assert!(matches!(stale, Taken::Refused(rdm_gossip::aggregate::Refusal::OlderThanPending { .. })), "a chunk of the dropped aggregate is refused by name: {stale:?}");
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 5)), "neither partial moved the held version");
         let mut last_install = None;
         for c in &newer[1..] {
@@ -279,11 +279,11 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
                 last_install = Some(*i);
             }
         }
-        let i = last_install.expect("the newer snapshot completes");
+        let i = last_install.expect("the newer aggregate completes");
         assert_eq!((i.topology_version, i.time_ms), (7, 11));
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 7)));
 
-        // A new snapshot publication at the held material version is fresh hearing evidence.
+        // A new aggregate publication at the held material version is fresh hearing evidence.
         // Its heartbeat sequence may advance without a topology change; only its exact repeat is
         // a duplicate. An equal version with different material content remains inconsistent.
         let again = topology_full_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13);
@@ -293,14 +293,14 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         }
         assert!(refreshed.expect("the new publication completes").refreshed);
         for c in &again {
-            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Refused(rdm_gossip::snapshot::Refusal::Duplicate)), "each installed publication chunk is ignored on its exact repeat");
+            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Refused(rdm_gossip::aggregate::Refusal::Duplicate)), "each installed publication chunk is ignored on its exact repeat");
         }
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 7)));
 
         // Malformed chunks are refused by name.
         let mut bad = chunk_of(&chunks[0]);
         bad.chunk_index = bad.chunk_count;
-        assert!(matches!(rx.take_chunk(bad), Taken::Refused(rdm_gossip::snapshot::Refusal::MalformedChunk { .. })));
+        assert!(matches!(rx.take_chunk(bad), Taken::Refused(rdm_gossip::aggregate::Refusal::MalformedChunk { .. })));
 
         // ---- 4. deltas: exactly the base, a copy is a no-op, anything else desynchronizes -------
         let f7 = rx.held_full("mesh2").unwrap().clone();
@@ -322,7 +322,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let p3 = publisher("mesh3.node-admin.1");
         assert!(matches!(rx.take_delta("mesh3", &author_of(&p3), 1, 2, &d78), Moved::Desynced { gap: Gap::NoBaseline, .. }));
         // The top-up: the primary's baseline is what it last PUBLISHED, which may lag what it holds.
-        let published_baseline = SourceSnapshot { mesh: "mesh2".into(), mesh_id: None, topology_version: 9, digests: f8.digests() };
+        let published_baseline = HeldAggregate { mesh: "mesh2".into(), mesh_id: None, topology_version: 9, digests: f8.digests() };
         let r = installed(read_baseline(&mut rx, &published_baseline));
         assert!(r.resumed);
         assert_eq!(rx.held_version("mesh2"), Some((Some(p.clone()), 9)));
@@ -340,27 +340,27 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 12)));
         for c in &topology_full_chunks(&f8, &successor, 1, 1) {
             let refused = rx.take_chunk(chunk_of(c));
-            assert!(matches!(refused, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { held_version: 12, offered_version: 1 })), "a version below the held one is older, whoever sent it: {refused:?}");
+            assert!(matches!(refused, Taken::Refused(rdm_gossip::aggregate::Refusal::OlderThanHeld { held_version: 12, offered_version: 1 })), "a version below the held one is older, whoever sent it: {refused:?}");
         }
 
-        // A chunk lost for good: the incomplete snapshot is never applied, and the top-up from the
+        // A chunk lost for good: the incomplete aggregate is never applied, and the top-up from the
         // Mesh's own primary completes the picture; the straggler chunks that follow install nothing.
         let lossy = topology_full_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 18, 14);
         assert!(lossy.len() > 2);
         for (k, c) in lossy.iter().enumerate() {
             if k != 1 {
-                assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { .. }), "chunk {k} of a snapshot missing chunk 1 installs nothing");
+                assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { .. }), "chunk {k} of an aggregate missing chunk 1 installs nothing");
             }
         }
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 12)), "the held version stands while a chunk is missing");
-        let top_up = SourceSnapshot { mesh: "mesh2".into(), mesh_id: None, topology_version: 18, digests: big.digests(8) };
+        let top_up = HeldAggregate { mesh: "mesh2".into(), mesh_id: None, topology_version: 18, digests: big.digests(8) };
         let r = installed(read_baseline(&mut rx, &top_up));
         assert_eq!(r.topology_version, 18);
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 18)), "the top-up completed what the lost chunk left incomplete");
         let late = rx.take_chunk(chunk_of(&lossy[1]));
         assert!(matches!(late, Taken::Waiting { .. } | Taken::Refused(_)), "the straggler installs nothing: {late:?}");
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 18)));
-        // A newer snapshot supersedes an incomplete one.
+        // A newer aggregate supersedes an incomplete one.
         let lossy2 = topology_full_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 19, 15);
         assert!(matches!(rx.take_chunk(chunk_of(&lossy2[0])), Taken::Waiting { .. }));
         let newest = topology_full_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 20, 16);
@@ -370,9 +370,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
                 done = Some(*i);
             }
         }
-        assert_eq!(done.expect("the newer snapshot completes").topology_version, 20);
+        assert_eq!(done.expect("the newer aggregate completes").topology_version, 20);
         let straggler = rx.take_chunk(chunk_of(&lossy2[1]));
-        assert!(matches!(straggler, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { held_version: 20, offered_version: 19 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
+        assert!(matches!(straggler, Taken::Refused(rdm_gossip::aggregate::Refusal::OlderThanHeld { held_version: 20, offered_version: 19 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
         assert_eq!(rx.held_version("mesh2"), Some((Some(successor.clone()), 20)));
 
         // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------
@@ -480,10 +480,10 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // are step 4 of #338.
         let remote = Mesh::new("mesh2", 8);
         // Publish (the admin's hierarchy loop does this every gossip interval) until the
-        // forwarding primary holds the snapshot, then until the ordinary member does.
+        // forwarding primary holds the aggregate, then until the ordinary member does.
         let held_by_fwd = {
             let mut seq = 1;
-            wait("the forwarding primary to install the source snapshot", || {
+            wait("the forwarding primary to install the source aggregate", || {
                 seq += 1;
                 let (bb, m, members, fbb) = (src_bb.clone(), src_m.clone(), remote.digests(seq), fwd_bb.clone());
                 async move {
@@ -546,11 +546,11 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!((attr(deltas_sent[1], "base_version"), attr(deltas_sent[1], "topology_version"), attr(deltas_sent[1], "changed")), (v1.to_string(), v2.to_string(), "1".to_string()));
         let applied = named(&spans, "rdm.mesh.topology.update.via-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.node.1").collect::<Vec<_>>();
         assert_eq!(applied.len(), 2, "the ordinary member applied each once");
-        let installs = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
+        let installs = named(&spans, "rdm.mesh.topology.update.via-aggregate-installed");
         let backbone_installs = installs.iter().filter(|s| attr(s, "channel") == "backbone" && attr(s, "node") == "mesh1.node-admin.1").count();
-        assert!(backbone_installs >= 1, "the forwarding primary installed complete backbone snapshots");
+        assert!(backbone_installs >= 1, "the forwarding primary installed complete backbone aggregates");
         let chunked_install = installs.iter().find(|s| attr(s, "channel") == "backbone" && attr(s, "members") == "8").map(|s| (attr(s, "time_ms"), attr(s, "topology_version")));
-        assert!(chunked_install.is_some(), "an 8-member snapshot installed whole");
+        assert!(chunked_install.is_some(), "an 8-member aggregate installed whole");
         result.insert(
             "real_gossip".into(),
             json!({
@@ -571,8 +571,8 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
 }
 
 /// CONTRACT (gossip.md §3.3: "The forwarder diffs the fulls it holds"; "A forwarder that becomes the
-/// primary publishes a full first"; §5: the joiner "reads complete source snapshots"): a node-admin
-/// that installed a peer Mesh's complete snapshot from its topology read (the fabric-primary's answer,
+/// primary publishes a full first"; §5: the joiner "reads complete source aggregates"): a node-admin
+/// that installed a peer Mesh's complete aggregate from its topology read (the fabric-primary's answer,
 /// before any backbone publication of that Mesh reached it) holds that source as a full, and on taking
 /// its Mesh's primary role puts it into its own Mesh: an ordinary member of the Mesh installs the peer
 /// source with no backbone publication of it. Must NOT happen: the read-installed source left out of
@@ -598,7 +598,7 @@ fn a_primary_puts_a_peer_source_it_installed_from_a_topology_read_into_its_mesh(
         fwd_m_channels.set_publisher(&fwd_publisher);
         fwd_m_channels.join(rdm_gossip::channel::ChannelId::backbone(&fab), vec![]).await.unwrap();
         let fwd_bb = fwd_m_channels.backbone().expect("the backbone is joined");
-        // The peer Mesh's complete snapshot, as the fabric-primary's topology read answers it: no
+        // The peer Mesh's complete aggregate, as the fabric-primary's topology read answers it: no
         // backbone publication of mesh2 ever reaches this node-admin.
         let src = publisher("mesh2.node-admin.1");
         let remote = Mesh::new("mesh2", 5);

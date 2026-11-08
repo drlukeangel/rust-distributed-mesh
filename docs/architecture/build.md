@@ -100,7 +100,7 @@ Rafka imports these RDM packages at one exact revision:
 |---|---|
 | `rdm-core` | the Node RPC protocol contract: framing, outcomes, reserved codes and protocol traits, with no transport dependency |
 | `rdm-core` | the generic Mesh entity: exact-node identity, process incarnation, topology, endpoint freshness, RuntimeFact and connection projections |
-| `rdm-gossip` | the gossip substrate on Iroh: channels, the topology view, the `Digest`, versioned cross-mesh topology snapshots and deltas, status, and the gossip frame codec |
+| `rdm-gossip` | the gossip substrate on Iroh: channels, the topology view, the `Digest`, versioned cross-mesh topology aggregates and deltas, status, and the gossip frame codec |
 | `rdm-transport` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
 | `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build and events stores (`builds.storage`, `BuildStateAdapter`; `events.storage`, `EventsStorage`; on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
 | `rdm-client` | the typed client and DTOs for the node-admin control API |

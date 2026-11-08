@@ -2,7 +2,7 @@
 //! a receiving primary applies to a frame.
 
 
-use crate::snapshot::PublisherId;
+use crate::aggregate::PublisherId;
 use anyhow::Result;
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Primary, PrimaryRole, RoleRevision, StateHook};
 use rdm_core::model::NodeStatus;
@@ -393,7 +393,7 @@ pub(crate) fn traced_by_envelope(f: &Frame, op: &LifecycleOp) -> LifecycleOp {
 /// What a peer mesh's primary puts on its own mesh channel for a lifecycle or status frame it
 /// heard on the backbone: the frame, unchanged but for `forwarded_by`, or nothing. A source Mesh's
 /// members are never forwarded as heard: the [`Forwarder`] derives the delta or the stripped full
-/// from the two snapshots the primary holds (gossip.md §3.3). `me` is the forwarding node, `own_mesh`
+/// from the two aggregates the primary holds (gossip.md §3.3). `me` is the forwarding node, `own_mesh`
 /// its mesh. A status keeps its publisher and its instant: a forwarder never restates one as its
 /// own, and forwards only what its author sent (a replay by a holder is for the backbone only).
 pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {

@@ -20,7 +20,7 @@
 //!
 //! The request carries the digest typed, as `WireDigest` (`crate::wire`, its positional shape). The answer is the postcard of the admin's entry
 //! answer (`rafka-node-admin-core` `wire::WireEntryAnswer`): its topology projection, its
-//! topology frames and its source snapshots are types of crates this contract does not depend
+//! topology frames and its source aggregates are types of crates this contract does not depend
 //! on, so they travel as one postcard frame of their own, never JSON. The family is not
 //! forwardable: the deploying admin decides its own joins.
 

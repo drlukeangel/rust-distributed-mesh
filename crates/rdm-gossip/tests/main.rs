@@ -24,7 +24,7 @@ pub(crate) fn evidence_dir() -> std::path::PathBuf {
 #[path = "../../../tools/test-support/gossip_wire.rs"]
 mod gossip_wire;
 
-mod nodes_snapshot;
+mod nodes_aggregate;
 mod status_reinforcement;
 mod refeed_scheduler;
 mod held_member_repair;

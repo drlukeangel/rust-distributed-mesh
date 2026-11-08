@@ -168,4 +168,4 @@ An election or live hand-over uses held current records, not this recovery copy.
 Without attached storage, recovery contacts a seed node and reads GetTopology; any live
 node serves that read. A node-admin joining a live mesh calls its maker for join admission and topology
 under §4.1. Stored, unversioned topology is only a contact map to a live own-mesh node,
-which supplies the current versioned snapshot. Stored topology never refreshes liveness.
+which supplies the current versioned aggregate. Stored topology never refreshes liveness.

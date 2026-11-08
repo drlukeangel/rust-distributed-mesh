@@ -210,7 +210,7 @@ fn members_chunks_are_sized_against_the_complete_message() {
     let (_, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&complete).unwrap();
     assert!(body.len() < 4032);
     assert!(complete.len() > 4032, "metadata makes this otherwise fitting body too large");
-    let chunks = rdm_gossip::snapshot::chunks_of(&rdm_gossip::snapshot::Full::new(vec![first, second], vec![], vec![]), shape);
+    let chunks = rdm_gossip::aggregate::chunks_of(&rdm_gossip::aggregate::Full::new(vec![first, second], vec![], vec![]), shape);
     assert_eq!(chunks.len(), 2);
     assert_eq!(chunks.iter().map(|f| match f.data() { Frame::TopologyFull { nodes, .. } => nodes.len(), _ => unreachable!() }).sum::<usize>(), 2);
     // Chunk k of n: the envelope id names it, every chunk under the one author and version.
@@ -259,10 +259,10 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
         context.traceparent = Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into());
         context.tracestate = Some(state.clone()); f
     };
-    let full = rdm_gossip::snapshot::Full::new(vec![d, other], vec![], vec![]);
+    let full = rdm_gossip::aggregate::Full::new(vec![d, other], vec![], vec![]);
     let oversized = shape(full.digests(), 0, 1).encode();
     assert!(oversized.len() > rdm_gossip::frame::MAX_FRAME);
-    let chunks = rdm_gossip::snapshot::chunks_of(&full, shape);
+    let chunks = rdm_gossip::aggregate::chunks_of(&full, shape);
     assert_eq!(chunks.len(), 2);
     assert!(chunks.iter().all(|f| f.encode().len() <= rdm_gossip::frame::MAX_FRAME));
     assert!(chunks.iter().all(|f| f.context().unwrap().tracestate.as_ref() == Some(&state)));

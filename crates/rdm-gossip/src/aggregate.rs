@@ -1,5 +1,5 @@
 //! Versioned cross-Mesh topology (rafka gossip.md §3.1 and §3.3): the `topology_version` a source
-//! Mesh's primary puts on its backbone mesh topology, the chunked snapshot a receiver installs
+//! Mesh's primary puts on its backbone mesh topology, the chunked aggregate a receiver installs
 //! atomically, the delta a forwarding primary derives between two fulls it holds, and the
 //! baseline an entry top-up hands a node.
 //!
@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! SOURCE PRIMARY   Full -> SourceVersion::observe -> version -> chunks_of -> TopologyFull on the backbone
-//! RECEIVER         TopologyFull chunks -> SnapshotReceiver -> installed only once EVERY chunk of one
+//! RECEIVER         TopologyFull chunks -> AggregateReceiver -> installed only once EVERY chunk of one
 //!                  (mesh, version, author) is held
 //! FORWARDER        held source Full, last-published Full -> Forwarder -> TopologyDelta chunks
 //! RECEIVER         TopologyDelta chunks -> applied once EVERY chunk is held, at exactly base_version,
@@ -303,17 +303,17 @@ pub fn delta_chunks(mesh: &str, base_version: u64, version: u64, delta: &Delta, 
 
 /// A source primary's version counter: `topology_version` bumps when the normalized projection
 /// changes and never otherwise (gossip.md §3.1). The first projection observed is version 1.
-/// `snapshot_id` is a counter of this publisher's own, never a clock reading.
+/// `aggregate_id` is a counter of this publisher's own, never a clock reading.
 #[derive(Debug, Default)]
 pub struct SourceVersion {
     version: u64,
     last: Option<Full>,
-    snapshots: Arc<AtomicU64>,
+    aggregates: Arc<AtomicU64>,
 }
 
 impl SourceVersion {
-    pub(crate) fn with_publication_counter(snapshots: Arc<AtomicU64>) -> Self {
-        Self { version: 0, last: None, snapshots }
+    pub(crate) fn with_publication_counter(aggregates: Arc<AtomicU64>) -> Self {
+        Self { version: 0, last: None, aggregates }
     }
 
     /// Continue the mesh's version from `version`, the last one this node holds of its mesh, with
@@ -347,9 +347,9 @@ impl SourceVersion {
         self.version
     }
 
-    /// The next snapshot id of this publisher.
-    pub fn next_snapshot_id(&mut self) -> u64 {
-        self.snapshots.fetch_add(1, Ordering::Relaxed) + 1
+    /// The next aggregate id of this publisher.
+    pub fn next_aggregate_id(&mut self) -> u64 {
+        self.aggregates.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
@@ -389,7 +389,7 @@ pub fn another_mesh(held: Option<&rdm_core::MeshId>, offered: Option<&rdm_core::
 /// One source Mesh's one list of nodes as a node holds or serves it: a topology read's answer
 /// (gossip.md §3.3: reads initialise and repair views).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceSnapshot {
+pub struct HeldAggregate {
     /// The source mesh's name.
     pub mesh: String,
     /// The source mesh's id, as its topology's frame named it.
@@ -400,8 +400,8 @@ pub struct SourceSnapshot {
     pub digests: Vec<MeshDigest>,
 }
 
-impl SourceSnapshot {
-    /// The snapshot as a [`Full`].
+impl HeldAggregate {
+    /// The aggregate as a [`Full`].
     pub fn full(&self) -> Full {
         Full::new(self.digests.clone(), Vec::new(), Vec::new()).of_mesh(self.mesh_id.clone())
     }
@@ -457,14 +457,14 @@ pub struct Install {
     pub full: Full,
     /// Nothing of this mesh was held before: the first topology of it this node installed.
     pub first: bool,
-    /// This source was desynchronized and is resumed by this snapshot.
+    /// This source was desynchronized and is resumed by this aggregate.
     pub resumed: bool,
-    /// A new snapshot publication or directed read at the held material version was heard.
+    /// A new aggregate publication or directed read at the held material version was heard.
     /// A repeated publication's chunks never install and never return this flag.
     pub refreshed: bool,
 }
 
-/// Why a chunk or snapshot was refused.
+/// Why a chunk or aggregate was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// An identical chunk or complete publication is already held; no effect is repeated.
@@ -472,7 +472,7 @@ pub enum Refusal {
     /// The held revision or chunk identity has different content; nothing is installed.
     Inconsistent,
 
-    /// The chunk names an index outside its count, or a count that disagrees with its snapshot's.
+    /// The chunk names an index outside its count, or a count that disagrees with its aggregate's.
     /// The chunk is malformed.
     MalformedChunk {
         /// The chunk's index.
@@ -502,15 +502,15 @@ pub enum Refusal {
 /// What a chunk did.
 #[derive(Debug, Clone)]
 pub enum Taken {
-    /// The snapshot is not complete: nothing is installed and no version moved.
+    /// The aggregate is not complete: nothing is installed and no version moved.
     /// Chunks are still missing.
     Waiting {
         /// The chunks held.
         held: u32,
-        /// The chunks the snapshot has.
+        /// The chunks the aggregate has.
         of: u32,
     },
-    /// The snapshot completed and was installed.
+    /// The aggregate completed and was installed.
     Installed(Box<Install>),
     /// The chunk was refused.
     Refused(Refusal),
@@ -519,7 +519,7 @@ pub enum Taken {
 /// Why a delta did not apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gap {
-    /// No snapshot of this source is held.
+    /// No aggregate of this source is held.
     NoBaseline,
     /// The held version is not the delta's base.
     Version {
@@ -528,7 +528,7 @@ pub enum Gap {
         /// The version the delta moves from.
         base: u64,
     },
-    /// The source was already desynchronized: its deltas are not applied until a snapshot or a top-up.
+    /// The source was already desynchronized: its deltas are not applied until an aggregate or a top-up.
     AlreadyDesynced,
     /// A node of this mesh held stopped is heard again, by a Digest newer than its stop: a sync issue,
     /// pulled from the mesh-primary by a read, which ends the stop once that primary took its
@@ -720,12 +720,12 @@ pub(crate) type InstalledProjection<'a> = (Option<&'a PublisherId>, u64, &'a Ful
 /// publication installs nothing and never completes repair; a directed read can resume the source
 /// at its held version. No delta is saved for later; the topology caller requests the repair.
 #[derive(Debug, Default)]
-pub struct SnapshotReceiver {
+pub struct AggregateReceiver {
     pending: HashMap<SourceKey, Pending>,
     /// The chunks of each differential not yet complete, by (mesh, base, version, author).
     pending_deltas: HashMap<DeltaKey, PendingDelta>,
     held: HashMap<String, Held>,
-    /// Sources a delta named before any snapshot of them was held: desynchronized, with no baseline.
+    /// Sources a delta named before any aggregate of them was held: desynchronized, with no baseline.
     unbased: BTreeMap<String, Gap>,
     /// The highest version of each source a delta reached while it was dropped with its source
     /// already desynchronized (a pull in flight): a copy installed older than it is still behind (gossip.md §3.3, Q130: "A node
@@ -734,7 +734,7 @@ pub struct SnapshotReceiver {
     dropped: BTreeMap<String, u64>,
 }
 
-impl SnapshotReceiver {
+impl AggregateReceiver {
     /// A gossip chunk. A new complete publication at the held material version (a later `time` of
     /// the same author) carries fresh hearing evidence; its exact repeat does nothing, including no
     /// repair completion. Repeated chunks of an unfinished set leave its other chunks admissible.
@@ -1038,17 +1038,17 @@ impl SnapshotReceiver {
     }
 
     /// Every projection held, as the baselines a node serves.
-    pub fn snapshots(&self) -> Vec<SourceSnapshot> {
-        self.snapshots_of(None)
+    pub fn aggregates(&self) -> Vec<HeldAggregate> {
+        self.aggregates_of(None)
     }
 
-    /// [`Self::snapshots`] of `mesh` alone when one is named: a source of another mesh is not copied.
-    pub fn snapshots_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
-        let mut v: Vec<SourceSnapshot> = self
+    /// [`Self::aggregates`] of `mesh` alone when one is named: a source of another mesh is not copied.
+    pub fn aggregates_of(&self, mesh: Option<&str>) -> Vec<HeldAggregate> {
+        let mut v: Vec<HeldAggregate> = self
             .held
             .iter()
             .filter(|(m, h)| h.desynced.is_none() && mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, h)| SourceSnapshot { mesh: m.clone(), mesh_id: h.full.mesh_id(), topology_version: h.version, digests: h.full.digests() })
+            .map(|(m, h)| HeldAggregate { mesh: m.clone(), mesh_id: h.full.mesh_id(), topology_version: h.version, digests: h.full.digests() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -1118,7 +1118,7 @@ pub enum Forward {
 pub struct Forwarder {
     author: Option<crate::envelope::Birth>,
     published: HashMap<String, Published>,
-    snapshots: Arc<AtomicU64>,
+    aggregates: Arc<AtomicU64>,
     /// Whether this node holds the forwarder role (it is its mesh's primary) now.
     role_on: bool,
     /// The term of the role: bumped on every take and every loss, so a decision made in one term
@@ -1145,7 +1145,7 @@ impl Forwarder {
         frame.authored(self.author(), 0, now_ms)
     }
 
-    pub(crate) fn publication_counter(&self) -> Arc<AtomicU64> { self.snapshots.clone() }
+    pub(crate) fn publication_counter(&self) -> Arc<AtomicU64> { self.aggregates.clone() }
 
     /// Forget every baseline: the role was taken or lost.
     pub fn reset(&mut self) {
@@ -1258,18 +1258,18 @@ impl Forwarder {
     }
 
     /// What this primary has published into its Mesh, as the baselines a top-up serves.
-    pub fn snapshots(&self) -> Vec<SourceSnapshot> {
-        self.snapshots_of(None)
+    pub fn aggregates(&self) -> Vec<HeldAggregate> {
+        self.aggregates_of(None)
     }
 
-    /// [`Self::snapshots`] of `mesh` alone when one is named: a source of another mesh is not copied.
+    /// [`Self::aggregates`] of `mesh` alone when one is named: a source of another mesh is not copied.
     /// A copy names this primary as the birth it is served from.
-    pub fn snapshots_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
-        let mut v: Vec<SourceSnapshot> = self
+    pub fn aggregates_of(&self, mesh: Option<&str>) -> Vec<HeldAggregate> {
+        let mut v: Vec<HeldAggregate> = self
             .published
             .iter()
             .filter(|(m, _)| mesh.is_none_or(|want| m.as_str() == want))
-            .map(|(m, p)| SourceSnapshot { mesh: m.clone(), mesh_id: p.full.mesh_id(), topology_version: p.version, digests: p.full.digests() })
+            .map(|(m, p)| HeldAggregate { mesh: m.clone(), mesh_id: p.full.mesh_id(), topology_version: p.version, digests: p.full.digests() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
         v
@@ -1335,7 +1335,7 @@ mod tests {
     #[test]
     fn a_read_older_than_a_delta_dropped_while_it_was_in_flight_leaves_the_source_desynchronized() {
         let p = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        let mut rx = SnapshotReceiver::default();
+        let mut rx = AggregateReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
         // The 7 -> 8 delta is lost; 8 -> 9 shows the gap, 9 -> 10 is dropped while the pull is in flight.
         assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 8, 9, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 7, base: 8 }, .. }));
@@ -1406,7 +1406,7 @@ mod tests {
             assert_eq!((&c.source, c.version(), c.kind.as_str()), (&author, Some(7), "rdm.mesh.members.delta"));
         }
         let chunks = heard(&frames);
-        let mut rx = SnapshotReceiver::default();
+        let mut rx = AggregateReceiver::default();
         for c in &chunks[..n - 1] {
             assert!(matches!(rx.take_delta_chunk(c.clone()), Moved::Waiting { .. }));
         }
@@ -1416,7 +1416,7 @@ mod tests {
         assert!(matches!(&applied, Moved::Applied { base_version: 0, topology_version: 7, moved, .. } if moved.len() == 400), "the last chunk applies the differential: {applied:?}");
         assert!(rx.held_full("mesh2").expect("held").same_topology(&full), "the receiver holds the forwarder's topology");
 
-        let mut missing = SnapshotReceiver::default();
+        let mut missing = AggregateReceiver::default();
         for c in chunks.iter().skip(1) {
             assert!(matches!(missing.take_delta_chunk(c.clone()), Moved::Waiting { .. }));
         }
@@ -1442,7 +1442,7 @@ mod tests {
         let (mut fwd, _) = forwarder();
         let at5 = Full::new(vec![member("1")], vec![], vec![]);
         let Forward::Delta(first) = fwd.source("mesh1.node-admin.1", "mesh2", 5, &at5, 1) else { panic!("the peer mesh goes in") };
-        let mut rx = SnapshotReceiver::default();
+        let mut rx = AggregateReceiver::default();
         assert!(matches!(rx.take_delta_chunk(heard(&first).remove(0)), Moved::Applied { topology_version: 5, .. }));
         let (mut other, _) = forwarder();
         other.start_from(&[("mesh2".into(), 6, at5.clone())]);
@@ -1470,7 +1470,7 @@ mod tests {
         let (one, two, three, four) = (member("1"), member("2"), member("3"), member("4"));
         let v1 = Full::new(vec![one.clone(), two.clone(), three.clone()], vec![], vec![]);
         let Forward::Delta(first) = fwd.source("mesh1.node-admin.1", "mesh2", 1, &v1, 1) else { panic!("the peer mesh goes in") };
-        let mut rx = SnapshotReceiver::default();
+        let mut rx = AggregateReceiver::default();
         assert!(matches!(rx.take_delta_chunk(heard(&first).remove(0)), Moved::Applied { topology_version: 1, .. }));
         let mut deleting = one.clone();
         deleting.status = rdm_core::model::NodeStatus::ConnectionsDeleting;
@@ -1500,13 +1500,13 @@ mod tests {
     }
 
     /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An
-    /// already-applied delta is a duplicate; lower snapshots/deltas cannot regress or request repair.
+    /// already-applied delta is a duplicate; lower aggregates/deltas cannot regress or request repair.
     /// An ahead-base delta requests repair; a new complete publication or directed read resumes
     /// that source. Repeated gossip of its held version does nothing.
     #[test]
     fn a_receiver_keeps_the_material_floor_and_requires_a_new_publication_or_read_to_resume() {
         let p = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        let mut rx = SnapshotReceiver::default();
+        let mut rx = AggregateReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
         assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));
         assert!(matches!(rx.take_delta("mesh1", &author_of(&p), 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }));

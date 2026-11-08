@@ -224,14 +224,14 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let receipts: Vec<(u64, String)> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed" && s["attributes"]["node"] == "mesh2.node-admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
-        .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["snapshot_id"].as_str().unwrap_or_default().to_string()))
+        .filter(|s| s["name"] == "rdm.mesh.topology.update.via-aggregate-installed" && s["attributes"]["node"] == "mesh2.node-admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
+        .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["aggregate_id"].as_str().unwrap_or_default().to_string()))
         .collect();
     let held_spans = spans.iter().filter(|s| s["name"] == "cell.store.update.via-held-read").count();
     println!("{cell}: worst t {worst:?} over {during} samples while the store was held ({held_reads} held reads ended, {held_spans} held-read spans); bound (two backbone intervals) {track:?}; backbone receipts at the peer {receipts:?}; spans in {}", artifact.display());
     assert!(held_reads >= 1, "the store was never held for a whole read inside the window: the cell proved nothing");
     assert!(
         worst < track,
-        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past two backbone intervals {track:?}: a live, serving mesh went quiet on the backbone, on its way to being held unheard (R-D1). The mesh topology anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, snapshot id): {receipts:?}"
+        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past two backbone intervals {track:?}: a live, serving mesh went quiet on the backbone, on its way to being held unheard (R-D1). The mesh topology anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, aggregate id): {receipts:?}"
     );
 }

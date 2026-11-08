@@ -136,7 +136,7 @@ Every term below links to the architecture pages that define it.
   [Node topology get](architecture/lifecycles/node-topology-get.md),
   [Query](architecture/query.md)): The [`node.topology.get`](architecture/lifecycles/node-topology-get.md)
   (`0x1E`) read a node performs during [`node.start`](architecture/lifecycles/node-start.md) after
-  `pre_node_ready`, installing complete mesh snapshots together with the node's own whole row, the
+  `pre_node_ready`, installing complete mesh aggregates together with the node's own whole row, the
   recorded primaries (with lost births marked gone), and each mesh's `MeshId`.
 - **staleness floor** ([Gossip](architecture/gossip.md),
   [Elections](architecture/fabric-node-lifecycle-elections.md)): The silence bound

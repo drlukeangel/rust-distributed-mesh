@@ -411,10 +411,10 @@ mod tests {
     /// the node-admin binds port 0 and the OS assigns the port."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:121
     /// "2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
-    /// maker. It installs complete topology snapshots and obtains its control/status context."
+    /// maker. It installs complete topology aggregates and obtains its control/status context."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:123
     /// "3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
-    /// can exit while the mesh has no node-admin. It installs complete snapshots and joins its mesh
+    /// can exit while the mesh has no node-admin. It installs complete aggregates and joins its mesh
     /// channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module)."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:129
     /// "4. Before it is ready, it sends one bounded Ping, once, to every node IN ITS OWN MESH
@@ -440,7 +440,7 @@ mod tests {
     /// "| Mesh-primary / provider | node recovery | node investigation, one recovery on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |"
     /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:98-100: "1. Load the durable topology and the
     /// accepted Build map; bind port 0 and retain the OS-assigned endpoint. The first GetTopology targets a node
-    /// from that durable map: OWN MESH first, install only complete source snapshots. Stabilize the own mesh
+    /// from that durable map: OWN MESH first, install only complete source aggregates. Stabilize the own mesh
     /// before investigating peers."
     /// docs/architecture/lifecycles/fabric-recovery.md:101-102: "2. Obtain current own-mesh topology, join the
     /// mesh channel from its member addresses, recover control and become ready under the ordinary election."
@@ -458,7 +458,7 @@ mod tests {
     /// same own-mesh sweep and node investigation as a node-admin joining a live mesh |
     /// `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |"
     /// a recovered fabric-primary binds port 0, reads GetTopology from the answering own-mesh member first
-    /// (ignoring peer-mesh entries in the durable map), assembles complete snapshots, joins the mesh channel,
+    /// (ignoring peer-mesh entries in the durable map), assembles complete aggregates, joins the mesh channel,
     /// runs the single bounded own-mesh Ping sweep (reporting non-answering members for node recovery), and
     /// with the full telemetry chain.
     #[test]
@@ -509,13 +509,13 @@ mod tests {
                 },
                 ..local_digest.clone()
             };
-            let snap = rdm_gossip::snapshot::SourceSnapshot {
+            let aggregate = rdm_gossip::aggregate::HeldAggregate {
                 mesh: "mesh1".into(),
                 mesh_id: None,
                 topology_version: 1,
                 digests: vec![local_digest.clone(), dead_digest],
             };
-            for r in crate::topology_read::snapshot_replies(&snap, &|_| None) {
+            for r in crate::topology_read::aggregate_replies(&aggregate, &|_| None) {
                 if let Some(chunk) = crate::topology_read::chunk_of(r, &local_digest.fabric_id, 0) {
                     let _ = local_view_channels.take_read_chunk(chunk, "mesh1");
                 }

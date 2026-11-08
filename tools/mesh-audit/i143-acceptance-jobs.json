@@ -592,10 +592,10 @@
       "layer": "unit",
       "cells": [
         {
-          "name": "members_receiver_commits_complete_snapshot_before_advancing_version",
-          "source": "crates/rdm-transport/tests/nodes_snapshot.rs",
-          "command": "cargo test -p rdm-transport --test main nodes_snapshot::members_receiver_commits_complete_snapshot_before_advancing_version -- --exact",
-          "dir": "target/i143-acceptance/2900/unit/members_receiver_commits_complete_snapshot_before_advancing_version"
+          "name": "members_receiver_commits_complete_aggregate_before_advancing_version",
+          "source": "crates/rdm-transport/tests/nodes_aggregate.rs",
+          "command": "cargo test -p rdm-transport --test main nodes_aggregate::members_receiver_commits_complete_aggregate_before_advancing_version -- --exact",
+          "dir": "target/i143-acceptance/2900/unit/members_receiver_commits_complete_aggregate_before_advancing_version"
         }
       ]
     },

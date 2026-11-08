@@ -4,7 +4,7 @@
 //! the rows are read once, in their stable order ([`crate::status_rpc::StatusService::read_rows`]: this
 //! admin's atlas, or the primary's carried read), packed in order into data frames that each fit the
 //! reply frame (`rdm_client::read_frames`, over `rdm_transport::chunking::pack_in_order`, the one
-//! packer the Build facts and topology snapshots share), and streamed `Started`, the frames, `End { rows, frames }`. A row that fits no
+//! packer the Build facts and topology aggregates share), and streamed `Started`, the frames, `End { rows, frames }`. A row that fits no
 //! frame alone is `ReadOverBound` naming it, and nothing is sent: no row is ever left out. One span,
 //! `rdm.node_admin.<entity>.serve.via-read`, names the read, its pairs, the rows and frames sent and
 //! the outcome.

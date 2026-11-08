@@ -77,7 +77,7 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
-        (Snapshot { mesh: "m".into(), mesh_id: None, topology_version: 3, chunk_index: 0, chunk_count: 1, nodes: vec![] }, "00 016d 00 03 00 01 00"),
+        (Aggregate { mesh: "m".into(), mesh_id: None, topology_version: 3, chunk_index: 0, chunk_count: 1, nodes: vec![] }, "00 016d 00 03 00 01 00"),
         (Unchanged { mesh: "m".into(), topology_version: 7 }, "01 016d 07"),
         (End { meshes: 2 }, "0202"),
         (NotReady { reason: "n".into() }, "03016e"),
@@ -116,14 +116,14 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
 }
 
 /// CONTRACT (gossip.md §3.3, Q387: reads initialise and repair views; management metadata comes from
-/// records and reads, never gossip): a `Snapshot` chunk (variant 0) carries each node as a read serves
+/// records and reads, never gossip): an `Aggregate` chunk (variant 0) carries each node as a read serves
 /// it: its id, incarnation, type, path, name, endpoint, address and lineage, its status
 /// (`ConnectionsDeleting` = 2), its primary roles, the sequence of its Digest the answerer holds, then
 /// its runtime and data dir (each absent here, `00`). Its fabric is the reader's and its mesh the
 /// read's. What must NOT happen: a node without its status or its Digest's sequence, or a second status
 /// beside it.
 #[test]
-fn a_snapshot_chunk_carries_each_node_as_a_read_serves_it() {
+fn an_aggregate_chunk_carries_each_node_as_a_read_serves_it() {
     use rdm_core::*;
     let d = MeshDigest { 
         fabric_id: FabricId::parse("1123456789ab").unwrap(),
@@ -141,25 +141,25 @@ fn a_snapshot_chunk_carries_each_node_as_a_read_serves_it() {
         emitted_at_rafka_ms: 0,
         primary: Vec::new(),
     };
-    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), mesh_id: None, topology_version: 3, chunk_index: 0, chunk_count: 1, nodes: vec![rdm_core::wire::ReadNode::of(&d, None)] };
+    let r = TopologyReply::Aggregate { mesh: "mesh1".into(), mesh_id: None, topology_version: 3, chunk_index: 0, chunk_count: 1, nodes: vec![rdm_core::wire::ReadNode::of(&d, None)] };
     let hex = "00 05 6d65736831 00 03 00 01 01 \
         0c 303132333435363738396162 0c 79727a34396a333033796834 04 6e6f6465 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 00 \
         02 00 07 00 00";
     assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
-    let TopologyReply::Snapshot { mesh, nodes, .. } = Topology::decode_reply(&bytes(hex)).unwrap() else { panic!("not a Snapshot") };
+    let TopologyReply::Aggregate { mesh, nodes, .. } = Topology::decode_reply(&bytes(hex)).unwrap() else { panic!("not an Aggregate") };
     let back: Vec<MeshDigest> = nodes.iter().map(|n| n.digest(&d.fabric_id, &mesh)).collect();
     assert_eq!(back, vec![d], "the node decodes with its status and its Digest's sequence");
 }
 
-/// CONTRACT (Q390): a read's snapshot is the mesh's one list of nodes, each with its status: a deleted
+/// CONTRACT (Q390): a read's aggregate is the mesh's one list of nodes, each with its status: a deleted
 /// node is listed `deleted`, with no separate open-operation or departure list beside it.
 #[test]
-fn a_snapshot_chunk_encodes_and_decodes_as_one_list_of_nodes_each_with_its_status() {
+fn an_aggregate_chunk_encodes_and_decodes_as_one_list_of_nodes_each_with_its_status() {
     let d = digest();
     let mut deleted = digest();
     deleted.node.node_id = rdm_core::NodeId::mint();
     deleted.status = rdm_core::model::NodeStatus::Deleted;
-    let r = TopologyReply::Snapshot {
+    let r = TopologyReply::Aggregate {
         mesh: "mesh1".into(),
         mesh_id: None,
         topology_version: 3,

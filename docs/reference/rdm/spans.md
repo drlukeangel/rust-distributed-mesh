@@ -129,13 +129,13 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.topology.reject.via-chunk-incomplete` | `crates/rdm-gossip/src/app.rs` | 395 |
 | `rdm.mesh.topology.reject.via-deleted-birth` | `crates/rdm-gossip/src/digest_view.rs` | 355 |
 | `rdm.mesh.topology.reject.via-deleted-birth` | `crates/rdm-gossip/src/digest_view.rs` | 370 |
-| `rdm.mesh.topology.reject.via-delta-too-large` | `crates/rdm-gossip/src/snapshot.rs` | 1192 |
+| `rdm.mesh.topology.reject.via-delta-too-large` | `crates/rdm-gossip/src/aggregate.rs` | 1192 |
 | `rdm.mesh.topology.reject.via-forwarder-role-dropped` | `crates/rdm-gossip/src/forward_path.rs` | 229 |
 | `rdm.mesh.topology.reject.via-inconsistent` | `crates/rdm-gossip/src/receive_order.rs` | 93 |
 | `rdm.mesh.topology.reject.via-inconsistent` | `crates/rdm-gossip/src/receive_order.rs` | 118 |
 | `rdm.mesh.topology.reject.via-inconsistent` | `crates/rdm-gossip/src/receive_order.rs` | 164 |
 | `rdm.mesh.topology.reject.via-inconsistent` | `crates/rdm-gossip/src/receive_order.rs` | 181 |
-| `rdm.mesh.topology.reject.via-item-too-large` | `crates/rdm-gossip/src/snapshot.rs` | 373 |
+| `rdm.mesh.topology.reject.via-item-too-large` | `crates/rdm-gossip/src/aggregate.rs` | 373 |
 | `rdm.mesh.topology.reject.via-malformed-chunk` | `crates/rdm-gossip/src/view.rs` | 508 |
 | `rdm.mesh.topology.reject.via-members-on-wrong-channel` | `crates/rdm-gossip/src/view.rs` | 404 |
 | `rdm.mesh.topology.reject.via-members-on-wrong-channel` | `crates/rdm-gossip/src/view.rs` | 467 |
@@ -144,7 +144,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.topology.reject.via-read-install` | `crates/rdm-node/src/topology_read.rs` | 554 |
 | `rdm.mesh.topology.reject.via-reserved` | `crates/rdm-gossip/src/channel.rs` | 392 |
 | `rdm.mesh.topology.reject.via-reserved` | `crates/rdm-gossip/src/receive_order.rs` | 72 |
-| `rdm.mesh.topology.reject.via-snapshot` | `crates/rdm-gossip/src/view.rs` | 440 |
+| `rdm.mesh.topology.reject.via-aggregate` | `crates/rdm-gossip/src/view.rs` | 440 |
 | `rdm.mesh.topology.reject.via-stale` | `crates/rdm-gossip/src/channel.rs` | 266 |
 | `rdm.mesh.topology.reject.via-stale` | `crates/rdm-gossip/src/receive_order.rs` | 84 |
 | `rdm.mesh.topology.reject.via-stale` | `crates/rdm-gossip/src/receive_order.rs` | 107 |
@@ -204,7 +204,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.topology.update.via-read-install` | `crates/rdm-node/src/topology_read.rs` | 543 |
 | `rdm.mesh.topology.update.via-recovering-held` | `crates/rdm-gossip/src/digest_view.rs` | 481 |
 | `rdm.mesh.topology.update.via-resubscribe` | `crates/rdm-gossip/src/channel.rs` | 475 |
-| `rdm.mesh.topology.update.via-snapshot-installed` | `crates/rdm-gossip/src/view.rs` | 641 |
+| `rdm.mesh.topology.update.via-aggregate-installed` | `crates/rdm-gossip/src/view.rs` | 641 |
 | `rdm.mesh.topology.update.via-status-event` | `crates/rdm-gossip/src/backbone.rs` | 604 |
 | `rdm.mesh.topology.update.via-stop-ended-in-projection` | `crates/rdm-gossip/src/digest_view.rs` | 1110 |
 | `rdm.mesh.topology.update.via-stopped-birth-heard` | `crates/rdm-gossip/src/view.rs` | 235 |

@@ -540,7 +540,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let own_digest_slot: Arc<std::sync::OnceLock<rdm_core::digest::MeshDigest>> = Arc::new(std::sync::OnceLock::new());
     // The admin side holds its own mesh at a version its primary put into the mesh, as a running
     // admin does; it serves the topology it holds like every node.
-    let held = rdm_gossip::snapshot::Chunk {
+    let held = rdm_gossip::aggregate::Chunk {
         mesh: "mesh1".into(),
         mesh_id: None,
         author: None,
@@ -553,7 +553,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     // A silent admin side holds only what its primary publishes into the mesh.
     if matches!(role, SideRole::Primary) {
-        assert!(matches!(channels.take_read_chunk(held, "peer"), rdm_gossip::snapshot::Taken::Installed(_)));
+        assert!(matches!(channels.take_read_chunk(held, "peer"), rdm_gossip::aggregate::Taken::Installed(_)));
     }
     let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the

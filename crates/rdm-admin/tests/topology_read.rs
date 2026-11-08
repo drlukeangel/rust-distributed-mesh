@@ -6,8 +6,8 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
-use rdm_admin::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyService, TopologyFailure, TopologySlot};
+use rdm_gossip::aggregate::{Chunk, HeldAggregate, Taken};
+use rdm_admin::topology_read::{get_topology, aggregate_replies, top_up_fetch, TopologyService, TopologyFailure, TopologySlot};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::protocol::NodeProtocol;
@@ -86,17 +86,17 @@ fn open(n: &Node, fabric: &FabricId) {
     let _ = n.slot.set(Arc::new(TopologyService::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone())));
 }
 
-/// `s` held by `m` as a complete snapshot its primary put into the mesh.
-fn hold(m: &rdm_gossip::channel::Channels, s: &SourceSnapshot) {
-    for r in snapshot_replies(s, &|_| None) {
-        let c: Chunk = rdm_admin::topology_read::chunk_of(r, m.topology_view().fabric_id(), 0).expect("a snapshot reply is one chunk");
+/// `s` held by `m` as a complete aggregate its primary put into the mesh.
+fn hold(m: &rdm_gossip::channel::Channels, s: &HeldAggregate) {
+    for r in aggregate_replies(s, &|_| None) {
+        let c: Chunk = rdm_admin::topology_read::chunk_of(r, m.topology_view().fabric_id(), 0).expect("an aggregate reply is one chunk");
         let t = m.take_read_chunk(c, "peer");
         assert!(!matches!(t, Taken::Refused(_)), "{t:?}");
     }
 }
 
-fn snap(mesh: &str, version: u64, digests: Vec<MeshDigest>) -> SourceSnapshot {
-    SourceSnapshot { mesh: mesh.into(), mesh_id: None, topology_version: version, digests }
+fn aggregate(mesh: &str, version: u64, digests: Vec<MeshDigest>) -> HeldAggregate {
+    HeldAggregate { mesh: mesh.into(), mesh_id: None, topology_version: version, digests }
 }
 
 fn target_of(from: &Node, to: &Node) -> NodeTarget {
@@ -120,12 +120,12 @@ async fn a_node_mid_birth_answers_not_ready_and_the_caller_installs_nothing() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a mesh the node holds no published snapshot of is absent from its answer, its own
+/// CONTRACT: a mesh the node holds no published aggregate of is absent from its answer, its own
 /// mesh included: a node whose mesh primary has put no version into the mesh answers with the
 /// meshes it does hold (none is a complete, empty answer), and a read naming the absent mesh is
 /// UnknownMesh.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
+async fn a_mesh_with_no_published_aggregate_is_absent_from_the_answer() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
     open(&server, &fabric);
@@ -134,7 +134,7 @@ async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
     assert!(empty.installed.is_empty() && empty.meshes == 0, "nothing held: an empty, complete answer");
 
     let mesh2: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh2", "node", k)).collect();
-    hold(&server.channels, &snap("mesh2", 7, mesh2));
+    hold(&server.channels, &aggregate("mesh2", 7, mesh2));
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
     assert_eq!((read.meshes, read.installed.len()), (1, 1));
     assert_eq!(read.installed[0].mesh, "mesh2");
@@ -179,9 +179,9 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
     open(&server, &fabric);
-    hold(&server.channels, &snap("mesh1", 4, vec![own_digest(&server, &fabric)]));
+    hold(&server.channels, &aggregate("mesh1", 4, vec![own_digest(&server, &fabric)]));
     let mesh2: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh2", "node", k)).collect();
-    hold(&server.channels, &snap("mesh2", 7, mesh2.clone()));
+    hold(&server.channels, &aggregate("mesh2", 7, mesh2.clone()));
     let t = target_of(&caller, &server);
 
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
@@ -204,7 +204,7 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
 
     let behind = SourceVersion { topology_version: 6 };
     let newer = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), Some(behind)).await.unwrap();
-    assert!(newer.unchanged.is_empty() && newer.installed.len() == 1, "a caller behind the node's version is sent the snapshot");
+    assert!(newer.unchanged.is_empty() && newer.installed.len() == 1, "a caller behind the node's version is sent the aggregate");
 
     let err = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh9"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh9".into()));
@@ -218,31 +218,31 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
 /// that publication, `topology_version = 1`, arrived on the backbone first and the read's chunk was
 /// refused `OlderThanHeld { held_version: 1, offered_version: 0 }`, so the read reported no mesh
 /// installed and the admin took itself for its mesh's first admin, never Ready): a read whose
-/// snapshot of a mesh is older than the complete one the caller already installed of the same
-/// source leaves that newer snapshot installed (node-start.md step 4, "Install only complete
-/// source snapshots"), and the read reports it, at the version and with the members the caller
+/// aggregate of a mesh is older than the complete one the caller already installed of the same
+/// source leaves that newer aggregate installed (node-start.md step 4, "Install only complete
+/// source aggregates"), and the read reports it, at the version and with the members the caller
 /// holds, as the mesh the read leaves installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_read_of_a_snapshot_older_than_the_held_one_reports_the_snapshot_the_caller_holds() {
+async fn a_read_of_an_aggregate_older_than_the_held_one_reports_the_aggregate_the_caller_holds() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "node-admin", |b| b).await);
     open(&server, &fabric);
     let first = member_of(&fabric, "mesh1", "node-admin", 1);
     let second = member_of(&fabric, "mesh1", "node-admin", 2);
     // The target serves the version before the one the caller already holds of the same source.
-    hold(&server.channels, &snap("mesh1", 1, vec![first.clone()]));
-    hold(&caller.channels, &snap("mesh1", 2, vec![first.clone(), second.clone()]));
+    hold(&server.channels, &aggregate("mesh1", 1, vec![first.clone()]));
+    hold(&caller.channels, &aggregate("mesh1", 2, vec![first.clone(), second.clone()]));
     let t = target_of(&caller, &server);
 
     let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, None, None).await.unwrap();
     assert_eq!(caller.topology_view.held_source_version("mesh1").map(|(_, v)| v), Some(2), "the held projection stands");
-    let m = read.installed.iter().find(|m| m.mesh == "mesh1").expect("the read reports the mesh it leaves installed: the newer snapshot the caller holds");
+    let m = read.installed.iter().find(|m| m.mesh == "mesh1").expect("the read reports the mesh it leaves installed: the newer aggregate the caller holds");
     assert_eq!(m.topology_version, 2, "at the version the caller holds, never the one served");
     let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
     ids.sort();
     let mut want = vec![first.node.node_id.to_string(), second.node.node_id.to_string()];
     want.sort();
-    assert_eq!(ids, want, "with the members of the snapshot the caller holds");
+    assert_eq!(ids, want, "with the members of the aggregate the caller holds");
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -262,16 +262,16 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
     open(&server, &fabric);
-    hold(&server.channels, &snap("mesh1", 1, vec![]));
+    hold(&server.channels, &aggregate("mesh1", 1, vec![]));
     let big: Vec<MeshDigest> = (1..=300).map(|k| member_of(&fabric, "mesh2", "node", k)).collect();
-    let source = snap("mesh2", 3, big);
+    let source = aggregate("mesh2", 3, big);
     // The largest fact a birth may record: a container id in a long domain.
     let mut fact = RuntimeFact { deployment_id: "d".repeat(12), provider: RuntimeProvider::Container, control_domain: String::new(), locator: RuntimeLocator::Container { id: "f".repeat(64) } };
     let base = serde_json::to_vec(&fact).unwrap().len();
     fact.control_domain = "c".repeat(MAX_FACT_BYTES - base);
     assert_eq!(fact.validate(), Ok(()), "exactly at the bound");
     let runtime = NodeRuntime { runtime: Some(fact), data_dir: Some(format!("/var/lib/rafka/{}", "x".repeat(64))) };
-    let chunks = snapshot_replies(&source, &|_| Some(runtime.clone()));
+    let chunks = aggregate_replies(&source, &|_| Some(runtime.clone()));
     assert!(chunks.len() > 2, "{} chunks", chunks.len());
     for c in &chunks {
         let len = Topology::encode_reply(c).unwrap().len();
@@ -297,15 +297,15 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a snapshot whose chunks do not all arrive is never installed: the caller's held
+/// CONTRACT: an aggregate whose chunks do not all arrive is never installed: the caller's held
 /// projection stands and the read ends without installing the mesh.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_snapshot_missing_a_chunk_is_never_installed() {
+async fn an_aggregate_missing_a_chunk_is_never_installed() {
     let fabric = FabricId::mint();
     let sent: Arc<Mutex<u32>> = Arc::default();
     let counted = sent.clone();
     let server = node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await;
-    // A server that streams the first chunk of a two-chunk snapshot and then ends the stream.
+    // A server that streams the first chunk of a two-chunk aggregate and then ends the stream.
     let lossy_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let (lid, linc) = (NodeId::mint(), IncarnationId::mint());
     let lossy = ServerBuilder::new()
@@ -313,7 +313,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
             let counted = counted.clone();
             async move {
                 let mut sink = sink.started(TopologyReply::Started).await.unwrap();
-                sink.data(TopologyReply::Snapshot {
+                sink.data(TopologyReply::Aggregate {
                     mesh: "mesh2".into(),
                     mesh_id: None,
                     topology_version: 1,
@@ -383,7 +383,7 @@ impl Capture {
 // @feature: node-lifecycle
 /// CONTRACT: a request naming a mesh the node never heard of is answered `UnknownMesh` naming it,
 /// installs nothing, and the node's serve span records the `unknown-mesh` outcome for that request
-/// (`requested` names the mesh) with no mesh or snapshot streamed.
+/// (`requested` names the mesh) with no mesh or aggregate streamed.
 #[test]
 fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_nothing() {
     let cap = capture("unknown-mesh");
@@ -391,7 +391,7 @@ fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_noth
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
         open(&server, &fabric);
-        hold(&server.channels, &snap("mesh2", 3, vec![member_of(&fabric, "mesh2", "node", 1)]));
+        hold(&server.channels, &aggregate("mesh2", 3, vec![member_of(&fabric, "mesh2", "node", 1)]));
         let t = target_of(&caller, &server);
         let err = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh77"), None).await.unwrap_err();
         assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh77".into()));
@@ -402,23 +402,23 @@ fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_noth
     let serves = cap.named("rdm.mesh.topology.serve.via-read");
     assert_eq!(serves.len(), 1, "{serves:?}");
     assert_eq!((serves[0]["outcome"].as_str(), serves[0]["requested"].as_str()), ("unknown-mesh", "mesh77"));
-    assert!(!serves[0].contains_key("snapshots"), "nothing was streamed: {:?}", serves[0]);
+    assert!(!serves[0].contains_key("aggregates"), "nothing was streamed: {:?}", serves[0]);
     assert!(cap.named("rdm.mesh.topology.update.via-read-install").is_empty(), "nothing was installed");
 }
 
 // @feature: node-lifecycle
 /// CONTRACT (Q389: the mesh's version is the mesh's, whichever mesh-primary sent it): `since` is the
-/// version of the mesh the caller holds. A version behind the node's is answered with the snapshot,
-/// and the serve span counts one snapshot and no unchanged; the version the node holds is Unchanged.
+/// version of the mesh the caller holds. A version behind the node's is answered with the aggregate,
+/// and the serve span counts one aggregate and no unchanged; the version the node holds is Unchanged.
 /// A `since` with no mesh named is ignored: every mesh is streamed.
 #[test]
-fn a_since_behind_the_held_version_is_answered_with_the_snapshot_and_the_held_version_unchanged() {
+fn a_since_behind_the_held_version_is_answered_with_the_aggregate_and_the_held_version_unchanged() {
     let cap = capture("since-revision");
     cap.run(async {
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
         open(&server, &fabric);
-        hold(&server.channels, &snap("mesh2", 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "node", k)).collect()));
+        hold(&server.channels, &aggregate("mesh2", 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "node", k)).collect()));
         let t = target_of(&caller, &server);
         let behind = SourceVersion { topology_version: 6 };
         let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh2"), Some(behind)).await.unwrap();
@@ -434,7 +434,7 @@ fn a_since_behind_the_held_version_is_answered_with_the_snapshot_and_the_held_ve
         caller.ep.close().await;
     });
     let serves = cap.named("rdm.mesh.topology.serve.via-read");
-    let counts: Vec<(&str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["snapshots"].as_str(), a["unchanged"].as_str())).collect();
+    let counts: Vec<(&str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["aggregates"].as_str(), a["unchanged"].as_str())).collect();
     assert_eq!(counts, vec![("mesh2", "1", "0"), ("mesh2", "0", "1"), ("*", "1", "0")], "{serves:?}");
 }
 
@@ -453,8 +453,8 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
         open(&server, &fabric);
         let own: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "node", k)).collect();
         let third: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "node", k)).collect();
-        hold(&server.channels, &snap("mesh1", 9, own.clone()));
-        hold(&server.channels, &snap("mesh3", 2, third.clone()));
+        hold(&server.channels, &aggregate("mesh1", 9, own.clone()));
+        hold(&server.channels, &aggregate("mesh3", 2, third.clone()));
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh2", &caller.channels, None, None).await.unwrap();
         let members_of = |mesh: &str| read.installed.iter().find(|m| m.mesh == mesh).map(|m| m.members.len());
@@ -491,7 +491,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         // The node under its delete says so by its status (Q390): the list carries no overlay beside it.
         members[1].status = rdm_core::model::NodeStatus::Deleting;
         let deleting = members[1].clone();
-        hold(&server.channels, &snap("mesh3", 4, members.clone()));
+        hold(&server.channels, &aggregate("mesh3", 4, members.clone()));
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh3"), None).await.unwrap();
         assert_eq!(read.installed[0].members.len(), 3, "the deleting member is still listed");
@@ -504,7 +504,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
     });
     let serve = cap.named("rdm.mesh.topology.serve.via-read");
     assert_eq!(serve.len(), 1);
-    assert_eq!((serve[0]["outcome"].as_str(), serve[0]["snapshots"].as_str()), ("served", "1"));
+    assert_eq!((serve[0]["outcome"].as_str(), serve[0]["aggregates"].as_str()), ("served", "1"));
 }
 
 // @feature: node-lifecycle
@@ -522,7 +522,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stopped_status_a_read_carries() {
         // The mesh primary's list after the stop: the stopped node listed stopped, with its identity.
         members[1].status = rdm_core::model::NodeStatus::Stopped;
         let stopped = members[1].clone();
-        hold(&server.channels, &snap("mesh3", 4, members));
+        hold(&server.channels, &aggregate("mesh3", 4, members));
         let t = target_of(&caller, &server);
         get_topology(&caller.client, &t, "mesh1", &caller.channels, Some("mesh3"), None).await.unwrap();
         assert!(caller.topology_view.digest_view.get(stopped.node.node_id.as_str()).is_none(), "the reader holds the stopped node by its stop, never as a node heard");
@@ -551,12 +551,12 @@ fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rdm_core::topology::S
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a node that holds no gossiped snapshot of a mesh but stores births of it answers that
+/// CONTRACT: a node that holds no gossiped aggregate of a mesh but stores births of it answers that
 /// mesh with its stored map, marked as having no version: the reader gets the births to reach and
 /// installs nothing. The stored mesh holds no source version at the reader, none of its nodes is in
-/// the reader's view, and a mesh the node does hold a snapshot of is answered by the snapshot, not
+/// the reader's view, and a mesh the node does hold an aggregate of is answered by the aggregate, not
 /// the stored map. The node never answers its own mesh from the stored map. The serve span counts
-/// the stored mesh and streams no snapshot of it.
+/// the stored mesh and streams no aggregate of it.
 #[test]
 fn a_stored_answer_is_never_installed_as_current_topology() {
     let cap = capture("stored");
@@ -566,17 +566,17 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
         let lost: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "node", k)).collect();
         let held: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "node", k)).collect();
         let own: Vec<MeshDigest> = vec![member_of(&fabric, "mesh2", "node", 9)];
-        // The node stores births of the lost mesh, of a mesh it holds a snapshot of, and of its own.
+        // The node stores births of the lost mesh, of a mesh it holds an aggregate of, and of its own.
         let rows: Vec<_> = lost.iter().chain(held.iter()).chain(own.iter()).map(stored_of).collect();
         open_with_stored(&server, &fabric, rows);
-        hold(&server.channels, &snap("mesh3", 5, held.clone()));
+        hold(&server.channels, &aggregate("mesh3", 5, held.clone()));
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh2", &caller.channels, None, None).await.unwrap();
-        assert_eq!(read.installed.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held snapshot is answered as a snapshot");
+        assert_eq!(read.installed.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held aggregate is answered as an aggregate");
         assert_eq!(read.stored.len(), 1, "only the lost mesh is answered from the stored map: {:?}", read.stored);
         assert_eq!((read.stored[0].mesh.as_str(), read.stored[0].nodes.len()), ("mesh1", 3));
         assert_eq!(read.stored[0].mesh_id, Some(MeshId::parse("04raj09p3zp7").unwrap()), "the stored mesh carries the id the node stored for it");
-        assert_eq!(read.meshes, 2, "End counts the snapshot mesh and the stored mesh");
+        assert_eq!(read.meshes, 2, "End counts the aggregate mesh and the stored mesh");
         assert!(caller.topology_view.held_source_version("mesh1").is_none(), "a stored map carries no version, so no source is held for it");
         for d in &lost {
             assert!(caller.topology_view.digest_view.get(d.node.node_id.as_str()).is_none(), "{:?} of a stored map is not held by the reader", d.node.name);
@@ -590,7 +590,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
         caller.ep.close().await;
     });
     let serves = cap.named("rdm.mesh.topology.serve.via-read");
-    let rows: Vec<(&str, &str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["outcome"].as_str(), a.get("stored").map(|s| s.as_str()).unwrap_or("-"), a.get("snapshots").map(|s| s.as_str()).unwrap_or("-"))).collect();
+    let rows: Vec<(&str, &str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["outcome"].as_str(), a.get("stored").map(|s| s.as_str()).unwrap_or("-"), a.get("aggregates").map(|s| s.as_str()).unwrap_or("-"))).collect();
     assert_eq!(rows, vec![("*", "served", "1", "1"), ("mesh1", "served", "1", "0"), ("mesh8", "unknown-mesh", "-", "-")], "{serves:?}");
     let installs = cap.named("rdm.mesh.topology.update.via-read-install");
     assert!(installs.iter().all(|a| a["mesh"] == "mesh3"), "nothing of the stored mesh was installed: {installs:?}");
@@ -709,7 +709,7 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
 /// repair, not a stop, restart or new admission"; origin-ordering.md, rafka-time: adopted at every
 /// JoinNode, and "between pulls a node keeps its rafka-time disciplined from its own authority's
 /// heartbeats only"): a member that tops up a desynchronized source from its mesh's primary installs
-/// the complete snapshot and keeps the rafka-time it holds. Nothing is adopted, so its reading is not
+/// the complete aggregate and keeps the rafka-time it holds. Nothing is adopted, so its reading is not
 /// stalled and its discipline window and slew are not cleared. Must NOT happen: the top-up re-anchors
 /// the member to the served time (gate e588aaea, rafka_time_discipline: mesh1.node.1's version-gap
 /// top-up adopted mesh1.node-admin.1's served time with stalls_ms=1501, erasing the 1.5 s the cell set, so
@@ -721,7 +721,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await);
         open(&server, &fabric);
-        hold(&server.channels, &snap("mesh2", 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "node", k)).collect()));
+        hold(&server.channels, &aggregate("mesh2", 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "node", k)).collect()));
         // The member stands far ahead of the primary's 5 000 000 ms: an adoption would stall it.
         caller.time.adopt(9_000_000);
         let _ = target_of(&caller, &server);
@@ -729,7 +729,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         primary.node.name = server.resolved.name.clone();
         let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
         let done = fetch(caller.channels.clone(), primary, vec!["mesh2".into()]).await.unwrap();
-        assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
+        assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete aggregate");
         let before = caller.time.now_ms();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let after = caller.time.now_ms();
@@ -761,7 +761,7 @@ fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_
         open(&new_fp, &fabric);
         hold(
             &new_fp.channels,
-            &snap("mesh1", 1, vec![own_digest(&new_fp, &fabric)]),
+            &aggregate("mesh1", 1, vec![own_digest(&new_fp, &fabric)]),
         );
         new_fp.topology_view.primaries().take(
             PrimaryRole::FabricPrimary,
@@ -831,7 +831,7 @@ fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_
 // @feature: node-topology-get
 /// CONTRACT (docs/architecture/query.md §2: `node.topology.get` answers what the target node holds;
 /// Q266: a read of one mesh copies that mesh's source alone, does not build the stored map when the
-/// requested mesh has a held snapshot, and reads the lost incarnations once per read rather than once
+/// requested mesh has a held aggregate, and reads the lost incarnations once per read rather than once
 /// per primary record): under concurrent readers asking for single meshes (`mesh1`, `mesh2`, `mesh3`)
 /// and the whole fabric (`None`), every one-mesh read answers the exact same topology version,
 /// members, primary records, and rafka-time kind as the whole read answers for that mesh.
@@ -876,9 +876,9 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
         let m1: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "node", k)).collect();
         let m2: Vec<MeshDigest> = (1..=4).map(|k| member_of(&fabric, "mesh2", "node", k)).collect();
         let m3: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "node", k)).collect();
-        hold(&server.channels, &snap("mesh1", 3, m1));
-        hold(&server.channels, &snap("mesh2", 7, m2));
-        hold(&server.channels, &snap("mesh3", 11, m3));
+        hold(&server.channels, &aggregate("mesh1", 3, m1));
+        hold(&server.channels, &aggregate("mesh2", 7, m2));
+        hold(&server.channels, &aggregate("mesh3", 11, m3));
 
         let fp_primary = Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 2 };
         let mp1 = fp_primary.clone();
@@ -889,7 +889,7 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
         server.topology_view.primaries().take(PrimaryRole::MeshPrimary, &mp2);
         server.topology_view.primaries().take(PrimaryRole::MeshPrimary, &mp3);
 
-        // First: a single-mesh read of a held snapshot does not build the stored map, and reads gone once.
+        // First: a single-mesh read of a held aggregate does not build the stored map, and reads gone once.
         let probe = node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "9").unwrap(), "node", |b| b).await;
         let t_probe = target_of(&probe, &server);
         let one_m2 = get_topology(&probe.client, &t_probe, "mesh1", &probe.channels, Some("mesh2"), None).await.unwrap();

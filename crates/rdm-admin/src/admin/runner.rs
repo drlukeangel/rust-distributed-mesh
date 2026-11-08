@@ -930,7 +930,7 @@ impl AdminRunner {
         };
         let (mesh, r#type) = requested.map(|(req, _)| (req.mesh.clone(), req.r#type.clone())).unwrap_or_else(|| (exited.mesh.clone(), exited.r#type.clone()));
         // A node-admin a recovery re-creates into its live mesh is handed no state: it installs the
-        // maker's complete topology snapshots, is mesh-primary under the election and, as the mesh's
+        // maker's complete topology aggregates, is mesh-primary under the election and, as the mesh's
         // successor primary, adopts the mesh's held state (node-create.md "A node-admin created into a
         // live mesh" steps 2 and 4; D65).
         let pre_node_ready = None;

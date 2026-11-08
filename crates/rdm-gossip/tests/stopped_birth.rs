@@ -20,7 +20,7 @@ use rdm_gossip::digest_view::DigestView;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::status::StatusEvent;
-use rdm_gossip::snapshot::{Chunk, PublisherId};
+use rdm_gossip::aggregate::{Chunk, PublisherId};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -160,9 +160,9 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
     }
 }
 
-/// `mesh`'s snapshot in `topology` as a topology read delivers it: one chunk, naming no author (a
+/// `mesh`'s aggregate in `topology` as a topology read delivers it: one chunk, naming no author (a
 /// read's reply carries none).
-fn read_chunks(topology: &[rdm_gossip::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
+fn read_chunks(topology: &[rdm_gossip::aggregate::HeldAggregate], mesh: &str) -> Vec<Chunk> {
     let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
     vec![Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() }]
 }

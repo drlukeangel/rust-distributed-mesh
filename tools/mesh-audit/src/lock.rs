@@ -219,7 +219,7 @@ pub const NON_WIRE_TRANSPORT_FILES: &[&str] = &["clock.rs", "discipline.rs", "ev
 pub const WIRE_SOURCES: &[&str] = &[
     "crates/rdm-gossip/src/frame.rs",
     "crates/rdm-gossip/src/channel.rs",
-    "crates/rdm-gossip/src/snapshot.rs",
+    "crates/rdm-gossip/src/aggregate.rs",
     "crates/rdm-transport/src/chunking.rs",
     "crates/rdm-transport/src/wire.rs",
     "crates/rdm-admin/src/join.rs",

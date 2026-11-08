@@ -392,7 +392,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         // transient states; which frame brought it is best-effort dissemination (R-NS2).
         for ordinary in [Estate::path(&format!("{m}.node"), "1"), Estate::path(&format!("{m}.node"), "2")] {
             let held_here = leaving_states.iter().any(|sp| on(sp, &ids, &ordinary));
-            let recovered: Vec<&Value> = ["rdm.mesh.topology.update.via-snapshot-installed", "rdm.mesh.topology.update.via-delta"]
+            let recovered: Vec<&Value> = ["rdm.mesh.topology.update.via-aggregate-installed", "rdm.mesh.topology.update.via-delta"]
                 .iter()
                 .flat_map(|n| named(&spans, n))
                 .filter(|sp| on(sp, &ids, &ordinary) && sp["attributes"]["mesh"] == "mesh1" && attr_u(sp, "deleted") >= members.len() as u64)
@@ -405,7 +405,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         }
     }
     let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);
-    let installed = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed");
+    let installed = named(&spans, "rdm.mesh.topology.update.via-aggregate-installed");
 
     // 1. While it lives: after mesh.deleted the last admin keeps publishing
     // mesh1's topology with itself the only node not listed `deleted` and MeshStatus Dead (Q390: the

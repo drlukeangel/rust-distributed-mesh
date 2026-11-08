@@ -119,9 +119,9 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    first node-admin (its MeshId, seed and mesh-primary launch mode). It records the deployed birth;
    the node-admin binds port 0 and the OS assigns the port.
 2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
-   maker. It installs complete topology snapshots and obtains its control/status context.
+   maker. It installs complete topology aggregates and obtains its control/status context.
 3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
-   can exit while the mesh has no node-admin. It installs complete snapshots and joins its mesh
+   can exit while the mesh has no node-admin. It installs complete aggregates and joins its mesh
    channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module).
    A mesh with no live node has no local node to read, so there is no local topology read, and no
    member address to join from: its mesh channel is created again under the mesh's MeshId by its first
@@ -160,7 +160,7 @@ sequenceDiagram
     FP-->>A: streamed maker topology
     A->>L: 0x1E GetTopology
     L-->>A: streamed current local topology
-    A->>A: install complete snapshots; join mesh channel; ready / mesh-primary
+    A->>A: install complete aggregates; join mesh channel; ready / mesh-primary
     A->>L: one bounded 0x01 Ping
     L-->>A: reply from live exact birth
     A->>D: one bounded 0x01 Ping
@@ -196,8 +196,8 @@ its own. A provider creates the process.
 ```text
 fabric-primary                              node recovery: node.create of a node-admin, the mesh's MeshId
 joining node-admin → maker (fabric-primary) JoinNode            ← Joined | JoinMismatch | DeploymentAbandoned
-joining node-admin → maker                  GetTopology         ← Started, Snapshot chunks, End
-joining node-admin → local own-mesh node    GetTopology         ← Started, Snapshot chunks, End
+joining node-admin → maker                  GetTopology         ← Started, Aggregate chunks, End
+joining node-admin → local own-mesh node    GetTopology         ← Started, Aggregate chunks, End
 joining node-admin → each own-mesh member   Ping, once          ← Pong | no answer: node recovery
 new mesh-primary                            node recovery of each other lost node-admin
 ```

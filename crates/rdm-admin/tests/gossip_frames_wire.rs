@@ -10,7 +10,7 @@
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_gossip::frame::Frame;
-use rdm_gossip::snapshot::{chunks_of, Full, PublisherId};
+use rdm_gossip::aggregate::{chunks_of, Full, PublisherId};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -160,7 +160,7 @@ fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
         }
     }
     assert_eq!(heard, members.len(), "the chunks carry every member");
-    result.insert("nodes_snapshot".into(), json!({ "members": members.len(), "chunks": chunks.len(), "largest_bytes": chunks.iter().map(|c| c.encode().len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
+    result.insert("nodes_aggregate".into(), json!({ "members": members.len(), "chunks": chunks.len(), "largest_bytes": chunks.iter().map(|c| c.encode().len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
 
     // ---- sizes: one Digest's data, postcard against the JSON-shaped MeshDigest; the envelope that
     // carries either is the same CloudEvents metadata, measured beside them ----

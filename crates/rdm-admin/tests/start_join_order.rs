@@ -214,7 +214,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
 /// new process or load a new executable."
 /// "node.start clears NodeStopped at NodeJoined, or, for an executor whose replayed start of a birth
 /// its view holds stopped is answered `AlreadyApplied`, at that answer: the join it did not see ...
-/// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot
+/// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial aggregate
 /// nor a Blocked hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
 /// exact birth through the node status apply, not a caller op. The node also declares Ready to its
 /// mesh-primary as an owed message, as it declares Stopped (Q36, Q87); frame and declaration apply once

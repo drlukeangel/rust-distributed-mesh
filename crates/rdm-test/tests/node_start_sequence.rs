@@ -5,7 +5,7 @@
 //! rafka-time answer, join the mesh channel, then node.joined; run `pre_node_ready` (topology follows
 //! the hook); "Satisfy the required Build floor after the hook ... Then obtain topology once through
 //! node.topology.get, as the final startup read. Request it without a conditional source version and
-//! install only complete snapshots. The same reply supplies the recorded primaries, startup context
+//! install only complete aggregates. The same reply supplies the recorded primaries, startup context
 //! and current Rafka-time; adopt the time after installing topology and before reporting started.
 //! ... Do not fetch topology before the Build-floor check and do not issue a second topology request
 //! just to refresh time"; emit node.started.

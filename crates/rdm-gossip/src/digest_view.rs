@@ -77,7 +77,7 @@ pub(crate) struct Target {
 impl Target {
     /// The stopped births a source projection carries: each node it lists `stopped` (Q390), and each
     /// open stop of a differential that still carries one.
-    pub(crate) fn stops_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, String)> {
+    pub(crate) fn stops_of(full: Option<&crate::aggregate::Full>) -> BTreeSet<(String, String)> {
         let Some(f) = full else { return BTreeSet::new() };
         let listed = f.digests().into_iter().filter(|d| d.status == rdm_core::model::NodeStatus::Stopped).map(|d| (d.node.node_id.to_string(), d.node.incarnation.to_string()));
         let open = f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.to_string()));
@@ -252,7 +252,7 @@ pub struct DigestView {
     /// departure. The member's own digest supersedes it; its departure or stop removes it.
     pub(crate) projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
     /// The lifecycle overlays that ended here, by complete operation identity and exact birth: a
-    /// later copy of the same overlay (a snapshot built before the rejoin, the primary's publication
+    /// later copy of the same overlay (an aggregate built before the rejoin, the primary's publication
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
     pub(crate) ended_overlays: Arc<Mutex<std::collections::HashSet<crate::receive_order::LifecycleIdentity>>>,
     /// The path name of the node holding this view, named by the refusals it writes.

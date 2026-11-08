@@ -259,13 +259,13 @@ The caller (`example-node-topology-get`) opens `rdm.node_admin.topology.resolve.
 
 ### Step 2: Serving the stream frames (`Started`, `Data`, `End`)
 
-On `mesh-gg4wtw-1.broker.1`, the `GetTopology` handler reads its held topology for both meshes (`rdm.mesh.topology.serve.via-read`, `meshes="2"`, `snapshots="2"`, `primaries="3"`) and writes the server-streaming reply frames on the stream (`rdm.node_rpc.stream.update.via-frame`): `started` (`seq` 0), two `snapshot` frames (`seq` 1..2), three `primaries` frames (`seq` 3..5), one `rafka-time` frame (`seq` 6), and the terminal `end` frame (`seq` 7, `rdm.node_rpc.stream.serve.via-terminal`, `frames="8"`, `bytes="7135"`; [`node.topology.get` — Typed read contract](../architecture/lifecycles/node-topology-get.md#typed-read-contract), [Node RPC envelope — Transport frames](../architecture/node-rpc-envelope.md#transport-frames-delivery-below-the-protocol)):
+On `mesh-gg4wtw-1.broker.1`, the `GetTopology` handler reads its held topology for both meshes (`rdm.mesh.topology.serve.via-read`, `meshes="2"`, `aggregates="2"`, `primaries="3"`) and writes the server-streaming reply frames on the stream (`rdm.node_rpc.stream.update.via-frame`): `started` (`seq` 0), two `aggregate` frames (`seq` 1..2), three `primaries` frames (`seq` 3..5), one `rafka-time` frame (`seq` 6), and the terminal `end` frame (`seq` 7, `rdm.node_rpc.stream.serve.via-terminal`, `frames="8"`, `bytes="7135"`; [`node.topology.get` — Typed read contract](../architecture/lifecycles/node-topology-get.md#typed-read-contract), [Node RPC envelope — Transport frames](../architecture/node-rpc-envelope.md#transport-frames-delivery-below-the-protocol)):
 
 ```json
-{"service":"rshape-broker","name":"rdm.mesh.topology.serve.via-read","attributes":{"bytes":"6719","meshes":"2","outcome":"served","primaries":"3","requested":"*","snapshots":"2","unchanged":"0","node_path":"mesh-gg4wtw-1.broker","node_name":"1"}}
+{"service":"rshape-broker","name":"rdm.mesh.topology.serve.via-read","attributes":{"bytes":"6719","meshes":"2","outcome":"served","primaries":"3","requested":"*","aggregates":"2","unchanged":"0","node_path":"mesh-gg4wtw-1.broker","node_name":"1"}}
 {"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"started","protocol":"topology"}}
-{"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"snapshot","protocol":"topology"}}
-{"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"snapshot","protocol":"topology"}}
+{"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"aggregate","protocol":"topology"}}
+{"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"aggregate","protocol":"topology"}}
 {"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"primaries","protocol":"topology"}}
 {"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"primaries","protocol":"topology"}}
 {"service":"rshape-broker","name":"rdm.node_rpc.stream.update.via-frame","attributes":{"code":"OK","detail":"primaries","protocol":"topology"}}
@@ -279,8 +279,8 @@ As each frame arrives on `invocation_id="2rex9y06dwpr/0ayq2qdh6men#2"`, the call
 
 ```json
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"started","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"0"}}
-{"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"snapshot","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"1"}}
-{"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"snapshot","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"2"}}
+{"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"aggregate","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"1"}}
+{"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"aggregate","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"2"}}
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"primaries","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"3"}}
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"primaries","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"4"}}
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"primaries","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"5"}}
@@ -299,13 +299,13 @@ sequenceDiagram
     B1->>B1: rdm.node_rpc.connection.create.via-accept (peer="7e593b2871")
     C->>B1: rdm.node_rpc.request.update.via-call (op="30", delivery_id="2rex9y06dwpr/0ayq2qdh6men#2")
     B1->>B1: rdm.node_rpc.stream.serve.via-direct (op="30", protocol="topology")
-    B1->>B1: rdm.mesh.topology.serve.via-read (requested="*", meshes="2", snapshots="2", primaries="3")
+    B1->>B1: rdm.mesh.topology.serve.via-read (requested="*", meshes="2", aggregates="2", primaries="3")
     B1->>C: rdm.node_rpc.stream.update.via-frame (detail="started")
     C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="0", detail="started")
-    B1->>C: rdm.node_rpc.stream.update.via-frame (detail="snapshot")
-    C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="1", detail="snapshot")
-    B1->>C: rdm.node_rpc.stream.update.via-frame (detail="snapshot")
-    C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="2", detail="snapshot")
+    B1->>C: rdm.node_rpc.stream.update.via-frame (detail="aggregate")
+    C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="1", detail="aggregate")
+    B1->>C: rdm.node_rpc.stream.update.via-frame (detail="aggregate")
+    C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="2", detail="aggregate")
     B1->>C: rdm.node_rpc.stream.update.via-frame (detail="primaries")
     C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="3", detail="primaries")
     B1->>C: rdm.node_rpc.stream.update.via-frame (detail="primaries")

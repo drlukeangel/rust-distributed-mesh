@@ -1,7 +1,7 @@
 //! Node topology get primitive (`docs/architecture/lifecycles/node-topology-get.md`).
 //!
 //! An admitted member requests topology from its mesh-primary on op `0x1E` (`GetTopology`),
-//! installing complete snapshots and refreshing rafka-time.
+//! installing complete aggregates and refreshing rafka-time.
 
 pub use crate::topology_read::{
     get_topology, ReadMesh, ServedTime, StoredMap, StoredMesh, TimeNotAdopted, TopologyService,
@@ -14,13 +14,13 @@ mod tests {
     use super::*;
     use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, PathName};
     use crate::span_capture::Capture;
-    use crate::topology_read::snapshot_replies;
+    use crate::topology_read::aggregate_replies;
     use iroh::SecretKey;
     use iroh::protocol::Router;
     use rdm_core::topology::{SourceVersion, StoredNode, TopologyReply};
     use rdm_core::views::{NodeStatus, NodeView, ProviderKind};
     use rdm_core::{MeshDigest, MeshNode};
-    use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
+    use rdm_gossip::aggregate::{Chunk, HeldAggregate, Taken};
     use rdm_gossip::topology::TopologyView;
     use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
     use std::collections::{BTreeMap, BTreeSet};
@@ -28,10 +28,10 @@ mod tests {
     use std::sync::{Arc, OnceLock};
 
     #[test]
-    fn get_topology_installs_snapshot_carries_own_row_and_stored_map_adopts_rafka_time_and_answers_unchanged_for_held_since() {
+    fn get_topology_installs_aggregate_carries_own_row_and_stored_map_adopts_rafka_time_and_answers_unchanged_for_held_since() {
         // docs/architecture/lifecycles/node-topology-get.md:7-10 — "An already-held member
         // requests node.topology.get from its OWN mesh-primary. It supplies its held source
-        // version under that schema, installs only complete snapshots, then resumes applicable
+        // version under that schema, installs only complete aggregates, then resumes applicable
         // deltas. The answer also carries the node's own whole row from its mesh-primary's
         // Atlas, never the store; the node holds it on its own entry (Q234)."
         let capture = Capture::new("node-topology-get-unit");
@@ -95,14 +95,14 @@ mod tests {
                 primary: rdm_core::RoleRevision::of_type("node-admin", Some(1), Some(1)),
             };
 
-            let snap = SourceSnapshot {
+            let aggregate = HeldAggregate {
                 mesh: "mesh1".to_string(),
                 mesh_id: None,
                 topology_version: 3,
                 digests: vec![own_digest.clone()],
             };
-            for r in snapshot_replies(&snap, &|_| None) {
-                let chunk = crate::topology_read::chunk_of(r, &fabric_id, 0).expect("a snapshot reply");
+            for r in aggregate_replies(&aggregate, &|_| None) {
+                let chunk = crate::topology_read::chunk_of(r, &fabric_id, 0).expect("an aggregate reply");
                 let taken = server_view_channels.take_read_chunk(chunk, "peer");
                 assert!(!matches!(taken, Taken::Refused(_)), "{taken:?}");
             }
@@ -185,7 +185,7 @@ mod tests {
             let client = NodeRpcClient::new(caller_ep.clone(), resolver);
             let target = NodeTarget::ExactNode(server_node_id.clone());
 
-            // 1. Full read installs mesh1 snapshot, carries mesh2 stored map, installs own_row at revision 4, and serves rafka-time.
+            // 1. Full read installs mesh1 aggregate, carries mesh2 stored map, installs own_row at revision 4, and serves rafka-time.
             let read = get_topology(&client, &target, "mesh1", &caller_view_channels, None, None)
                 .await
                 .expect("get_topology succeeds");
@@ -234,8 +234,8 @@ mod tests {
 
         let serve_spans = capture.named("rdm.mesh.topology.serve.via-read");
         assert!(
-            serve_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("served") && s.attributes.get("snapshots").map(String::as_str) == Some("1")),
-            "expected rdm.mesh.topology.serve.via-read with snapshots=1"
+            serve_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("served") && s.attributes.get("aggregates").map(String::as_str) == Some("1")),
+            "expected rdm.mesh.topology.serve.via-read with aggregates=1"
         );
         assert!(
             serve_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("served") && s.attributes.get("unchanged").map(String::as_str) == Some("1")),

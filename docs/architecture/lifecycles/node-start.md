@@ -39,7 +39,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    not a promise that every intermediate state is durably observed.
 3. Run [pre_node_ready](../fabric-node-hooks.md#pre_node_ready) with the
    start kind and inherited-data-dir indication. The app subscribes its kind channels
-   through the joined channel and reads no topology snapshot as a prerequisite.
+   through the joined channel and reads no topology aggregate as a prerequisite.
    Ready waits for the hook; its `Ok`, `Pending` and `Failed` answers under the hook's `Send`, the `Pending` probe
    answer and cancellation follow [Outcomes and the gate](../fabric-node-hooks.md#outcomes-and-the-gate).
 4. Satisfy the required Build floor after the hook. Read committed facts from Build storage
@@ -49,11 +49,11 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    fetching topology early.
    Then obtain topology once through [node.topology.get](node-topology-get.md), as the final
    startup read. Request it without a conditional source version and install only complete
-   snapshots. The same reply supplies the recorded primaries, startup context and current
+   aggregates. The same reply supplies the recorded primaries, startup context and current
    Rafka-time; adopt the time after installing topology and before reporting started.
    Preserve retained own properties. Do not fetch topology before
    the Build-floor check and do not issue a second topology request just to refresh time.
-5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
+5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial aggregate nor a
    `Pending` hook permits it. That frame is the node's report, and the node writes
    ready on its own record (Q356). The node also declares Ready to its mesh-primary as an owed message, as it declares
    Stopped (Q36, Q87); frame and declaration apply once (Q49). A typed

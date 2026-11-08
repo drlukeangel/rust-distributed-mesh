@@ -262,7 +262,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The member holds mesh2 before anything changes: by its first differential, from 0, or by a read.
     let member_installed: Vec<Value> = wait_for("the member holds mesh2's projection", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        let v: Vec<Value> = ["rdm.mesh.topology.update.via-snapshot-installed", "rdm.mesh.topology.update.via-delta"].iter().flat_map(|n| spans_of(&spans, n, &member_id, 0)).filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
+        let v: Vec<Value> = ["rdm.mesh.topology.update.via-aggregate-installed", "rdm.mesh.topology.update.via-delta"].iter().flat_map(|n| spans_of(&spans, n, &member_id, 0)).filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
         (!v.is_empty()).then_some(v)
     })
     .await;
@@ -437,7 +437,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // whole topology at its start (node-start.md step 3), from the same primary.
     let by_mesh1: Vec<&Value> = reads_after_gap(&mesh1_primary_at).into_iter().filter(|sp| at(sp) < cut_at).collect();
     assert_eq!(by_mesh1.len(), 1, "one top-up, one topology read between the gap and the cut: {by_mesh1:?}");
-    assert_eq!((attr(by_mesh1[0], "requested"), attr(by_mesh1[0], "snapshots")), ("mesh2".to_string(), "1".to_string()));
+    assert_eq!((attr(by_mesh1[0], "requested"), attr(by_mesh1[0], "aggregates")), ("mesh2".to_string(), "1".to_string()));
     // The member never queries the remote Mesh's primary: a read mesh2.node-admin.1 serves its own mesh's
     // members (a mesh2 node reading mesh2 after a re-feed) is theirs, not the member's top-up.
     let caller = |sp: &Value| spans.iter().find(|p| p["span_id"] == sp["parent_span_id"]).map(|p| attr(p, "peer")).unwrap_or_default();

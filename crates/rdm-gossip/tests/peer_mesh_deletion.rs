@@ -15,7 +15,7 @@ use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStat
 use rdm_gossip::channel::{ChannelId, Channels};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
-use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
+use rdm_gossip::aggregate::{Chunk, HeldAggregate, Taken};
 use rdm_gossip::topology::TopologyView;
 use serde_json::Value;
 use std::time::Duration;
@@ -147,10 +147,10 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         fp_m_channels.publish_lifecycle(&Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
         assert!(fp_m.digest_view.is_deleted(id.as_str()), "the executor holds its own deletion");
         let fp_own = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &NodeId::mint(), &IncarnationId::mint(), 41_001);
-        let listed = |s: &[SourceSnapshot]| s.iter().find(|s| s.mesh == "mesh2").and_then(|s| s.digests.iter().find(|d| d.node.node_id == id).map(|d| (s.topology_version, d.status)));
+        let listed = |s: &[HeldAggregate]| s.iter().find(|s| s.mesh == "mesh2").and_then(|s| s.digests.iter().find(|d| d.node.node_id == id).map(|d| (s.topology_version, d.status)));
         let served = fp_m.held_topology_of(&fp_own, Some("mesh2"));
         assert_eq!(listed(&served), Some((7, NodeStatus::Deleted)), "the fabric-primary's read of mesh2 lists the node it deleted, deleted");
-        let read = |s: &[SourceSnapshot], time_ms: u64| {
+        let read = |s: &[HeldAggregate], time_ms: u64| {
             let s = s.iter().find(|s| s.mesh == "mesh2").expect("the read holds mesh2");
             Chunk { mesh: s.mesh.clone(), mesh_id: s.mesh_id.clone(), author: None, topology_version: s.topology_version, time_ms, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() }
         };
@@ -199,7 +199,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         }
         let installed: Vec<&Value> = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed" && attr(s, "node") == "mesh1.node-admin.1" && attr(s, "channel") == "backbone" && attr(s, "mesh") == "mesh2" && attr(s, "topology_version").parse::<u64>().is_ok_and(|v| v > 7))
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-aggregate-installed" && attr(s, "node") == "mesh1.node-admin.1" && attr(s, "channel") == "backbone" && attr(s, "mesh") == "mesh2" && attr(s, "topology_version").parse::<u64>().is_ok_and(|v| v > 7))
             .collect();
         assert!(installed.first().is_some_and(|s| attr(s, "deleted") == "1"), "the next mesh-primary's first aggregate lists the node deleted: {installed:#?}");
         println!("peer-mesh-deletion: mesh1.node-admin.1 installed mesh2's next aggregate trace {} span {}", installed[0]["trace_id"], installed[0]["span_id"]);

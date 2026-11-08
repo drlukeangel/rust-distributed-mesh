@@ -1,10 +1,10 @@
 //! `node.topology.get` (op `0x1E`): read the topology a node holds, every mesh or one, and read it again
 //! cheaply after a reconnect (node-rpc-envelope.md, the topology read).
 //!
-//! The read streams `Started`, then for each mesh the node holds one snapshot in chunks (the mesh, its
+//! The read streams `Started`, then for each mesh the node holds one aggregate in chunks (the mesh, its
 //! `topology_version`, and the nodes with the status the mesh-primary holds for each),
 //! then `End`. A caller that already holds a mesh's version names it in `since`; a node holding the same
-//! version answers `Unchanged` for that mesh instead of the snapshot. That is the read an application
+//! version answers `Unchanged` for that mesh instead of the aggregate. That is the read an application
 //! makes after it reconnects: one call says whether what it holds is still current.
 //!
 //! The target is a node by its current `(path, name)`; any node answers from its own view.
@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let mut held: Vec<(String, SourceVersion)> = Vec::new();
     for frame in rpc.topology_get(&target, None, None, &CallOptions::default()).await? {
         match frame {
-            TopologyReply::Snapshot { mesh, topology_version, chunk_index, chunk_count, nodes, .. } => {
+            TopologyReply::Aggregate { mesh, topology_version, chunk_index, chunk_count, nodes, .. } => {
                 let nodes: Vec<String> = nodes.into_iter().map(|n| format!("path {:?}, name {:?} {:?}", n.path, n.name, n.status)).collect();
                 println!("{mesh} v{topology_version} (chunk {}/{chunk_count}): {nodes:?}", chunk_index + 1);
                 if chunk_index == 0 {
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
         for frame in rpc.topology_get(&target, Some(mesh.clone()), Some(since), &CallOptions::default()).await? {
             match frame {
                 TopologyReply::Unchanged { mesh, topology_version, .. } => println!("{mesh}: unchanged at v{topology_version}"),
-                TopologyReply::Snapshot { mesh, topology_version, chunk_index: 0, .. } => println!("{mesh}: moved on to v{topology_version}"),
+                TopologyReply::Aggregate { mesh, topology_version, chunk_index: 0, .. } => println!("{mesh}: moved on to v{topology_version}"),
                 _ => {}
             }
         }

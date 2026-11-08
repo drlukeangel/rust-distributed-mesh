@@ -1,5 +1,5 @@
 //! The topology a mesh-primary serves a read of its own mesh (node-rpc-envelope.md, Topology op
-//! `0x1E`: "Snapshot uses gossip TopologyFull's shape"; "A matching held source version answers
+//! `0x1E`: "Aggregate uses gossip TopologyFull's shape"; "A matching held source version answers
 //! Unchanged"; "Read-only: the target changes no state because of the read").
 //!
 //! gossip.md §3.1, `TopologyFull`: "the version bumps on a material change of the normalized projection
@@ -11,7 +11,7 @@ use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::snapshot::{Chunk, SourceSnapshot, Taken};
+use rdm_gossip::aggregate::{Chunk, HeldAggregate, Taken};
 use serde_json::Value;
 
 fn fabric() -> FabricId {
@@ -50,21 +50,21 @@ async fn node() -> Node {
     Node { ep, _router: router, gossip }
 }
 
-/// `mesh`'s snapshot in `served`, as the `TopologyService` holds it.
-fn of(served: Vec<SourceSnapshot>, mesh: &str) -> SourceSnapshot {
+/// `mesh`'s aggregate in `served`, as the `TopologyService` holds it.
+fn of(served: Vec<HeldAggregate>, mesh: &str) -> HeldAggregate {
     served.into_iter().find(|s| s.mesh == mesh).expect("the primary serves its own mesh")
 }
 
 /// `s` as one topology read delivers it, served at Rafka-time `time_ms`: one chunk, naming no author
 /// (a read's reply carries none).
-fn read_chunks(s: &SourceSnapshot, time_ms: u64) -> Vec<Chunk> {
+fn read_chunks(s: &HeldAggregate, time_ms: u64) -> Vec<Chunk> {
     vec![Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms, chunk_index: 0, chunk_count: 1, digests: s.digests.clone(), runtimes: Vec::new() }]
 }
 
 /// Every chunk of one read, taken by `reader` as the joiner takes a read from its own mesh: the last
 /// answer.
-fn take_read(reader: &rdm_gossip::channel::Channels, s: &SourceSnapshot, snapshot_id: u64) -> Taken {
-    read_chunks(s, snapshot_id).into_iter().map(|c| reader.take_read_chunk(c, "mesh1")).last().expect("a snapshot has at least one chunk")
+fn take_read(reader: &rdm_gossip::channel::Channels, s: &HeldAggregate, aggregate_id: u64) -> Taken {
+    read_chunks(s, aggregate_id).into_iter().map(|c| reader.take_read_chunk(c, "mesh1")).last().expect("an aggregate has at least one chunk")
 }
 
 /// CONTRACT (gossip.md §3.1 `TopologyFull` and its receiver rule; node-rpc-envelope.md Topology `0x1E`):
@@ -116,10 +116,10 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         assert!(p.digest_view.get(two.as_str()).is_some(), "the primary's view holds the new birth");
 
         let served = of(p.held_topology(&own()), "mesh1");
-        let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>();
+        let names = |s: &HeldAggregate| s.digests.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>();
         assert_eq!(served.topology_version, n, "the read serves the version its content was published at");
         let again = take_read(&reader_channels, &served, 2);
-        assert!(!matches!(again, Taken::Refused(rdm_gossip::snapshot::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
+        assert!(!matches!(again, Taken::Refused(rdm_gossip::aggregate::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
         assert!(served.digests.iter().all(|d| d.node.node_id != two), "the read serves no member under version {n} that version {n} does not carry: {:?}", names(&served));
         assert_eq!(served.full(), published.full(), "the read serves the version-{n} publication as published: {:?} against {:?}", names(&served), names(&published));
 
@@ -215,13 +215,13 @@ fn a_mesh_primary_that_reads_a_higher_version_of_its_own_mesh_continues_the_mesh
         assert_eq!(served(), 1, "the first publication of a mesh-primary that held no version of its mesh");
 
         // A read of its own mesh, served by a node of its mesh, at the version the mesh's nodes hold.
-        let held_by_the_mesh = SourceSnapshot { mesh: "mesh1".into(), mesh_id: None, topology_version: 11, digests: vec![one_at(3)] };
+        let held_by_the_mesh = HeldAggregate { mesh: "mesh1".into(), mesh_id: None, topology_version: 11, digests: vec![one_at(3)] };
         assert!(matches!(take_read(&p_channels, &held_by_the_mesh, 7), Taken::Installed(_)), "the read of version 11 installs");
         assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
         assert_eq!(served(), 12, "the next publication continues the mesh's version from the read's (its topology is another)");
 
         // A read below the version it published is refused and moves nothing.
-        let behind = SourceSnapshot { topology_version: 5, ..held_by_the_mesh.clone() };
+        let behind = HeldAggregate { topology_version: 5, ..held_by_the_mesh.clone() };
         assert!(matches!(take_read(&p_channels, &behind, 8), Taken::Refused(_)), "a read of version 5 is below the published 12");
         assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
         assert_eq!(served(), 12, "an unchanged mesh republishes the version it holds");

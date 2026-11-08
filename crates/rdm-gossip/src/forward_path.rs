@@ -21,7 +21,7 @@
 //! one, the rest of it is not sent, since no receiver can apply it without every chunk.
 
 use crate::frame::Frame;
-use crate::snapshot::{Forward, Forwarder, Full};
+use crate::aggregate::{Forward, Forwarder, Full};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -553,7 +553,7 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), gate.sink());
         path.source("mesh2.node-admin.1", "mesh1", 10, &source_at(&ids, 10), 1);
         path.carry("mesh2.node-admin.1", Frame::digest(&digest(1, &ids[0].0, &ids[0].1, 1)));
-        assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
+        assert!(path.forwarder.lock().unwrap().aggregates().is_empty(), "no baseline is recorded without the role");
         path.set_role(true, &[]);
         path.source("mesh2.node-admin.1", "mesh1", 11, &source_at(&ids, 11), 2);
         for _ in 0..400 {

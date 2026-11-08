@@ -2,7 +2,7 @@
 //! the full topology of its mesh and its status announcements.
 
 
-use crate::snapshot::{Full, PublisherId, SourceVersion};
+use crate::aggregate::{Full, PublisherId, SourceVersion};
 use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::net::Gossip;
@@ -162,7 +162,7 @@ impl Backbone {
                 for d in &taken.carried {
                     m.mesh().register(d);
                 }
-                // A complete snapshot of a source Mesh: the forwarding primary says what moved
+                // A complete aggregate of a source Mesh: the forwarding primary says what moved
                 // since it last published that source into its own Mesh. The forward path decides
                 // nothing unless this node holds the forwarder role, read under its lock.
                 if let Some((source_mesh, version, full)) = taken.source {
@@ -338,7 +338,7 @@ impl Backbone {
         if primary {
             // The mesh's version is the mesh's, whoever its primary is (Q389, Q391): taking the role,
             // this node continues it from the last aggregate of its mesh it installed.
-            let held = self.channels.topology_view.view.order.lock().unwrap().installed_snapshot(&self.mesh).map(|(_, version, full, _)| (version, full.clone()));
+            let held = self.channels.topology_view.view.order.lock().unwrap().installed_aggregate(&self.mesh).map(|(_, version, full, _)| (version, full.clone()));
             if let Some((version, full)) = held {
                 self.version.lock().unwrap().continue_from(version, full);
             }
@@ -452,7 +452,7 @@ impl Backbone {
         let open = full.digests().iter().any(|d| matches!(d.status, rdm_core::model::NodeStatus::Stopped | rdm_core::model::NodeStatus::Deleting));
         let withheld = (open && self.withholds("aggregate-in-flight", "backbone")) || self.withholds("aggregate", "backbone");
         let author = crate::envelope::Birth::publisher(&self.fabric, &publisher);
-        for frame in crate::snapshot::chunks_of(&full, |nodes, chunk_index, chunk_count| Frame::TopologyFull {
+        for frame in crate::aggregate::chunks_of(&full, |nodes, chunk_index, chunk_count| Frame::TopologyFull {
             mesh: mesh.clone(),
             mesh_id: full.mesh_id(),
             chunk_index,

@@ -29,7 +29,7 @@
 //!      It reads no topology;
 //!    - `rdm.mesh.node.update.via-topology-taken`: then one `GetTopology` from the node's own current
 //!      mesh-primary (after a stop, the one whose call commanded the start), the final startup read, with no conditional source version (`since: None`):
-//!      installed per mesh only from a complete snapshot, and the rafka-time of the same reply adopted
+//!      installed per mesh only from a complete aggregate, and the rafka-time of the same reply adopted
 //!      after the install. No second topology request is made to refresh rafka-time.
 //! 5. `rdm.mesh.node.update.via-ready` (step 5): the type's node.started report.
 
@@ -794,11 +794,11 @@ mod tests {
     /// fetching topology early.
     /// Then obtain topology once through node.topology.get, as the final
     /// startup read. Request it without a conditional source version and install only complete
-    /// snapshots. The same reply supplies the recorded primaries, startup context and current
+    /// aggregates. The same reply supplies the recorded primaries, startup context and current
     /// Rafka-time; adopt the time after installing topology and before reporting started.
     /// Preserve retained own properties and application recognition. Do not fetch topology before
     /// the Build-floor check and do not issue a second topology request just to refresh time.
-    /// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot
+    /// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial aggregate
     /// nor a `Pending` hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
     /// exact birth through the node status apply, not a caller op. The node also declares Ready to its
     /// mesh-primary as an owed message, as it declares Stopped (Q36, Q87); frame and declaration apply once

@@ -90,7 +90,7 @@ the same order starts the workflow again, resuming from the progress recorded on
 
 1. Load the durable topology and the accepted Build's topology; bind port 0 and retain the OS-assigned
    endpoint. The first GetTopology targets a node from that durable map: OWN MESH first,
-   install only complete source snapshots. Stabilize the own mesh before investigating peers.
+   install only complete source aggregates. Stabilize the own mesh before investigating peers.
 2. Obtain current own-mesh topology, join the mesh channel from its member addresses, recover
    control and become ready under the ordinary election.
 3. Run the single bounded own-mesh Ping sweep
@@ -113,7 +113,7 @@ sequenceDiagram
     FP->>FP: durable topology exists; recovery mode; bind port 0
     FP->>L: FIRST topology read: 0x1E GetTopology
     L-->>FP: streamed current topology
-    FP->>FP: complete snapshots; join own mesh; ready / election
+    FP->>FP: complete aggregates; join own mesh; ready / election
     Note over FP: writes is_fabric_primary on its own record
     FP->>L: one bounded own-mesh 0x01 Ping
     FP->>P: node investigation for non-answers
@@ -138,7 +138,7 @@ Recovery composes deployment, topology reads, Ping and readiness; it has no
 recovery opcode. A provider creates the process.
 
 ```text
-recovered fabric-primary → durable-map node of its own mesh   GetTopology        ← Started, Snapshot chunks, End
+recovered fabric-primary → durable-map node of its own mesh   GetTopology        ← Started, Aggregate chunks, End
 recovered fabric-primary → each own-mesh member               Ping, once         ← Pong | no answer: node recovery
 ```
 

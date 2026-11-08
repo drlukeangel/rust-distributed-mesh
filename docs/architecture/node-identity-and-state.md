@@ -439,7 +439,7 @@ Readiness is the end of [node start](lifecycles/node-start.md), reported by the 
 1. **The gates are the start's.** The join (its cert and rafka-time, the mesh channel joined), the
    application's [`pre_node_ready` hook](fabric-node-hooks.md) returning Ok, complete topology
    installed, the required Build floor held, rafka-time refreshed last. Nothing else makes a node
-   ready; a partial snapshot or a `Pending` hook makes none.
+   ready; a partial aggregate or a `Pending` hook makes none.
 2. **The application's one contribution is the hook.** Whatever an application must hold before it
    can serve
    it does inside `pre_node_ready`, which it answers `Ok`, `Pending { reason }` or `Failed { reason }`, under the `Send` its own code

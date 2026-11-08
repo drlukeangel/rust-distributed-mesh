@@ -197,7 +197,7 @@ impl Estate {
         let mut held = HeldTopology::default();
         for frame in frames {
             match frame {
-                rdm_core::topology::TopologyReply::Snapshot { mesh, nodes, .. } => held.members.extend(nodes.iter().map(|n| rdm_client::HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() })),
+                rdm_core::topology::TopologyReply::Aggregate { mesh, nodes, .. } => held.members.extend(nodes.iter().map(|n| rdm_client::HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() })),
                 rdm_core::topology::TopologyReply::Primaries { kind, primary, gone } => held.primaries.push((kind, primary, gone)),
                 _ => {}
             }

@@ -6,7 +6,7 @@ use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::status::StatusEvent;
-use rdm_gossip::snapshot::{Chunk, Taken};
+use rdm_gossip::aggregate::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use std::{sync::{Arc, OnceLock}, time::Duration};
 
@@ -131,7 +131,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
     let spans=capture.spans().unwrap();
     assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.topology.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
     for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.topology.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
-    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-snapshot-installed"&&s["attributes"]["node"]==receiver_id.as_str()&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
+    assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.update.via-aggregate-installed"&&s["attributes"]["node"]==receiver_id.as_str()&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
     for frame in ["digest","mesh-status","fabric-status","mesh-topology","mesh-topology-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.topology.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}
     // The read holds the deletion by the node's status (Q390), with no operation identity: the later
     // NodeDeleted is refused by name against the departure it holds, which stands.

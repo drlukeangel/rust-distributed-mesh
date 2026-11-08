@@ -56,14 +56,14 @@ fn node_id(nodes: &[NodeView], name: &rdm_core::PathName) -> String {
     nodes.iter().find(|n| &n.location() == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name:?} is not in the view"))
 }
 
-/// The nodes of `mesh` across every chunk of its one snapshot, with the snapshot's version.
-fn snapshot_of(frames: &[Value], mesh: &str) -> (Vec<String>, u64, usize) {
-    let chunks: Vec<&Value> = frames.iter().filter(|f| f["frame"] == "snapshot" && f["mesh"] == mesh).collect();
-    assert!(!chunks.is_empty(), "no snapshot of {mesh} in {frames:?}");
+/// The nodes of `mesh` across every chunk of its one aggregate, with the aggregate's version.
+fn aggregate_of(frames: &[Value], mesh: &str) -> (Vec<String>, u64, usize) {
+    let chunks: Vec<&Value> = frames.iter().filter(|f| f["frame"] == "aggregate" && f["mesh"] == mesh).collect();
+    assert!(!chunks.is_empty(), "no aggregate of {mesh} in {frames:?}");
     let count = chunks[0]["chunk_count"].as_u64().unwrap() as usize;
-    assert_eq!(chunks.len(), count, "every chunk of the snapshot of {mesh} arrived");
+    assert_eq!(chunks.len(), count, "every chunk of the aggregate of {mesh} arrived");
     let versions: std::collections::BTreeSet<u64> = chunks.iter().map(|c| c["topology_version"].as_u64().unwrap()).collect();
-    assert_eq!(versions.len(), 1, "one snapshot per mesh, its chunks at one version");
+    assert_eq!(versions.len(), 1, "one aggregate per mesh, its chunks at one version");
     let mut members: Vec<String> = chunks.iter().flat_map(|c| c["members"].as_array().unwrap().iter().map(s)).collect();
     members.sort();
     (members, chunks[0]["topology_version"].as_u64().unwrap(), count)
@@ -81,10 +81,10 @@ fn topology_frames(frames: &[Value]) -> Vec<Value> {
 
 /// CONTRACT: an ordinary member (a node, neither a primary nor a maker) answers
 /// `GetTopology` with the fabric topology it holds: its own mesh and the other mesh, each at its
-/// `topology_version` (Q389), as `Started`, one snapshot per mesh, the primaries and
+/// `topology_version` (Q389), as `Started`, one aggregate per mesh, the primaries and
 /// rafka-time it holds (`Primaries`, `RafkaTime`), `End`. A read naming the
-/// version it holds is `Unchanged` and sends no snapshot; a caller one version behind is sent the
-/// snapshot; a mesh it does not hold is refused as `UnknownMesh` and nothing else is sent. The read
+/// version it holds is `Unchanged` and sends no aggregate; a caller one version behind is sent the
+/// aggregate; a mesh it does not hold is refused as `UnknownMesh` and nothing else is sent. The read
 /// changes nothing at the member: the member's version of each mesh after the reads is the one
 /// before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -121,11 +121,11 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let k = kinds(&frames);
     assert_eq!(k.first().map(String::as_str), Some("started"), "{k:?}");
     assert_eq!(frames.last().unwrap(), &json!({"frame": "end", "meshes": 2}), "{frames:?}");
-    // Between Started and End: the snapshots, then the primaries and the rafka-time the member holds
+    // Between Started and End: the aggregates, then the primaries and the rafka-time the member holds
     // (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply` carries `Primaries` and `RafkaTime` frames).
-    assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot" || f == "primaries" || f == "rafka-time"), "{k:?}");
-    let (mesh1, mesh1_v, _) = snapshot_of(&frames, "mesh1");
-    let (mesh2, mesh2_v, _) = snapshot_of(&frames, "mesh2");
+    assert!(k[1..k.len() - 1].iter().all(|f| f == "aggregate" || f == "primaries" || f == "rafka-time"), "{k:?}");
+    let (mesh1, mesh1_v, _) = aggregate_of(&frames, "mesh1");
+    let (mesh2, mesh2_v, _) = aggregate_of(&frames, "mesh2");
     let members = |mesh: &str| {
         let mut ids: Vec<_> = nodes.iter().filter(|n| n.mesh() == mesh).map(|n| n.node_id.to_string()).collect();
         ids.sort();
@@ -135,33 +135,33 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     assert_eq!(mesh2, members("mesh2"));
     assert!(mesh1_v >= 1 && mesh2_v >= 1);
 
-    // The version it holds: Unchanged, no snapshot.
+    // The version it holds: Unchanged, no aggregate.
     let since = mesh2_v.to_string();
     let held = estate.probe(&["topology", "--target", &target, "--mesh", "mesh2", "--since", &since]);
     let held_frames = topology_frames(held["frames"].as_array().unwrap());
     assert_eq!(kinds(&held_frames), vec!["started", "unchanged", "end"], "{held_frames:?}");
     assert_eq!(held_frames[1]["topology_version"], mesh2_v);
     assert_eq!(held_frames[2]["meshes"], 1, "End counts Unchanged");
-    // One version behind: the snapshot.
+    // One version behind: the aggregate.
     let behind = (mesh2_v - 1).to_string();
     let b = estate.probe(&["topology", "--target", &target, "--mesh", "mesh2", "--since", &behind]);
-    assert!(kinds(b["frames"].as_array().unwrap()).contains(&"snapshot".to_string()), "{b}");
+    assert!(kinds(b["frames"].as_array().unwrap()).contains(&"aggregate".to_string()), "{b}");
     // A mesh it does not hold.
     let unknown = estate.probe(&["topology", "--target", &target, "--mesh", "mesh9"]);
     assert_eq!(kinds(unknown["frames"].as_array().unwrap()), vec!["unknown-mesh"], "{unknown}");
     // Read-only: the same versions after.
     let after = estate.probe(&["topology", "--target", &target]);
     let after_frames = after["frames"].as_array().unwrap().clone();
-    assert_eq!((snapshot_of(&after_frames, "mesh1").1, snapshot_of(&after_frames, "mesh2").1), (mesh1_v, mesh2_v), "reading changed no version at the member");
+    assert_eq!((aggregate_of(&after_frames, "mesh1").1, aggregate_of(&after_frames, "mesh2").1), (mesh1_v, mesh2_v), "reading changed no version at the member");
 
     estate.stop().await;
     let spans = estate.spans();
     let served: Vec<&Value> = named(&spans, "rdm.mesh.topology.serve.via-read").into_iter().filter(|sp| attr(sp, "node_path") == member_location.path && attr(sp, "node_name") == member_location.name && at(sp) >= t0).collect();
-    let full = served.iter().find(|sp| attr(sp, "requested") == "*" && attr(sp, "snapshots") == "2").unwrap_or_else(|| panic!("{served:?}"));
+    let full = served.iter().find(|sp| attr(sp, "requested") == "*" && attr(sp, "aggregates") == "2").unwrap_or_else(|| panic!("{served:?}"));
     assert_eq!((attr(full, "meshes"), attr(full, "unchanged")), ("2".to_string(), "0".to_string()));
     assert!(attr(full, "bytes").parse::<u64>().unwrap() > 0);
     let unchanged = served.iter().find(|sp| attr(sp, "unchanged") == "1").expect("the Unchanged read is a serve span of its own");
-    assert_eq!(attr(unchanged, "snapshots"), "0");
+    assert_eq!(attr(unchanged, "aggregates"), "0");
     // Caller and server are one trace: the probe's call span (op 30) is the ancestor of the member's serve.
     let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr(sp, "op") == "30").find(|c| descends_from(&spans, full, c)).expect("the member's serve descends from a caller span of op 0x1E");
     let stream_serve = named(&spans, "rdm.node_rpc.stream.serve.via-direct").into_iter().find(|sp| attr(sp, "op") == "30" && descends_from(&spans, full, sp)).expect("the serve span is a child of the runtime's stream serve");
@@ -190,7 +190,7 @@ fn rdm_test_scenario_now() -> u64 {
 /// reads the maker's topology with `GetTopology`: the maker's join span (`via-join`, installed)
 /// precedes the maker's topology serve span, which precedes the node's own
 /// `via-read-install` span, one per mesh the maker streamed. The read is one call that is answered
-/// (never refused) with the meshes the maker holds published snapshots of: a Day-0 maker that has
+/// (never refused) with the meshes the maker holds published aggregates of: a Day-0 maker that has
 /// published none answers none, and the birth completes. A join of an already-held member is not a
 /// re-read: no join is recorded as `member`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -220,7 +220,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
             .min_by_key(|sp| at(sp))
             .unwrap_or_else(|| panic!("{maker} served no topology read after the join of {node}"));
         assert_eq!(attr(serve, "outcome"), "served", "{maker}'s read of {node} is answered, not refused");
-        assert_eq!(installs.len().to_string(), attr(serve, "snapshots"), "{node} installs exactly the meshes the maker's single read streamed (a maker that holds none answers none): {installs:?}");
+        assert_eq!(installs.len().to_string(), attr(serve, "aggregates"), "{node} installs exactly the meshes the maker's single read streamed (a maker that holds none answers none): {installs:?}");
         if let Some(first_install) = installs.iter().min_by_key(|sp| at(sp)) {
             assert!(at(join_span) < at(serve) && at(serve) < at(first_install), "join, then serve, then install");
         }
@@ -229,7 +229,7 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
             "node": node,
             "maker": maker,
             "join_span": { "trace_id": join_span["trace_id"], "span_id": join_span["span_id"] },
-            "serve_span": { "trace_id": serve["trace_id"], "span_id": serve["span_id"], "meshes": attr(serve, "meshes"), "snapshots": attr(serve, "snapshots") },
+            "serve_span": { "trace_id": serve["trace_id"], "span_id": serve["span_id"], "meshes": attr(serve, "meshes"), "aggregates": attr(serve, "aggregates") },
             "installed": installs.iter().map(|sp| json!({ "mesh": attr(sp, "mesh"), "topology_version": attr(sp, "topology_version"), "members": attr(sp, "members") })).collect::<Vec<_>>(),
         }));
     }

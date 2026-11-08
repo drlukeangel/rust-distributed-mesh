@@ -488,7 +488,7 @@ impl<'a> NodeRpc<'a> {
         let mut view = HeldView::default();
         for f in frames {
             match f {
-                TopologyReply::Snapshot { mesh, nodes, .. } => {
+                TopologyReply::Aggregate { mesh, nodes, .. } => {
                     // The read names the mesh its births are of, each with its status.
                     for n in nodes {
                         let birth = HeldBirth { node: n.node(&mesh), status: n.status, primary: n.primary.clone(), runtime: n.runtime() };

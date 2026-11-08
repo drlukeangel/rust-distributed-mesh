@@ -5,7 +5,7 @@ use super::*;
 
 /// Every birth of `fabric` this admin's view holds besides itself, heard a moment ago or only
 /// carried in an installed topology read: the births a maker serves a joining admin for a mesh it
-/// holds no snapshot of, beside the ones its records hold.
+/// holds no aggregate of, beside the ones its records hold.
 pub(crate) fn held_births(digest_view: &DigestView, fabric: &FabricId, me: &NodeId) -> Vec<MeshDigest> {
     digest_view.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }

@@ -130,7 +130,7 @@ And the mesh's first backbone `TopologyFull`, one member, itself; the shape is t
 [catalog's example](../gossip.md#examples) with `mesh2`, `publisher` the node-admin's exact
 birth, `topology_version` 1 and that one digest in `digests`. Peer mesh primaries install it into
 their held external topology and forward it on their own channels under the rules in
-[gossip.md §3.3](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-snapshots-and-the-top-up).
+[gossip.md §3.3](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-aggregates-and-the-top-up).
 
 ## Mermaid sequence diagram
 

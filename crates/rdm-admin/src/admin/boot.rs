@@ -1978,7 +1978,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = join_slot.set(join_service);
                                 // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
                                 let own = digest.clone();
-                                // For a mesh it holds no snapshot of, this admin answers from the births its view holds now
+                                // For a mesh it holds no aggregate of, this admin answers from the births its view holds now
                                 // (its durable topology included), never from the store (Q227; node-rpc-envelope.md
                                 // Topology, Stored): a read is never refused because the store is mid-write. A birth's
                                 // address is the node's own part of its record (Q333), not on the records this admin

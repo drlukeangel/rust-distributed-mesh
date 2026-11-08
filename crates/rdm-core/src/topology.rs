@@ -1,21 +1,21 @@
 //! The topology read on op `0x1E` (node-rpc-envelope.md "Topology, op `0x1E`, rdm").
 //!
 //! Direction: peer read, any node to any node. The call is read-only: it mutates nothing at the
-//! target. The reply is a server stream of the snapshots the target holds, one per mesh, chunked
-//! by the one method gossip's `TopologyFull` snapshots use:
+//! target. The reply is a server stream of the aggregates the target holds, one per mesh, chunked
+//! by the one method gossip's `TopologyFull` aggregates use:
 //!
 //! ```text
-//! Started  (Snapshot* | Unchanged* | Stored*) Primaries* RafkaTime  End { meshes }   a stream
+//! Started  (Aggregate* | Unchanged* | Stored*) Primaries* RafkaTime  End { meshes }   a stream
 //! NotReady | UnknownMesh                                  one refusal, nothing started
 //! ```
 //!
-//! A mesh the target holds no gossiped snapshot of, but whose nodes it stores, is answered with
+//! A mesh the target holds no gossiped aggregate of, but whose nodes it stores, is answered with
 //! `Stored`: the stored map, which carries no version. It names births to reach and is never the
 //! mesh's current topology: a caller installs none of it.
 //!
 //! A mesh is named by its NAME on the wire, as the gossip `TopologyFull` frame names it. A caller
 //! installs a mesh atomically, and only once every chunk of one `(mesh, topology_version)` of the
-//! stream is present. Each snapshot is the mesh's one list of nodes, as its mesh-primary's aggregate
+//! stream is present. Each aggregate is the mesh's one list of nodes, as its mesh-primary's aggregate
 //! lists them: a node under a stop or delete, or deleted, says so by its status (Q390). The family is
 //! not forwardable: it is a stream.
 
@@ -50,7 +50,7 @@ impl PrimaryKind {
     }
 }
 
-/// The topology read protocol: a stream of one mesh's snapshot chunks, or of every mesh a node
+/// The topology read protocol: a stream of one mesh's aggregate chunks, or of every mesh a node
 /// holds.
 pub struct Topology;
 
@@ -117,19 +117,19 @@ impl TopologyRequest {
 /// One frame of a topology read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TopologyReply {
-    /// One chunk of one mesh's snapshot.
+    /// One chunk of one mesh's aggregate.
     ///
     /// Position 0 on the wire.
-    Snapshot {
+    Aggregate {
         /// The source mesh's name.
         mesh: String,
         /// The source mesh's id, as its topology's frame named it.
         mesh_id: Option<MeshId>,
-        /// The snapshot's `topology_version`: the mesh's version, whichever mesh-primary sent it (Q389).
+        /// The aggregate's `topology_version`: the mesh's version, whichever mesh-primary sent it (Q389).
         topology_version: u64,
-        /// This chunk's index within the snapshot.
+        /// This chunk's index within the aggregate.
         chunk_index: u32,
-        /// The number of chunks in the snapshot.
+        /// The number of chunks in the aggregate.
         chunk_count: u32,
         /// The nodes this chunk carries, each as a read serves it: its identity, status and primary
         /// roles, the sequence of its Digest held, and its runtime and data dir (hydration).
@@ -200,11 +200,11 @@ pub enum TopologyReply {
         /// Why the call is refused.
         reason: String,
     },
-    /// The stream begins: sent before the first snapshot of an accepted read.
+    /// The stream begins: sent before the first aggregate of an accepted read.
     ///
     /// Position 10 on the wire.
     Started,
-    /// A mesh the target holds no gossiped snapshot of, from the map it stores: no version, so it is
+    /// A mesh the target holds no gossiped aggregate of, from the map it stores: no version, so it is
     /// never installed as the mesh's topology. It names births to reach, nothing more. One mesh may
     /// arrive in several frames; `End.meshes` counts the mesh once. `mesh_id` is the id the target
     /// stored for the mesh, when it stored one: the mesh keeps its id through a recovery.
@@ -264,7 +264,7 @@ impl TopologyReply {
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Snapshot { .. } => "snapshot",
+            Self::Aggregate { .. } => "aggregate",
             Self::Unchanged { .. } => "unchanged",
             Self::End { .. } => "end",
             Self::NotReady { .. } => "not-ready",
@@ -299,7 +299,7 @@ impl NodeProtocol for Topology {
 
     fn reply_detail(reply: &Self::Reply) -> &'static str {
         match reply {
-            TopologyReply::Snapshot { .. } => "snapshot",
+            TopologyReply::Aggregate { .. } => "aggregate",
             TopologyReply::Unchanged { .. } => "unchanged",
             TopologyReply::End { .. } => "end",
             TopologyReply::NotReady { .. } => "not-ready",
@@ -319,7 +319,7 @@ impl NodeProtocol for Topology {
 
     fn classify_reply(reply: &TopologyReply) -> ReplyKind {
         match reply {
-            TopologyReply::Snapshot { .. } => ReplyKind::Success,
+            TopologyReply::Aggregate { .. } => ReplyKind::Success,
             TopologyReply::Unchanged { .. } => ReplyKind::Success,
             TopologyReply::End { .. } => ReplyKind::Success,
             TopologyReply::NotReady { .. } => ReplyKind::NotReady,
@@ -361,7 +361,7 @@ impl StreamingProtocol for Topology {
     fn frame_kind(frame: &TopologyReply) -> FrameKind {
         match frame {
             TopologyReply::Started => FrameKind::Started,
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } | TopologyReply::OwnRow { .. } => FrameKind::Data,
+            TopologyReply::Aggregate { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Primaries { .. } | TopologyReply::RafkaTime { .. } | TopologyReply::OwnRow { .. } => FrameKind::Data,
             TopologyReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Topology::classify_reply(other)),
         }

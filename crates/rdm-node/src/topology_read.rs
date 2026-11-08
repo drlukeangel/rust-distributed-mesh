@@ -1,18 +1,18 @@
 //! The topology read (`GetTopology`, op `0x1E`; node-rpc-envelope.md "Topology, op `0x1E`, rdm").
 //!
-//! Every node serves it: it reads what the node holds (its topology view and the snapshot
+//! Every node serves it: it reads what the node holds (its topology view and the aggregate
 //! receiver's held sources, each at the `topology_version` it holds it, one list of nodes each) and
-//! streams one snapshot per mesh, chunked by the one method gossip's `TopologyFull` snapshots use
-//! ([`rdm_gossip::snapshot::chunks_of`]). It mutates nothing at the target.
+//! streams one aggregate per mesh, chunked by the one method gossip's `TopologyFull` aggregates use
+//! ([`rdm_gossip::aggregate::chunks_of`]). It mutates nothing at the target.
 //!
-//! The caller ([`get_topology`]) installs a mesh only once every chunk of one snapshot is held,
-//! through the receiver the Mesh channel's snapshots install into
+//! The caller ([`get_topology`]) installs a mesh only once every chunk of one aggregate is held,
+//! through the receiver the Mesh channel's aggregates install into
 //! ([`TopologyView::take_read_chunk`]): there is no second install path.
 
 use rdm_core::wire::ReadNode;
 use rdm_core::MeshDigest;
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
+use rdm_gossip::aggregate::{chunks_measured, Chunk, HeldAggregate, Taken};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::catalog::OpOwner;
@@ -29,7 +29,7 @@ pub struct TopologyService {
     /// This node's own digest, as it publishes it now.
     pub own: Arc<dyn Fn() -> MeshDigest + Send + Sync>,
     /// The map this node stores (an admin's durable map of the births it knows), for a mesh it holds
-    /// no gossiped snapshot of.
+    /// no gossiped aggregate of.
     stored: Option<StoredSource>,
     /// Whether this node holds a recorded primary's exact birth as proven gone.
     gone: Option<GoneSource>,
@@ -48,7 +48,7 @@ pub type GoneSource = Arc<dyn Fn() -> std::collections::HashSet<rdm_core::Incarn
 /// answering mesh-primary's mesh.
 pub type OwnRowSource = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<rdm_core::views::NodeView>> + Send>> + Send + Sync>;
 
-/// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
+/// What a node stores of the meshes it does not hold an aggregate of: the births it knows, and the id
 /// it stored for each mesh.
 #[derive(Debug, Clone, Default)]
 pub struct StoredMap {
@@ -58,7 +58,7 @@ pub struct StoredMap {
     pub mesh_ids: std::collections::BTreeMap<String, rdm_core::MeshId>,
 }
 
-/// The births a node stores, read when a mesh has no gossiped snapshot to answer from.
+/// The births a node stores, read when a mesh has no gossiped aggregate to answer from.
 pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StoredMap, String>> + Send>> + Send + Sync>;
 
 /// Stored nodes per `Stored` frame: a frame stays under the reply ceiling.
@@ -70,7 +70,7 @@ impl TopologyService {
         Self { topology_view, own, stored: None, gone: None, own_row: None, time }
     }
 
-    /// This node also answers, for a mesh it holds no snapshot of, from the map it stores.
+    /// This node also answers, for a mesh it holds no aggregate of, from the map it stores.
     pub fn with_stored(mut self, stored: StoredSource) -> Self {
         self.stored = Some(stored);
         self
@@ -98,16 +98,16 @@ pub type TopologySlot = Arc<OnceLock<Arc<TopologyService>>>;
 /// of it, dated `at_rafka_ms` (the rafka-time the answerer served). `None` for a reply that carries no
 /// chunk.
 pub fn chunk_of(reply: TopologyReply, fabric: &rdm_core::FabricId, at_rafka_ms: u64) -> Option<Chunk> {
-    let TopologyReply::Snapshot { mesh, mesh_id, topology_version, chunk_index, chunk_count, nodes } = reply else { return None };
+    let TopologyReply::Aggregate { mesh, mesh_id, topology_version, chunk_index, chunk_count, nodes } = reply else { return None };
     let digests = nodes.iter().map(|n| n.digest(fabric, &mesh)).collect();
     let runtimes = nodes.iter().map(|n| (n.node_id.clone(), n.incarnation.clone(), n.runtime())).collect();
     Some(Chunk { mesh, mesh_id, author: None, topology_version, time_ms: at_rafka_ms, chunk_index, chunk_count, digests, runtimes })
 }
 
 /// The chunks of one held source as the replies that carry them, in the one chunking gossip uses.
-pub fn snapshot_replies(s: &SourceSnapshot, runtime_of: &dyn Fn(&MeshDigest) -> Option<rdm_core::NodeRuntime>) -> Vec<TopologyReply> {
+pub fn aggregate_replies(s: &HeldAggregate, runtime_of: &dyn Fn(&MeshDigest) -> Option<rdm_core::NodeRuntime>) -> Vec<TopologyReply> {
     let full = s.full();
-    chunks_measured(&full, |digests, chunk_index, chunk_count| TopologyReply::Snapshot {
+    chunks_measured(&full, |digests, chunk_index, chunk_count| TopologyReply::Aggregate {
         mesh: s.mesh.clone(),
         mesh_id: s.mesh_id.clone(),
         topology_version: s.topology_version,
@@ -125,7 +125,7 @@ impl TopologyService {
             node_path = %me.node.path, node_name = %me.node.name,
             requested = mesh.as_deref().unwrap_or("*"),
             meshes = tracing::field::Empty,
-            snapshots = tracing::field::Empty,
+            aggregates = tracing::field::Empty,
             unchanged = tracing::field::Empty,
             stored = tracing::field::Empty,
             stored_nodes = tracing::field::Empty,
@@ -146,8 +146,8 @@ impl TopologyService {
             };
             // Only the mesh asked for is copied out of the view (Q266).
             let held = self.topology_view.held_topology_of(&me, mesh.as_deref());
-            // A mesh with no gossiped snapshot is answered from the stored map, marked as having no
-            // version, when the node stores births of it. A read of one mesh this node holds a snapshot
+            // A mesh with no gossiped aggregate is answered from the stored map, marked as having no
+            // version, when the node stores births of it. A read of one mesh this node holds an aggregate
             // of, or of its own mesh, has none to answer from it, and the map is not built (Q266).
             let mut stored: std::collections::BTreeMap<String, Vec<StoredNode>> = Default::default();
             let mut stored_ids = std::collections::BTreeMap::new();
@@ -183,15 +183,15 @@ impl TopologyService {
             };
             // What the read answers, per held source: `<mesh>@<topology_version>:<node.id>,...`.
             span.record("members", held.iter().map(|s| format!("{}@{}:{}", s.mesh, s.topology_version, s.digests.iter().map(|d| d.node.node_id.to_string()).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(";").as_str());
-            let (mut answered, mut snapshots, mut unchanged, mut bytes) = (0u32, 0u64, 0u64, 0u64);
+            let (mut answered, mut aggregates, mut unchanged, mut bytes) = (0u32, 0u64, 0u64, 0u64);
             for s in &held {
                 let same = mesh.is_some() && since.as_ref().is_some_and(|v| v.topology_version == s.topology_version);
                 let replies = if same {
                     unchanged += 1;
                     vec![TopologyReply::Unchanged { mesh: s.mesh.clone(), topology_version: s.topology_version }]
                 } else {
-                    snapshots += 1;
-                    snapshot_replies(s, &|d: &MeshDigest| self.topology_view.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation))
+                    aggregates += 1;
+                    aggregate_replies(s, &|d: &MeshDigest| self.topology_view.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation))
                 };
                 for r in replies {
                     bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
@@ -266,7 +266,7 @@ impl TopologyService {
             span.record("primaries", primary_records);
             span.record("stored", stored_meshes);
             span.record("meshes", answered);
-            span.record("snapshots", snapshots);
+            span.record("aggregates", aggregates);
             span.record("unchanged", unchanged);
             span.record("bytes", bytes);
             span.record("outcome", "served");
@@ -295,7 +295,7 @@ pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
 /// What one topology read left installed (`lifecycles/node-topology-get.md`).
 #[derive(Debug, Clone, Default)]
 pub struct TopologyRead {
-    /// Each mesh installed from a complete snapshot, with its node digests.
+    /// Each mesh installed from a complete aggregate, with its node digests.
     pub installed: Vec<ReadMesh>,
     /// Each mesh the target answered `Unchanged`: `(mesh, topology_version)`.
     pub unchanged: Vec<(String, u64)>,
@@ -362,16 +362,16 @@ pub struct StoredMesh {
     pub nodes: Vec<StoredNode>,
 }
 
-/// A mesh answered from a gossiped snapshot.
+/// A mesh answered from a gossiped aggregate.
 #[derive(Debug, Clone)]
 pub struct ReadMesh {
     /// The mesh's name.
     pub mesh: String,
     /// The mesh's id, as the read named it.
     pub mesh_id: Option<rdm_core::MeshId>,
-    /// The snapshot's `topology_version`: the mesh's version, whichever mesh-primary sent it (Q389).
+    /// The aggregate's `topology_version`: the mesh's version, whichever mesh-primary sent it (Q389).
     pub topology_version: u64,
-    /// The node digests of the snapshot.
+    /// The node digests of the aggregate.
     pub members: Vec<MeshDigest>,
     /// The runtime and data dir the read carried of each birth it served (hydration).
     pub runtimes: Vec<(rdm_core::NodeId, rdm_core::IncarnationId, rdm_core::NodeRuntime)>,
@@ -401,15 +401,15 @@ impl std::fmt::Display for TopologyFailure {
     }
 }
 
-/// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `topology_view` each mesh whose snapshot arrives
+/// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `topology_view` each mesh whose aggregate arrives
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, channels: &rdm_gossip::channel::Channels, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let topology_view = channels.topology_view();
     let node_name = topology_view.node_name();
-    // A mesh whose served snapshot is older than the complete one this node already installed of the
+    // A mesh whose served aggregate is older than the complete one this node already installed of the
     // same source (its publication arrived before the read's answer) is refused `OlderThanHeld`: the
-    // held snapshot stands, and it is the one this read leaves installed (node-start.md step 4).
+    // held aggregate stands, and it is the one this read leaves installed (node-start.md step 4).
     let mut older_than_held: Vec<String> = Vec::new();
     // The primary records the target holds are this node's too, wherever they supersede its own: it
     // computes no primary before it has them, so they are held before any mesh's topology in the read is
@@ -418,7 +418,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     let mut read = read_with(client, target, topology_view.fabric_id(), &node_name, mesh, since, |r| topology_view.learn_primaries(&r.primaries, "entry"), |c| {
         let mesh = c.mesh.clone();
         let taken = channels.take_read_chunk(c, answerer_mesh);
-        if matches!(taken, Taken::Refused(rdm_gossip::snapshot::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
+        if matches!(taken, Taken::Refused(rdm_gossip::aggregate::Refusal::OlderThanHeld { .. })) && !older_than_held.contains(&mesh) {
             older_than_held.push(mesh);
         }
         taken
@@ -426,7 +426,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
     .await?;
     older_than_held.retain(|m| read.installed.iter().all(|i| &i.mesh != m));
     for mesh in older_than_held {
-        if let Some((topology_version, members)) = topology_view.installed_snapshot(&mesh) {
+        if let Some((topology_version, members)) = topology_view.installed_aggregate(&mesh) {
             let mesh_id = topology_view.digest_view.mesh_id_of(&mesh);
             let runtimes = members.iter().filter_map(|d| topology_view.digest_view.runtime_of(&d.node.node_id, &d.node.incarnation).map(|r| (d.node.node_id.clone(), d.node.incarnation.clone(), r))).collect();
             read.installed.push(ReadMesh { mesh, mesh_id, topology_version, members, runtimes });
@@ -465,7 +465,7 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_gossip::topology::TopUpFe
 /// whom to reach; what it holds as nodes stays what it hears itself.
 /// Read the topology from `target`.
 pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, fabric: &rdm_core::FabricId, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    let mut receiver = rdm_gossip::snapshot::SnapshotReceiver::default();
+    let mut receiver = rdm_gossip::aggregate::AggregateReceiver::default();
     read_with(client, target, fabric, node, mesh, since, |_| {}, |c| receiver.take_chunk(c)).await
 }
 
@@ -503,8 +503,8 @@ async fn read_with(
         match item {
             StreamItem::Frame(FrameKind::Refusal(_), r) => return Err(refusal_of(r)),
             StreamItem::Frame(_, TopologyReply::Started) => {}
-            StreamItem::Frame(_, reply @ TopologyReply::Snapshot { .. }) => {
-                let chunk = chunk_of(reply, fabric, 0).expect("a snapshot reply is one chunk");
+            StreamItem::Frame(_, reply @ TopologyReply::Aggregate { .. }) => {
+                let chunk = chunk_of(reply, fabric, 0).expect("an aggregate reply is one chunk");
                 runtimes.entry(chunk.mesh.clone()).or_default().extend(chunk.runtimes.iter().cloned());
                 chunks.push(chunk);
             }
@@ -547,12 +547,12 @@ async fn read_with(
                     members = members.len(),
                     target = %target_name,
                 )
-                .in_scope(|| tracing::info!("a complete snapshot read from the target is installed"));
+                .in_scope(|| tracing::info!("a complete aggregate read from the target is installed"));
                 read.installed.push(ReadMesh { mesh: i.mesh.clone(), mesh_id: i.full.mesh_id(), topology_version: i.topology_version, members, runtimes: runtimes.remove(&i.mesh).unwrap_or_default() });
             }
             Taken::Refused(r) => {
                 tracing::info_span!("rdm.mesh.topology.reject.via-read-install", target = %target_name, reason = ?r)
-                    .in_scope(|| tracing::info!("a snapshot chunk read from the target is refused: the held projection stands"));
+                    .in_scope(|| tracing::info!("an aggregate chunk read from the target is refused: the held projection stands"));
             }
         }
     }

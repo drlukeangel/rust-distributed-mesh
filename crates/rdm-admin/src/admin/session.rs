@@ -799,7 +799,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         let _ = channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), mesh_peers).await;
         let _ = channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), admins).await;
         // The maker's topology: when the own mesh already has nodes, this admin is entering an existing
-        // mesh (recovery); a mesh's first birth finds none. A maker that holds no snapshot of this mesh
+        // mesh (recovery); a mesh's first birth finds none. A maker that holds no aggregate of this mesh
         // answers from its stored map: births to reach a local node with, never installed.
         let mut map = crate::reenter::map_of_read(read, &self.fabric_id);
         map.extend(crate::reenter::map_of_stored(read));
@@ -828,7 +828,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
             }
         }
         // The mesh exists when the maker names another birth its primary, though its answer lists none
-        // of the mesh's nodes (a maker that has published no snapshot of its own mesh yet answers it
+        // of the mesh's nodes (a maker that has published no aggregate of its own mesh yet answers it
         // absent, node-rpc-envelope.md's Stored, yet its Primaries frame names the mesh's primary):
         // this admin enters an existing mesh, never waits for a Pending that is not its own (rdm#130).
         let primary_elsewhere = read.primaries.iter().any(|(role, p, gone)| *role == rdm_core::PrimaryRole::MeshPrimary && p.mesh == self.mesh && p.node_id != self.me_id && !gone);

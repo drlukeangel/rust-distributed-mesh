@@ -19,7 +19,7 @@ use rdm_core::{IncarnationId, model::NodeStatus, MeshDigest, NodeId};
 use rdm_gossip::location::{gossip_addr, learn_addresses};
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
-use rdm_gossip::snapshot::PublisherId;
+use rdm_gossip::aggregate::PublisherId;
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_admin::node_hooks::NodeHooks;
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -130,8 +130,8 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // The top-up pulls from the birth the node's primary record names, through that birth's own
         // Digest (gossip.md §3.1, §3.3): a gap signalled before the node holds it is one refused
         // attempt, held for nothing, until the primary next speaks. A start whose topology read the
-        // primary answered before its first publication carries no snapshot of mesh1 (a mesh with
-        // no published snapshot is absent, node-rpc-envelope.md op 0x1E), so the cell waits for it.
+        // primary answered before its first publication carries no aggregate of mesh1 (a mesh with
+        // no published aggregate is absent, node-rpc-envelope.md op 0x1E), so the cell waits for it.
         until("mesh1.node-admin.2 to hold its own Mesh's primary, the birth its primary record names", WRONG, || {
             admin.topology_view.mesh_primary().is_ok_and(|p| p.node.node_id == root_digest.node.node_id && p.node.incarnation == root_digest.node.incarnation)
         })

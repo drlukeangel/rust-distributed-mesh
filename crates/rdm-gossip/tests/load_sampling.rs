@@ -137,7 +137,7 @@ fn a_node_samples_its_own_load_with_configured_budgets_and_gossip_delivers_it_wi
             if fwd_bb.held_source("mesh2").is_some() && mem_m.held_source_version("mesh2").is_some() {
                 break;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for backbone and member snapshots");
+            assert!(Instant::now() < deadline, "timed out waiting for backbone and member aggregates");
         }
 
         // The node reaches both with its identity and status, and no load: a held digest has no place
@@ -164,11 +164,11 @@ fn a_node_samples_its_own_load_with_configured_budgets_and_gossip_delivers_it_wi
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let installs: Vec<&Value> = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-snapshot-installed")
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-aggregate-installed")
             .collect();
         assert!(
             installs.iter().any(|s| s["attributes"]["node"] == "mesh1.node-admin.1" && s["attributes"]["channel"] == "backbone"),
-            "backbone snapshot install span recorded on mesh1.node-admin.1: {installs:?}"
+            "backbone aggregate install span recorded on mesh1.node-admin.1: {installs:?}"
         );
         let applied: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-delta").collect();
         assert!(

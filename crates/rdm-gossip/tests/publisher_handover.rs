@@ -18,7 +18,7 @@ use rdm_gossip::backbone::Backbone;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::status::StatusEvent;
-use rdm_gossip::snapshot::PublisherId;
+use rdm_gossip::aggregate::PublisherId;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -91,10 +91,10 @@ fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
 
 /// What `view`'s topology read serves of `mesh`, as the chunks a reader takes (gossip.md §3.3: a node
 /// holds its own mesh's projection only by a read, Q387).
-fn read_of(view: &TopologyView, me: &MeshDigest, mesh: &str) -> Vec<rdm_gossip::snapshot::Chunk> {
+fn read_of(view: &TopologyView, me: &MeshDigest, mesh: &str) -> Vec<rdm_gossip::aggregate::Chunk> {
     let served = view.held_topology(me);
     let s = served.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
-    vec![rdm_gossip::snapshot::Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: s.full().digests(), runtimes: Vec::new() }]
+    vec![rdm_gossip::aggregate::Chunk { mesh: s.mesh.clone(), mesh_id: None, author: None, topology_version: s.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: s.full().digests(), runtimes: Vec::new() }]
 }
 
 fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
@@ -328,8 +328,8 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let read = rdm_gossip::topology::TopologyView::new(&fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), Default::default());
         let read_channels = rdm_gossip::channel::Channels::new(&reader.gossip, &reader.ep, &read).unwrap();
         read_channels.join(rdm_gossip::channel::ChannelId::mesh(read.fabric_id(), read.mesh_id()), vec![]).await.unwrap();
-        let chunk = rdm_gossip::snapshot::Chunk { mesh: served.mesh, mesh_id: None, author: None, topology_version: served.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, runtimes: Vec::new() };
-        assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::snapshot::Taken::Installed(_)));
+        let chunk = rdm_gossip::aggregate::Chunk { mesh: served.mesh, mesh_id: None, author: None, topology_version: served.topology_version, time_ms: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, runtimes: Vec::new() };
+        assert!(matches!(read_channels.take_read_chunk(chunk, "mesh1"), rdm_gossip::aggregate::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((None, version)), "a topology read installs the version; its reply names no author");
 
         // A subsequent material change goes in through the delta path, from the same forwarder.
