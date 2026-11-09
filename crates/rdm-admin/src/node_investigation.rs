@@ -470,19 +470,20 @@ pub(crate) fn investigated_ctx(ids: (rdm_core::FabricId, Option<rdm_core::MeshId
 
 /// The application's `pre_node_recreate` (`hook`, `None` when it registers none), asked by the primary
 /// running the recovery of `node`'s birth at `incarnation` on `inspected`, node.runtime.inspect's
-/// answer that led to it, before
-/// node.delete of the birth and node.create at its path and name (fabric-node-hooks.md
-/// "pre_node_recreate", node-recovery.md sequence step 1, Q416). It is told the [`investigated_ctx`]
-/// `on_node_investigated` is told, under `rdm.node_admin.node.update.via-pre-node-recreate`, a child of
-/// the span current here. One call under the hook's `Send`: one attempt within
-/// [`rdm_transport::Send::default`]'s time limit, the next recovery tick being the call sent again
-/// (Q344). `Ok(())`: the recovery runs on. `Err(reason)`: the application's `Failed { reason }`, no
-/// answer within the time limit (`time limit`), or a panic (named); the recovery ends failed. No hook
-/// registered is `Ok`.
+/// answer that led to it, the last step before node.delete of the birth and node.create at its path
+/// and name (fabric-node-hooks.md "pre_node_recreate", node-recovery.md sequence step 1, Q416). It is
+/// told the [`investigated_ctx`]
+/// `on_node_investigated` is told, its `context` taken inside
+/// `rdm.node_admin.node.update.via-pre-node-recreate`, a child of the span current here, so the
+/// application's work is that span's child. One call, bounded by [`rdm_transport::Send::default`]'s
+/// time limit and never sent again: the next recovery tick is the call sent again (Q344).
+/// `Ok(())`: the recovery runs on. `Err(reason)`, the recovery's failure, named: the application's
+/// `Failed { reason }`; a call still running at the time limit, cancelled (its future dropped); a panic; or a
+/// view that holds no id for the birth's mesh, the hook's own outcome, the application not asked. No
+/// hook registered is `Ok`.
 pub(crate) async fn ask_pre_node_recreate(hook: Option<&crate::wiring::PreNodeRecreate>, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, inspected: &crate::deployment::provider::Inspected) -> Result<(), String> {
     use futures_util::FutureExt as _;
     use tracing::Instrument as _;
-    let context = crate::build::current_context();
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-pre-node-recreate",
         node_path = %node.path, node_name = %node.name,
@@ -501,38 +502,48 @@ pub(crate) async fn ask_pre_node_recreate(hook: Option<&crate::wiring::PreNodeRe
         span.in_scope(|| tracing::info!("no pre_node_recreate hook is registered: the recovery runs on"));
         return Ok(());
     };
-    let answered = match investigated_ctx(ids, node, incarnation, crate::wiring::NodeInvestigatedResult::ReCreated, Some(inspected), context) {
-        None => Err("this admin's view holds no id for the birth's mesh: the application cannot be told the birth".to_string()),
+    // The application's context is taken inside the hook's span: its work parents under it.
+    let context = span.in_scope(crate::build::current_context);
+    let limit = rdm_transport::Send::default().time_limit.0;
+    // Short of `Ok`: the span's `reason`, the recovery's failure, and what the span says of it.
+    let ended: Result<(), (String, String, &'static str)> = match investigated_ctx(ids, node, incarnation, crate::wiring::NodeInvestigatedResult::ReCreated, Some(inspected), context) {
+        // The hook's own outcome, never the application's answer: it is not asked. The recovery stays
+        // owed, and the next tick asks again once the view holds the mesh's id.
+        None => {
+            let reason = "this admin's view holds no id for the birth's mesh: the application is not asked".to_string();
+            Err((reason.clone(), format!("pre_node_recreate: {reason}"), "the application is not asked: the recovery ends failed, still owed, and the next recovery tick asks again"))
+        }
         Some(ctx) => {
-            let send = rdm_transport::Send { attempts: 1, ..rdm_transport::Send::default() };
-            let call = || {
-                let (hook, ctx) = (hook.clone(), ctx.clone());
-                async move {
-                    std::panic::AssertUnwindSafe(async move { hook(ctx).await }).catch_unwind().await.unwrap_or_else(|panic| {
-                        let what = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
-                        Err(format!("pre_node_recreate panicked: {what}"))
-                    })
+            let call = std::panic::AssertUnwindSafe(async move { hook(ctx).await }).catch_unwind();
+            match tokio::time::timeout(limit, call).instrument(span.clone()).await {
+                Ok(Ok(Ok(()))) => Ok(()),
+                Ok(Ok(Err(reason))) => Err((reason.clone(), format!("pre_node_recreate answered Failed: {reason}"), "pre_node_recreate answered Failed: the recovery ends failed, still owed, and nothing is deleted or created")),
+                Ok(Err(panic)) => {
+                    let what = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
+                    let reason = format!("pre_node_recreate panicked: {what}");
+                    Err((reason.clone(), reason, "pre_node_recreate panicked: the recovery ends failed, still owed, and nothing is deleted or created"))
                 }
-            };
-            send.run(|_: &String| true, call).instrument(span.clone()).await.map_err(|end| match end {
-                rdm_transport::SendEnd::Answered(reason) | rdm_transport::SendEnd::Spent { last: Some(reason), .. } => reason,
-                rdm_transport::SendEnd::Spent { last: None, .. } => "time limit".to_string(),
-            })
+                Err(_) => {
+                    let reason = format!("time limit: the application's call was cancelled after {} ms", limit.as_millis());
+                    Err((reason.clone(), format!("pre_node_recreate: {reason}"), "pre_node_recreate did not answer within its time limit: the call is cancelled, the recovery ends failed, still owed, and nothing is deleted or created"))
+                }
+            }
         }
     };
     span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-    match &answered {
+    match ended {
         Ok(()) => {
             span.record("outcome", "ok");
             span.in_scope(|| tracing::info!("pre_node_recreate answered Ok: the recovery runs on"));
+            Ok(())
         }
-        Err(reason) => {
+        Err((reason, failed, said)) => {
             span.record("outcome", "failed");
             span.record("reason", reason.as_str());
-            span.in_scope(|| tracing::info!("pre_node_recreate answered Failed: the recovery ends failed, still owed, and nothing is deleted or created"));
+            span.in_scope(|| tracing::info!("{said}"));
+            Err(failed)
         }
     }
-    answered
 }
 
 /// node.runtime.inspect's span (node-runtime-inspect.md "Observability contract"), the one every
@@ -603,48 +614,83 @@ mod tests {
     use std::sync::Mutex;
 
     /// CONTRACT (fabric-node-hooks.md "pre_node_recreate": "There is no `Pending`: the application's work
-    /// is one call under the hook's `Send`, whose time limit covers it"; Q416): the mesh-primary asking
-    /// the application's `pre_node_recreate` before the re-create of the lost birth mesh1.node.1 reads
-    /// as the application's `Failed`, named on its span, a hook that does not answer within the time
-    /// limit of its `Send` (`time limit`, the one call not sent again: the next recovery tick asks
-    /// again), a hook that panics (named), and a view that holds no id for the birth's mesh; it reads
-    /// the hook's `Ok` as `Ok`. Must NOT happen: a recovery run on, or held for good, by a hook that never
-    /// answers or panics.
+    /// is one call under the hook's `Send`, whose time limit covers it"; "Observability": "A cancelled
+    /// hook names the cancellation"; Q416): the mesh-primary asking the application's
+    /// `pre_node_recreate` before the re-create of the lost birth mesh1.node.1 reads as the recovery's
+    /// failure, each named on the hook's span: the application's `Failed`; a hook still running at the
+    /// time limit of `rdm_transport::Send::default()`, its call cancelled there (its future dropped) and
+    /// never sent again, the next recovery tick asking again; a hook that panics; and a view that holds
+    /// no id for the birth's mesh, the hook's own outcome, the application not asked. It reads the hook's
+    /// `Ok` as `Ok`, the application told a context taken inside the hook's span. Must NOT happen: a
+    /// recovery run on, or held for good, by a hook that never answers or panics; a missing mesh id
+    /// named as the application's answer.
     // @feature: node-lifecycle
     #[tokio::test(start_paused = true)]
     async fn pre_node_recreate_unanswered_within_its_time_limit_or_panicking_is_failed_by_name() {
+        /// Set when the silent hook's call is dropped: its cancellation.
+        struct Cancelled(std::sync::Arc<AtomicBool>);
+        impl Drop for Cancelled {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
         let (node, _) = world();
         let incarnation = node.incarnation_id.clone().unwrap();
         let ids = || (FabricId::mint(), Some(rdm_core::MeshId::mint()));
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let told: std::sync::Arc<Mutex<Vec<crate::wiring::NodeInvestigatedCtx>>> = std::sync::Arc::default();
         let hook = |answer: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>| -> crate::wiring::PreNodeRecreate {
-            let calls = calls.clone();
-            std::sync::Arc::new(move |_ctx| {
+            let (calls, told) = (calls.clone(), told.clone());
+            std::sync::Arc::new(move |ctx| {
                 calls.fetch_add(1, Ordering::SeqCst);
+                told.lock().unwrap().push(ctx);
                 answer()
             })
         };
-        let silent = hook(|| Box::pin(std::future::pending()));
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let silent: crate::wiring::PreNodeRecreate = {
+            let (calls, cancelled) = (calls.clone(), cancelled.clone());
+            std::sync::Arc::new(move |_ctx| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let guard = Cancelled(cancelled.clone());
+                Box::pin(async move {
+                    let _guard = guard;
+                    std::future::pending::<Result<(), String>>().await
+                })
+            })
+        };
         let panics = hook(|| panic!("the application's release panicked"));
         let ok = hook(|| Box::pin(async { Ok(()) }));
         let capture = crate::span_capture::Capture::new("q416-pre-node-recreate-time-limit");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let exited = &crate::deployment::provider::Inspected::Exited(None);
+        let limit = rdm_transport::Send::default().time_limit.0;
+        let cancellation = format!("time limit: the application's call was cancelled after {} ms", limit.as_millis());
         let started = tokio::time::Instant::now();
-        assert_eq!(ask_pre_node_recreate(Some(&silent), ids(), &node, &incarnation, exited).await, Err("time limit".to_string()), "no answer within the time limit is Failed");
-        assert_eq!(started.elapsed(), rdm_transport::Send::default().time_limit.0, "one call, bounded by its Send's time limit, never sent again");
+        assert_eq!(ask_pre_node_recreate(Some(&silent), ids(), &node, &incarnation, exited).await, Err(format!("pre_node_recreate: {cancellation}")), "a call still running at the time limit is Failed, its cancellation named");
+        assert_eq!(started.elapsed(), limit, "one call, bounded by the time limit of Send::default(), never sent again");
+        assert!(cancelled.load(Ordering::SeqCst), "the call is cancelled at the time limit: its future is dropped");
         let panicked = ask_pre_node_recreate(Some(&panics), ids(), &node, &incarnation, exited).await;
         assert_eq!(panicked, Err("pre_node_recreate panicked: the application's release panicked".to_string()), "a panic is Failed, named");
+        let not_asked = "this admin's view holds no id for the birth's mesh: the application is not asked".to_string();
         let unnamed = ask_pre_node_recreate(Some(&ok), (FabricId::mint(), None), &node, &incarnation, exited).await;
-        assert!(unnamed.as_ref().is_err_and(|e| e.contains("holds no id for the birth's mesh")), "{unnamed:?}");
+        assert_eq!(unnamed, Err(format!("pre_node_recreate: {not_asked}")), "no mesh id is the hook's own failure, never the application's answer");
         assert_eq!(ask_pre_node_recreate(Some(&ok), ids(), &node, &incarnation, exited).await, Ok(()));
         assert_eq!(calls.load(Ordering::SeqCst), 3, "each hook is called once, and none is called without the mesh's id");
         let asks = capture.named("rdm.node_admin.node.update.via-pre-node-recreate");
         let seen: Vec<(String, String)> = asks.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("reason").cloned().unwrap_or_default())).collect();
-        assert_eq!(seen[..2], [("failed".to_string(), "time limit".to_string()), ("failed".to_string(), "pre_node_recreate panicked: the application's release panicked".to_string())], "{asks:?}");
+        assert_eq!(
+            seen[..3],
+            [("failed".to_string(), cancellation.clone()), ("failed".to_string(), "pre_node_recreate panicked: the application's release panicked".to_string()), ("failed".to_string(), not_asked.clone())],
+            "{asks:?}"
+        );
         assert_eq!(asks[0].attributes.get("elapsed_ms").map(String::as_str), Some("10000"), "{:?}", asks[0].attributes);
         assert_eq!(seen[3].0, "ok", "{asks:?}");
+        let told = told.lock().unwrap().clone();
+        let parent = told.last().and_then(|t| t.context.traceparent.clone()).unwrap_or_default();
+        assert_eq!(parent.split('-').nth(2), Some(asks[3].span_id.as_str()), "the application's context is the hook's span: {parent} vs {:?}", asks[3]);
         eprintln!("span {} trace_id={} {:?}", asks[0].name, asks[0].trace_id, asks[0].attributes);
+        eprintln!("span {} trace_id={} {:?}", asks[2].name, asks[2].trace_id, asks[2].attributes);
     }
 
     fn ready(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Node {

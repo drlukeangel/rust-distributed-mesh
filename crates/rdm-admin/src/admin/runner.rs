@@ -2349,19 +2349,23 @@ mod tests {
     }
 
     /// CONTRACT (fabric-node-hooks.md "pre_node_recreate": "nothing is created at that path and name
-    /// until the application answers"; node-recovery.md sequence step 1, Q416): the mesh-primary
-    /// mesh1.node-admin.1, running on its tick the recovery of its lost member mesh1.node.1, asks the
+    /// until the application answers"; node-recovery.md sequence step 1: a step on the same node runs
+    /// "before or after it at the mesh-primary, never beside it", Q416): the mesh-primary
+    /// mesh1.node-admin.1, running on its tick the recovery of its lost node mesh1.node.1, asks the
     /// application's `pre_node_recreate` once it has written the result `re-created`, with the result's
-    /// `NodeInvestigatedCtx`, before node.delete of the birth and node.create at its path and name.
+    /// `NodeInvestigatedCtx`, the last step before node.delete of the birth and node.create at its path
+    /// and name: the birth already held recovering and the node's work turn already the recovery's.
     /// (a) The hook answers `Failed`: no node.delete and no node.create of the birth, its record as it
     /// was, and the recovery ends failed, named on its span, still owed with the inspect's answer.
     /// (b) The next tick runs the recovery again, the hook included, and on its `Ok` the recovery runs on:
     /// the hook's span, a child of the recovery's, closes before node.delete's opens.
     /// (c) With no hook registered, the recovery of mesh1.node.2 runs as before, its hook span
     /// `none-registered`.
+    /// (d) The recovery the fabric-primary submits of a lost mesh-primary (`submit`, the route
+    /// primary_watch and fabric recovery take) asks the hook too, before its node.delete.
     /// Must NOT happen: node.delete or node.create of the birth before the application answered `Ok`
     /// (trace 15ccf04a28b6f7ca1817bdd09588f402: node.delete 4 ms after the application's departure close
-    /// was sent, node.create 18 ms after node.delete).
+    /// was sent, node.create 18 ms after node.delete); the hook asked beside another step on the node.
     // @feature: node-lifecycle
     #[tokio::test]
     async fn the_mesh_primary_asks_pre_node_recreate_before_it_deletes_and_re_creates_a_lost_birth() {
@@ -2369,10 +2373,14 @@ mod tests {
         use crate::wiring::{NodeInvestigatedCtx, NodeInvestigatedResult};
         let (dir, runner, builds, _) = runner_rig("q416-pre-node-recreate").await;
         let asked: Arc<Mutex<Vec<NodeInvestigatedCtx>>> = Arc::default();
-        let answers = Arc::new(Mutex::new(std::collections::VecDeque::from([Err("the lost birth's routing is not released yet".to_string()), Ok(())])));
+        // When asked: whether the node's work turn was taken (no other step can take it) and the birth
+        // held recovering.
+        let held: Arc<Mutex<Vec<(bool, bool)>>> = Arc::default();
+        let answers = Arc::new(Mutex::new(std::collections::VecDeque::from([Err("the lost birth's routing is not released yet".to_string()), Ok(()), Ok(())])));
         let hook: crate::wiring::PreNodeRecreate = {
-            let (asked, answers) = (asked.clone(), answers.clone());
+            let (asked, held, answers, runner) = (asked.clone(), held.clone(), answers.clone(), runner.clone());
             Arc::new(move |ctx: NodeInvestigatedCtx| {
+                held.lock().unwrap().push((runner.try_node_work(&ctx.node_id).is_none(), runner.digest_view.is_recovering(ctx.node_id.as_str(), &ctx.incarnation)));
                 asked.lock().unwrap().push(ctx);
                 let answer = answers.lock().unwrap().pop_front().expect("the hook is asked no more often than the cell answers");
                 Box::pin(async move { answer })
@@ -2413,6 +2421,12 @@ mod tests {
         assert_eq!(attr(&runs[0], "outcome"), "failed: pre_node_recreate answered Failed: the lost birth's routing is not released yet", "the recovery ends failed, named on its span");
         assert_eq!(asks[0].parent_span_id, runs[0].span_id, "the hook's span is a child of the recovery's");
         assert_eq!(recovery.failed_recoveries(true, "mesh1"), vec![(lost.clone(), t.inspected.clone().expect("a re-created result names the inspect's answer"))], "the failed recovery stays owed to the birth, with the inspect's answer");
+        assert_eq!(held.lock().unwrap()[0], (true, true), "asked once the node's work turn is the recovery's and the birth is held recovering");
+        let holding = of("rdm.mesh.topology.update.via-recovering-held", &lost);
+        assert_eq!(holding.len(), 1, "{holding:?}");
+        assert!(holding[0].start <= asks[0].start, "the birth is held recovering before the hook is asked: {:?} {:?}", holding[0], asks[0]);
+        let parent = t.context.traceparent.clone().unwrap_or_default();
+        assert_eq!(parent.split('-').nth(2), Some(asks[0].span_id.as_str()), "the application's context is the hook's span: {parent}");
         eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
         eprintln!("span {submit} trace_id={} {:?}", runs[0].trace_id, runs[0].attributes);
 
@@ -2421,6 +2435,7 @@ mod tests {
         let told = asked.lock().unwrap().clone();
         assert_eq!(told.len(), 2, "the next tick asks again: {told:?}");
         assert_eq!((&told[1].node_id, &told[1].incarnation, told[1].result, &told[1].inspected), (&t.node_id, &t.incarnation, t.result, &t.inspected), "asked again of the same birth, on the same result and inspect's answer");
+        assert_eq!(held.lock().unwrap()[1], (true, true), "asked again on the node's work turn, the birth held recovering");
         let (asks, runs, deletes) = (of(ask, &lost), of(submit, &lost), of(delete, &lost));
         assert_eq!(asks.len(), 2, "a hook span on each run: {asks:?}");
         assert_eq!(attr(&asks[1], "outcome"), "ok", "{:?}", asks[1].attributes);
@@ -2443,6 +2458,83 @@ mod tests {
         assert!(asks[0].end <= deletes[0].start, "{:?} {:?}", asks[0], deletes[0]);
         assert_eq!(asked.lock().unwrap().len(), 2, "the other recovery asks no application");
         eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
+
+        // (d) The fabric-primary's route: a recovery submitted, not run on the tick, asks the hook too.
+        let third = lost_member(&runner, "3").await;
+        let _ = recovery.submit(&third, &crate::deployment::provider::Inspected::Exited(None)).await;
+        let told = asked.lock().unwrap().clone();
+        assert_eq!(told.len(), 3, "the submitted recovery asks the application once: {told:?}");
+        assert_eq!((&told[2].node_id, told[2].result, &told[2].inspected), (&third.node_id, NodeInvestigatedResult::ReCreated, &Some(crate::deployment::provider::Inspected::Exited(None))), "asked of the submitted birth on the inspect's answer");
+        assert_eq!(held.lock().unwrap()[2], (true, true), "asked on the node's work turn, the birth held recovering");
+        let (asks, runs, deletes) = (of(ask, &third), of(submit, &third), of(delete, &third));
+        assert_eq!((asks.len(), runs.len()), (1, 1), "{asks:?} {runs:?}");
+        assert_eq!(attr(&asks[0], "outcome"), "ok", "{:?}", asks[0].attributes);
+        assert_eq!(asks[0].parent_span_id, runs[0].span_id, "the hook's span is a child of the submitted recovery's");
+        assert_eq!(deletes.len(), 1, "on Ok the submitted recovery runs on to node.delete: {deletes:?}");
+        assert!(asks[0].end <= deletes[0].start, "the hook answered before node.delete opened: {:?} {:?}", asks[0], deletes[0]);
+        eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (fabric-node-hooks.md "pre_node_recreate"; node-recovery.md sequence step 1, Q416): the
+    /// application's `pre_node_recreate` is the last step of a recovery before node.delete, so a recovery
+    /// its primary refuses before it holds the birth asks nothing: the mesh-primary mesh1.node-admin.1
+    /// recovering its lost node mesh1.node.1 with its runner not built, after it stopped reconciling
+    /// (rdm#305), and under an in-force fabric.delete (fabric-delete.md "Failure") ends each failed by
+    /// name, still owed, with no hook span and the application never called, the birth not held
+    /// recovering. Must NOT happen: the application asked, and so releasing the lost birth's routing,
+    /// for a re-create RDM then refuses.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_recovery_its_primary_refuses_never_asks_pre_node_recreate() {
+        use crate::wiring::NodeInvestigatedCtx;
+        let (dir, runner, builds, _) = runner_rig("q416-refused-recovery").await;
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook: crate::wiring::PreNodeRecreate = {
+            let asked = asked.clone();
+            Arc::new(move |_ctx: NodeInvestigatedCtx| {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            })
+        };
+        let lost = lost_member(&runner, "1").await;
+        let capture = crate::span_capture::Capture::new("q416-refused-recovery");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let of = |name: &str| capture.named(name).into_iter().filter(|s| s.attributes.get("node_id") == Some(&lost.node_id.to_string())).collect::<Vec<_>>();
+        let outcomes = || of("rdm.node_admin.node.update.via-node-recovery").into_iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>();
+
+        // Its runner not built.
+        let unbuilt = RecoverySubmitter { runner: Arc::new(std::sync::OnceLock::new()), ..recovery_over(&runner, builds.clone(), Some(hook.clone())) };
+        unbuilt.recover(&lost).await;
+        assert_eq!(unbuilt.failed_recoveries(true, "mesh1").len(), 1, "still owed");
+
+        // Stopped reconciling.
+        let stopped = recovery_over(&runner, builds.clone(), Some(hook.clone()));
+        runner.repairs_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        stopped.recover(&lost).await;
+        runner.repairs_stopped.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(stopped.failed_recoveries(true, "mesh1").len(), 1, "still owed");
+
+        // Under an in-force fabric.delete.
+        let deleting = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        deleting
+            .publish_accepted(&crate::build_state::BuildAccepted { build_id: crate::build::BuildId::mint(), topology: crate::accepted::FabricTopology::root("fab", "mesh1", runner.topology.read().await.meshes[0].id.clone().unwrap()), change: rdm_core::build::BuildChange::DeleteFabric, source: None, time: 2000 })
+            .await
+            .unwrap();
+        let under_delete = recovery_over(&runner, deleting, Some(hook));
+        under_delete.recover(&lost).await;
+        assert_eq!(under_delete.failed_recoveries(true, "mesh1").len(), 1, "still owed");
+
+        let ended = outcomes();
+        assert_eq!(ended.len(), 3, "one recovery span each: {ended:?}");
+        for (outcome, refusal) in ended.iter().zip(["its runner is not built yet", "stopped reconciling: it starts no repair", "is in force: nothing is recovered and nothing is re-created"]) {
+            assert!(outcome.contains(refusal), "the recovery ends failed by its refusal's name: {outcome:?}");
+        }
+        assert!(of("rdm.node_admin.node.update.via-pre-node-recreate").is_empty(), "no refused recovery opens the hook's span");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0, "no refused recovery asks the application");
+        assert!(!runner.digest_view.is_recovering(lost.node_id.as_str(), lost.incarnation_id.as_ref().unwrap()), "a refused recovery holds no birth recovering");
+        assert!(of("rdm.node_admin.node.delete.via-node-recovery").is_empty(), "nothing is deleted");
+        eprintln!("refused recoveries: {ended:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

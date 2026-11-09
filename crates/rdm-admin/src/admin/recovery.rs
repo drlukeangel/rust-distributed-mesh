@@ -40,7 +40,8 @@ pub(crate) struct RecoverySubmitter {
     /// birth with none held is a self-heal's.
     pub reasons: Arc<Mutex<HashMap<(NodeId, IncarnationId), crate::node_investigation::Reason>>>,
     /// The application's `pre_node_recreate`, asked before each re-create of a recovery this primary
-    /// runs on its tick (fabric-node-hooks.md "pre_node_recreate", Q416); `None` when it registers none.
+    /// runs, on every route ([`Self::submit_in`]; fabric-node-hooks.md "pre_node_recreate", Q416); `None`
+    /// when it registers none.
     pub pre_node_recreate: Option<crate::wiring::PreNodeRecreate>,
 }
 
@@ -146,23 +147,17 @@ impl RecoverySubmitter {
     /// that finds the node still lost runs it again (Q344).
     async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, inspected: &Inspected, again: bool, investigated: bool) -> Result<(), String> {
         let span = submit_span(&self.me_id, node, incarnation, if again { "" } else { inspected.name() });
-        let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
         if again {
             span.record("again", true);
         } else if investigated {
             // The investigation ends `re-created`: written once as its event with the inspect's
             // answer that led to it, and the application is told once from that write, under the
             // recovery's span (fabric-node-hooks.md "on_node_investigated").
+            let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
             let reason = self.reasons.lock().unwrap().get(&(node.node_id.clone(), incarnation.clone())).copied().unwrap_or(crate::node_investigation::Reason::SelfHeal);
-            self.investigated.end(ids.clone(), node, incarnation, Some(crate::wiring::NodeInvestigatedResult::ReCreated), Some(inspected), reason).instrument(span.clone()).await;
+            self.investigated.end(ids, node, incarnation, Some(crate::wiring::NodeInvestigatedResult::ReCreated), Some(inspected), reason).instrument(span.clone()).await;
         }
-        // Nothing is deleted or created at the birth's path and name until the application answers
-        // (fabric-node-hooks.md "pre_node_recreate", Q416): its `Failed` ends this recovery failed,
-        // still owed, and the next tick asks again, the hook included.
-        let end = match crate::node_investigation::ask_pre_node_recreate(self.pre_node_recreate.as_ref(), ids, node, incarnation, inspected).instrument(span.clone()).await {
-            Ok(()) => self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await,
-            Err(reason) => Ok(RecoveryEnd::Failed { reason: format!("pre_node_recreate answered Failed: {reason}") }),
-        };
+        let end = self.submit_in(&span, node, incarnation, inspected, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);
         let birth = (node.node_id.clone(), incarnation.clone());
         match &ended {
@@ -237,7 +232,7 @@ impl RecoverySubmitter {
     pub async fn submit_route(&self, node: &Node, outcome: &Inspected, route: &'static str) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no birth to key a recovery on", node.node_id))?;
         let span = submit_span(&self.me_id, node, &incarnation, outcome.name());
-        let end = self.submit_in(&span, node, &incarnation, route).instrument(span.clone()).await;
+        let end = self.submit_in(&span, node, &incarnation, outcome, route).instrument(span.clone()).await;
         settled(&span, end)
     }
 
@@ -282,8 +277,13 @@ impl RecoverySubmitter {
     /// own workflow, never a Build or part of one (Q342): node.delete then node.create, each step recorded
     /// on the node record. It runs on the node's work turn: a node command or a Build's step on the same
     /// node runs before or after it, never beside it; a Build in flight elsewhere neither holds it nor is
-    /// held by it.
-    pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
+    /// held by it. Every recovery path runs through here, so each run, a run again included, asks the
+    /// application's `pre_node_recreate` once, on `inspected`, node.runtime.inspect's answer that led to
+    /// the recovery: after the refusals, the
+    /// birth held recovering and the node's work turn taken, the last step before node.delete
+    /// (fabric-node-hooks.md "pre_node_recreate", node-recovery.md sequence step 1, Q416). A refused run
+    /// asks nothing.
+    pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, inspected: &Inspected, route: &'static str) -> Result<RecoveryEnd, String> {
         let runner = self.runner.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its runner is not built yet", self.me_id))?;
         span.record("route", route);
         // An admin that stopped reconciling (its stop, or a rig that runs no reconciler) starts no repair,
@@ -309,6 +309,13 @@ impl RecoverySubmitter {
         // Q342): its digests are refused by name while its replacement is born, as after it.
         self.digest_view.hold_recovering(&node.node_id, incarnation);
         let _turn = runner.node_work(&node.node_id).await;
+        // Nothing is deleted or created at the birth's path and name until the application answers
+        // (fabric-node-hooks.md "pre_node_recreate", Q416). Short of `Ok` the recovery ends failed here as
+        // a failed step below does: the birth stays held recovering, and the caller keeps it owed.
+        let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
+        if let Err(reason) = crate::node_investigation::ask_pre_node_recreate(self.pre_node_recreate.as_ref(), ids, node, incarnation, inspected).await {
+            return Ok(RecoveryEnd::Failed { reason });
+        }
         let from = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         match runner.recover(&node.location(), &from, route == "fabric-recovery-backbone").await {
             Ok(()) => Ok(RecoveryEnd::Complete),
