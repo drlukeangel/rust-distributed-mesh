@@ -518,13 +518,12 @@ mod container {
         a_launched_admins_create_sets_the_value_and_no_file_carries_it(test, "container").await;
     }
 
-    /// CONTRACT (Q150 §0.1, the value's life; container provider). Ignored by name: the estate starts a
-    /// node-admin again on a data dir as a host process (`Estate::restart_admin_with`), and a node-admin
-    /// started on an inherited data dir binds the inherited birth's address (admin/boot.rs, the
-    /// inherited arm), which in a container fabric is the lost container's address on the fabric
-    /// network: the host cannot bind it ("mesh address 172.20.255.254:0: Failed to bind sockets").
+    /// CONTRACT (Q150 §0.1, the value's life; container provider). The estate starts the node-admin,
+    /// which ran in a container, again on its data dir as a host process (`Estate::restart_admin_with`):
+    /// it binds the gateway of the fabric network its start prepares, as a Day-0 host-process admin does,
+    /// never the inherited birth's address, the lost container's, which the host does not hold (#353:
+    /// "mesh address 172.21.255.254:0: Failed to bind sockets").
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/353"]
     async fn an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_types_with_the_value_containers() {
         if !container_opted_in("declared secrets") {
             return;

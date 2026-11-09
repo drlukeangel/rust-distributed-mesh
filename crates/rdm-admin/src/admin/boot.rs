@@ -677,8 +677,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 incarnation.clone(),
                 None,
                 // A new endpoint key (minted above, Q358) and a fresh port (the operating system assigns it),
-                // never the inherited birth's: peers learn the new endpoint and address from its digest.
-                SocketAddr::new(own.transport_addr.ip(), 0),
+                // never the inherited birth's: peers learn the new endpoint and address from its digest. On a
+                // container fabric, an admin started on the host binds the gateway of the network prepared
+                // above, as a Day-0 host-process admin does: the inherited birth's address can be the lost
+                // container's, which the host does not hold (#353). Elsewhere it binds the inherited IP.
+                {
+                    let ip = match &early {
+                        Some((p, _)) if p.provider.kind() == ProviderKind::Container && rdm_core::runtime::this_container_id().is_none() => p.admin_ip,
+                        _ => own.transport_addr.ip(),
+                    };
+                    SocketAddr::new(ip, 0)
+                },
                 seeds,
             )
         }
