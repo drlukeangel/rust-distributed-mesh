@@ -71,7 +71,7 @@ pub async fn start_with_seams(
 const MEMORY: &str = "memory";
 
 /// The topology storage providers a testkit node registers (storage.md §2): RDM's `file` backend, the
-/// testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`] at its place beside `launch`'s store dir (made
+/// testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`] at its place under `launch`'s store dir (made
 /// here when absent) and one process's memory as [`MEMORY`]; in a build without the file backend,
 /// [`MEMORY`] alone.
 fn node_backend(launch: &Launch) -> rdm_node::storage_backend::NodeStorageProviders {

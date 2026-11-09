@@ -12,7 +12,7 @@
 //! launch, reports them at its join and its row publishes them.
 //!
 //! It registers a second topology storage provider (storage.md §2), [`TOPOLOGY_STORAGE_TARGET`], in
-//! every executable of the testkit: RDM's file backend at a place of its own beside the fabric's store
+//! every executable of the testkit: RDM's file backend at a place of its own under the fabric's store
 //! dir ([`topology_storage_dir`]), a separate durable namespace standing in for an application's
 //! backend; a third, [`TOPOLOGY_STORAGE_REFUSING`], the same backend at a place of its own whose
 //! store lines are refused by name once a scenario writes its knob ([`refuse_list_knob`]: an
@@ -65,8 +65,7 @@ pub const LISTENERS: [&str; 3] = ["kafka", "rest", "proxy"];
 pub const TOPOLOGY_STORAGE_TARGET: &str = "test-target";
 
 /// Where [`TOPOLOGY_STORAGE_TARGET`] keeps its stores for a fabric whose store dir
-/// (`RDM_STORE_DIR`) is `store_dir`: a directory beside it, never inside it, so the file provider's
-/// store dir holds only its own roots.
+/// (`RDM_STORE_DIR`) is `store_dir`: its place under it ([`provider_dir`]).
 pub fn topology_storage_dir(store_dir: &std::path::Path) -> std::path::PathBuf {
     provider_dir(store_dir, TOPOLOGY_STORAGE_TARGET)
 }
@@ -89,10 +88,13 @@ pub fn refuse_list_knob(store_dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// Where the testkit provider `provider` keeps its stores for a fabric whose store dir is `store_dir`:
-/// a directory beside it, never inside it.
+/// `<store_dir>/<provider>/`, under the one directory every node of the fabric reaches (the process
+/// provider's host directory; the container provider mounts it at its host path in every runtime,
+/// storage.md §2: "A provider is one set of stores for the fabric, reached by every node that
+/// writes"). It sits beside the file provider's roots (`<store_dir>/<fabric_id>/`) and is never one: a
+/// provider's name is never a fabric id, so each root holds only its own files.
 pub fn provider_dir(store_dir: &std::path::Path, provider: &str) -> std::path::PathBuf {
-    let name = store_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    store_dir.with_file_name(format!("{name}-{provider}"))
+    store_dir.join(provider)
 }
 
 /// A backend whose copy lines refuse every store's list by name while `knob` stands; everything else
@@ -146,7 +148,7 @@ impl rdm_node::storage_copy::ProviderLines for ListRefused {
 }
 
 /// The topology storage providers the testkit's node-admin registers (storage.md §2): RDM's `file`
-/// backend on the fabric's store dir, [`TOPOLOGY_STORAGE_TARGET`] on its own place beside it
+/// backend on the fabric's store dir, [`TOPOLOGY_STORAGE_TARGET`] on its own place under it
 /// ([`topology_storage_dir`]), [`TOPOLOGY_STORAGE_REFUSING`] on its own ([`provider_dir`]), each made
 /// here when absent, and [`TOPOLOGY_STORAGE_MEMORY`].
 #[cfg(feature = "file-backend")]

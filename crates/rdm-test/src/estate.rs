@@ -37,10 +37,6 @@ pub fn artifacts_root() -> PathBuf {
     }
 }
 
-/// The fabrics' name index beside the per-fabric roots under a store_dir (R-FN1,
-/// `rdm_admin::store_root::FABRIC_NAMES`): not a fabric root.
-const FABRIC_NAMES: &str = "fabrics";
-
 /// Directory holding the built binaries: `RDM_BIN_DIR`, else the cargo
 /// target dir's profile directory this test binary was built into.
 pub fn bin_dir() -> PathBuf {
@@ -873,8 +869,9 @@ impl Estate {
         estate_store_dir(&self.root)
     }
 
-    /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one fabric directory the
-    /// estate's store_dir holds beside the fabrics' name index (`fabrics/`, R-FN1).
+    /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one directory of the
+    /// estate's store_dir named by a fabric id. The testkit providers' places beside it
+    /// (`test_app::provider_dir`) are named by their providers and are no fabric root.
     pub fn fabric_store_root(&self) -> PathBuf {
         let store = estate_store_dir(&self.root);
         let fabrics: Vec<PathBuf> = std::fs::read_dir(&store)
@@ -882,7 +879,7 @@ impl Estate {
             .flatten()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.is_dir() && p.file_name().is_none_or(|n| n != FABRIC_NAMES))
+            .filter(|p| p.is_dir() && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| rdm_core::FabricId::parse(n).is_ok()))
             .collect();
         match fabrics.as_slice() {
             [one] => one.clone(),

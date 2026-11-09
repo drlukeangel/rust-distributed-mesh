@@ -10,7 +10,7 @@
 //!
 //! Every estate here runs the testkit's faulted node-admin and node, each registering RDM's `file`
 //! backend and the testkit's second provider, [`TOPOLOGY_STORAGE_TARGET`], a file backend at a place of
-//! its own beside the fabric's store dir (`rdm_test::test_app::topology_storage_dir`).
+//! its own under the fabric's store dir (`rdm_test::test_app::topology_storage_dir`).
 
 use rdm_client::{CallEnd, Change, FabricDesired, FabricView, MeshDesired, NodeStatus, NodeView, PathName};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -282,9 +282,10 @@ async fn an_omitted_provider_preserves_the_current_provider() {
     estate.artifact("fabric.json", &json!(fabric));
     estate.artifact("views.json", &json!(Estate::values(&views)));
     fabric_names(&fabric, TOPOLOGY_STORAGE_TARGET, &[]);
-    // Day 0 on the named provider: its place holds the fabric's root, the file provider's store dir none.
+    // Day 0 on the named provider: its place holds the fabric's root, the file provider's store dir none
+    // beside the testkit providers' places.
     let store_dir = estate.store_dir();
-    let file_held: Vec<String> = std::fs::read_dir(&store_dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+    let file_held: Vec<String> = std::fs::read_dir(&store_dir).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| ![TOPOLOGY_STORAGE_TARGET, TOPOLOGY_STORAGE_REFUSING].contains(&n.as_str())).collect()).unwrap_or_default();
     assert!(file_held.is_empty(), "the file provider's store dir {} holds nothing of the fabric: {file_held:?}", store_dir.display());
     let target = topology_storage_dir(&store_dir).join(fabric.id.to_string());
     assert!(target.join(rdm_admin::store_root::LAYOUT).is_file(), "the fabric's root is on {TOPOLOGY_STORAGE_TARGET}'s place {}", target.display());
@@ -457,7 +458,8 @@ async fn change_to(estate: &Estate, provider: &str) -> (String, String) {
 /// store: the change's end (storage.md §2 "Changing it").
 async fn ended(estate: &Estate, change_id: &str) -> Value {
     let (file_root, target_root) = roots(estate);
-    let roots = [file_root, target_root, topology_storage_dir(estate.fabric_store_root().parent().expect("the root is under the store dir")).join("..").join("refusing")];
+    let refusing_root = rdm_test::test_app::provider_dir(file_root.parent().expect("the root is under the store dir"), TOPOLOGY_STORAGE_REFUSING).join(file_root.file_name().expect("the root is named by its fabric id"));
+    let roots = [file_root, target_root, refusing_root];
     wait_for(&format!("the rdm.storage.ended event of storage change {change_id}"), SETTLE, || {
         let roots = roots.clone();
         async move {
@@ -1412,11 +1414,9 @@ async fn a_customer_returns_to_a_previous_topology_provider() {
 }
 
 /// The container provider's cells: opt-in, the container-proof step (`RDM_CONTAINER_PROOF=1`, or
-/// `RDM_REQUIRE_CONTAINER=1`); otherwise each skips by name. Each is ignored by name until a role node's
-/// container reaches the testkit's second provider: run opted in at 17fbf387e, every node-admin moved
-/// onto `test-target` and each node refused its move, `refusing to start: <estate>/store-test-target:
-/// the store_dir (RDM_STORE_DIR) cannot be used`, its mesh-primary replying `unblocked` with the node
-/// left on `file` and writing there after the switch.
+/// `RDM_REQUIRE_CONTAINER=1`); otherwise each skips by name. Every node's container reaches the place
+/// of `test-target`: it is under the store dir the container provider mounts in every runtime
+/// (`rdm_test::test_app::provider_dir`).
 mod container {
     /// Whether the opt-in container step runs this cell; otherwise it skips by name.
     fn opted_in(what: &str) -> bool {
@@ -1430,7 +1430,6 @@ mod container {
     /// CONTRACT (i149 R13, R15; container provider): every serving node keeps its birth and
     /// ready through a change, as the process provider's cell states it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/354"]
     async fn every_serving_node_keeps_its_birth_and_ready_through_a_change_containers() {
         if !opted_in("topology storage provider") {
             return;
@@ -1441,7 +1440,6 @@ mod container {
     /// CONTRACT (i149 R14, R15; container provider): a later Build naming the previous provider returns
     /// the fabric to it, as the process provider's cell states it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/354"]
     async fn a_customer_returns_to_a_previous_topology_provider_containers() {
         if !opted_in("topology storage provider") {
             return;
