@@ -209,9 +209,10 @@ pub struct DigestView {
     /// Local to this view: refused on receipt, never projected or published.
     pub(crate) recovering: Arc<Mutex<HashMap<String, IncarnationId>>>,
     /// The deletions this process executed and published as `NodeDeleted`, by the deleted NodeId: its
-    /// mesh's topology carries each in `TopologyFull.deleted` for the retention, whatever mesh the deleted
-    /// birth was in (gossip.md §3.1 `NodeDeleted`: the "executor's own mesh channel; backbone
-    /// Members.deleted"). A deletion this view only heard is not one of them.
+    /// mesh's topology lists each with status `deleted` for the retention ([`Self::with_executed_deletions`]),
+    /// whatever mesh the deleted birth was in (gossip.md §3.1 `NodeDeleted`: the "executor's own mesh
+    /// channel; backbone: the node's status in its mesh's TopologyFull"). A deletion this view only heard
+    /// is not one of them.
     pub(crate) executed_deletions: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The departures the deleted target refused, by the NodeId of the departure held: each operation
     /// key refused by name once. Its publisher carries it in every mesh topology for the retention, and a
@@ -566,7 +567,7 @@ impl DigestView {
 
     /// The removal overlays (`NodeDeleting`) the Build facts ended, closed: an overlay is keyed by its
     /// operation (gossip.md: `(build_id, operation)` is the only operation identity; the overlay rides
-    /// `TopologyFull.in_flight` while the operation has not completed), so it closes when its
+    /// the node's status in `TopologyFull` while the operation has not completed, Q390), so it closes when its
     /// operation's verdict is terminal or its Build is forgotten (`forgotten`). `by_verdict` names each
     /// removal whose operation has a terminal verdict, by the overlay's key, with the verdict's name. A
     /// copy of a closed overlay opens nothing again.

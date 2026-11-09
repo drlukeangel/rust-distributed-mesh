@@ -63,7 +63,8 @@ Never `cargo test -p` in a lane (each `-p` selection rebuilds the stack), never 
 
 ## Tiers and where they live
 
-The tiers are CLAUDE.md's: `unit`, `functional`, `e2e`, `load`, `chaos`. RDM has no `load` tier.
+The tiers are CLAUDE.md's: `unit`, `functional`, `e2e`, `load`, `chaos`. RDM's `load` tier is the load
+harness ([testing-load-harness.md](testing-load-harness.md)), run by `scripts/rdm-load.sh`, never by a gate.
 Its long runs are the soak driver (`crates/rdm-test/tests/fabric/seeded.rs`,
 [testing-strategy-seed.md](testing-strategy-seed.md) §2) and the R-shape composition and traffic
 cells (`crates/rdm-test/tests/rshape_burn_in.rs`, run by the registry's `i143-rshape-*` jobs).
@@ -73,6 +74,7 @@ cells (`crates/rdm-test/tests/rshape_burn_in.rs`, run by the registry's `i143-rs
 | unit | inline `#[cfg(test)] mod tests` in `<crate>/src/*.rs`, run by the crate's `lib` executable | one function's behaviour |
 | functional | `<crate>/tests/*.rs`, each a module of the crate's one `tests/main.rs` executable: `rdm-admin`, `rdm-core`, `rdm-node`, `rdm-transport`, `tools/mesh-audit` | one internal mechanism, in-process; a cell may read an internal map or field when no public surface can express the assertion |
 | e2e | `crates/rdm-test/tests/<family>/<file>.rs`, modules of `rdm-test`'s `main` executable; families `build/`, `connections/`, `elections/`, `fabric/`, `gossip/`, `mesh/`, `node/`, `rpc/`, `runtime/`; some files still sit at the top of `tests/` | an operation or mechanism on live processes, through public surfaces only |
+| load | `crates/rdm-test/tests/load/`, in `rdm-test`'s `main` executable: the `load_profile_<l1\|l2\|l3\|l4>_*` cells, ignored by every gate and run by `scripts/rdm-load.sh <profile>` | RDM at scale: each measure one row, read against the plan's targets ([testing-load-harness.md](testing-load-harness.md)) |
 | chaos | `crates/rdm-test/tests/chaos/` (the fault backends' own cells), the chaos-kit backends in `crates/rdm-test/src/*_faults.rs`, and the registry's `chaos-process`/`chaos-container` jobs | faults applied to a running estate |
 
 `rdm-test` also has a second executable, `memory_estate` (`tests/memory_estate.rs`), which builds
