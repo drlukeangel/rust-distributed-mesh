@@ -187,7 +187,11 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         .expect("mesh1.node-admin.2 took the stopped node's newer Digest as a sync issue");
 
         // The top-up: mesh1.node-admin.2 reads from its own Mesh's primary.
-        let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));
+        // The top-up of the sync issue this cell made, the stopped node heard again: another may come
+        // first (a Digest of a birth whose runtime fact is not held yet is a sync issue too, Q400).
+        let topped = |f: &BTreeMap<String, String>| {
+            f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1")) && f.get("reasons").is_some_and(|r| r.contains("mesh1:stopped-birth-heard"))
+        };
         if tokio::time::timeout(TOP_UP, spans.recorded("rdm.mesh.entry.update.via-top-up", topped)).await.is_err() {
             let rejected = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()));
             panic!(
