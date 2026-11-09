@@ -12,7 +12,7 @@
 
 use rdm_client::{BuildFrame, BuildId, BuildStream, Change, NodeStatus, NodeView};
 use rdm_admin::build_state::{BuildState, StepOutcome};
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -75,10 +75,14 @@ async fn until_pending(stream: &mut BuildStream, operation: &str) -> Vec<BuildFr
 /// attempts, no claims, no next-pass pickup): a Build grows `mesh2` by two nodes. The first is created
 /// and the second launched and held at its `pre_node_ready` when `mesh2`'s primary is killed: the section call ends
 /// short, the Build ends `incomplete` naming `mesh2`, and nothing runs it on its own. `mesh2`'s other
-/// node-admin takes the mesh's primary role. The resubmit by the build_id dispatches `mesh2`'s section
-/// to that new primary, which reads the Build and its step events from storage and runs only the steps
-/// whose event did not end `complete`; the Build ends `complete`. Must NOT happen: a second Build, a
-/// run of the section before the resubmit, or a step that ended `complete` run again.
+/// node-admin takes the mesh's primary role, and the held node is released once its own view names
+/// that primary: its start's one topology read goes to its own current mesh-primary (node-topology-get.md,
+/// "exact member → own mesh-primary"), and a start finishes on its direct calls (Q90), so one released
+/// while its view still names its lost launcher ends at that admin (#373). The resubmit by the build_id
+/// dispatches `mesh2`'s section to that new primary, which reads the Build and its step events from
+/// storage and runs only the steps whose event did not end `complete`; the Build ends `complete`. Must
+/// NOT happen: a second Build, a run of the section before the resubmit, a step that ended `complete`
+/// run again, or the released node's start ended at a step.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_events() {
     let test = "a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_events";
@@ -90,7 +94,8 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     let mut stream = estate.submit_shape(FABRIC, &[("mesh1", 2, 1), ("mesh2", 2, 4)]).await;
     let build_id: BuildId = stream.build_id().clone();
     let b = build_id.to_string();
-    let held_op = format!("node.create:{}", crate::build_log::created_id(&estate, &b, &held_at).await);
+    let held_id = crate::build_log::created_id(&estate, &b, &held_at).await.to_string();
+    let held_op = format!("node.create:{held_id}");
     until_pending(&mut stream, &held_op).await;
     drop(stream);
 
@@ -107,6 +112,20 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     let new = estate
         .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != old.node_id).cloned())
         .await;
+    // The held node's own view names that primary before it is released: the entered admin's view
+    // naming it is not yet the held node's (#373, as #369).
+    let new_id = new.node_id.to_string();
+    wait_for("the held node's own view names mesh2's new primary", SETTLE, || {
+        let spans = estate.spans();
+        let (held_id, new_id) = (held_id.clone(), new_id.clone());
+        async move {
+            named(&spans, "rdm.node_rpc.primary.update.via-topology")
+                .into_iter()
+                .any(|sp| attr(sp, "node") == held_id && attr(sp, "mesh") == "mesh2" && attr(sp, "primary_node_id") == new_id)
+                .then_some(())
+        }
+    })
+    .await;
     rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "pass").unwrap();
     let resubmitted_ns = now_ns();
     let resumed = tokio::time::timeout(SETTLE * 2, async { estate.follow_to_terminal(estate.resubmit(&build_id).await).await }).await.unwrap_or_else(|_| panic!("the resubmitted Build {b} has no terminal within {:?}", SETTLE * 2));
@@ -130,6 +149,10 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     let step_events: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-step-event").into_iter().filter(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2" && sp["trace_id"] == picked["trace_id"]).collect();
     assert!(!step_events.is_empty(), "the new primary wrote the remaining steps' events in the resubmitted section's trace");
     assert!(step_events.iter().all(|sp| !stood.iter().any(|(op, step)| attr(sp, "op") == op && attr(sp, "step") == step)), "the resubmitted section wrote no event of a step that stood: {step_events:?}");
+    let failed: Vec<&Value> = named(&spans, "rdm.mesh.node.reject.via-start-step-failed").into_iter().filter(|sp| attr(sp, "node_id") == held_id).collect();
+    assert!(failed.is_empty(), "the released node's start ended at no step: {failed:?}");
+    let taken = named(&spans, "rdm.mesh.node.update.via-topology-taken").into_iter().find(|sp| attr(sp, "node_id") == held_id).cloned().unwrap_or_else(|| panic!("the released node's start read its topology"));
+    assert_eq!(attr(&taken, "served_by"), new_id, "the released node read its topology from mesh2's new primary: {taken}");
 
     println!("flame (resubmitted section at mesh2's new primary): http://192.168.68.99:16687/trace/{}", s(&picked["trace_id"]));
     println!("flame (mesh2's section unfinished at the loss): http://192.168.68.99:16687/trace/{}", s(&unfinished["trace_id"]));
