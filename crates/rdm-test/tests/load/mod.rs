@@ -1098,9 +1098,11 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
                 continue;
             }
             // The view poll above returned once every admin's topology held the status; each admin's
-            // BatchSpanProcessor exports its closed spans on a 200 ms schedule (telemetry.rs:298), so
-            // read incremental spans across one export window before declaring a sample unseen.
-            let flush_until = Instant::now() + Duration::from_millis(500);
+            // BatchSpanProcessor exports its closed spans on a 200 ms schedule (telemetry.rs:298), and a
+            // freshly started process's first batches come later (the first stop's mesh-primary write,
+            // left unseen at 500 ms in every profile at 9da952102), so read incremental spans for up to
+            // 2 s before declaring a sample unseen. A sample its spans name ends the wait at once.
+            let flush_until = Instant::now() + Duration::from_secs(2);
             let sampled = loop {
                 let spans = estate.spans_named(&[
                     "rdm.mesh.topology.update.from-command-admitted",
