@@ -191,7 +191,14 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         .expect("the fabric primary recovered the lost mesh-primary");
     assert_eq!(attr(first, "outcome"), "complete", "the fabric primary's recovery of {lost}'s primary completed: {first}");
     let under = |name: &str| named(&spans, name).into_iter().find(|c| c["parent_span_id"] == first["span_id"] && attr(c, "node_id") == lost_primary_id).cloned();
-    assert!(under("rdm.node_admin.node.delete.via-node-recovery").is_some(), "the lost birth is deleted under its recovery: {first}");
+    let deleting = under("rdm.node_admin.node.delete.via-node-recovery").unwrap_or_else(|| panic!("the lost birth is deleted under its recovery: {first}"));
+    // The fabric primary's recovery asks `pre_node_recreate` too, its last step before node.delete
+    // (fabric-node-hooks.md "pre_node_recreate", Q416): this estate's node-admins are RDM's own
+    // executable, which registers none, so the hook's span is `none-registered`.
+    let asked = under("rdm.node_admin.node.update.via-pre-node-recreate").unwrap_or_else(|| panic!("the fabric primary's recovery asks pre_node_recreate under its span: {first}"));
+    assert_eq!(attr(&asked, "outcome"), "none-registered", "{asked}");
+    assert!(asked["end_unix_nano"].as_u64().unwrap_or(u64::MAX) <= at(&deleting), "the hook span closes before node.delete of the lost mesh-primary: {asked} vs {deleting}");
+    eprintln!("fabric primary's recovery: trace {} | pre_node_recreate outcome {} | node.delete +{} ns after the hook", s(&first["trace_id"]), attr(&asked, "outcome"), at(&deleting).saturating_sub(asked["end_unix_nano"].as_u64().unwrap_or(0)));
     let created = under("rdm.node_admin.node.create.via-node-recovery").unwrap_or_else(|| panic!("a node-admin is created under the recovery: {first}"));
     let recovery_admin = PathName::new(attr(&created, "node_path"), attr(&created, "node_name")).expect("a create names its location");
     // Its node id is the one it joins with: the node writes its own record (Q356), so the create

@@ -113,7 +113,7 @@ node `Pending`, and nothing retries until someone acts:
 |---|---|
 | a Build (Create) | the step's `rdm.build.step` event, `failed { reason }`; its mesh's section ends, and the Build ends `incomplete` (Q346) |
 | a `node.start` command | the command ends `Failed { reason }` to its caller, recorded on the node record |
-| [node recovery](lifecycles/node-recovery.md) | the recovery's step, `failed { reason }`, on its span; the recovery stays owed and the next tick runs it again (Q344) |
+| [node recovery](lifecycles/node-recovery.md) | the recovery's step, `failed { reason }`, on its span |
 | Day 0's first node-admin | its start ends `Failed`, and the Day 0 Build is `incomplete` |
 
 For Build-backed work the executor frames the subject's `Pending` on the workflow stream from its

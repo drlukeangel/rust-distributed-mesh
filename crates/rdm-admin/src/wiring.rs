@@ -301,7 +301,11 @@ pub type NodeInvestigatedNotice = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn
 /// `NodeInvestigatedCtx` of `on_node_investigated`, the application releases what the lost birth held
 /// there and answers `Ok(())`, and the recovery runs on, or `Err(reason)`, its `Failed { reason }`: the
 /// recovery ends failed, still owed, and the next recovery tick asks again. One call under the hook's
-/// `Send`, whose time limit covers it: no answer within it, or a panic, is `Failed`.
+/// `Send`, whose time limit covers it: no answer within it, or a panic, is `Failed`. A call still
+/// running at the time limit is cancelled (its future dropped) and named so on the hook's span: the
+/// application's work must tolerate being called again after a cancellation. A view that holds no id
+/// for the birth's mesh asks no application: the recovery ends failed, named on the hook's span as its
+/// own outcome, and the next recovery tick asks again.
 pub type PreNodeRecreate = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 /// The application's notices and hooks a node-admin calls
