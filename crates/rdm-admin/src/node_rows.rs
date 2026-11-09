@@ -8,7 +8,7 @@
 //! - node.delete's admission: `Deleting` ([`NodeRows::deleting`]).
 //! - `NodeDeleted` (node-delete.md step 3), a mesh delete's member, node recovery's lost birth and
 //!   fabric recovery's: `Deleted`, the record and its config kept ([`NodeRows::deleted`],
-//!   [`NodeRows::deleted_unreached`], [`NodeRows::deleted_birth`]).
+//!   [`NodeRows::deleted_exited`], [`NodeRows::deleted_birth`]).
 //!
 //! Every other admin refuses by name (`not-mesh-primary`), another mesh's primary included. A record a
 //! node never wrote (its create ended before its start) is no record, and nothing is written for it.
@@ -122,7 +122,7 @@ impl NodeRows {
     /// Why this admin does not write `mesh`'s records in view `t` (the record at `subject`), naming the
     /// mesh-primary the view holds; `None` when it writes them.
     fn not_writer(&self, t: &Topology, mesh: &str, subject: &PathName) -> Option<String> {
-        if acts_as_mesh_primary(t, &self.me_id, mesh) || self.birth.get().is_some_and(|birth| crate::fabric_recovery::executes_for(self.fabric_recovery.as_ref(), t, birth, mesh)) {
+        if self.writer_rule(t, mesh).is_some() {
             return None;
         }
         let me = self.held_name_in(t);
@@ -134,6 +134,22 @@ impl NodeRows {
         Some(format!("path {me_path:?}, name {me_name:?} ({}) is not the mesh-primary of {mesh} and refuses the record at path {subject_path:?}, name {subject_name:?}: {writer}", self.me_id, me_path = &me.path, me_name = &me.name, subject_path = &subject.path, subject_name = &subject.name))
     }
 
+    /// The rule by which this admin writes `mesh`'s records in view `t`, the `writer` of its
+    /// `via-node-row` spans: `mesh-primary`; `fabric-primary-no-primary`, the fabric-primary for a mesh
+    /// with no primary or a stopped one (R-NS1 item 2); `fabric-recovery`, its executor (build.md §5.3).
+    /// `None` when it writes none of them.
+    fn writer_rule(&self, t: &Topology, mesh: &str) -> Option<&'static str> {
+        if t.is_mesh_primary(mesh, &self.me_id) {
+            Some("mesh-primary")
+        } else if acts_as_mesh_primary(t, &self.me_id, mesh) {
+            Some("fabric-primary-no-primary")
+        } else if self.birth.get().is_some_and(|birth| crate::fabric_recovery::executes_for(self.fabric_recovery.as_ref(), t, birth, mesh)) {
+            Some("fabric-recovery")
+        } else {
+            None
+        }
+    }
+
     /// Whether this admin, the fabric-primary, writes the record of the node-admin `node_id` as acting
     /// primary of its mesh: the mesh holds no primary but that node (node-identity-and-state.md §4.3).
     fn acting_for(&self, t: &Topology, mesh: &str, node_id: &NodeId) -> bool {
@@ -143,14 +159,14 @@ impl NodeRows {
     /// The writer check of the record of `node_id` at `name` in view `t`: this admin writes it as its
     /// mesh's mesh-primary or, `acting` (a node-admin's record), as the fabric-primary acting for a mesh
     /// that holds no primary but that node; any other admin refuses it by name. Answers the name this
-    /// admin holds.
-    fn writer_in(&self, t: &Topology, name: &PathName, mesh: &str, node_id: &NodeId, acting: bool) -> Result<PathName, RowRefused> {
+    /// admin holds and the rule it writes by ([`Self::writer_rule`], or `fabric-primary-acting`).
+    fn writer_in(&self, t: &Topology, name: &PathName, mesh: &str, node_id: &NodeId, acting: bool) -> Result<(PathName, &'static str), RowRefused> {
         if acting && self.acting_for(t, mesh, node_id) {
-            return Ok(self.held_name_in(t));
+            return Ok((self.held_name_in(t), "fabric-primary-acting"));
         }
-        match self.not_writer(t, mesh, name) {
-            Some(why) => Err(RowRefused::NotMeshPrimary(why)),
-            None => Ok(self.held_name_in(t)),
+        match self.writer_rule(t, mesh) {
+            Some(writer) => Ok((self.held_name_in(t), writer)),
+            None => Err(RowRefused::NotMeshPrimary(self.not_writer(t, mesh, name).unwrap_or_default())),
         }
     }
 
@@ -176,7 +192,7 @@ impl NodeRows {
     }
 
     /// Whether this admin writes the `Deleted` record of the unreached birth `record` now
-    /// ([`Self::deleted_unreached`]).
+    /// ([`Self::deleted_exited`]).
     pub async fn writes_unreached(&self, record: &Node) -> bool {
         self.writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type)).is_ok()
     }
@@ -190,8 +206,8 @@ impl NodeRows {
     /// for a mesh with no primary): the node's latest record with state `Deleting`. One
     /// `rdm.node_admin.node.update.via-node-row` span.
     pub async fn deleting(&self, record: &Node) -> Result<(), RowRefused> {
-        let me = self.writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))?;
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-row", node_path = %me.path, node_name = %me.name, subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, state = "deleting", outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let (me, writer) = self.writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))?;
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-row", node_path = %me.path, node_name = %me.name, subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, state = "deleting", writer, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let written = async {
             let Some(mut row) = self.storage.node(&record.node_id).await.map_err(|e| RowRefused::Unwritten(e.to_string()))?.map(|l| l.record) else {
                 return Ok(false);
@@ -219,13 +235,13 @@ impl NodeRows {
     /// node's mesh-primary (the fabric-primary for a mesh with no primary). One
     /// `rdm.node_admin.node.update.via-node-row` span. `Ok(true)` when it was written.
     pub async fn investigated(&self, record: &Node, to: NodeStatus) -> Result<bool, RowRefused> {
-        let me = self.writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))?;
+        let (me, writer) = self.writer_in(&*self.view.read().await, &record.location(), &record.mesh, &record.node_id, rdm_core::is_node_admin(&record.r#type))?;
         let state = match to {
             NodeStatus::PendingReconnect => "pending-reconnect",
             NodeStatus::Dead => "dead",
             _ => "other",
         };
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-row", node_path = %me.path, node_name = %me.name, subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, state, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-row", node_path = %me.path, node_name = %me.name, subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, state, writer, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let written = async {
             let Some(mut row) = self.storage.node(&record.node_id).await.map_err(|e| RowRefused::Unwritten(e.to_string()))?.map(|l| l.record) else {
                 return Ok(false);
@@ -251,10 +267,13 @@ impl NodeRows {
         self.deleted_record(&record.location(), &record.node_id, operation, false).await
     }
 
-    /// [`Self::deleted`] of an unreached birth (node-recovery.md step 3): a node-admin's record is written
-    /// by its mesh's elected primary, and by the fabric-primary only as acting primary of a mesh with no
-    /// primary (node-identity-and-state.md §4.3; R-OW1).
-    pub async fn deleted_unreached(&self, record: &Node, operation: &rdm_core::OperationId) -> Result<(), RowRefused> {
+    /// [`Self::deleted`] once the provider's exact Exited of `record`'s runtime is in hand: an unreached
+    /// birth's (node-recovery.md step 3), or a reached one's after its stop and termination, run here or
+    /// reused from an executor this one replaced (#365). A node-admin's record is written by its mesh's
+    /// elected primary, and by the fabric-primary as acting primary of a mesh that holds no primary but
+    /// that exited node (node-identity-and-state.md §4.3; R-OW1; mesh-delete.md step 7: it "stops it,
+    /// shows its exit and writes its row deleted as the writer of a mesh with no primary").
+    pub async fn deleted_exited(&self, record: &Node, operation: &rdm_core::OperationId) -> Result<(), RowRefused> {
         self.deleted_record(&record.location(), &record.node_id, operation, rdm_core::is_node_admin(&record.r#type)).await
     }
 
@@ -287,6 +306,7 @@ impl NodeRows {
             subject_path = %name.path, subject_name = %name.name,
             operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
             node_id = %node_id,
+            writer = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
@@ -294,7 +314,8 @@ impl NodeRows {
         let r = tracing::Instrument::instrument(
             async {
                 let mesh = rdm_core::path::mesh_of(&name.path);
-                let me = self.writer_in(&*self.view.read().await, name, &mesh, node_id, acting)?;
+                let (me, writer) = self.writer_in(&*self.view.read().await, name, &mesh, node_id, acting)?;
+                tracing::Span::current().record("writer", writer);
                 let written = if name_checked { write_deleted(&*self.storage, name, node_id).await } else { write_record_deleted(&*self.storage, node_id).await };
                 written.map(|row| row.is_some()).map_err(|e| match e {
                     DeletedRefused::NameHeld(held) => RowRefused::NameHeld(held),

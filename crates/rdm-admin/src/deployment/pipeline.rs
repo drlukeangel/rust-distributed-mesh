@@ -2264,7 +2264,7 @@ impl DeploymentPipeline<'_> {
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
             run.given(DeleteStep::NodeDeleted.name(), &op);
-            let op = self.step(&mut run, DeleteStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone(), false)).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone(), true)).await?;
             self.lifecycle.deleted(&op).await;
             self.complete(&mut run).await
         }
@@ -2394,7 +2394,7 @@ impl DeploymentPipeline<'_> {
                 // step and before node.deleted (lifecycles/node-delete.md step 3): a node created at that
                 // path and name, a recovery's create included, writes its row over it and seeds its
                 // config from it (node-recovery.md "Retained").
-                self.deleted_row(&node, op.clone(), req.unreached).await
+                self.deleted_row(&node, op.clone(), true).await
             })
             .await?;
         self.lifecycle.deleted(&op).await;
@@ -2505,11 +2505,12 @@ impl DeploymentPipeline<'_> {
 
     /// `NodeDeleted`'s work (lifecycles/node-delete.md step 3, before node.deleted): the writer of the
     /// mesh's rows writes `record`'s row `Deleted` at its `(path, name)`, the record and its config
-    /// kept; a refusal fails the step by name. `unreached`: the delete of an unreached birth
-    /// ([`crate::node_rows::NodeRows::deleted_unreached`]).
-    async fn deleted_row(&self, record: &Node, op: LifecycleOp, unreached: bool) -> Result<LifecycleOp, String> {
+    /// kept; a refusal fails the step by name. `exited`: the provider's exact Exited of `record`'s runtime
+    /// is in hand, run here or reused ([`crate::node_rows::NodeRows::deleted_exited`]); a delete of this
+    /// admin's own birth writes its row before its runtime exits.
+    async fn deleted_row(&self, record: &Node, op: LifecycleOp, exited: bool) -> Result<LifecycleOp, String> {
         if let Some(rows) = self.sink.node_rows() {
-            let written = if unreached { rows.deleted_unreached(record, &op.operation).await } else { rows.deleted(record, &op.operation).await };
+            let written = if exited { rows.deleted_exited(record, &op.operation).await } else { rows.deleted(record, &op.operation).await };
             written.map_err(|e| format!("{}: the Deleted row of {} is not written: {e}", record.node_id, record.node_id))?;
         }
         Ok(op)

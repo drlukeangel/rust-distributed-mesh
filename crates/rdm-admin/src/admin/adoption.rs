@@ -258,6 +258,8 @@ pub async fn release_name(lost: &crate::storage::OwnRow, me_id: &NodeId, nodes: 
         subject_path = %name.path, subject_name = %name.name,
         operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
         node_id = %lost.node_id,
+        // The writer: the adoption launch, acting for the lost node (Q356).
+        writer = "adoption-launch",
         outcome = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
