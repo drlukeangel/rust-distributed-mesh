@@ -99,13 +99,13 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
     });
 }
 
-/// CONTRACT (node-mesh-leave.md: "the node publishes nothing in that state and nothing after it",
-/// R-ON1; node-stop.md step 4: "The node gossips nothing for this step"): a node whose status moves to
-/// Leaving stops publishing its Digest. Its peer holds it at the last status it published, Ready, and
-/// never hears it Leaving. Must NOT happen: the publish loop sending the Leaving Digest until the cut.
+/// CONTRACT (node-mesh-leave.md, Q415: the node "publishes it in its Digest at once, its last Digest
+/// before it leaves the mesh"): a node whose status moves to Leaving publishes it, and its peer holds
+/// it Leaving. Must NOT happen: the publish loop skipping the Leaving Digest, so the peer holds the
+/// node at Ready, its last status before the stop's leave.
 #[test]
-fn a_node_leaving_publishes_no_digest_in_that_state() {
-    if crate::own_process::delegated(module_path!(), "a_node_leaving_publishes_no_digest_in_that_state") {
+fn a_node_leaving_publishes_leaving_as_its_last_digest() {
+    if crate::own_process::delegated(module_path!(), "a_node_leaving_publishes_leaving_as_its_last_digest") {
         return;
     }
     let dir = crate::evidence_dir();
@@ -145,6 +145,6 @@ fn a_node_leaving_publishes_no_digest_in_that_state() {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         pb.abort();
         pa.abort();
-        assert!(heard(NodeStatus::Ready), "the peer holds the node at its last published status, Ready, never Leaving: {:?}", ma.digest_view.get(b_id.as_str()).map(|(d, _)| d.status));
+        assert!(heard(NodeStatus::Leaving), "the peer holds the node Leaving, its last Digest: {:?}", ma.digest_view.get(b_id.as_str()).map(|(d, _)| d.status));
     });
 }

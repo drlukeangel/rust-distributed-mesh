@@ -304,13 +304,17 @@ fn spread_from_spans(spans: &[Value], admins: &[rdm_core::NodeId], member: &rdm_
         _ => false,
     };
     let received = |sp: &Value| is(sp) || (status == "leaving" && a(sp, "status").eq_ignore_ascii_case("stopping"));
-    let applies = |sp: &Value| writes(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-digest-status") && a(sp, "member_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && received(sp));
+    // A stop reaches a node-admin as the node's leaving Digest where it is heard, else as its
+    // mesh-primary's NodeStopped (Q415): the NodeStopped span names its node-admin `observer`.
+    let stopped_at = |sp: &Value| status == "leaving" && s(&sp["name"]) == "rdm.mesh.topology.remove.via-node-stopped" && a(sp, "node_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str();
+    let applies = |sp: &Value| writes(sp) || stopped_at(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-digest-status") && a(sp, "member_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && received(sp));
+    let at_admin = |sp: &Value, admin: &str| if stopped_at(sp) { a(sp, "observer") == admin } else { a(sp, "node") == admin };
     let after: Vec<&Value> = spans.iter().filter(|sp| start_ns(sp) >= since).collect();
     let origin = after.iter().filter(|sp| writes(sp)).map(start_ns).min().ok_or_else(|| vec![format!("the mesh-primary's write of {member} {status}")])?;
     let mut last = origin;
     let mut missing = Vec::new();
     for admin in admins {
-        match after.iter().filter(|sp| applies(sp) && a(sp, "node") == admin.to_string()).map(start_ns).min() {
+        match after.iter().filter(|sp| applies(sp) && at_admin(sp, &admin.to_string())).map(start_ns).min() {
             Some(at) => last = last.max(at),
             None => missing.push(admin.to_string()),
         }
@@ -1103,6 +1107,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
                     "rdm.mesh.topology.update.from-node-started",
                     "rdm.mesh.topology.update.via-member-state",
                     "rdm.mesh.topology.update.via-digest-status",
+                    "rdm.mesh.topology.remove.via-node-stopped",
                 ]);
                 match spread_from_spans(&spans, &admin_ids, &member, status, since) {
                     Ok(ms) => break Ok(ms),

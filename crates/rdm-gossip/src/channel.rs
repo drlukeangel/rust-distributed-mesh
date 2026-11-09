@@ -1382,10 +1382,9 @@ impl Channels {
             let mut stopped = me.mesh().stopped.subscribe();
             loop {
                 let d = (!*me.mesh().stopped.borrow()).then(&digest);
-                // A birth Leaving publishes nothing in that state (node-mesh-leave.md: "the node
-                // publishes nothing in that state and nothing after it", R-ON1): its heartbeat ends
-                // with the status move, before its cut.
-                if let Some(d) = d.filter(|d| d.status != rdm_core::model::NodeStatus::Leaving) {
+                // A birth Leaving publishes leaving as its last Digest, until it leaves the mesh, and
+                // nothing after it (node-mesh-leave.md, Q415): its mesh-primary's NodeStopped follows.
+                if let Some(d) = d {
                     let _ = me.publish(&d).await;
                     if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
                         last_heartbeat = Some(Instant::now());

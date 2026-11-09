@@ -394,7 +394,7 @@ connections-deleted, leaving, left, stopping, stopped, deleting and deleted, eac
 define, and `PendingReconnect`, the status of a node under its mesh-primary's self-heal [investigation](lifecycles/node-investigation.md) (Q393).
 The node writes its status on its own record (Q356) and publishes it in its Digest at once when it
 changes and on every heartbeat ([gossip](gossip.md#31-frame-catalog)); its mesh-primary writes
-`PendingReconnect`, deleting and deleted. A stopping node's last Digest carries stopping, and its
+`PendingReconnect`, deleting and deleted. A stopping node's last Digest carries leaving (Q415), and its
 mesh-primary publishes `NodeStopped` from the stop stream's `node.stopped` frame.
 
 - **Shutdown is signal-driven.** SIGINT and SIGTERM run the node's own stop steps
