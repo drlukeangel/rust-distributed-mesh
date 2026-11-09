@@ -75,6 +75,15 @@ async fn estate(test: &str) -> Estate {
     for node in [broker(), gateway(), carrier()] {
         estate.until_node(&node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.state == NodeStatus::Ready).map(|_| ())).await;
     }
+    // Each gateway streams to the broker by its node id, which the gateway resolves in its own view
+    // (`rdm_test::originate`): Ready in the entered admin's view is not yet in a gateway's own (#369).
+    let broker_id = id_at(&estate, &broker()).await;
+    let peers = estate.peers().await;
+    for node in [gateway(), carrier()] {
+        let view = estate.node_view(&node).await;
+        let fact = format!("{:?} ({broker_id}) in {node:?}'s own view", broker());
+        rdm_test::typed::peer_holds(&peers, &view, "mesh1", &fact, |v| v.members.iter().any(|b| b.node.node_id == broker_id)).await;
+    }
     estate
 }
 
