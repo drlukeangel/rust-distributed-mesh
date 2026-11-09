@@ -181,10 +181,30 @@ fn own_record_within(dir: &std::path::Path, within: Duration) -> Result<rdm_core
     }
 }
 
-/// Whether a task of `pid` has not yet exited: it is in `/proc/<pid>/task` and its state is not zombie.
-fn live_task(pid: u32) -> bool {
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return false };
-    tasks.flatten().any(|t| std::fs::read_to_string(t.path().join("stat")).is_ok_and(|stat| stat.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z'))))
+/// Whether a task of the process `pid` started at `start` has not yet exited. Exited is read only
+/// from evidence: no process holds `pid` with that start token, or every task `/proc/<pid>/task`
+/// lists is a zombie. A task list or a task state this reap cannot read is not exited: the reap waits
+/// on, within its bound (#367: a reap that read nothing returned while its node still ran).
+fn live_task(pid: u32, start: u64) -> bool {
+    match rdm_core::runtime::process_start_token(pid) {
+        // Another process holds the pid: this one has exited.
+        Some(token) if token != start => return false,
+        Some(_) => {}
+        // No token read: exited only when no `/proc/<pid>` stands; a token that cannot be read is not exited.
+        None => return std::path::Path::new(&format!("/proc/{pid}")).exists(),
+    }
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return true };
+    let mut listed = 0;
+    for task in tasks {
+        let Ok(task) = task else { return true };
+        listed += 1;
+        let Ok(stat) = std::fs::read(task.path().join("stat")) else { return true };
+        let state = stat.rsplit(|b| *b == b')').next().and_then(|rest| rest.trim_ascii_start().first().copied());
+        if state != Some(b'Z') {
+            return true;
+        }
+    }
+    listed == 0 && rdm_core::runtime::process_start_token(pid) == Some(start)
 }
 
 /// One process this reap signalled, held by a pidfd: the fd names that exact process for its whole
@@ -193,6 +213,8 @@ fn live_task(pid: u32) -> bool {
 struct Pidfd {
     fd: std::os::fd::OwnedFd,
     pid: u32,
+    /// The process's start token, read from its `deployment.json` and checked before the signal.
+    start: u64,
     dir: std::path::PathBuf,
 }
 
@@ -228,7 +250,7 @@ impl Pidfd {
             eprintln!("reap: SIGKILL to pid {pid} ({}) failed: {}", dir.display(), std::io::Error::last_os_error());
             return None;
         }
-        Some(Self { fd, pid, dir: dir.to_path_buf() })
+        Some(Self { fd, pid, start, dir: dir.to_path_buf() })
     }
 
     /// Wait until the process has exited, at most `within`; a process still running after that is
@@ -244,7 +266,7 @@ impl Pidfd {
                 // each to leave `/proc/<pid>/task` or show as a zombie, within the same bound.
                 1.. => {
                     let deadline = std::time::Instant::now() + within;
-                    while live_task(self.pid) {
+                    while live_task(self.pid, self.start) {
                         if std::time::Instant::now() >= deadline {
                             eprintln!("reap: pid {} ({}) still has a task running {within:?} after SIGKILL", self.pid, self.dir.display());
                             return;
