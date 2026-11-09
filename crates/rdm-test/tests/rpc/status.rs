@@ -206,6 +206,11 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1.node-admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.node-admin.1", estate.nodes_obj().await.start(&a1).await).await;
     estate.until_node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1.node-admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready && !n.is_primary).map(|_| ())).await;
+    // mesh1.node.1 holds its type's primary role (Q406): its stop first hands the role to a Ready node of its
+    // type, and the mesh-primary refuses it `no-secondary` until its view holds one (the approved proposal
+    // node-primary-update-fabric-mesh-and-node-type.md, Part C1: "until a secondary is available"). The
+    // entered admin, mesh1.node-admin.2, decides it; its view held mesh1.node.2 Pending when it took the roles (#366).
+    estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node-admin.2 holds mesh1.node.2 ready, the secondary of its type", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready).map(|_| ())).await;
     let before_rpc = estate.node_view(&rpc1).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
