@@ -1,7 +1,8 @@
 //! The testkit's application: it takes the fabric's notices the way an embedding does.
 //!
 //! `on_mesh_ready` and `on_fabric_ready` (Q175), `on_build_started` and `on_build_ended` (Q256), `on_node_investigated` (Q312)
-//! and every node's `on_call_failed` (Q314, [`CallFailed`]) each only record a span. A scenario that holds a fabric
+//! and every node's `on_call_failed` (Q314, [`CallFailed`]) each only record a span; its `pre_node_recreate` (Q416)
+//! records a span and answers `Ok`. A scenario that holds a fabric
 //! short of ready holds a node's `pre_node_ready` (`crate::write_pre_node_ready_knob`), as an
 //! application holds its own node.
 //!
@@ -173,7 +174,8 @@ pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {
     vec![rdm_core::launch::DeclaredSecret { name: DECLARED_SECRET.into(), types: DECLARED_TYPES.iter().map(|t| t.to_string()).collect() }]
 }
 
-/// The hooks of this application: each notice records a span.
+/// The hooks of this application: each notice records a span, and `pre_node_recreate` records one
+/// and answers `Ok`.
 pub fn hooks() -> FabricHooks {
     let on_mesh_ready: rdm_admin::wiring::MeshReadyNotice = Arc::new(|ready: MeshReadyCtx| {
         let span = tracing::info_span!("rdm.testkit.app.update.via-on-mesh-ready", fabric_id = %ready.fabric_id, mesh = %ready.mesh, mesh_id = %ready.mesh_id, "otel.kind" = "internal");
@@ -196,7 +198,18 @@ pub fn hooks() -> FabricHooks {
         let span = tracing::info_span!("rdm.testkit.app.update.via-on-node-investigated", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, incarnation_id = %told.incarnation.as_str(), node_path = %told.path, node_name = %told.name, node_type = %told.r#type, result = told.result.as_str(), inspected, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application was told a node investigation's result") }.instrument(span))
     });
-    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated) }
+    let pre_node_recreate: rdm_admin::wiring::PreNodeRecreate = Arc::new(|asked: NodeInvestigatedCtx| {
+        let inspected = asked.inspected_name();
+        let span = tracing::info_span!("rdm.testkit.app.update.via-pre-node-recreate", fabric_id = %asked.fabric_id, mesh_id = %asked.mesh_id, node_id = %asked.node_id, incarnation_id = %asked.incarnation.as_str(), node_path = %asked.path, node_name = %asked.name, node_type = %asked.r#type, result = asked.result.as_str(), inspected, "otel.kind" = "internal");
+        Box::pin(
+            async move {
+                tracing::info!("the application released what the lost birth held at its path and name");
+                Ok(())
+            }
+            .instrument(span),
+        )
+    });
+    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated), pre_node_recreate: Some(pre_node_recreate) }
 }
 
 /// The testkit application's `on_call_failed`, on every node it runs: it records a span.

@@ -172,9 +172,10 @@ Every term below links to the architecture pages that define it.
 
 ## Hooks, certificates, storage, and recovery
 
-- **hooks (`pre_node_ready`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`)**
+- **hooks (`pre_node_ready`, `pre_node_recreate`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`)**
   ([Fabric and node hooks](architecture/fabric-node-hooks.md)): The entry points where application
-  work plugs into an RDM lifecycle. `pre_node_ready` gates a node's transition to `Ready`; the
+  work plugs into an RDM lifecycle. `pre_node_ready` gates a node's transition to `Ready`, and
+  `pre_node_recreate` a node recovery's re-create of a lost node at its path and name; the
   `on_*` hooks are fire-and-forget notices called after the state or Build transition is recorded.
 - **`rafka-time`** ([Fabric and node hooks](architecture/fabric-node-hooks.md),
   [Gossip](architecture/gossip.md)): The fabric's clock, which says when a fact or publication

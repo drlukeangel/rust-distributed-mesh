@@ -13,6 +13,10 @@ pub(crate) struct Captured {
     pub name: String,
     /// The trace it belongs to.
     pub trace_id: String,
+    /// Its own id.
+    pub span_id: String,
+    /// Its parent's id, all zeros for a root span.
+    pub parent_span_id: String,
     /// Its attributes, rendered.
     pub attributes: std::collections::BTreeMap<String, String>,
     /// When it opened.
@@ -45,7 +49,12 @@ impl Capture {
             .unwrap()
             .into_iter()
             .filter(|s| s.name == name)
-            .map(|s| Captured { name: s.name.to_string(), trace_id: s.span_context.trace_id().to_string(), attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect(), start: s.start_time, end: s.end_time })
+            .map(|s| Captured {
+                name: s.name.to_string(),
+                trace_id: s.span_context.trace_id().to_string(),
+                span_id: s.span_context.span_id().to_string(),
+                parent_span_id: s.parent_span_id.to_string(),
+                attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect(), start: s.start_time, end: s.end_time })
             .collect()
     }
 }

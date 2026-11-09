@@ -408,6 +408,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The application's `on_node_investigated`: told by this admin, as its mesh's primary, of each
     // verdict it writes on a node of its mesh (fabric-node-hooks.md, Q312).
     let on_node_investigated = fabric_hooks.on_node_investigated.clone();
+    // The application's `pre_node_recreate`: asked by this admin, as its mesh's primary, before each
+    // re-create of a node recovery it runs (fabric-node-hooks.md "pre_node_recreate", Q416).
+    let pre_node_recreate = fabric_hooks.pre_node_recreate.clone();
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
     // reads this one reader.
@@ -2536,6 +2539,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     failed: Arc::default(),
                                                     investigated: investigated.clone(),
                                                     reasons: Arc::default(),
+                                                    pre_node_recreate: pre_node_recreate.clone(),
                                                 };
                                                 // A node that will not move in a storage change's mesh.unblock is re-created by this
                                                 // mesh-primary's node recovery, never part of the change (storage.md §2 step 4).
@@ -2878,12 +2882,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 {
                                                     let offline = records.offline.lock().unwrap().clone();
                                                     let failed_now = recovery.failed_recoveries(holds_role, &mesh);
-                                                    let failed_births: HashSet<(NodeId, IncarnationId)> = failed_now.iter().filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
+                                                    let failed_births: HashSet<(NodeId, IncarnationId)> = failed_now.iter().filter_map(|(n, _)| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
                                                     for n in recovery_due(investigates, &mesh, &watched, &offline) {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
                                                         // A birth whose recovery failed here is that recovery's, run again below
-                                                        // with no inspection: its verdict stands, and its own NodeDeleting is no
+                                                        // with no inspection: the inspect's answer that led to it stands, and its own NodeDeleting is no
                                                         // other workflow's removal (Q342, Q344).
                                                         if failed_births.contains(&birth) {
                                                             continue;
@@ -2899,7 +2903,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // node-recovery.md "Failure": a birth whose recovery failed is run again by this
                                                     // tick, whether or not the view still holds it (a recovery whose delete completed
                                                     // deleted it). One recovery per birth in flight, whichever way it is due.
-                                                    for n in failed_now {
+                                                    for (n, inspected) in failed_now {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
                                                         if !recovery.take(&birth, &in_flight) {
@@ -2907,7 +2911,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         }
                                                         let recovery = recovery.clone();
                                                         crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
-                                                            let _ = recovery.recover_again(&n).await;
+                                                            let _ = recovery.recover_again(&n, inspected).await;
                                                         });
                                                     }
                                                     // A second birth another executor made at a path and name of this mesh across a cut:

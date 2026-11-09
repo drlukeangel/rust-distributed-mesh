@@ -2311,4 +2311,138 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The node recovery the rig's mesh-primary, mesh1.node-admin.1, runs on its tick over `runner`, its
+    /// view and its stores, the application's `pre_node_recreate` registered as `hook`.
+    fn recovery_over(runner: &Arc<AdminRunner>, builds: Arc<dyn BuildStateAdapter>, hook: Option<crate::wiring::PreNodeRecreate>) -> RecoverySubmitter {
+        let slot = Arc::new(std::sync::OnceLock::new());
+        let _ = slot.set(runner.clone());
+        RecoverySubmitter {
+            me_path: runner.me_path.clone(), me_name: runner.me_name.clone(),
+            me_id: runner.node_id.clone(),
+            topology: runner.topology.clone(),
+            digest_view: runner.digest_view.clone(),
+            provider: runner.provider.clone(),
+            nodes_storage: runner.nodes_storage.clone(),
+            runner: slot,
+            build_service: Default::default(),
+            client: None,
+            builds,
+            failed: Arc::default(),
+            investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&runner.fabric_id, &runner.node_id),
+            reasons: Arc::default(),
+            pre_node_recreate: hook,
+        }
+    }
+
+    /// A lost member of mesh1 at `mesh1.node`, name `name`, in the rig's view, its own record written at
+    /// its start (Q356: node recovery acts only on a birth that wrote its record).
+    async fn lost_member(runner: &AdminRunner, name: &str) -> Node {
+        use crate::storage::NodesStorage;
+        let at = PathName::new("mesh1.node", name).unwrap();
+        let mut member = Node::allocated(at.clone(), "mesh1", "node");
+        member.incarnation_id = Some(IncarnationId::mint());
+        member.status = NodeStatus::Ready;
+        runner.nodes_storage.put_node(&rdm_node::nodes_storage::fixture_record(&at, "node", member.node_id.clone(), member.incarnation_id.clone().unwrap(), NodeStatus::Ready)).await.unwrap();
+        runner.topology.write().await.nodes.push(member.clone());
+        member
+    }
+
+    /// CONTRACT (fabric-node-hooks.md "pre_node_recreate": "nothing is created at that path and name
+    /// until the application answers"; node-recovery.md sequence step 1, Q416): the mesh-primary
+    /// mesh1.node-admin.1, running on its tick the recovery of its lost member mesh1.node.1, asks the
+    /// application's `pre_node_recreate` once it has written the result `re-created`, with the result's
+    /// `NodeInvestigatedCtx`, before node.delete of the birth and node.create at its path and name.
+    /// (a) The hook answers `Failed`: no node.delete and no node.create of the birth, its record as it
+    /// was, and the recovery ends failed, named on its span, still owed with the inspect's answer.
+    /// (b) The next tick runs the recovery again, the hook included, and on its `Ok` the recovery runs on:
+    /// the hook's span, a child of the recovery's, closes before node.delete's opens.
+    /// (c) With no hook registered, the recovery of mesh1.node.2 runs as before, its hook span
+    /// `none-registered`.
+    /// Must NOT happen: node.delete or node.create of the birth before the application answered `Ok`
+    /// (trace 15ccf04a28b6f7ca1817bdd09588f402: node.delete 4 ms after the application's departure close
+    /// was sent, node.create 18 ms after node.delete).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_mesh_primary_asks_pre_node_recreate_before_it_deletes_and_re_creates_a_lost_birth() {
+        use crate::storage::NodesStorage;
+        use crate::wiring::{NodeInvestigatedCtx, NodeInvestigatedResult};
+        let (dir, runner, builds, _) = runner_rig("q416-pre-node-recreate").await;
+        let asked: Arc<Mutex<Vec<NodeInvestigatedCtx>>> = Arc::default();
+        let answers = Arc::new(Mutex::new(std::collections::VecDeque::from([Err("the lost birth's routing is not released yet".to_string()), Ok(())])));
+        let hook: crate::wiring::PreNodeRecreate = {
+            let (asked, answers) = (asked.clone(), answers.clone());
+            Arc::new(move |ctx: NodeInvestigatedCtx| {
+                asked.lock().unwrap().push(ctx);
+                let answer = answers.lock().unwrap().pop_front().expect("the hook is asked no more often than the cell answers");
+                Box::pin(async move { answer })
+            })
+        };
+        let recovery = recovery_over(&runner, builds.clone(), Some(hook));
+        let lost = lost_member(&runner, "1").await;
+        let capture = crate::span_capture::Capture::new("q416-pre-node-recreate");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let of = |name: &str, n: &Node| capture.named(name).into_iter().filter(|s| s.attributes.get("node_id") == Some(&n.node_id.to_string())).collect::<Vec<_>>();
+        let attr = |s: &crate::span_capture::Captured, k: &str| s.attributes.get(k).cloned().unwrap_or_default();
+        let (ask, submit, delete, create) = ("rdm.node_admin.node.update.via-pre-node-recreate", "rdm.node_admin.node.update.via-node-recovery", "rdm.node_admin.node.delete.via-node-recovery", "rdm.node_admin.node.create.via-node-recovery");
+
+        // (a) The tick's recovery of the birth its investigation wrote dead: the application answers Failed.
+        recovery.investigated.begin(&lost.node_id, lost.incarnation_id.as_ref().unwrap());
+        recovery.recover(&lost).await;
+        for name in [delete, create] {
+            assert!(of(name, &lost).is_empty(), "{name}: nothing is deleted or created before the application answers Ok: {:?}", of(name, &lost));
+        }
+        let told = asked.lock().unwrap().clone();
+        assert_eq!(told.len(), 1, "the application is asked once, after the result: {told:?}");
+        let investigated = of("rdm.node_admin.node.update.via-on-node-investigated", &lost);
+        assert_eq!(investigated.len(), 1, "the result is written once, as its event: {investigated:?}");
+        let mesh1_id = runner.topology.read().await.meshes[0].id.clone().expect("the rig's view holds mesh1's id");
+        let t = &told[0];
+        assert_eq!(
+            (&t.fabric_id, &t.mesh_id, &t.node_id, &t.incarnation, t.path.as_str(), t.name.as_str(), t.r#type.as_str(), t.result, t.inspected_name()),
+            (&runner.fabric_id, &mesh1_id, &lost.node_id, lost.incarnation_id.as_ref().unwrap(), "mesh1.node", "1", "node", NodeInvestigatedResult::ReCreated, attr(&investigated[0], "inspected").as_str()),
+            "told the result's NodeInvestigatedCtx, the one on_node_investigated gets"
+        );
+        let record = runner.nodes_storage.node(&lost.node_id).await.unwrap().expect("the lost birth's record");
+        assert_eq!(record.record.state, NodeStatus::Ready, "the lost birth's record is as it was: no node.delete wrote it");
+        let asks = of(ask, &lost);
+        assert_eq!(asks.len(), 1, "one hook span: {asks:?}");
+        assert_eq!((attr(&asks[0], "outcome").as_str(), attr(&asks[0], "reason").as_str(), attr(&asks[0], "inspected")), ("failed", "the lost birth's routing is not released yet", t.inspected_name().to_string()), "{:?}", asks[0].attributes);
+        let runs = of(submit, &lost);
+        assert_eq!(runs.len(), 1, "one recovery span: {runs:?}");
+        assert_eq!(attr(&runs[0], "outcome"), "failed: pre_node_recreate answered Failed: the lost birth's routing is not released yet", "the recovery ends failed, named on its span");
+        assert_eq!(asks[0].parent_span_id, runs[0].span_id, "the hook's span is a child of the recovery's");
+        assert_eq!(recovery.failed_recoveries(true, "mesh1"), vec![(lost.clone(), t.inspected.clone().expect("a re-created result names the inspect's answer"))], "the failed recovery stays owed to the birth, with the inspect's answer");
+        eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
+        eprintln!("span {submit} trace_id={} {:?}", runs[0].trace_id, runs[0].attributes);
+
+        // (b) The next tick runs it again, the application asked again; it answers Ok and the recovery runs on.
+        let _ = recovery.recover_again(&lost, t.inspected.clone().unwrap()).await;
+        let told = asked.lock().unwrap().clone();
+        assert_eq!(told.len(), 2, "the next tick asks again: {told:?}");
+        assert_eq!((&told[1].node_id, &told[1].incarnation, told[1].result, &told[1].inspected), (&t.node_id, &t.incarnation, t.result, &t.inspected), "asked again of the same birth, on the same result and inspect's answer");
+        let (asks, runs, deletes) = (of(ask, &lost), of(submit, &lost), of(delete, &lost));
+        assert_eq!(asks.len(), 2, "a hook span on each run: {asks:?}");
+        assert_eq!(attr(&asks[1], "outcome"), "ok", "{:?}", asks[1].attributes);
+        assert_eq!(attr(&runs[1], "again"), "true", "the run again is marked `again`: {:?}", runs[1].attributes);
+        assert_eq!(asks[1].parent_span_id, runs[1].span_id, "the hook's span is a child of the recovery's");
+        assert_eq!(deletes.len(), 1, "on Ok the recovery runs on to node.delete of the birth: {deletes:?}");
+        assert_eq!(deletes[0].trace_id, asks[1].trace_id, "node.delete is in the recovery's trace");
+        assert!(asks[1].end <= deletes[0].start, "the hook answered before node.delete of the birth opened: {:?} {:?}", asks[1], deletes[0]);
+        eprintln!("span {ask} trace_id={} {:?}", asks[1].trace_id, asks[1].attributes);
+        eprintln!("span {delete} trace_id={} {:?}", deletes[0].trace_id, deletes[0].attributes);
+
+        // (c) No hook registered: the recovery runs on as before.
+        let plain = recovery_over(&runner, builds, None);
+        let other = lost_member(&runner, "2").await;
+        plain.recover(&other).await;
+        let (asks, deletes) = (of(ask, &other), of(delete, &other));
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(attr(&asks[0], "outcome"), "none-registered", "{:?}", asks[0].attributes);
+        assert_eq!(deletes.len(), 1, "with no hook the recovery runs on to node.delete: {deletes:?}");
+        assert!(asks[0].end <= deletes[0].start, "{:?} {:?}", asks[0], deletes[0]);
+        assert_eq!(asked.lock().unwrap().len(), 2, "the other recovery asks no application");
+        eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

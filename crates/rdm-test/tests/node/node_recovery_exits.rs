@@ -309,6 +309,16 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     // The recovery's own run, in the submit's trace.
     let run = in_trace(&spans, &recovery);
     assert_mesh_primary_ran_the_recovery(&run, &mesh_primary, &before);
+    // The mesh-primary asks the application's `pre_node_recreate` under the submit, and deletes the
+    // exited birth only once the application answered Ok (fabric-node-hooks.md "pre_node_recreate", Q416).
+    let of_birth = |name: &str| named(&run, name).into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned();
+    let asked = of_birth("rdm.node_admin.node.update.via-pre-node-recreate").expect("the recovery asks pre_node_recreate in its trace");
+    assert_eq!(asked["parent_span_id"], recovery["span_id"], "asked under the recovery's submit: {asked}");
+    assert_eq!((s(&asked["attributes"]["outcome"]), s(&asked["attributes"]["inspected"])), ("ok".to_string(), "exited".to_string()), "{asked}");
+    let released = of_birth("rdm.testkit.app.update.via-pre-node-recreate").expect("the application's pre_node_recreate ran in the recovery's trace");
+    assert_eq!(released["parent_span_id"], asked["span_id"], "the application's work is a child of the hook's span: {released}");
+    let deleting = of_birth("rdm.node_admin.node.delete.via-node-recovery").expect("the recovery's node.delete");
+    assert!(end(&asked) <= start(&deleting), "the application answered before node.delete of the exited birth: {asked} vs {deleting}");
     let mut last = 0u64;
     for step in ["NodeDeleting", "NodeDeleted", "RemoveTopologyMembership", "DeployRuntime", "WaitForNodeReady"] {
         let sp = step_span(&run, NO_BUILD, node, step).unwrap_or_else(|| panic!("the recovery's {step} step span"));

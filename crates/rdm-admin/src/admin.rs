@@ -1121,6 +1121,7 @@ mod tests {
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&view.fabric.id, &view.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().node_id),
             reasons: Arc::default(),
+            pre_node_recreate: None,
         };
         (recovery, nodes_storage, member)
     }
@@ -1256,21 +1257,22 @@ mod tests {
         assert_eq!(runs.len(), 1, "one recovery span: {runs:?}");
         let outcome = runs[0].attributes.get("outcome").cloned().unwrap_or_default();
         assert!(outcome.contains("runner is not built yet"), "the recovery ends failed by name: {:?}", runs[0].attributes);
-        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![node.clone()], "the failed recovery stays owed to its birth");
+        let running = Inspected::Running;
+        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![(node.clone(), running.clone())], "the failed recovery stays owed to its birth, with the inspect's answer that led to it");
         eprintln!("span {} trace_id={} {:?}", runs[0].name, runs[0].trace_id, runs[0].attributes);
 
         // The next tick takes it at once, and each tick after while it keeps failing: no wait of its own.
         assert!(recovery.take(&replacement, &in_flight), "another birth, the next at its (path, name), does not wait on it");
         for tick in 1..=4u32 {
             assert!(recovery.take(&birth, &in_flight), "tick {tick}: the next tick takes the failed recovery at once");
-            assert!(recovery.recover_again(&node).await.is_err(), "tick {tick}: run again, it fails again by name");
+            assert!(recovery.recover_again(&node, running.clone()).await.is_err(), "tick {tick}: run again, it fails again by name");
             in_flight.lock().unwrap().remove(&birth);
         }
         let runs = capture.named("rdm.node_admin.node.update.via-node-recovery");
         assert_eq!(runs.len(), 5, "the first recovery and one run again on each of four ticks: {runs:?}");
         assert!(runs[1..].iter().all(|r| r.attributes.get("again").map(String::as_str) == Some("true")), "each later run is marked `again`: {runs:?}");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "a recovery run again is not inspected again");
-        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![node], "still owed while it keeps failing");
+        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![(node, running)], "still owed while it keeps failing");
     }
 
     /// CONTRACT (node-recovery.md "Detection and the result": "A recovery that ends failed is run again
@@ -1303,6 +1305,7 @@ mod tests {
             failed: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint()),
             reasons: Arc::default(),
+            pre_node_recreate: None,
         };
         let mut member = Node::allocated(path.clone(), "mesh2", "node");
         member.node_id = node_id.clone();
@@ -1314,20 +1317,21 @@ mod tests {
             recovery.submit_route(&member, &Inspected::Exited(None), "node-recovery").await
         };
         assert!(first.is_err(), "this cell builds no runner: the recovery fails by name: {first:?}");
-        recovery.failed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), member.clone());
+        let exited = Inspected::Exited(None);
+        recovery.failed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), (member.clone(), exited.clone()));
         assert_eq!(recovery.failed_recoveries(false, "mesh2"), vec![], "nothing is owed by an admin that does not hold the role");
         assert_eq!(recovery.failed_recoveries(true, "mesh1"), vec![], "another mesh's primary is owed none of mesh2's recoveries");
-        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![member.clone()], "the failed recovery stays owed to its exact birth, no view holding it");
+        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![(member.clone(), exited.clone())], "the failed recovery stays owed to its exact birth, no view holding it");
         let again = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            recovery.recover_again(&member).await
+            recovery.recover_again(&member, exited.clone()).await
         };
         assert!(again.is_err(), "it runs again and fails again by name: {again:?}");
         let runs = capture.named("rdm.node_admin.node.update.via-node-recovery");
         let s = &runs.last().expect("the recovery's span").attributes;
         let sattr = |k: &str| s.get(k).cloned().unwrap_or_default();
         assert_eq!((sattr("node_path"), sattr("node_name"), sattr("node_id"), sattr("incarnation_id"), sattr("again")), (path.path.clone(), path.name.clone(), node_id.to_string(), incarnation.to_string(), "true".to_string()), "keyed on the exact birth, run again: {s:?}");
-        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![member], "still owed after a second failure");
+        assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![(member, exited)], "still owed after a second failure");
     }
 
     /// CONTRACT (node-recovery.md: "Node recovery is RDM's drift reconciliation for a member that

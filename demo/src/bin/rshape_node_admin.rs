@@ -229,7 +229,7 @@ fn notices(own: Own) -> FabricHooks {
             );
         })
     });
-    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated) }
+    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated), pre_node_recreate: None }
 }
 
 #[tokio::main]

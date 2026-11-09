@@ -134,6 +134,7 @@ count against the config cap.
 | a Build starting and ending (`complete`, `incomplete`, `failed`) | [on_build_started, on_build_ended](../architecture/fabric-node-hooks.md#on_build_started) |
 | a call of mine that spent its attempts | [on_call_failed](../architecture/fabric-node-hooks.md#on_call_failed) |
 | a node investigation's result | [on_node_investigated](../architecture/fabric-node-hooks.md#on_node_investigated) |
+| before a node recovery re-creates a lost node at its path and name (`pre_node_recreate`). It answers `Ok` or `Failed { reason }` in one call within its `Send`'s time limit (10 s); `Failed`, no answer or a panic ends the recovery failed, and the next recovery tick asks again | [pre_node_recreate](../architecture/fabric-node-hooks.md#pre_node_recreate) |
 | the clock | [rafka-time](../architecture/fabric-node-hooks.md#rafka-time) |
 
 ## Talking between nodes
