@@ -26,17 +26,21 @@ pub(crate) struct RecoverySubmitter {
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// This admin's Build state: the current Build's paths a refused caller's decision reads (Q217).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
-    /// The births whose recovery ended failed, with the node each is of: run again by the next tick that
-    /// finds the node still lost, whether or not the view still holds the birth (its delete may have
-    /// completed), with no wait of its own: the recovery's calls retry only under their `Send` (Q344;
-    /// node-recovery.md "Detection and the verdict", "Failure"). Removed once a recovery of it completed.
-    pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), Node>>>,
+    /// The births whose recovery ended failed, with the node each is of and the investigation's verdict
+    /// that opened its recovery: run again by the next tick that finds the node still lost, whether or
+    /// not the view still holds the birth (its delete may have completed), with no wait of its own: the
+    /// recovery's calls retry only under their `Send` (Q344; node-recovery.md "Detection and the
+    /// verdict", "Failure"). Removed once a recovery of it completed.
+    pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), (Node, crate::wiring::NodeInvestigatedVerdict)>>>,
     /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
     /// application's `on_node_investigated`, sent from that write (Q312).
     pub investigated: crate::node_investigation::NodeInvestigatedWriter,
     /// Why each birth this tick wrote dead was investigated (Q393): its re-create's event names it; a
     /// birth with none held is a self-heal's.
     pub reasons: Arc<Mutex<HashMap<(NodeId, IncarnationId), crate::node_investigation::Reason>>>,
+    /// The application's `pre_node_recreate`, asked before each re-create of a recovery this primary
+    /// runs on its tick (fabric-node-hooks.md "pre_node_recreate", Q416); `None` when it registers none.
+    pub pre_node_recreate: Option<crate::wiring::PreNodeRecreate>,
 }
 
 impl RecoverySubmitter {
@@ -133,7 +137,8 @@ impl RecoverySubmitter {
         }
         match n.incarnation_id.clone() {
             Some(incarnation) => {
-                let _ = self.submit_on_tick(n, &incarnation, verdict_name(&outcome), false).await;
+                let inspected = verdict_name(&outcome);
+                let _ = self.submit_on_tick(n, &incarnation, inspected, investigated_verdict(inspected), false).await;
             }
             None => {
                 let _ = self.submit(n, &outcome).await;
@@ -143,21 +148,29 @@ impl RecoverySubmitter {
     }
 
     /// One recovery the tick runs of `node`'s birth at `incarnation` (node-recovery.md "Detection and
-    /// the verdict": the loop on every gossip interval), on the investigation's `verdict`, or again after
-    /// it failed (`again`). A recovery that ends failed is named on its span's `outcome` and stays owed to
-    /// the birth ([`Self::failed`]): the next tick that finds the node still lost runs it again (Q344).
-    async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, verdict: &str, again: bool) -> Result<(), String> {
-        let span = submit_span(&self.me_id, node, incarnation, verdict);
+    /// the verdict": the loop on every gossip interval), on the investigation's `verdict` (`inspected`,
+    /// the inspection's answer its span names), or again after it failed (`again`: nothing is inspected,
+    /// and its span names no answer). A recovery that ends failed is named on its span's `outcome` and
+    /// stays owed to the birth, with its verdict ([`Self::failed`]): the next tick that finds the node
+    /// still lost runs it again (Q344).
+    async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, inspected: &str, verdict: crate::wiring::NodeInvestigatedVerdict, again: bool) -> Result<(), String> {
+        let span = submit_span(&self.me_id, node, incarnation, inspected);
+        let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
         if again {
             span.record("again", true);
         } else {
             // The verdict opens the re-create: it is written as its event, and the application is told
             // once from that write, under the recovery's span (fabric-node-hooks.md "on_node_investigated").
-            let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
             let reason = self.reasons.lock().unwrap().get(&(node.node_id.clone(), incarnation.clone())).copied().unwrap_or(crate::node_investigation::Reason::SelfHeal);
-            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate, reason).instrument(span.clone()).await;
+            crate::node_investigation::write_node_investigated(&self.investigated, ids.clone(), node, incarnation, verdict, crate::wiring::NodeInvestigatedNext::Recreate, reason).instrument(span.clone()).await;
         }
-        let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
+        // Nothing is deleted or created at the birth's path and name until the application answers
+        // (fabric-node-hooks.md "pre_node_recreate", Q416): its `Failed` ends this recovery failed,
+        // still owed, and the next tick asks again, the hook included.
+        let end = match crate::node_investigation::ask_pre_node_recreate(self.pre_node_recreate.as_ref(), ids, node, incarnation, verdict).instrument(span.clone()).await {
+            Ok(()) => self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await,
+            Err(reason) => Ok(RecoveryEnd::Failed { reason: format!("pre_node_recreate answered Failed: {reason}") }),
+        };
         let ended = settled(&span, end);
         let birth = (node.node_id.clone(), incarnation.clone());
         match &ended {
@@ -165,7 +178,7 @@ impl RecoverySubmitter {
                 self.failed.lock().unwrap().remove(&birth);
             }
             Err(_) => {
-                self.failed.lock().unwrap().insert(birth.clone(), node.clone());
+                self.failed.lock().unwrap().insert(birth.clone(), (node.clone(), verdict));
             }
         }
         ended
@@ -239,21 +252,22 @@ impl RecoverySubmitter {
     /// The births whose recovery the tick runs again (node-recovery.md "Detection and the verdict": "A
     /// recovery that ends failed is run again by the next check that finds the node still lost"): none
     /// unless this admin holds its mesh's primary role; else every birth of its own mesh whose recovery
-    /// failed here, whether or not the view still holds it.
-    pub(crate) fn failed_recoveries(&self, holds_role: bool, mesh: &str) -> Vec<Node> {
+    /// failed here, whether or not the view still holds it, with the verdict that opened its recovery.
+    pub(crate) fn failed_recoveries(&self, holds_role: bool, mesh: &str) -> Vec<(Node, crate::wiring::NodeInvestigatedVerdict)> {
         if !holds_role {
             return Vec::new();
         }
-        self.failed.lock().unwrap().values().filter(|n| n.mesh == mesh).cloned().collect()
+        self.failed.lock().unwrap().values().filter(|(n, _)| n.mesh == mesh).cloned().collect()
     }
 
     /// The recovery of a birth whose last recovery failed ([`Self::failed_recoveries`]), run again on the
-    /// tick: the same workflow, keyed on the birth; nothing is inspected again. A birth already recovered
+    /// tick on the `verdict` that opened it: the same workflow, keyed on the birth; nothing is inspected
+    /// again. A birth already recovered
     /// is not recovered again (node-recovery.md sequence step 1: never a second recovery): once the node
     /// its recovery created stands at its path and name, that recovery is owed no more, however its step
     /// ended. A start that ended `Failed` at its hook leaves that node `Pending`, and nothing retries until
     /// someone acts (fabric-node-hooks.md "Outcomes and the gate", Q350).
-    pub(crate) async fn recover_again(&self, node: &Node) -> Result<(), String> {
+    pub(crate) async fn recover_again(&self, node: &Node, verdict: crate::wiring::NodeInvestigatedVerdict) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no birth to recover", node.node_id))?;
         let created = self.topology.read().await.births().find(|b| b.location() == node.location() && b.node_id != node.node_id).map(|b| b.node_id.clone());
         if let Some(created) = created {
@@ -265,7 +279,7 @@ impl RecoverySubmitter {
             span.in_scope(|| tracing::info!(created_node_id = %created, "a birth already recovered is not recovered again: the node its recovery created stands at its path and name"));
             return Ok(());
         }
-        self.submit_on_tick(node, &incarnation, "", true).await
+        self.submit_on_tick(node, &incarnation, "", verdict, true).await
     }
 
     /// The recovery of `node`'s unreached birth at `incarnation`, run by this admin, the primary above

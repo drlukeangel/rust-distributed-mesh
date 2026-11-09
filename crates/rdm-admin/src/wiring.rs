@@ -7,7 +7,7 @@
 //! product passes [`Wiring::default`]: nothing is wrapped. Application work enters a lifecycle only
 //! through the [Fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html)
 //! (`pre_node_ready`, `on_node_ready`, `on_call_failed`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`,
-//! `on_node_investigated`; build.md §9): the
+//! `on_node_investigated`, `pre_node_recreate`; build.md §9): the
 //! admin's transition pipeline registers no application hook. The core carries no fault code; a
 //! decorator that delays, refuses or records lives in the executable that passes it.
 
@@ -295,7 +295,16 @@ pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Outp
 /// (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type NodeInvestigatedNotice = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// The application's notices a node-admin calls
+/// `pre_node_recreate`: the hook the mesh-primary running a node recovery asks once it writes a
+/// verdict whose `next` is `recreate`, before node.delete of the target birth and node.create at its
+/// path and name (`docs/architecture/fabric-node-hooks.md` "pre_node_recreate", Q416). Told the
+/// `NodeInvestigatedCtx` of `on_node_investigated`, the application releases what the lost birth held
+/// there and answers `Ok(())`, and the recovery runs on, or `Err(reason)`, its `Failed { reason }`: the
+/// recovery ends failed, still owed, and the next recovery tick asks again. One call under the hook's
+/// `Send`, whose time limit covers it: no answer within it, or a panic, is `Failed`.
+pub type PreNodeRecreate = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
+/// The application's notices and hooks a node-admin calls
 /// ([fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html),
 /// `docs/architecture/fabric-node-hooks.md`).
 #[derive(Default, Clone)]
@@ -310,12 +319,14 @@ pub struct FabricHooks {
     pub on_build_ended: Option<BuildEndedNotice>,
     /// `on_node_investigated`: optional, because it gates nothing.
     pub on_node_investigated: Option<NodeInvestigatedNotice>,
+    /// `pre_node_recreate`: optional; with none, the recovery's re-create is answered `Ok`.
+    pub pre_node_recreate: Option<PreNodeRecreate>,
 }
 
 impl FabricHooks {
-    /// The hooks of an embedding with no application work: no notice.
+    /// The hooks of an embedding with no application work: no notice and no hook.
     pub fn no_app_work() -> Self {
-        Self { on_mesh_ready: None, on_fabric_ready: None, on_build_started: None, on_build_ended: None, on_node_investigated: None }
+        Self { on_mesh_ready: None, on_fabric_ready: None, on_build_started: None, on_build_ended: None, on_node_investigated: None, pre_node_recreate: None }
     }
 }
 

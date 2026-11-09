@@ -13,6 +13,7 @@ never decides an RDM transition.
 | Hook | Called by | When | Gates |
 |---|---|---|---|
 | [`pre_node_ready`](#pre_node_ready) | every node | before the node reaches Ready: after the join and the mesh-channel join, before topology is written to the topology view | the node's Ready |
+| [`pre_node_recreate`](#pre_node_recreate) | each mesh-primary running a node recovery | after the investigation's verdict, before node.delete and node.create of the recovered birth | the recovery's re-create |
 | [`on_node_ready`](#on_node_ready) | every node | after its Ready | nothing; it is a notice |
 | [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready is on its Mesh record | nothing; it is a notice |
 | [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready state is set | nothing; it is a notice |
@@ -21,7 +22,7 @@ never decides an RDM transition.
 | [`on_call_failed`](#on_call_failed) | every node | after one of its calls ends with its attempts spent | nothing; it is a notice |
 | [`on_node_investigated`](#on_node_investigated) | each mesh-primary | after it records a node investigation's verdict on a node of its mesh | nothing; it is a notice |
 
-`pre_` names the one hook the application is asked before the act and holds until it answers; `on_`
+`pre_` names a hook the application is asked before the act, held until it answers; `on_`
 names a notice of what happened, fire and forget. Each notice is called once each time its scope
 enters ready, or its Build ends, by the one that set it; a successor that adopts the state calls nothing.
 
@@ -112,7 +113,7 @@ node `Pending`, and nothing retries until someone acts:
 |---|---|
 | a Build (Create) | the step's `rdm.build.step` event, `failed { reason }`; its mesh's section ends, and the Build ends `incomplete` (Q346) |
 | a `node.start` command | the command ends `Failed { reason }` to its caller, recorded on the node record |
-| [node recovery](lifecycles/node-recovery.md) | the recovery's step, `failed { reason }`, on the node record |
+| [node recovery](lifecycles/node-recovery.md) | the recovery's step, `failed { reason }`, on its span; the recovery stays owed and the next tick runs it again (Q344) |
 | Day 0's first node-admin | its start ends `Failed`, and the Day 0 Build is `incomplete` |
 
 For Build-backed work the executor frames the subject's `Pending` on the workflow stream from its
@@ -133,6 +134,10 @@ Ending the in-flight start cancels the token. That covers node.connection.delete
 provider terminate. The hook and any pull it has in flight end, and no call is left behind. While a
 start is `Pending`, node.connection.delete, node.stop and Status stay admissible, so a node that never
 becomes ready can still be removed.
+
+## pre_node_recreate
+
+Once it writes a node investigation's verdict whose `next` is `recreate` ([node recovery](lifecycles/node-recovery.md) step 1), the mesh-primary running the recovery calls `pre_node_recreate` with the `NodeInvestigatedCtx` of [`on_node_investigated`](#on_node_investigated), before node.delete of the target birth and node.create at its path and name: nothing is created at that path and name until the application answers. The application releases what the lost birth held there (Rafka: a broker's departure close, its `write → none` rows durable, replica-routing.md §6) and answers `Ok`, and the recovery runs on, or `Failed { reason }`, and the recovery ends `failed { reason }`, named on its span, still owed: the next recovery tick runs it again, the hook included (Q344). There is no `Pending`: the application's work is one call under the hook's `Send`, whose time limit covers it. A `rejoin` calls no `pre_node_recreate`; an application that registers none is answered `Ok`.
 
 ## on_node_ready
 
@@ -168,7 +173,7 @@ When a call this node opened ends with its attempts spent ([node-rpc.md §43](no
 
 ## on_node_investigated
 
-Once it writes a node investigation's verdict on a node of its mesh as its `rdm.node.investigated` event ([build.md §5](build.md#5-buildstateadapter); [node investigation](lifecycles/node-investigation.md)), the mesh-primary calls `on_node_investigated` once, with `NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict, next, context }`, on a task of its own. `verdict` is the investigation's; `next` is what RDM does with the birth: `rejoin` (commanded back through node.mesh.join) or `recreate` (re-created at the same path and name with a new node.id). The notice gates nothing in RDM and orders nothing: a re-create may be under way when the application's hook runs.
+Once it writes a node investigation's verdict on a node of its mesh as its `rdm.node.investigated` event ([build.md §5](build.md#5-buildstateadapter); [node investigation](lifecycles/node-investigation.md)), the mesh-primary calls `on_node_investigated` once, with `NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict, next, context }`, on a task of its own. `verdict` is the investigation's; `next` is what RDM does with the birth: `rejoin` (commanded back through node.mesh.join) or `recreate` (re-created at the same path and name with a new node.id). The notice gates nothing in RDM and orders nothing: a re-create may be under way when the application's hook runs. Work that must come before the re-create belongs in [`pre_node_recreate`](#pre_node_recreate).
 
 ## rafka-time
 
@@ -200,5 +205,5 @@ RDM exposes it to the application through one public, cloneable `RafkaTime` hand
 ## Observability
 
 Each hook call is one span under the node's boot span, under the fabric's change span for
-`on_fabric_ready`, under the Build's span for `on_build_started` and `on_build_ended` (`rdm.node_admin.build.update.via-on-build-started`, `rdm.node_admin.build.update.via-on-build-ended`), or of its own for `on_mesh_ready` (`rdm.node_admin.mesh.update.via-on-mesh-ready`), under the spent call's span for `on_call_failed` (`rdm.mesh.node.update.via-on-call-failed`), under the span that records the verdict for `on_node_investigated` (`rdm.node_admin.node.update.via-on-node-investigated`). The span carries the outcome and the blocker or reason. `via-ready` follows the
+`on_fabric_ready`, under the Build's span for `on_build_started` and `on_build_ended` (`rdm.node_admin.build.update.via-on-build-started`, `rdm.node_admin.build.update.via-on-build-ended`), or of its own for `on_mesh_ready` (`rdm.node_admin.mesh.update.via-on-mesh-ready`), under the spent call's span for `on_call_failed` (`rdm.mesh.node.update.via-on-call-failed`), under the span that records the verdict for `on_node_investigated` (`rdm.node_admin.node.update.via-on-node-investigated`), under the recovery's span for `pre_node_recreate` (`rdm.node_admin.node.update.via-pre-node-recreate`). The span carries the outcome and the blocker or reason. `via-ready` follows the
 successful `pre_node_ready`. A cancelled hook names the cancellation.
