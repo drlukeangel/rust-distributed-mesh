@@ -2,7 +2,8 @@
 //! fabric-node-hooks.md "on_call_failed", "on_node_investigated"; node-recovery.md steps 1-3).
 //!
 //! CONTRACT: in a one-mesh estate whose node-admins are the testkit's (`faulted-node-admin`: the testkit
-//! application's `on_call_failed` and `on_node_investigated`, each recording a span) at a 60 s staleness
+//! application's `on_call_failed` and `on_node_investigated`, each recording a span, and its
+//! `pre_node_recreate`, recording one and answering `Ok`) at a 60 s staleness
 //! floor, an rpc member holding no role is hung (`ExactRuntime::hang`: every task but the leader held, so
 //! it neither gossips nor answers, and the provider reads it running). At once the caller asks the
 //! mesh-primary for `node.config.update` of that member, so the mesh-primary's own `UpdateConfig` call
@@ -24,10 +25,16 @@
 //!    submit, and orders nothing against the re-create's end; sent from the write of the result's one
 //!    `rdm.node.investigated` event of the birth's node.id on the fabric's store root, by the mesh-primary
 //!    (node-investigation.md, build.md §5).
+//! 5. `pre_node_recreate` is asked once for that birth, under the submit, after the result is written,
+//!    and answers `Ok` (`rdm.node_admin.node.update.via-pre-node-recreate`, the application's
+//!    `rdm.testkit.app.update.via-pre-node-recreate` under it); node.delete of the hung birth
+//!    (`rdm.node_admin.node.delete.via-node-recovery`) opens only after it answered
+//!    (fabric-node-hooks.md "pre_node_recreate", Q416).
 //!
 //! Must NOT happen: a call to the hung birth that ends before its third attempt, a second
 //! `on_call_failed` for the one call, `on_call_failed` before the call ended, an investigation started
-//! by silence instead of the spent call, the member held, or a second `on_node_investigated` for the birth.
+//! by silence instead of the spent call, the member held, a second `on_node_investigated` for the birth,
+//! or node.delete of the birth before the application answered `pre_node_recreate`.
 use rdm_client::{NodeStatus, PathName};
 
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -188,9 +195,26 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     assert_eq!((event.data.get("result").and_then(Value::as_str), event.data.get("inspected").and_then(Value::as_str)), (Some("re-created"), Some("running")), "{event:?}");
     assert!(event.source.contains(&primary_id), "written by the member's mesh-primary, its exact birth: {event:?}");
     assert_eq!(attr(told, "event_id"), event.id.to_string(), "the notice is sent from the event's write: {told}");
+    // 5. pre_node_recreate once, after the result is written and before node.delete of the hung birth,
+    //    under the submit; the application's own work under the hook's span.
+    let asked: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-pre-node-recreate").into_iter().filter(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str()).collect();
+    assert_eq!(asked.len(), 1, "the application is asked pre_node_recreate once for the birth: {asked:#?}");
+    let asked = asked[0];
+    assert_eq!((attr(asked, "outcome"), attr(asked, "inspected")), ("ok".to_string(), "running".to_string()), "the application answered Ok, asked on the inspect's answer: {asked}");
+    assert_eq!(s(&asked["parent_span_id"]), s(&recovery["span_id"]), "asked under the recovery's submit: {asked}");
+    assert!(at(asked) >= at(told), "asked once the result is written: result {}, asked {}", at(told), at(asked));
+    let released: Vec<&Value> = named(&spans, "rdm.testkit.app.update.via-pre-node-recreate").into_iter().filter(|sp| s(&sp["parent_span_id"]) == s(&asked["span_id"])).collect();
+    assert_eq!(released.len(), 1, "the application's pre_node_recreate ran once, under the hook's span: {released:#?}");
+    let deleting = named(&spans, "rdm.node_admin.node.delete.via-node-recovery")
+        .into_iter()
+        .find(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("the recovery's node.delete of {path:?} is exported"));
+    assert_eq!(s(&deleting["parent_span_id"]), s(&recovery["span_id"]), "node.delete runs under the submit: {deleting}");
+    assert!(end(asked) <= at(&deleting), "the application answered before node.delete of the hung birth: asked ..{}, node.delete {}..", end(asked), at(&deleting));
 
     eprintln!(
-        "send: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms result {} inspected {} | new birth {} at {path:?}",
+        "send: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms result {} inspected {} | pre_node_recreate +{}..+{} ms outcome {} | node.delete +{} ms | new birth {} at {path:?}",
         attr(&call, "op"),
         attr(&call, "attempts"),
         attr(&call, "delivery"),
@@ -206,6 +230,10 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
         ms(held_at, at(told)),
         attr(told, "result"),
         attr(told, "inspected"),
+        ms(held_at, at(asked)),
+        ms(held_at, end(asked)),
+        attr(asked, "outcome"),
+        ms(held_at, at(&deleting)),
         after.node_id,
     );
     estate.record_trace_url(&s(&call["trace_id"]));
