@@ -149,18 +149,15 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     .await;
     // ...through its own mesh channel only; every admin is on the backbone. An admin's backbone
     // subscription is its own, and can follow the ordinary nodes' learning: wait for it (#371).
-    wait_for("every admin joins the backbone", Duration::from_secs(30), || {
+    let subs: Vec<(String, String)> = wait_for("every admin joins the backbone", Duration::from_secs(30), || {
         let spans = estate.spans();
         let admins = admins.clone();
         async move {
             let subs: Vec<(String, String)> = named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
-            admins.iter().all(|n| subs.iter().any(|(x, c)| x == n && c == "backbone")).then_some(())
+            admins.iter().all(|n| subs.iter().any(|(x, c)| x == n && c == "backbone")).then_some(subs)
         }
     })
     .await;
-    let spans = estate.spans();
-    let subs: Vec<(String, String)> =
-        named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
     for n in &rpcs {
         let mesh = nodes.iter().find(|v| s(&v["node_id"]) == *n).map(|v| s(&rdm_test::estate::mesh_of(v))).expect("node mesh metadata");
         let mine: BTreeSet<&str> = subs.iter().filter(|(x, _)| x == n).map(|(_, c)| c.as_str()).collect();
