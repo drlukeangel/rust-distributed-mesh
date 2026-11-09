@@ -525,7 +525,7 @@ impl Estate {
     }
 
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
-    /// node type holds exactly its count of nodes, every one ready. No stream announces it: the
+    /// node type holds exactly its count of nodes, every one ready, and exactly one primary. No stream announces it: the
     /// recovery is the rectifier's (the primary's own node recovery, Q342, or a person's admin on a former
     /// role's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
     /// is named.
@@ -539,7 +539,12 @@ impl Estate {
             for n in &views {
                 *have.entry((n.mesh().clone(), n.r#type.clone())).or_default() += 1;
             }
-            (have == want && views.iter().all(|n| n.state == NodeStatus::Ready)).then_some(views)
+            // The view the Build left holds its roles too: each node type present holds exactly one
+            // primary, the role its first node's create commanded or its own nodes elected (Q406, Q407),
+            // which a node's view shows from that node's next Digest. A view read before the role arrives
+            // is no settled view (#370, #372).
+            let roles_settled = want.keys().all(|(mesh, kind)| views.iter().filter(|n| &n.mesh() == mesh && &n.r#type == kind && n.is_primary).count() == 1);
+            (have == want && roles_settled && views.iter().all(|n| n.state == NodeStatus::Ready)).then_some(views)
         })
         .await
     }
