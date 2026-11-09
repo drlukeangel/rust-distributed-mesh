@@ -306,7 +306,6 @@ mod admin_start_declares;
 mod stopped_birth_signal;
 mod stop_during_start_read;
 mod stop_reconciling;
-mod admin_boot_name;
 mod process_env;
 mod role_process;
 #[path = "gossip/receive_rules.rs"]
