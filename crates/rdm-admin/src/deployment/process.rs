@@ -580,7 +580,10 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             .map_err(|elapsed| past(deadline, elapsed, "process.find", &spec.deployment_id, false))??;
         Ok(match on_disk {
             OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
-            OnDisk::Exited(pid, start) => Found::Exited(Some(self.handle(spec.deployment_id.clone(), pid, start))),
+            // A pid is this launch's exact runtime only with its start token: a record that names none names
+            // no exact runtime, and the pid may run another process now.
+            OnDisk::Exited(pid, Some(start)) => Found::Exited(Some(self.handle(spec.deployment_id.clone(), pid, Some(start)))),
+            OnDisk::Exited(_, None) => Found::Exited(None),
             OnDisk::NeverLaunched => Found::NeverLaunched,
         })
     }
@@ -1030,6 +1033,20 @@ mod tests {
         let refused = ProcessDeploymentProvider::new().spawn(&spec, crate::deployment::deadline::Deadline::step()).await.expect_err("the executable does not exist");
         assert!(refused.to_string().contains("no-such-executable"), "{refused}");
         assert!(matches!(ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(Some(_))), "its record names a process that is gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (deployment-provider.md §2.6: a process runtime is its pid with its start token; rdm#374):
+    /// a launch record that names its pid with no start token, a pid that no longer runs the launch's
+    /// executable (here it is this test's own process), is exited and names no exact runtime. Must NOT
+    /// happen: a handle on that pid, which a delete would inspect as running and signal, the process that
+    /// holds the pid now being another.
+    #[tokio::test]
+    async fn a_launch_record_with_no_start_token_names_no_runtime_once_its_pid_runs_another_executable() {
+        let dir = crate::test_support::tempdir("process-find-no-start");
+        let spec = launch(&dir);
+        std::fs::write(dir.join(DEPLOYMENT_FILE), serde_json::json!({ "deployment_id": spec.deployment_id.as_str(), "pid": std::process::id(), "start": null }).to_string()).unwrap();
+        assert_eq!(ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(None), "exited, and no exact runtime of the launch is named");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
