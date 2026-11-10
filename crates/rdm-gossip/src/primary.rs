@@ -42,10 +42,6 @@ pub(crate) struct HeldRoles {
     /// record's role and mesh, with the instant it was replaced here: the primaries this view saw
     /// change, so a birth that was never primary here is told apart from one an update moved.
     pub(crate) replaced: HashMap<(PrimaryRole, String, IncarnationId), Instant>,
-    /// When each node-type primary record held here, by (mesh, kind), first named the birth it names:
-    /// the instant from which a birth this view holds no digest of is unheard (the pruner's sweep,
-    /// `DigestView::mark_silence_at`). A later revision of the same birth keeps it.
-    pub(crate) node_type_since: HashMap<(String, String), Instant>,
 }
 
 /// The role and mesh a record of `role` in `mesh` is held under: a mesh's node-admin type is its
@@ -85,11 +81,7 @@ impl HeldRoles {
                 self.meshes.insert(mesh.to_string(), record);
             }
             PrimaryRole::NodePrimary(r#type) => {
-                let key = (mesh.to_string(), r#type);
-                if self.node_type_primaries.get(&key).is_none_or(|held| !held.is_birth(&record.node_id, &record.incarnation)) {
-                    self.node_type_since.insert(key.clone(), Instant::now());
-                }
-                self.node_type_primaries.insert(key, record);
+                self.node_type_primaries.insert((mesh.to_string(), r#type), record);
             }
         }
     }
@@ -213,13 +205,6 @@ impl PrimaryView {
     /// Every other node type's primary record held, by (mesh, kind).
     pub fn node_type_primaries(&self) -> std::collections::BTreeMap<(String, String), Primary> {
         self.inner.lock().unwrap().node_type_primaries.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
-    }
-
-    /// Every node-type primary record held, each with the instant this view first held a record naming
-    /// its birth.
-    pub fn node_type_primaries_since(&self) -> Vec<(Primary, Instant)> {
-        let held = self.inner.lock().unwrap();
-        held.node_type_primaries.iter().map(|(k, h)| (h.clone(), held.node_type_since.get(k).copied().unwrap_or_else(Instant::now))).collect()
     }
 
 }

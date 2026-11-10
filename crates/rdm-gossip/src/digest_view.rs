@@ -1960,32 +1960,21 @@ impl DigestView {
 
     /// The pruner's sweep at `now` (Q254: one clock, the pruner's; its mark is a view change): every
     /// departure past the retention is forgotten (`Self::expire_deleted_at`), and the births held
-    /// silent past the staleness floor are read, each held birth by its unheard time, each birth
-    /// held only from its mesh-primary's projection by the time since it was first held, and each
-    /// birth a node-type primary record held here names, of which this view holds no digest, by the
-    /// time since it first held a record naming it (fabric-node-lifecycle-elections.md §1: "the
-    /// primary stays primary while it is heard -> unheard past the staleness floor"; a record read
-    /// off a store or an entry names a birth this view may never hear). When they differ from the last
-    /// sweep's, the silence watch moves ([`RoutingWatch`]): the view is rebuilt on the mark, never on
-    /// a poll. `true` when it moved.
+    /// silent past the staleness floor are read, each held birth by its unheard time and each birth
+    /// held only from its mesh-primary's projection by the time since it was first held. When they
+    /// differ from the last sweep's, the silence watch moves ([`RoutingWatch`]): the view is rebuilt on
+    /// the mark, never on a poll. `true` when it moved.
     pub fn mark_silence_at(&self, now: Instant) -> bool {
         self.expire_deleted_at(now);
         let floor = self.staleness_floor;
-        let records = self.primaries.node_type_primaries_since();
-        let mut silent: BTreeSet<(String, String)> = {
-            let inner = self.inner.lock().unwrap();
-            let mut silent: BTreeSet<(String, String)> = inner
-                .values()
-                .filter(|(_, at, fw)| unheard(at, *fw, now) > floor)
-                .map(|(d, _, _)| (d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()))
-                .collect();
-            let projected = self.projected.lock().unwrap();
-            let held = |p: &Primary| inner.get(p.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == p.incarnation) || projected.get(p.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == p.incarnation);
-            for (record, _) in records.iter().filter(|(record, since)| now.saturating_duration_since(*since) > floor && !held(record)) {
-                silent.insert((record.node_id.to_string(), record.incarnation.as_str().to_string()));
-            }
-            silent
-        };
+        let mut silent: BTreeSet<(String, String)> = self
+            .inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(_, at, fw)| unheard(at, *fw, now) > floor)
+            .map(|(d, _, _)| (d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()))
+            .collect();
         let projected: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
         for id in projected {
             if let Some((d, _)) = self.projected_at(&id, now).filter(|(_, unheard)| *unheard > floor) {

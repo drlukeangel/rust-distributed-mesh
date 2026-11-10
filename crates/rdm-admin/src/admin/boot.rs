@@ -1176,9 +1176,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // included. A launched admin reads no store (Q227): its mesh-primary's hydration sync serves
                 // them (`Primaries`, node.topology.get), a lost birth's record marked gone. A start with no
                 // launcher, the re-born fabric-primary with nobody to pull from, reads them off the node
-                // records of the fabric's store root: every mesh's mesh-primary and the fabric-primary, and
-                // its own mesh's node-type primaries, never another mesh's (Q406, Q407). A record older
-                // than one held changes nothing.
+                // records of the fabric's store root. A record older than one held changes nothing.
                 if cfg.launch.is_none() {
                     crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, topology_view.primaries()).await.map_err(storage_err)?;
                 }
