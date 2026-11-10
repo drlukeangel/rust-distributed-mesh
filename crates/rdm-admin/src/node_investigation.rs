@@ -155,8 +155,9 @@ pub enum Follows {
     /// back, sent until answered: answered, `rejoined`.
     MeshJoin,
     /// The birth is commanded to start (node.start), sent until answered: answered, `rejoined`. An
-    /// `os-stopped` inspect, or a reached birth answering `CurrentStopped` that no command stopped
-    /// (Q393: "stopped is asked to start").
+    /// `os-stopped` inspect (Q393: "stopped is asked to start"). A reached birth answering
+    /// `CurrentStopped` is never started: a node stops only by a command, and a commanded stop is never
+    /// undone by an investigation (Q425).
     Start,
     /// The birth is written `dead`, and its recovery runs at once: `re-created`.
     Dead,
@@ -178,15 +179,14 @@ impl Follows {
 /// topology is `status` (node-recovery.md step 3, Q393): an ordered investigation whose finding
 /// matches the status ([`matches_topology`]) does nothing; any other finding follows the self-heal:
 /// `reached` ends `ready` ([`Follows::MeshJoin`], node-investigation.md: "to a tickle, the
-/// investigation ends `ready`"), but answering `CurrentStopped` is commanded to start (Q393, note
-/// 0006); `running` is commanded back through node.mesh.join, `os-stopped` is commanded to start, and
+/// investigation ends `ready`"), a birth answering `CurrentStopped` included, which is never started
+/// (Q425); `running` is commanded back through node.mesh.join, `os-stopped` is commanded to start, and
 /// `exited` or `dead` (not proven by the end of the retries) is written `dead`.
 pub fn follows(finding: &Finding, reason: Reason, status: NodeStatus) -> Follows {
     if matches!(reason, Reason::Ordered { .. }) && matches_topology(finding, status) {
         return Follows::Nothing;
     }
     match finding {
-        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } => Follows::Start,
         Finding::Reached { .. } | Finding::Running => Follows::MeshJoin,
         Finding::OsStopped => Follows::Start,
         Finding::Exited { .. } | Finding::Dead { .. } => Follows::Dead,
@@ -1004,7 +1004,7 @@ mod tests {
             // Review finding 2, R3: the birth's own word that it is stopped matches `stopped` only, as
             // os-stopped does (Q425).
             assert_eq!(matches_topology(&stopped, status), status == S::Stopped, "reached answering CurrentStopped and {status:?}");
-            assert_eq!(follows(&stopped, Reason::SelfHeal, status), Follows::Start, "a self-heal's CurrentStopped is commanded to start (Q393, note 0006): {status:?}");
+            assert_eq!(follows(&stopped, Reason::SelfHeal, status), Follows::MeshJoin, "a self-heal's CurrentStopped ends `ready` and is never started (Q425): {status:?}");
             assert_eq!(matches_topology(&Finding::OsStopped, status), status == S::Stopped, "os-stopped and {status:?}");
             assert_eq!(matches_topology(&Finding::Exited { code: None }, status), status == S::Dead, "exited and {status:?}");
             assert!(!matches_topology(&Finding::Dead { reason: String::new() }, status), "dead (not proven) and {status:?}");

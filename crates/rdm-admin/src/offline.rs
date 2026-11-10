@@ -1013,21 +1013,13 @@ impl OfflineTickle {
                         "otel.kind" = "internal"
                     )
                     .in_scope(|| tracing::info!(node_id = %id, answer, carrier = %carrier, "the tickle reached the birth: reachable-silent, recorded, no action"));
-                    if follows == crate::node_investigation::Follows::Start {
-                        // `CurrentStopped`, and the topology does not hold it stopped: no command stopped
-                        // it, so it is commanded to start, and the start's end is the result (Q393, note
-                        // 0006; note 0005 R2).
-                        verdict_span(&id, &path, answer, n, follows, &self.observer, seen_at, started_at_ms);
-                        report.inspected.insert(id.clone(), inspected.unwrap_or_else(|| crate::deployment::provider::Inspected::Unavailable("the ladder carried no inspect answer".into())));
-                        report.start.push(id.clone());
-                    } else {
-                        // Any other answer ends the investigation `ready`, a `Current` one commanded back
-                        // for its view only (node-investigation.md: "to a tickle, the investigation ends
-                        // `ready`"; Q87, Q420).
-                        report.ready.push((id.clone(), n.reason));
-                        if current {
-                            report.answered_current.push(id.clone());
-                        }
+                    // Every answer ends the investigation `ready`, a `Current` one commanded back for its
+                    // view only (node-investigation.md: "to a tickle, the investigation ends `ready`"; Q87,
+                    // Q420). A `CurrentStopped` is never started: a commanded stop is never undone by an
+                    // investigation (Q425).
+                    report.ready.push((id.clone(), n.reason));
+                    if current {
+                        report.answered_current.push(id.clone());
                     }
                     report.reachable_silent.push(id);
                 }
@@ -2212,17 +2204,16 @@ pub(crate) mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-recovery.md:58
     /// "An ordered investigation ... sets no `PendingReconnect`: an inspect's answer that matches the
     ///  birth's status in the topology does nothing"
-    /// (review finding 2, R2, R3; note 0006: `CurrentStopped` goes to the start, Q393 "stopped is asked to
-    /// start"; `Pending` and `StartFailed` end `ready`): the fold of a reached birth's ladder ends a
-    /// self-heal `ready` on `Current` (commanded back for its view), `Pending` and `StartFailed`, and
-    /// sends a `CurrentStopped` to the start with the inspect's answer the ladder read; an ordered
-    /// investigation whose answer matches the birth's status in the topology is matched, with no result:
-    /// `Current` and a live status, `CurrentStopped` and `stopped`; one whose answer differs follows the
-    /// self-heal. Must NOT happen: `ready` for a matched ordered investigation, for a commanded-stopped
-    /// node answering `CurrentStopped`, or for a `CurrentStopped` that is sent to the start.
+    /// (review finding 2, R3; `Pending` and `StartFailed` end `ready`; Q425: a commanded stop is never
+    /// undone by an investigation): the fold of a reached birth's ladder ends a self-heal `ready` on
+    /// `Current` (commanded back for its view), `Pending`, `StartFailed` and `CurrentStopped`, and starts
+    /// nothing; an ordered investigation whose answer matches the birth's status in the topology is
+    /// matched, with no result: `Current` and a live status, `CurrentStopped` and `stopped`; one whose
+    /// answer differs follows the self-heal. Must NOT happen: `ready` for a matched ordered
+    /// investigation, or a start of a node answering `CurrentStopped`.
     // @feature: node-investigation
     #[tokio::test(start_paused = true)]
-    async fn a_reached_birth_ends_ready_unless_it_answered_stopped_or_its_ordered_answer_matches() {
+    async fn a_reached_birth_ends_ready_and_is_never_started_unless_its_ordered_answer_matches() {
         use crate::deployment::provider::Inspected;
         use crate::model::NodeStatus as S;
         use crate::node_investigation::Reason;
@@ -2238,10 +2229,10 @@ pub(crate) mod tests {
             (current.clone(), Reason::SelfHeal, S::PendingReconnect, true, true, false, false),
             (pending.clone(), Reason::SelfHeal, S::PendingReconnect, true, false, false, false),
             (failed.clone(), Reason::SelfHeal, S::PendingReconnect, true, false, false, false),
-            (stopped.clone(), Reason::SelfHeal, S::PendingReconnect, false, false, true, false),
+            (stopped.clone(), Reason::SelfHeal, S::PendingReconnect, true, false, false, false),
             (current.clone(), ordered, S::Ready, false, false, false, true),
             (stopped.clone(), ordered, S::Stopped, false, false, false, true),
-            (stopped.clone(), ordered, S::Ready, false, false, true, false),
+            (stopped.clone(), ordered, S::Ready, true, false, false, false),
             (current.clone(), ordered, S::Leaving, true, true, false, false),
         ] {
             let said = answer.name();

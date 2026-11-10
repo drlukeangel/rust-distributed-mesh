@@ -2795,7 +2795,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 // A self-heal's `running` is commanded back through node.mesh.join and its
-                                                // `os-stopped` (or a birth's `CurrentStopped`) commanded to start, each sent until
+                                                // `os-stopped` commanded to start (a birth answering `CurrentStopped` never is, Q425), each sent until
                                                 // answered; unanswered at the end of its attempts, the birth is written dead and
                                                 // recovered (Q393). Each on its own task, its result written by `HeardAgain::self_heal`
                                                 // or the recovery.
