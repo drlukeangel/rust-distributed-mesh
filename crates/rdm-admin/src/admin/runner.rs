@@ -2416,6 +2416,14 @@ mod tests {
         member.incarnation_id = Some(IncarnationId::mint());
         member.status = NodeStatus::Ready;
         runner.nodes_storage.put_node(&rdm_node::nodes_storage::fixture_record(&at, "node", member.node_id.clone(), member.incarnation_id.clone().unwrap(), NodeStatus::Ready)).await.unwrap();
+        // The runtime its join report carried, held apart from its digest: this process's pid under another
+        // start token, a runtime that has exited (a recycled pid is never signalled), so its recovery's
+        // node.delete reads it exited, terminates nothing and completes.
+        let mut fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60(&format!("dep-lost-{name}"))).unwrap();
+        if let rdm_core::RuntimeLocator::Process { start, .. } = &mut fact.locator {
+            *start += 1;
+        }
+        runner.digest_view.hold_runtime(&member.node_id, member.incarnation_id.as_ref().unwrap(), rdm_core::NodeRuntime { runtime: Some(fact), data_dir: None });
         runner.topology.write().await.nodes.push(member.clone());
         member
     }
@@ -2453,8 +2461,9 @@ mod tests {
         // held deleted at the view, recovering or its NodeDeleted applied.
         let held: Arc<Mutex<Vec<(bool, bool)>>> = Arc::default();
         let answers = Arc::new(Mutex::new(std::collections::VecDeque::from([Err("the lost birth's routing is not released yet".to_string()), Ok(()), Ok(())])));
-        let hook: crate::wiring::PreNodeRecreate = {
-            let (asked, held, answers, runner) = (asked.clone(), held.clone(), answers.clone(), runner.clone());
+        // The application's hook over the rig `runner` whose recovery asks it.
+        let hook_over = |runner: Arc<AdminRunner>| -> crate::wiring::PreNodeRecreate {
+            let (asked, held, answers) = (asked.clone(), held.clone(), answers.clone());
             Arc::new(move |ctx: NodeInvestigatedCtx| {
                 let deleted = runner.digest_view.is_recovering(ctx.node_id.as_str(), &ctx.incarnation) || runner.digest_view.deleted().iter().any(|op| op.node_id == ctx.node_id && op.incarnation == ctx.incarnation);
                 held.lock().unwrap().push((runner.try_node_work(&ctx.node_id).is_none(), deleted));
@@ -2463,7 +2472,7 @@ mod tests {
                 Box::pin(async move { answer })
             })
         };
-        let recovery = recovery_over(&runner, builds.clone(), Some(hook));
+        let recovery = recovery_over(&runner, builds.clone(), Some(hook_over(runner.clone())));
         let lost = lost_member(&runner, "1").await;
         let capture = crate::span_capture::Capture::new("q416-pre-node-recreate");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -2478,7 +2487,7 @@ mod tests {
         let deletes = of(delete, &lost);
         assert_eq!(deletes.len(), 1, "the birth is deleted before the application is asked: {deletes:?}");
         let told = asked.lock().unwrap().clone();
-        assert_eq!(told.len(), 1, "the application is asked once, after the result: {told:?}");
+        assert_eq!(told.len(), 1, "the application is asked once, after the result and the birth's node.delete: {told:?}; the recovery ended {:?}", of(submit, &lost).iter().map(|s| attr(s, "outcome")).collect::<Vec<_>>());
         let investigated = of("rdm.node_admin.node.update.via-on-node-investigated", &lost);
         assert_eq!(investigated.len(), 1, "the result is written once, as its event: {investigated:?}");
         let mesh1_id = runner.topology.read().await.meshes[0].id.clone().expect("the rig's view holds mesh1's id");
@@ -2527,12 +2536,15 @@ mod tests {
         eprintln!("span {ask} trace_id={} {:?}", asks[1].trace_id, asks[1].attributes);
         eprintln!("span {create} trace_id={} {:?}", creates[0].trace_id, creates[0].attributes);
 
-        // (c) No hook registered: the recovery runs on as before.
-        let plain = recovery_over(&runner, builds, None);
-        let other = lost_member(&runner, "2").await;
+        // (c) No hook registered: the recovery runs on as before. Each of (c) and (d) runs on a rig of its
+        // own: a completed node.delete reprojects the rig's view, which holds its admin primary only as
+        // the rig wrote it.
+        let (dir_c, runner_c, builds_c, _) = runner_rig("q416-pre-node-recreate-none").await;
+        let plain = recovery_over(&runner_c, builds_c, None);
+        let other = lost_member(&runner_c, "2").await;
         plain.recover(&other).await;
         let (asks, deletes, creates) = (of(ask, &other), of(delete, &other), of(create, &other));
-        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks.len(), 1, "{asks:?}; the recovery ended {:?}", of(submit, &other).iter().map(|s| attr(s, "outcome")).collect::<Vec<_>>());
         assert_eq!(attr(&asks[0], "outcome"), "none-registered", "{:?}", asks[0].attributes);
         assert_eq!((deletes.len(), creates.len()), (1, 1), "with no hook the recovery runs on to node.delete and node.create: {deletes:?} {creates:?}");
         assert!(deletes[0].end <= asks[0].start && asks[0].end <= creates[0].start, "{:?} {:?} {:?}", deletes[0], asks[0], creates[0]);
@@ -2540,12 +2552,14 @@ mod tests {
         eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
 
         // (d) The fabric-primary's route: a recovery submitted, not run on the tick, asks the hook too.
-        let third = lost_member(&runner, "3").await;
-        let _ = recovery.submit(&third, &crate::deployment::provider::Inspected::Exited(None)).await;
+        let (dir_d, runner_d, builds_d, _) = runner_rig("q416-pre-node-recreate-submit").await;
+        let submitted = recovery_over(&runner_d, builds_d, Some(hook_over(runner_d.clone())));
+        let third = lost_member(&runner_d, "3").await;
+        let _ = submitted.submit(&third, &crate::deployment::provider::Inspected::Exited(None)).await;
         let told = asked.lock().unwrap().clone();
         assert_eq!(told.len(), 3, "the submitted recovery asks the application once: {told:?}");
         assert_eq!((&told[2].node_id, told[2].result, &told[2].inspected), (&third.node_id, NodeInvestigatedResult::ReCreated, &Some(crate::deployment::provider::Inspected::Exited(None))), "asked of the submitted birth on the inspect's answer");
-        assert_eq!(held.lock().unwrap()[2], (true, true), "asked on the node's work turn, the birth held recovering");
+        assert_eq!(held.lock().unwrap()[2], (true, true), "asked on the node's work turn, the birth held deleted");
         let (asks, runs, deletes, creates) = (of(ask, &third), of(submit, &third), of(delete, &third), of(create, &third));
         assert_eq!((asks.len(), runs.len()), (1, 1), "{asks:?} {runs:?}");
         assert_eq!(attr(&asks[0], "outcome"), "ok", "{:?}", asks[0].attributes);
@@ -2553,7 +2567,9 @@ mod tests {
         assert_eq!((deletes.len(), creates.len()), (1, 1), "the submitted recovery deletes, then on Ok creates: {deletes:?} {creates:?}");
         assert!(deletes[0].end <= asks[0].start && asks[0].end <= creates[0].start, "node.delete, then the hook, then node.create: {:?} {:?} {:?}", deletes[0], asks[0], creates[0]);
         eprintln!("span {ask} trace_id={} {:?}", asks[0].trace_id, asks[0].attributes);
-        let _ = std::fs::remove_dir_all(&dir);
+        for d in [dir, dir_c, dir_d] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// CONTRACT (fabric-node-hooks.md "pre_node_recreate"; node-recovery.md sequence step 1, Q416, Q437
