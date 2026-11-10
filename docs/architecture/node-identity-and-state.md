@@ -579,7 +579,7 @@ defines.
 **Observed death means UNAVAILABLE, not gone** (§6): a broker or a compute that stops being
 reachable serves again on return under its own identity. Only
 [node.delete](lifecycles/node-delete.md) releases a node's identity and name, never its storage.
-The offline verdict writes no application work of its own; what an application does on a node's
+Node investigation's result writes no application work of its own; what an application does on a node's
 release is the application's.
 A silent member is its mesh-primary's
 [node recovery](lifecycles/node-recovery.md); a peer mesh's lost mesh-primary is the fabric-primary's

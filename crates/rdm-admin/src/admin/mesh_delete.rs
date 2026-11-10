@@ -1346,7 +1346,7 @@ mod tests {
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-delete.md, "Resume after the primary's loss", step 1:
-    /// "a verdict of `reached` refuses the resume by name, since the primary is not lost". The leaving
+    /// "a result of `ready` refuses the resume by name, since the primary is not lost". The leaving
     /// mesh2's node-admin `mesh2.node-admin.1` is silent in the fabric-primary's view, and its exact birth
     /// answers node investigation's probe (`ProbeNodeState`, `Current`): the resume ends incomplete
     /// naming it as alive, and nothing of it is deleted (no step event of its node.delete). fabric-delete.md

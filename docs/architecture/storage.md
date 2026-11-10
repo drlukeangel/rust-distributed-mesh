@@ -120,8 +120,8 @@ It is four steps:
    recovery, never part of the change, before its mesh-primary replies `unblocked`.
 
 A mesh-primary that does not reply `blocked` or `unblocked` is a lost node, as any node is
-([node investigation](lifecycles/node-investigation.md)): it is investigated, and on any verdict but
-`reached` node recovery re-creates it, the primary's own workflow, never part of the change. After
+([node investigation](lifecycles/node-investigation.md)): it is investigated, and node recovery
+brings it back or re-creates it (it ends `rejoined` or `re-created`), the primary's own workflow, never part of the change. After
 the switch the change completes, its `rdm.storage.ended` event written, once every mesh-primary has
 replied `unblocked`; nothing else waits.
 

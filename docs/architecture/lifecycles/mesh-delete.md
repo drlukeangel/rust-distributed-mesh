@@ -64,8 +64,8 @@ The roster is the mesh's node records at each step: a birth this Build's own nod
 keeps its `Deleted` record (D67). When the mesh-primary is lost during mesh.delete, the fabric-primary resumes the mesh's section in this order, each step its own
 `rdm.build.step` event:
 
-1. The lost primary's node investigation verdict is recorded as its roster receipt; a verdict of
-   `reached` refuses the resume by name, since the primary is not lost.
+1. The lost primary's node investigation result is recorded as its roster receipt; a result of
+   `ready` refuses the resume by name, since the primary is not lost.
 2. Every silent node-admin of the mesh's records is deleted, the lost primary among them, its
    node.delete's `TerminateRuntime` its roster receipt. The mesh's section then goes to the new
    mesh-primary: the surviving admin the election named or, when none survives, the one node-admin

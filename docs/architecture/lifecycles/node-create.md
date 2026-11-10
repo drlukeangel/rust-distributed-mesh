@@ -136,8 +136,8 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    A mesh with no live node has no member to ping, so there is no sweep: the node-admin brings
    every member back through [node recovery](node-recovery.md), under the same MeshId.
 5. Every node the sweep did not reach goes to [node recovery](node-recovery.md): the new
-   mesh-primary's [node investigation](node-investigation.md), then recovery on its verdict.
-   A missing Ping reply is the trigger, never the verdict.
+   mesh-primary's [node investigation](node-investigation.md), then recovery on its result.
+   A missing Ping reply is the trigger, never the result.
 6. Each other node-admin the mesh lost is a member like any other: the new mesh-primary recovers it
    through [node recovery](node-recovery.md) (step 5). It calls its maker, obtains topology, joins
    the channel and becomes ready.
@@ -167,10 +167,12 @@ sequenceDiagram
     Note over A,D: no answer hands D to node recovery; it is not a sign the node is dead
     A->>D: node investigation: tickle
     A->>P: node.runtime.inspect
-    P-->>A: verdict
-    alt reached
+    P-->>A: the inspect's answer
+    alt D answered the tickle (ready)
         A->>D: node.mesh.join
-    else any other verdict
+    else running or os-stopped, answered the command back or the start (rejoined)
+        A->>D: node.mesh.join, or the start
+    else exited, or the command back or the start unanswered (re-created)
         A->>A: node recovery: node.delete D, node.create with D's path and name
     end
     A->>P: node recovery of each other lost node-admin
@@ -184,7 +186,7 @@ sequenceDiagram
 | Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |
 | Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes written to the topology view | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read` |
 | Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |
-| Mesh-primary / provider | node recovery | node investigation, one recovery on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
+| Mesh-primary / provider | node recovery | node investigation, one recovery on its result | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |
 
 Call/serve ancestry follows the [runtime spans](../node-rpc-envelope.md#runtime-spans).
 
