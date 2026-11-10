@@ -205,6 +205,22 @@ impl Estate {
         Some(held)
     }
 
+    /// What each of `nodes` holds itself ([`Self::held_topology_at`]) as `mesh`'s primary of `type`:
+    /// the live births it lists with that role in their digests, by node, `None` for a node that does
+    /// not answer within 2 s. A birth it lists deleted or withdrawn (a retained departure, listed with its
+    /// last digest) holds no role. More than one birth listed is two primaries.
+    pub async fn node_type_primary_held_at(&self, nodes: &[PathName], mesh: &str, r#type: &str) -> Vec<(PathName, Option<Vec<rdm_core::NodeId>>)> {
+        use rdm_core::model::NodeStatus as S;
+        let role = rdm_core::PrimaryRole::of_type(r#type);
+        let mut out = Vec::new();
+        for node in nodes {
+            let live = |m: &&rdm_client::HeldBirth| !matches!(m.status, S::Deleted | S::Withdrawn);
+            let held = self.held_topology_at(node).await.map(|h| h.members.iter().filter(live).filter(|m| m.node.mesh == mesh && m.primary.iter().any(|r| r.role == role)).map(|m| m.node.node_id.clone()).collect());
+            out.push((node.clone(), held));
+        }
+        out
+    }
+
     /// [`Self::node_views_at`], naming the read that ended ([`views_of`]).
     pub async fn views_at(&self, admin: &PathName) -> Result<Vec<NodeView>, ViewsEnd> {
         let peers = self.peers().await;

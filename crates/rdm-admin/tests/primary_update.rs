@@ -119,6 +119,8 @@ const REJECTED: &str = "rdm.node_admin.primary.reject.via-primary-update";
 const INVESTIGATION: &str = "rdm.node_admin.primary.resolve.via-successor-investigation";
 /// The commander's node.primary.update.
 const COMMAND: &str = "rdm.node_admin.primary.update.via-command";
+/// The mesh-primary's create step's command of a type's first primary (Q407).
+const FIRST: &str = "rdm.node_admin.primary.update.via-create";
 /// One Node RPC call at its caller: its target, op, outcome, reason and elapsed time.
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
 
@@ -624,6 +626,13 @@ async fn type_fabric(with_b2: bool) -> TypeFabric {
 /// [`type_fabric`], B1's own view holding B2 (its digest, Ready) only when `b1_hears_b2`: the
 /// mesh-primary's view holds B2 Ready either way.
 async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
+    type_fabric_of(with_b2, b1_hears_b2, true).await
+}
+
+/// [`type_fabric_heard`]; with `b1_primary` false the type holds no primary yet: no node's view holds
+/// a record of mesh1's node primary and B1 is not primary in any view, as before the type's first
+/// create completes (Q407).
+async fn type_fabric_of(with_b2: bool, b1_hears_b2: bool, b1_primary: bool) -> TypeFabric {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "000000000008", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", &rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "000000000001", true, status).await;
@@ -632,7 +641,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
     let mut pn = node_of(&p, NodeStatus::Ready, false);
     pn.is_primary = true;
     let xn = node_of(&x, NodeStatus::Ready, true);
-    let mut nodes = vec![pn, xn, member_node(&b1, true)];
+    let mut nodes = vec![pn, xn, member_node(&b1, b1_primary)];
     nodes.extend(b2.iter().map(|b| member_node(b, false)));
     let resolved: Vec<ResolvedNode> = [p.resolved.clone(), x.resolved.clone(), b1.resolved.clone()].into_iter().chain(b2.iter().map(|b| b.resolved.clone())).collect();
     for a in [&p, &x] {
@@ -643,14 +652,18 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         primary_at(a, PrimaryRole::FabricPrimary, &primary_of(&x, 7)).await;
         primary_at(a, PrimaryRole::MeshPrimary, &primary_of(&p, 3)).await;
         primary_at(a, PrimaryRole::MeshPrimary, &primary_of(&x, 1)).await;
-        primary_at(a, PrimaryRole::NodePrimary(RPC.to_string()), &member_primary(&b1, 2)).await;
+        if b1_primary {
+            primary_at(a, PrimaryRole::NodePrimary(RPC.to_string()), &member_primary(&b1, 2)).await;
+        }
     }
     let members: Vec<&Member> = std::iter::once(&b1).chain(b2.iter()).collect();
     for m in &members {
         for r in &resolved {
             m.resolver.insert(r.clone());
         }
-        m.service.topology_view().primaries().take(PrimaryRole::NodePrimary(RPC.to_string()), &member_primary(&b1, 2));
+        if b1_primary {
+            m.service.topology_view().primaries().take(PrimaryRole::NodePrimary(RPC.to_string()), &member_primary(&b1, 2));
+        }
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.service.topology_view().digest_view.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it Ready.
@@ -1058,6 +1071,94 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
         let r = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type node in mesh mesh1"), "{r:?}");
         assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the node primary");
+        let _ = &f.x;
+    });
+}
+
+/// The record of mesh1's node primary each member's own view holds: `(its node id, the record)`.
+fn held_roles(members: &[&Member]) -> Vec<(String, Option<Primary>)> {
+    members.iter().map(|m| (m.resolved.node_id.to_string(), m.service.topology_view().primaries().node_type_primary("mesh1", RPC))).collect()
+}
+
+/// CONTRACT (Q433, Luke: "make the create decision respect the mesh-primary's existing recorded command
+/// answer. A replacement must not bootstrap another primary when the role has already moved";
+/// node-primary-update.md, the Commander row: "Each reads a node's mesh-primary and every node type's
+/// primary from its atlas, from the answer streamed back, never waiting on gossip (Q355)"): P, mesh1's
+/// mesh-primary, moves mesh1's node primary from B1 to B2 and is answered node.primary.updated naming
+/// B2, which it records in its atlas. B2's digest never reaches P in this cell, so P's record still
+/// names B1 at 2: the move's gossip is withheld. B1 is deleted (its birth gone at P), and B3, a new
+/// birth at B1's path and name, is created Ready. P's create step reads its recorded answer first: the
+/// type's primary is B2, and B3 is commanded nothing (`via-create` outcome `answered`, naming B2). B2 is
+/// the only node holding the role. Must NOT happen: B3 commanded the type's primary at the revision B2
+/// holds, two nodes primary of one type (rdm#379,
+/// http://192.168.68.99:16687/trace/7e060490d2dee5d68ad6294ba7662efa).
+#[test]
+fn a_create_after_a_move_this_mesh_primary_was_answered_for_commands_no_primary_while_the_moves_gossip_is_withheld() {
+    let cap = trace_capture("primary-update");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    cap.run(async {
+        let f = type_fabric(true).await;
+        let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
+        let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.delete", &f.b1.resolved.node_id));
+        let moved = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("mesh1's node primary moves");
+        assert_eq!(moved, f.b2().resolved.node_id, "the answer names B2");
+        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "P's record still names B1: the move's gossip has not reached it");
+        // B1's delete: its birth is gone at P.
+        f.p.primary_update.topology_view.primaries().mark_gone(f.b1.resolved.incarnation.clone());
+        // B3, a new birth at B1's path and name, created Ready by P.
+        let b3 = member(&f.b1.fabric, "mesh1", &rdm_core::PathName::new("mesh1.node", "1").unwrap(), "000000000005").await;
+        f.p.resolver.insert(b3.resolved.clone());
+        let create = rdm_core::OperationId::node("node.create", &b3.resolved.node_id);
+        let commanded = f.p.primary_update.command_first_primary(&member_node(&b3, false), "b1", &create).await.expect("the create step's first-primary decision ends");
+        let first = spans.named(FIRST);
+        let held = held_roles(&[&f.b1, f.b2(), &b3]);
+        let expected = vec![(f.b1.resolved.node_id.to_string(), Some(member_primary(f.b2(), 3))), (f.b2().resolved.node_id.to_string(), Some(member_primary(f.b2(), 3))), (b3.resolved.node_id.to_string(), None)];
+        assert_eq!(held, expected, "B2 is the only node holding the role, B3 holds none: {first:?}");
+        assert!(!commanded, "the create commands nothing: {first:?}");
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].get("outcome").map(String::as_str), Some("answered"), "the create read P's recorded answer: {first:?}");
+        assert!(first[0].get("detail").is_some_and(|d| d.contains(f.b2().resolved.node_id.as_str())), "naming B2: {first:?}");
+        let mut atlas_view = f.p.primary_update.topology.read().await.clone();
+        f.p.primary_update.atlas.primaries(&mut atlas_view);
+        assert_eq!(atlas_view.node_type_primary("mesh1", RPC).map(|n| n.node_id.clone()), Some(f.b2().resolved.node_id.clone()), "P's atlas still names B2");
+        let _ = &f.x;
+    });
+}
+
+/// CONTRACT (Q407: "the mesh-primary's create step commands the type's first node by
+/// `node.primary.update` once it is Ready"; Q433: "Preserve initial primary assignment during
+/// concurrent creates"): mesh1's node type holds no primary yet, and P's creates of B1 and B2, both
+/// Ready, decide at once (a Build's creates run at once, Q245). Exactly one is commanded the type's
+/// first primary, at revision 1; the other reads the record that answer held and is commanded nothing
+/// (`via-create` outcome `held`, naming the commanded node). Must NOT happen: both commanded at
+/// revision 1, two nodes primary of one type.
+#[test]
+fn two_creates_of_a_type_with_no_primary_deciding_at_once_command_exactly_one_first_primary() {
+    let cap = trace_capture("primary-update");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    cap.run(async {
+        let f = type_fabric_of(true, true, false).await;
+        let pu = &f.p.primary_update;
+        assert_eq!(pu.topology_view.primaries().node_type_primary("mesh1", RPC), None, "the type holds no primary yet");
+        let (b1, b2) = (member_node(&f.b1, false), member_node(f.b2(), false));
+        let (c1, c2) = (rdm_core::OperationId::node("node.create", &f.b1.resolved.node_id), rdm_core::OperationId::node("node.create", &f.b2().resolved.node_id));
+        let (one, two) = tokio::join!(pu.command_first_primary(&b1, "b1", &c1), pu.command_first_primary(&b2, "b1", &c2));
+        let commanded = [one.expect("B1's create decides"), two.expect("B2's create decides")];
+        let first = spans.named(FIRST);
+        let updated: Vec<&BTreeMap<String, String>> = first.iter().filter(|s| s.get("outcome").map(String::as_str) == Some("updated")).collect();
+        assert_eq!(updated.len(), 1, "exactly one create commands the type's first primary: {first:?}");
+        assert_eq!(commanded.iter().filter(|c| **c).count(), 1, "{commanded:?}: {first:?}");
+        let (winner, other) = if commanded[0] { (&f.b1, f.b2()) } else { (f.b2(), &f.b1) };
+        assert_eq!(updated[0].get("subject_id").map(String::as_str), Some(winner.resolved.node_id.as_str()), "{updated:?}");
+        assert_eq!(updated[0].get("revision").map(String::as_str), Some("1"), "{updated:?}");
+        let theirs = first.iter().find(|s| s.get("subject_id").map(String::as_str) == Some(other.resolved.node_id.as_str())).unwrap_or_else(|| panic!("the other create decided: {first:?}"));
+        assert_eq!(theirs.get("outcome").map(String::as_str), Some("held"), "{theirs:?}");
+        assert!(theirs.get("detail").is_some_and(|d| d.contains(winner.resolved.node_id.as_str())), "the record the first answer held, naming the commanded node: {theirs:?}");
+        let expected = vec![(winner.resolved.node_id.to_string(), Some(member_primary(winner, 1))), (other.resolved.node_id.to_string(), None)];
+        assert_eq!(held_roles(&[winner, other]), expected, "only the commanded node holds the role: {first:?}");
+        assert_eq!(pu.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(winner, 1)), "P holds the record its answer held");
         let _ = &f.x;
     });
 }

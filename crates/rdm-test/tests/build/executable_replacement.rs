@@ -10,7 +10,7 @@ use rdm_core::binding::Binding;
 use rdm_core::build::{BuildChange, Nodes};
 use rdm_core::meta::{PersistentDisposition, StoragePersistence};
 use rdm_core::PathName;
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for_observed, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -158,8 +158,13 @@ async fn a_persistent_replacement_takes_the_old_data_dir_and_an_ephemeral_one_a_
 /// mesh2 holds two brokers, one its type's primary; one Create names both with another executable, the
 /// primary first. The non-primary is replaced first, its new node Ready, and only then is the primary's
 /// role moved, by node.primary.update, to that new node, and the primary deleted and created again. The
-/// type's nodes are never both gone. Must NOT happen: the primary deleted first, both deleted before
-/// either is created again, or the role moved to a node about to be deleted.
+/// type's nodes are never both gone. Every node of mesh2 then holds that new node as the broker primary,
+/// and node.get answers it the one primary broker: the re-created primary path's create commands no
+/// primary, its mesh-primary reading the answer of the move it commanded (Q433, Q355), whether or not
+/// the move's gossip reached it first. Must NOT happen: the primary deleted first, both deleted before
+/// either is created again, the role moved to a node about to be deleted, or a replacement's create
+/// commanding the broker primary over the move (rdm#379: two brokers primary at one revision,
+/// http://192.168.68.99:16687/trace/7e060490d2dee5d68ad6294ba7662efa).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_brokers_are_replaced_one_at_a_time_the_primary_last_its_role_moved_to_the_replaced_one() {
     let cell = "two_brokers_are_replaced_one_at_a_time_the_primary_last_its_role_moved_to_the_replaced_one";
@@ -177,8 +182,28 @@ async fn two_brokers_are_replaced_one_at_a_time_the_primary_last_its_role_moved_
     let primary_first = frame(&done.frames, &op("node.delete", &primary.node_id), None).expect("the primary's delete");
     let primary_created = frame(&done.frames, &op("node.create", &primary2.node_id), Some("Complete")).expect("the primary's create");
     assert!(other_deleted < other_created && other_created < primary_first && primary_first < primary_created, "one path at a time, the primary last, the non-primary's new node Ready before the primary's delete begins: {other_deleted} {other_created} {primary_first} {primary_created}: {:?}", done.frames);
+    // Every node of mesh2 holds the node the role moved to as the broker primary, and node.get answers
+    // it the one primary broker.
+    let mesh2 = [at("mesh2.node-admin", "1"), other.location(), primary.location()];
+    let want = Some(vec![other2.node_id.clone()]);
+    wait_for_observed("every node of mesh2 holds the non-primary's new node as the broker primary, the one node.get answers primary", Duration::from_secs(15), || async {
+        let held = estate.node_type_primary_held_at(&mesh2, "mesh2", "broker").await;
+        let answered: Vec<rdm_core::NodeId> = estate.node_views().await.into_iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "broker" && n.is_primary).map(|n| n.node_id).collect();
+        if held.iter().all(|(_, h)| *h == want) && answered == [other2.node_id.clone()] { Ok(()) } else { Err(format!("want {}; held {held:?}; node.get primary brokers {answered:?}", other2.node_id)) }
+    })
+    .await;
     estate.stop().await;
     let spans = estate.spans();
+    // The one broker primary a create commanded is the type's first, at the estate's own creation:
+    // neither replacement's create commands one (Q433).
+    let replaced = [other2.node_id.as_str(), primary2.node_id.as_str()];
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-create").into_iter().filter(|sp| s(&sp["attributes"]["mesh"]) == "mesh2" && s(&sp["attributes"]["type"]) == "broker").collect();
+    let commanded: Vec<&Value> = creates.iter().copied().filter(|sp| s(&sp["attributes"]["outcome"]) == "updated").collect();
+    assert_eq!(commanded.len(), 1, "one create commanded the broker primary, the type's first: {commanded:#?}");
+    assert!(views.iter().any(|v| s(&commanded[0]["attributes"]["subject_id"]) == v.node_id.as_str()), "it was one of the estate's first brokers: {}", commanded[0]);
+    let recreated = creates.iter().find(|sp| s(&sp["attributes"]["subject_id"]) == primary2.node_id.as_str()).unwrap_or_else(|| panic!("the re-created primary path's create decided its first primary: {creates:#?}"));
+    assert!(["answered", "held"].contains(&s(&recreated["attributes"]["outcome"]).as_str()), "the re-created primary path's create read the move, commanding nothing: {recreated}");
+    assert!(creates.iter().filter(|sp| replaced.contains(&s(&sp["attributes"]["subject_id"]).as_str())).all(|sp| s(&sp["attributes"]["outcome"]) != "updated"), "no replacement's create commands a primary: {creates:#?}");
     let build_id = done.build_id.to_string();
     let moved: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-command").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == build_id && s(&sp["attributes"]["outcome"]) == "updated").collect();
     assert_eq!(moved.len(), 1, "the Build moves one primary role, the broker primary's: {moved:?}");

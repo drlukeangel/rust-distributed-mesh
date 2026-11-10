@@ -11,11 +11,14 @@
 //!   `node.topology.get` at the gateway lists the broker with its broker-primary role at revision 1;
 //! - no node-admin computes the broker election: no `rdm.mesh.election.resolve.via-recompute` span names
 //!   the broker type.
+//!
+//! A second cell creates a mesh's first three brokers in one Build, their creates at once: exactly one
+//! is commanded the type's first primary, and every node of the mesh holds it (Q433).
 
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
-use rdm_core::{PrimaryRole, RoleRevision};
-use rdm_test::estate::{named, wait_for, Estate, Owner};
-use serde_json::json;
+use rdm_core::{PathName, PrimaryRole, RoleRevision};
+use rdm_test::estate::{named, wait_for, wait_for_observed, Estate, Owner};
+use serde_json::{json, Value};
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -81,4 +84,46 @@ async fn a_meshs_first_broker_is_commanded_primary_at_its_create_and_a_gateway_h
     let node_admin_elections: Vec<_> = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().filter(|sp| sp["attributes"]["type"] != "node-admin").collect();
     assert!(node_admin_elections.iter().all(|sp| sp["attributes"]["observer_type"] == sp["attributes"]["type"]), "no node-admin computes another type's election: {node_admin_elections:#?}");
     estate.record_trace_url(commanded["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (Q407: "the mesh-primary's create step commands the type's first node by
+/// `node.primary.update` once it is Ready"; Q433, Luke: "Preserve initial primary assignment during
+/// concurrent creates ... Check the nodes' actual primary roles and unexpected via-create commands"):
+/// mesh2's first three brokers are created by one Build, their creates running at once in mesh2's
+/// section (Q245). Its mesh-primary commands exactly one of them the broker type's first primary, at
+/// revision 1, and the other two creates command nothing. Every node of mesh2 holds that one broker as
+/// the broker primary, and node.get answers it the one primary broker. Must NOT happen: two creates
+/// commanding the type's first primary, two brokers primary.
+// @feature: mesh-elections
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_brokers_created_at_once_get_one_first_primary_that_every_node_of_their_mesh_holds() {
+    let test = "three_brokers_created_at_once_get_one_first_primary_that_every_node_of_their_mesh_holds";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1)]), MeshDesired::of("mesh2", [("node-admin", 1), ("broker", 3)])] }).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let brokers: Vec<PathName> = (1..=3).map(|i| PathName::new("mesh2.broker", &i.to_string()).unwrap()).collect();
+    let mesh2: Vec<PathName> = std::iter::once(PathName::new("mesh2.node-admin", "1").unwrap()).chain(brokers.iter().cloned()).collect();
+    // Every node of mesh2 holds one and the same broker as the broker primary, the one node.get answers.
+    let primary = wait_for_observed("every node of mesh2 holds one broker as the broker primary, the one node.get answers primary", Duration::from_secs(15), || async {
+        let held = estate.node_type_primary_held_at(&mesh2, "mesh2", "broker").await;
+        let answered: Vec<rdm_core::NodeId> = estate.node_views().await.into_iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "broker" && n.is_primary).map(|n| n.node_id).collect();
+        match answered.as_slice() {
+            [one] if held.iter().all(|(_, h)| h.as_deref() == Some(std::slice::from_ref(one))) => Ok(one.clone()),
+            _ => Err(format!("held {held:?}; node.get primary brokers {answered:?}")),
+        }
+    })
+    .await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-create").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2" && sp["attributes"]["type"] == "broker").collect();
+    assert_eq!(creates.len(), 3, "each broker's create decided its type's first primary: {creates:#?}");
+    let commanded: Vec<&&Value> = creates.iter().filter(|sp| sp["attributes"]["outcome"] == "updated").collect();
+    assert_eq!(commanded.len(), 1, "exactly one create commands the broker type's first primary: {creates:#?}");
+    assert_eq!(commanded[0]["attributes"]["subject_id"], primary.as_str(), "the commanded broker is the one every node holds: {}", commanded[0]);
+    assert_eq!(commanded[0]["attributes"]["revision"].to_string().trim_matches('"'), "1", "{}", commanded[0]);
+    for sp in creates.iter().filter(|sp| sp["attributes"]["outcome"] != "updated") {
+        assert_eq!(sp["attributes"]["outcome"], "held", "the other creates read the record the first answer held: {sp}");
+        assert!(sp["attributes"]["detail"].as_str().is_some_and(|d| d.contains(primary.as_str())), "naming the commanded broker: {sp}");
+    }
+    estate.record_trace_url(commanded[0]["trace_id"].as_str().unwrap_or(""));
 }
