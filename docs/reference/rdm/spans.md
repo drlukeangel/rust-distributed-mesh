@@ -535,7 +535,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.resolve.via-call` | `crates/rdm-core/src/names.rs` | 78 |
 | `rdm.node_admin.node.resolve.via-investigator-hears-none` | `crates/rdm-admin/src/offline.rs` | 1040 |
 | `rdm.node_admin.node.resolve.via-lifecycle-record` | `crates/rdm-admin/src/current_record.rs` | 45 |
-| `rdm.node_admin.node.resolve.via-node-admin-left` | `crates/rdm-admin/src/primary_watch.rs` | 198 |
+| `rdm.node_admin.node.resolve.via-node-admin-left` | `crates/rdm-admin/src/primary_watch.rs` | 204 |
 | `rdm.node_admin.node.resolve.via-provider-inspection` | `crates/rdm-admin/src/deployment/pipeline.rs` | 2752 |
 | `rdm.node_admin.node.resolve.via-provider-inspection` | `crates/rdm-admin/src/node_investigation.rs` | 487 |
 | `rdm.node_admin.node.resolve.via-receipted-exit` | `crates/rdm-admin/src/admin/runner.rs` | 1858 |
@@ -620,7 +620,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.primary.update.via-fabric-primary-call` | `crates/rdm-core/src/names.rs` | 92 |
 | `rdm.node_admin.primary.update.via-fabric-primary-left` | `crates/rdm-admin/src/primary_update.rs` | 632 |
 | `rdm.node_admin.primary.update.via-fabric-recovery` | `crates/rdm-admin/src/primary_update.rs` | 451 |
-| `rdm.node_admin.primary.update.via-investigation` | `crates/rdm-admin/src/primary_watch.rs` | 360 |
+| `rdm.node_admin.primary.update.via-investigation` | `crates/rdm-admin/src/primary_watch.rs` | 366 |
 | `rdm.node_admin.primary.update.via-issued-writes-finished` | `crates/rdm-admin/src/primary_update.rs` | 401 |
 | `rdm.node_admin.primary.update.via-primary-updated` | `crates/rdm-admin/src/primary_update.rs` | 231 |
 | `rdm.node_admin.primary.update.via-primary-updated` | `crates/rdm-node/src/member_handover.rs` | 275 |

@@ -158,8 +158,14 @@ impl Looker {
     /// that primary's investigation, begun here and, when it reaches the birth, ended here
     /// ([`look_ends`]); one that does not reach is ended by the investigation the birth goes on to.
     pub async fn look_for(&self, view: &Topology, n: &Node, reason: crate::node_investigation::Reason) -> Finding {
+        self.look_as(view, n, reason, crate::heard_again::commands_join(view, &self.me_id, n).is_ok()).await
+    }
+
+    /// [`Self::look_for`] by an admin that is (`commander`) or is not the primary above `n`: the primary
+    /// watch's own rule names the fabric-primary the primary above a lost mesh-primary its view no longer
+    /// names one (the election replaced it, or names none: [`run`]'s `was_mesh_primary`).
+    pub async fn look_as(&self, view: &Topology, n: &Node, reason: crate::node_investigation::Reason, commander: bool) -> Finding {
         let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: self.connections.clone() };
-        let commander = crate::heard_again::commands_join(view, &self.me_id, n).is_ok();
         let writer = self.heard_again.get().filter(|_| commander).map(|h| h.investigated.clone());
         if let (Some(writer), Some(incarnation)) = (&writer, n.incarnation_id.as_ref()) {
             writer.begin(&n.node_id, incarnation);
@@ -377,7 +383,12 @@ pub async fn run(w: Watch) {
             let seen = rdm_transport::iroh_obs::observe_remote(&w.channels.endpoint(), key).await;
             span.record("iroh_known_addrs", seen.known_addrs.as_str());
             span.record("iroh_active_addrs", seen.active_addrs.as_str());
-            let finding = w.looker.look_for(&view, &node, reason).instrument(span.clone()).await;
+            // This admin is the primary above the birth when it commands it (`commands_join`), and, as the
+            // fabric-primary, above a lost mesh-primary of another mesh its view names no longer (the
+            // election replaced it, or names none): its investigation and its one result are this admin's
+            // (node-investigation.md "Caller"; review finding 3, lead note 0005 D).
+            let above = crate::heard_again::commands_join(&view, &w.me_id, &node).is_ok() || (view.is_fabric_primary(&me_birth.0) && !node.is_fabric_primary && node.mesh != w.mesh && (node.is_primary || was_mesh_primary(&node)));
+            let finding = w.looker.look_as(&view, &node, reason, above).instrument(span.clone()).await;
             let follows = crate::node_investigation::follows(&finding, reason, node.status);
             span.record("follows", follows.as_str());
             // The verdict on the fabric-primary's lost birth is fabric recovery's input (Q337): the

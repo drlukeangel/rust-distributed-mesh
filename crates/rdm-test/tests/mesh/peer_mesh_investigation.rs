@@ -194,8 +194,11 @@ const REMOVED_SPANS: [&str; 5] = ["rdm.node_admin.mesh.update.via-probe", "rdm.n
 /// successor. The fabric-primary's primary watch runs node investigation on the lost birth, reads its
 /// verdict (the runtime exited) and submits its node recovery; with no node-admin left in the mesh the
 /// fabric-primary executes it, and the node-admin is re-created at its path.name with a new node.id, the
-/// mesh's primary again. Must NOT happen: a probe round, a mesh recovery of its own, a `degraded` status,
-/// or the mesh given a node-admin anywhere but at the lost birth's path.name.
+/// mesh's primary again. The fabric-primary's investigation ends `re-created`: one `rdm.node.investigated`
+/// event of the lost birth, written by the fabric-primary, `inspected` `exited` (node-investigation.md;
+/// review finding 3, lead note 0005 D). Must NOT happen: a probe of its own, a mesh recovery of its own, a
+/// `degraded` status, no result or a second one, or the mesh given a node-admin anywhere but at the lost
+/// birth's path.name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by_the_fabric_primary() {
     let cell = "a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by_the_fabric_primary";
@@ -226,6 +229,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     })
     .await;
     wait_for("the fabric is ready", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
+    let events = crate::build_log::node_investigated(&estate, &lost_id);
     let mesh2_after = estate.mesh_view("mesh2").await;
     let starts_after = estate.starts_of_build(&accepted).await;
     let stop_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
@@ -239,6 +243,9 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == lost_id && attr(sp, "submitter") == fp_id).collect();
     assert!(!submitted.is_empty(), "the fabric-primary submitted the node recovery of {lost:?} on the verdict");
     assert!(submitted.iter().all(|sp| at_ns(sp) >= at_ns(look)), "the recovery follows the investigation's verdict");
+    let results: Vec<(String, String)> = events.iter().map(|e| (s(&e["data"]["result"]), s(&e["data"]["inspected"]))).collect();
+    assert_eq!(results, vec![("re-created".to_string(), "exited".to_string())], "the fabric-primary's investigation ends `re-created`, once, with the inspect's answer that led to it: {events:#?}");
+    assert!(s(&events[0]["source"]).contains(&fp_id), "written by the fabric-primary that investigated: {}", events[0]);
     estate.record_trace_url(&s(&look["trace_id"]));
     for name in REMOVED_SPANS {
         assert!(named(&spans, name).is_empty(), "no span of the removed second ladder: {name}");
