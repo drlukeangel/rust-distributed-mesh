@@ -122,6 +122,16 @@ pub(crate) enum RoleFrom {
     View,
 }
 
+impl RoleFrom {
+    /// The name the `node.get` span's `role_from` carries for it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            RoleFrom::Record => "record",
+            RoleFrom::View => "view",
+        }
+    }
+}
+
 /// More than one record claiming one role, decided as a view decides between two claims (Q429: "by the
 /// elections rule (heard, then lowest complete NodeId), never by a number"; elections.md: "A published
 /// or recorded `is_primary` or `is_fabric_primary` bit is a projection of this result"): among the
@@ -249,7 +259,9 @@ fn row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRecord) ->
 /// `node.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the
 /// lifecycle the ops left each birth in (`records`, its atlas): every birth that matches every pair of
 /// `filter`, by `(path, name)`. A filter the node schema refuses is `RejectedFilter` naming the pair,
-/// and nothing is read. Its span names the read, the pairs and how many nodes were answered. It takes
+/// and nothing is read. Its span names the read, the pairs, how many nodes were answered and, in
+/// `role_from`, where each answered node's role flags came from (`<node id>:record` or
+/// `<node id>:view`, [`RoleFrom`]). It takes
 /// `current`, the reader each birth's record is read through (query.md §1: its
 /// lifecycle record and its properties at its own node ID; never a copy an
 /// atlas holds). A record that cannot be read answers `NotReady` naming it.
@@ -262,6 +274,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         properties = %filter.properties(),
         pairs = %pairs(filter),
         nodes = tracing::field::Empty,
+        role_from = tracing::field::Empty,
         io_calls = tracing::field::Empty,
         io_queued_ms = tracing::field::Empty,
         io_ms = tracing::field::Empty,
@@ -287,6 +300,8 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         nodes.retain(|(n, _)| filter.matches(n));
         let count = nodes.len();
         span.record("nodes", count as u64);
+        let role_from = nodes.iter().map(|(n, from)| format!("{}:{}", n.node_id, from.name())).collect::<Vec<_>>().join(" ");
+        span.record("role_from", role_from.as_str());
         StatusReply::Nodes { nodes: nodes.into_iter().map(|(n, _)| n).collect() }
     };
     // What the read's store calls took (the blocking pool's queue and run).
