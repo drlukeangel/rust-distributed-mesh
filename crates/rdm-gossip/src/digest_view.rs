@@ -1602,7 +1602,7 @@ impl DigestView {
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.status != d.status || now.saturating_duration_since(*at) > self.staleness_floor);
         let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
-        self.take_primaries_in(&inner, &d);
+        self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Direct));
         drop(inner);
         self.note_status(&d, prior, channel);
@@ -1626,35 +1626,13 @@ impl DigestView {
     }
 
     /// Hold the primary records `d` carries (gossip.md "A primary change on gossip", Q392): its birth
-    /// as each role it lists, at that role's revision. A record is held when it supersedes the one held
-    /// (a later revision); who is primary is the election's, from what the view holds.
+    /// as each role it lists, at that role's revision. A record is held only when it supersedes the
+    /// one held (a later revision); who is primary is the election's, from what the view holds.
     pub(crate) fn take_primaries(&self, d: &MeshDigest) {
-        let inner = self.inner.lock().unwrap();
-        self.take_primaries_in(&inner, d);
-    }
-
-    /// [`Self::take_primaries`] under the view's hold `inner`. A node's claim of its node type's role is
-    /// its own (Q406): it is held over a record that names a birth this view does not hear, a birth it
-    /// holds no digest of or was told is gone, whatever the two records' order
-    /// (fabric-node-lifecycle-elections.md §1: the recorded primary stays primary while it is heard; a
-    /// recorded bit never makes a primary). One `rdm.mesh.primary.update.via-unheard-record` span names
-    /// each record so replaced.
-    fn take_primaries_in(&self, inner: &HeldMembers, d: &MeshDigest) {
         let n = &d.node;
         for r in &d.primary {
             let record = Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision: r.revision };
-            if !matches!(r.role, rdm_core::PrimaryRole::NodePrimary(_)) {
-                self.primaries.take(r.role.clone(), &record);
-                continue;
-            }
-            let gone = self.primaries.gone();
-            let unheard = |held: &Primary| gone.contains(&held.incarnation) || !inner.get(held.node_id.as_str()).is_some_and(|(h, _, _)| h.node.incarnation == held.incarnation);
-            let RoleTaken::Held { previous: Some(previous) } = self.primaries.take_claim(r.role.clone(), &record, unheard) else { continue };
-            if record.supersedes(&previous) || !unheard(&previous) {
-                continue;
-            }
-            tracing::info_span!("rdm.mesh.primary.update.via-unheard-record", node = %self.observer_name.lock().unwrap(), role = r.role.name(), primary = %record, previous = %previous, outcome = "held")
-                .in_scope(|| tracing::info!("a node's own claim of its node type's role is held over a record of a birth this view does not hear"));
+            self.primaries.take(r.role.clone(), &record);
         }
     }
 
@@ -1713,7 +1691,7 @@ impl DigestView {
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
         let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
-        self.take_primaries_in(&inner, &d);
+        self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
         drop(inner);
         self.note_status(&d, prior, "topology");
@@ -1781,7 +1759,7 @@ impl DigestView {
         // hears): a birth held silent past the staleness floor is heard again here, as on its own digest.
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || held.status != d.status || unheard(at, *heard, now) > self.staleness_floor);
         let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
-        self.take_primaries_in(&inner, &d);
+        self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         self.note_status(&d, prior, if carried == Carried::Status { "forwarded" } else { "join" });
@@ -1982,21 +1960,32 @@ impl DigestView {
 
     /// The pruner's sweep at `now` (Q254: one clock, the pruner's; its mark is a view change): every
     /// departure past the retention is forgotten (`Self::expire_deleted_at`), and the births held
-    /// silent past the staleness floor are read, each held birth by its unheard time and each birth
-    /// held only from its mesh-primary's projection by the time since it was first held. When they
-    /// differ from the last sweep's, the silence watch moves ([`RoutingWatch`]): the view is rebuilt on
-    /// the mark, never on a poll. `true` when it moved.
+    /// silent past the staleness floor are read, each held birth by its unheard time, each birth
+    /// held only from its mesh-primary's projection by the time since it was first held, and each
+    /// birth a node-type primary record held here names, of which this view holds no digest, by the
+    /// time since it first held a record naming it (fabric-node-lifecycle-elections.md §1: "the
+    /// primary stays primary while it is heard -> unheard past the staleness floor"; a record read
+    /// off a store or an entry names a birth this view may never hear). When they differ from the last
+    /// sweep's, the silence watch moves ([`RoutingWatch`]): the view is rebuilt on the mark, never on
+    /// a poll. `true` when it moved.
     pub fn mark_silence_at(&self, now: Instant) -> bool {
         self.expire_deleted_at(now);
         let floor = self.staleness_floor;
-        let mut silent: BTreeSet<(String, String)> = self
-            .inner
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|(_, at, fw)| unheard(at, *fw, now) > floor)
-            .map(|(d, _, _)| (d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()))
-            .collect();
+        let records = self.primaries.node_type_primaries_since();
+        let mut silent: BTreeSet<(String, String)> = {
+            let inner = self.inner.lock().unwrap();
+            let mut silent: BTreeSet<(String, String)> = inner
+                .values()
+                .filter(|(_, at, fw)| unheard(at, *fw, now) > floor)
+                .map(|(d, _, _)| (d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()))
+                .collect();
+            let projected = self.projected.lock().unwrap();
+            let held = |p: &Primary| inner.get(p.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == p.incarnation) || projected.get(p.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == p.incarnation);
+            for (record, _) in records.iter().filter(|(record, since)| now.saturating_duration_since(*since) > floor && !held(record)) {
+                silent.insert((record.node_id.to_string(), record.incarnation.as_str().to_string()));
+            }
+            silent
+        };
         let projected: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
         for id in projected {
             if let Some((d, _)) = self.projected_at(&id, now).filter(|(_, unheard)| *unheard > floor) {

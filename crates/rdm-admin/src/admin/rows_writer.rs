@@ -121,15 +121,22 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
 
 /// Hold the primaries the node records on the store root record (`is_primary`, `is_fabric_primary` on
 /// each record's newest birth, a `Deleted` record's included: [`crate::storage::records`]), the own
-/// record's included: an election input (elections §3), each
-/// held only when it supersedes the record held. The records record the role; the election decides it.
-/// The store root is the fabric's own, so every record on it is of this fabric.
+/// record's included: an input of the elections and commands this admin takes part in (elections §3),
+/// each held only when it supersedes the record held. The records record the role; the election
+/// decides it. Those are every mesh's mesh-primary and the fabric-primary (the node-admins' own
+/// election), and the node-type primaries of `own_mesh`, whose types' first primaries this admin
+/// commands as its mesh's mesh-primary (Q407). Another mesh's node-type primary is never taken: it is
+/// the election of that type's own nodes, and its first is commanded by that mesh's own mesh-primary
+/// (Q406, Q407), neither of which holds this admin's read of the record. The store root is the fabric's
+/// own, so every record on it is of this fabric.
 pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, primaries: &rdm_gossip::primary::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
         let record = |revision| rdm_core::Primary { mesh: r.mesh(), node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), revision };
-        if let Some(revision) = r.is_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_type(&r.r#type), &record(revision)), rdm_gossip::primary::RoleTaken::Held { .. }));
+        let role = rdm_core::PrimaryRole::of_type(&r.r#type);
+        let input = !matches!(role, rdm_core::PrimaryRole::NodePrimary(_)) || r.mesh() == own_mesh;
+        if let Some(revision) = r.is_primary.filter(|_| input) {
+            taken += usize::from(matches!(primaries.take(role, &record(revision)), rdm_gossip::primary::RoleTaken::Held { .. }));
         }
         if let Some(revision) = r.is_fabric_primary {
             taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_gossip::primary::RoleTaken::Held { .. }));

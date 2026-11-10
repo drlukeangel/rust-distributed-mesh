@@ -42,6 +42,10 @@ pub(crate) struct HeldRoles {
     /// record's role and mesh, with the instant it was replaced here: the primaries this view saw
     /// change, so a birth that was never primary here is told apart from one an update moved.
     pub(crate) replaced: HashMap<(PrimaryRole, String, IncarnationId), Instant>,
+    /// When each node-type primary record held here, by (mesh, kind), first named the birth it names:
+    /// the instant from which a birth this view holds no digest of is unheard (the pruner's sweep,
+    /// `DigestView::mark_silence_at`). A later revision of the same birth keeps it.
+    pub(crate) node_type_since: HashMap<(String, String), Instant>,
 }
 
 /// The role and mesh a record of `role` in `mesh` is held under: a mesh's node-admin type is its
@@ -81,7 +85,11 @@ impl HeldRoles {
                 self.meshes.insert(mesh.to_string(), record);
             }
             PrimaryRole::NodePrimary(r#type) => {
-                self.node_type_primaries.insert((mesh.to_string(), r#type), record);
+                let key = (mesh.to_string(), r#type);
+                if self.node_type_primaries.get(&key).is_none_or(|held| !held.is_birth(&record.node_id, &record.incarnation)) {
+                    self.node_type_since.insert(key.clone(), Instant::now());
+                }
+                self.node_type_primaries.insert(key, record);
             }
         }
     }
@@ -111,25 +119,6 @@ impl PrimaryView {
         match held.get(role.clone(), &primary.mesh) {
             Some(c) if &c == primary => RoleTaken::Same,
             Some(c) if !primary.supersedes(&c) => RoleTaken::Refused { held: c },
-            previous => {
-                held.put(role, &primary.mesh, primary.clone());
-                self.changed.send_modify(|v| *v += 1);
-                RoleTaken::Held { previous }
-            }
-        }
-    }
-
-    /// [`Self::take`], for a node's own claim of its node type's role (Q406): a claim that does not
-    /// supersede the record held is held all the same when `unheard` says this view does not hear the
-    /// birth that record names. The recorded primary stays primary while it is heard
-    /// (fabric-node-lifecycle-elections.md §1), and a record of a birth nobody hears (deleted, gone, or
-    /// never held here) never outweighs a heard node's own claim; this decides on what is heard, never on
-    /// the two records' order. `unheard` is asked under this view's hold, so it reads no `PrimaryView`.
-    pub fn take_claim(&self, role: PrimaryRole, primary: &Primary, unheard: impl Fn(&Primary) -> bool) -> RoleTaken {
-        let mut held = self.inner.lock().unwrap();
-        match held.get(role.clone(), &primary.mesh) {
-            Some(c) if &c == primary => RoleTaken::Same,
-            Some(c) if !primary.supersedes(&c) && !unheard(&c) => RoleTaken::Refused { held: c },
             previous => {
                 held.put(role, &primary.mesh, primary.clone());
                 self.changed.send_modify(|v| *v += 1);
@@ -224,6 +213,13 @@ impl PrimaryView {
     /// Every other node type's primary record held, by (mesh, kind).
     pub fn node_type_primaries(&self) -> std::collections::BTreeMap<(String, String), Primary> {
         self.inner.lock().unwrap().node_type_primaries.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
+    }
+
+    /// Every node-type primary record held, each with the instant this view first held a record naming
+    /// its birth.
+    pub fn node_type_primaries_since(&self) -> Vec<(Primary, Instant)> {
+        let held = self.inner.lock().unwrap();
+        held.node_type_primaries.iter().map(|(k, h)| (h.clone(), held.node_type_since.get(k).copied().unwrap_or_else(Instant::now))).collect()
     }
 
 }

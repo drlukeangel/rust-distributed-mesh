@@ -32,7 +32,9 @@ pub enum Vacant {
     /// The view holds a later birth of the primary's node id.
     Replaced,
     /// The pruner's sweep found the primary unheard past the staleness floor, and it has not been heard
-    /// since.
+    /// since: its birth held and silent past the floor, or never held here for a floor since this view
+    /// first held the record naming it (a record read off a store or an entry, of a birth lost before
+    /// this view heard it).
     Unheard,
 }
 
@@ -83,7 +85,11 @@ impl Elector {
     /// The vacancy this node's view holds of its type's primary, with the winner the election names for
     /// it; `None` while no record of the type's primary is held (the create's command fills a type's first
     /// primary, Q407), while the record names this birth, or while it names a primary this view follows:
-    /// its exact birth, not known gone, not replaced, and not unheard past the staleness floor.
+    /// its exact birth, not known gone, not replaced, and not unheard past the staleness floor. A record
+    /// naming a birth this view never held is unheard from the instant the view first held it
+    /// (fabric-node-lifecycle-elections.md §1: "the primary stays primary while it is heard -> unheard
+    /// past the staleness floor"): the pruner's sweep marks it silent a floor later
+    /// (`DigestView::mark_silence_at`), so the nodes of the type elect by the same rule.
     pub fn vacancy(&self) -> Option<Vacancy> {
         // The node-admins' own election is the mesh-primary's and the fabric-primary's (rdm-admin).
         if rdm_core::is_node_admin(&self.r#type) {
@@ -363,6 +369,41 @@ mod tests {
         assert_eq!(pending.vacancy().and_then(|v| v.winner), None, "a Pending node wins nothing, and no other broker is Ready");
         assert!(!pending.elect_once(&mut None));
         assert_eq!(mesh.broker_primary(), Some(mesh.record(&primary, 1)), "nothing installed");
+    }
+
+    /// CONTRACT (fabric-node-lifecycle-elections.md §1: "the primary stays primary while it is heard ->
+    /// unheard past the staleness floor: eligible candidates of that type in that mesh -> lowest
+    /// complete NodeId"; §4.1, Q406): a broker's view holds a record of its type's primary naming a birth
+    /// it never held a digest of, not known gone (a record of a birth lost before this view heard it).
+    /// Within a floor of first holding the record no broker elects; the pruner's sweep a floor later
+    /// finds it unheard, and the lowest Ready broker installs itself at the next revision over it. Must
+    /// NOT happen: the type left with a primary nobody hears and no election, or an election before the
+    /// record has been held a floor.
+    // @feature: mesh-elections
+    #[tokio::test]
+    async fn a_record_naming_a_birth_this_view_never_heard_is_vacant_a_floor_after_it_was_held() {
+        let mesh = Mesh::new();
+        let floor = mesh.view.digest_view.staleness_floor();
+        let never_heard = mesh.digest("broker", "1", "100000000001", NodeStatus::Ready);
+        let me = mesh.digest("broker", "2", "300000000000", NodeStatus::Ready);
+        let higher = mesh.digest("broker", "3", "500000000000", NodeStatus::Ready);
+        for d in [&me, &higher] {
+            mesh.heard(d);
+        }
+        mesh.view.primaries().take(PrimaryRole::NodePrimary("broker".into()), &mesh.record(&never_heard, 4));
+        let held_at = Instant::now();
+        let (mine, theirs) = (mesh.elector(&me, NodeStatus::Ready), mesh.elector(&higher, NodeStatus::Ready));
+        assert!(!mesh.view.digest_view.mark_silence_at(held_at), "within a floor of the record: nothing silent");
+        assert_eq!(mine.vacancy(), None, "a record held under a floor: no vacancy");
+        assert!(mesh.view.digest_view.mark_silence_at(held_at + floor * 2), "the sweep a floor later moves the silence watch");
+        assert!(mesh.view.digest_view.is_silent(&never_heard.node.node_id, &never_heard.node.incarnation), "the record's birth, never heard, is silent past the floor");
+        let vacancy = theirs.vacancy().expect("a vacancy");
+        assert_eq!(vacancy.why, Vacant::Unheard);
+        assert_eq!(vacancy.winner, Some(me.node.node_id.clone()), "the lowest Ready broker: {vacancy:?}");
+        assert!(!theirs.elect_once(&mut None), "a broker that is not the winner installs nothing");
+        assert!(mine.elect_once(&mut None), "the winner installs itself");
+        assert_eq!(mesh.broker_primary(), Some(mesh.record(&me, 5)), "at the next revision over the record held");
+        assert_eq!(theirs.vacancy(), None, "the winner's record names a heard broker: no vacancy");
     }
 
     /// CONTRACT (fabric-node-lifecycle-elections.md §4.2: the node-admin type's primary is the

@@ -499,6 +499,39 @@ mod tests {
         }
     }
 
+    /// CONTRACT (Q406: a node-type primary is the election of that type's own nodes, node-admins taking
+    /// part only in their own; Q407: a mesh's mesh-primary commands its own mesh's types' first primary;
+    /// fabric-recovery.md "Nothing alive": the admin started with no launcher installs the recorded
+    /// primaries before electing), on either backend: the store read of a start with no launcher holds
+    /// every mesh's mesh-primary record and the fabric-primary's, and the node-type primary records of
+    /// its own mesh, and never another mesh's node-type primary record. Must NOT happen: a peer mesh's
+    /// lost node-type primary, read off its record, held over the claim of the node that mesh's
+    /// recovered mesh-primary commanded (node_admin_loss_recovery after a full fabric loss: the dead
+    /// birth's record at revision 1 and a lower NodeId refused the live node's revision-1 claim).
+    #[tokio::test]
+    async fn a_start_read_holds_the_admin_primaries_of_every_mesh_and_the_node_type_primaries_of_its_own_mesh_only() {
+        for (backend, nodes, meshes) in record_stores("own-mesh-node-type-records").await {
+            let admin = primaries(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", rdm_core::model::NodeStatus::Ready), Some(1), Some(1));
+            let own_type = primaries(digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", rdm_core::model::NodeStatus::Ready), Some(1), None);
+            let peer_admin = primaries(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), Some(1), None);
+            let peer_type = primaries(digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready), Some(1), None);
+            for d in [&admin, &own_type, &peer_admin, &peer_type] {
+                own_record(&*nodes, d).await;
+            }
+            meshes.put_mesh(&crate::storage::MeshRecord::new(crate::model::MeshId::mint(), "mesh2")).await.unwrap();
+            let digest_view = DigestView::default();
+            let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &digest_view.primaries).await.unwrap();
+            let of = |d: &MeshDigest| Some(d.node.node_id.clone());
+            let primaries = &digest_view.primaries;
+            assert_eq!(primaries.mesh("mesh1").map(|p| p.node_id), of(&admin), "{backend}: its own mesh's mesh-primary");
+            assert_eq!(primaries.fabric().map(|p| p.node_id), of(&admin), "{backend}: the fabric-primary");
+            assert_eq!(primaries.mesh("mesh2").map(|p| p.node_id), of(&peer_admin), "{backend}: a peer mesh's mesh-primary");
+            assert_eq!(primaries.node_type_primary("mesh1", "node").map(|p| p.node_id), of(&own_type), "{backend}: its own mesh's node-type primary");
+            assert_eq!(primaries.node_type_primary("mesh2", "node"), None, "{backend}: never a peer mesh's node-type primary");
+            assert_eq!(taken, 4, "{backend}: four records held");
+        }
+    }
+
     /// CONTRACT (R-OW1: config is never checked; Q402: RDM carries no contact field): a node-admin
     /// birth this admin's view holds ready is Ready. What must NOT happen: a node-admin refused Ready for a value RDM never
     /// reads.

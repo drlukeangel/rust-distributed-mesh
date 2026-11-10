@@ -698,9 +698,8 @@ impl View {
         // A node listed stopped or deleted is held by its stop or its departure, never as a node heard.
         for d in listed.into_iter().filter(|d| !matches!(d.status, S::Stopped | S::Deleted)) {
             // The primary records the entry carries, this node's own among them (gossip.md "A primary
-            // change on gossip": the mesh-primary's `TopologyFull` projection carries them): held by revision,
-            // or a node type's claim over a record of a birth this view does not hear, whatever else of the
-            // entry is taken, and however old its copy of the digest is.
+            // change on gossip": the mesh-primary's `TopologyFull` projection carries them): held by revision
+            // whatever else of the entry is taken, and however old its copy of the digest is.
             self.digest_view.take_primaries(&d);
             // A read carries this node's own digest as the node read holds it: this node's own
             // view is the authority on itself.
