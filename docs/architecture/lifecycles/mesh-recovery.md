@@ -65,7 +65,7 @@ Q349). The fabric-primary then:
 2. acts on the result, as its own workflow:
    - `ready` (it answered the tickle): it commands it back through [node.mesh.join](node-mesh-join.md). With no successor
      named, it keeps the mesh's primary role;
-   - any other answer, `running` and `os-stopped` included: it is written `dead`, the investigation ends `re-created`, and the fabric-primary re-creates the mesh's node-admin under the mesh's own MeshId
+   - any other answer, `running` and `os-stopped` included: the investigation ends `re-created`, and the fabric-primary re-creates the mesh's node-admin under the mesh's own MeshId
      ([a node-admin created into a live mesh](node-create.md#a-node-admin-created-into-a-live-mesh)).
      The re-created node-admin is the mesh's primary by the same election, and its first act is step 3
      above.
