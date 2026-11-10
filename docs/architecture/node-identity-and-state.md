@@ -45,7 +45,7 @@ The lifecycle architecture rests on five design rules:
 **A node is one entity with one record** (Q323) in `nodes.jsonl`, keyed by its node ID, each line's `subject`, append-only, in two parts:
 the mesh-primary's whole row line (`type` `node-record`) and the node's own line (`type` `node-properties`), the reader folding the latest of each (Q333).
 The node writes its own properties in it: config, tags, bound addresses and
-application declarations. Its mesh-primary writes the status and role flags in the same record,
+application declarations. The node writes its status and role flags in the same record (Q356); its mesh-primary writes them only for a node that is lost, killed or deleted,
 beside identity, explicit mesh and type, certificates and executable facts.
 A current-pair lookup reads the node records by their path and name; it never uses the last writer at a path.
 Gossip is a projection, not persistence or evidence that a lifecycle operation completed.

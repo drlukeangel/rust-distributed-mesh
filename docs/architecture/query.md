@@ -15,7 +15,7 @@ into an atlas to serve `node.get` or acceptance.
 
 A current-pair lookup resolves the path and name to a node ID from the node records. The reader reads the node's record
 at that node ID: one record per node, append-only, its latest line current, the node's own properties
-and the status and role flags its mesh-primary writes in the same record (Q323). A node that has not
+and the status and role flags the node writes in the same record (Q323, Q356). A node that has not
 written yet has no properties yet. A raw last-written-path index supplies no fallback. Record read
 errors remain named errors, not empty results or fabricated lifecycle status.
 
