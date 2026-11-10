@@ -21,7 +21,6 @@
 //! by mesh2's re-created mesh-primary (`rdm.node_admin.build.serve.via-section-run`).
 
 use rdm_core::PathName;
-use rdm_test::estate::location;
 use crate::build_log;
 use rdm_client::{FabricDesired, MeshDesired, Meshes};
 use rdm_test::typed::BuildSpec;
@@ -196,26 +195,11 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
         .unwrap_or_else(|| panic!("the resubmitted B's section call to mesh2 was served"));
     assert_eq!(attr(&section, "node_path"), "mesh2.node-admin", "mesh2's section runs on mesh2's own mesh-primary: {section}");
 
-    // Each created admin held the runtime of every surviving node of its own mesh before it committed
-    // Ready (i143.e4.s16). Runtime left gossip (Q394, #340): a node-admin's take-over waits on its own
-    // mesh's births only, and another mesh's runtime is read from that birth's node record (Q404).
-    for admin in after.iter().filter(|n| rdm_test::estate::mesh_of(&n) == "mesh2" && n["type"] == "node-admin") {
-        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
-            .into_iter()
-            .find(|sp| rdm_test::estate::of_node(sp, &location(admin), admin["node_id"].as_str().unwrap_or_default()) && sp["attributes"]["incarnation_id"] == admin["incarnation"])
-            .unwrap_or_else(|| panic!("{} reports ready", admin["name"]))
-            .clone();
-        let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
-        // The other nodes of its mesh that were Ready before it: the births it must hold at its Ready.
-        let own = after
-            .iter()
-            .filter(|n| rdm_test::estate::mesh_of(n) == "mesh2" && n["node_id"] != admin["node_id"])
-            .filter(|n| {
-                named(&spans, "rdm.mesh.node.update.via-ready").into_iter().any(|sp| rdm_test::estate::of_node(sp, &location(n), n["node_id"].as_str().unwrap_or_default()) && sp["attributes"]["incarnation_id"] == n["incarnation"] && at(sp) < at(&ready))
-            })
-            .count();
-        assert!(held >= own as u64, "{} held {held} runtime facts before Ready, of {own} other nodes of its mesh Ready before it: {ready}", admin["name"]);
-    }
+    // A created admin's runtime facts are not this cell's: a node-admin hydrates the runtime facts of
+    // the births it may manage before Ready (gossip.md §9), and Ready is refused while a held birth has
+    // none (`take_over_blockers`). The reads have their own cells in rdm-gossip's topology.rs: a node-admin
+    // reads its mesh-primary's view again at each Digest of a birth it holds no fact of (Q400 A, kept by
+    // Q405 A), and with no live primary it takes the fact from the birth's node record (Q404 A).
     eprintln!("admins_lost_mid_build: investigation trace {} | recovery trace {} | unfinished trace {} | resubmitted section trace {}", s(&look["trace_id"]), s(&create["trace_id"]), s(&unfinished["trace_id"]), s(&section["trace_id"]));
     estate.record_trace_url(section["trace_id"].as_str().unwrap_or(""));
 }
