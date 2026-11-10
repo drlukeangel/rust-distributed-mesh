@@ -957,6 +957,28 @@ mod tests {
         PathName::new(path, name).unwrap()
     }
 
+    /// CONTRACT (query.md §1, Q439: "Each node is the topology's node row as `node.topology.get` serves
+    /// it, read from the node's record"): the row of a record carries the record's birth, type, endpoint,
+    /// roles, runtime and data dir, the status the ops left it in, and the lineage and digest sequence of
+    /// the answerer's held digest of the same birth; a held digest of another birth gives neither.
+    #[test]
+    fn a_node_row_is_read_from_its_record_with_the_held_digest_of_the_same_birth() {
+        let (mut record, inc) = record(path("mesh1.node", "2"), "mesh1", "node", NodeStatus::Ready);
+        record.is_primary = Some(3);
+        let held = |incarnation: &IncarnationId| rdm_core::MeshDigest {
+            fabric_id: crate::model::FabricId::mint(),
+            node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: record.node_id.clone(), path: record.path.clone(), name: record.name.clone(), endpoint_id: record.endpoint_id.clone(), transport_addr: record.transport_addr, incarnation: incarnation.clone(), supersedes: Some(IncarnationId::mint()) },
+            status: NodeStatus::Ready, primary: Vec::new(), digest_seq: 41, emitted_at_rafka_ms: 0,
+        };
+        let same = held(&inc);
+        let row = read_node(&record, NodeStatus::Leaving, Some(&same));
+        assert_eq!((&row.node_id, &row.incarnation, row.r#type.as_str(), &row.endpoint_id, row.status, row.digest_seq, &row.supersedes), (&record.node_id, &inc, "node", &record.endpoint_id, NodeStatus::Leaving, 41, &same.node.supersedes), "the record's birth, the ops' status, the held digest's sequence and lineage");
+        assert_eq!(row.primary, rdm_core::RoleRevision::of_type("node", Some(3), None), "the roles the record names");
+        assert_eq!(row.runtime(), rdm_core::NodeRuntime { runtime: Some(record.runtime.clone()), data_dir: record.storage.data_dir.clone() }, "the record's runtime and data dir");
+        let other = read_node(&record, NodeStatus::Ready, Some(&held(&IncarnationId::mint())));
+        assert_eq!((other.digest_seq, other.supersedes), (0, None), "a held digest of another birth is not this row's");
+    }
+
     /// The root's atlas (`fabric.atlas.get` at the fabric-primary) of one fabric whose mesh2 holds `rows`.
     fn root_of(rows: Vec<rdm_core::views::AtlasNodeView>) -> rdm_core::views::AtlasView {
         let t = Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };

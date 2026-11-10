@@ -179,7 +179,7 @@ fn atlas_row<'a>(read: &'a Value, node_id: &Value) -> Option<&'a Value> {
 /// and the current Build complete, then mesh1 and mesh2, each with `mesh.get`'s fields and every node the
 /// node view holds of it in `(path, name)` order, the same birth, type and status. While the
 /// fabric-primary holds a node.stop of a mesh1 node it commands (its stopped frame held), that node's row
-/// carries the stop as accepted and is not stopped; once the stop completes it is stopped with nothing
+/// carries the stop as accepted, not complete; once the stop completes it is stopped with nothing
 /// accepted. `mesh.atlas.get [name: mesh2]` answers the same fabric with mesh2 alone, and a mesh the
 /// fabric-primary does not hold as the fabric with no mesh. Must NOT happen: a flat node list, a mesh or
 /// a node missing or out of order, a field spelled other than its own read spells it, the stop absent
@@ -246,7 +246,9 @@ async fn the_atlas_answers_the_fabric_then_its_meshes_and_nodes_with_a_stop_in_f
     faults.wait_held("atlas:stop-in-flight").await;
     let in_flight = atlas_value(&estate, "fabric.atlas.get while the stop is held").await;
     let row = atlas_row(&in_flight, &node_id).unwrap_or_else(|| panic!("the atlas holds no row of {at:?}: {in_flight}"));
-    assert_eq!((&row["accepted"]["action"], &row["stopped"]), (&json!("node.stop"), &json!(false)), "node-investigation.md: while its stop runs, {at:?}'s row carries the stop accepted and not complete: {row}");
+    // The hold is at the stream's stopped frame: the node has written Stopped on its own record (Q356),
+    // so the row may read stopped; the command has not returned, so it is in flight.
+    assert_eq!((&row["accepted"]["action"], &row["accepted"]["subject"]["Node"]), (&json!("node.stop"), &node_id), "node-investigation.md: while its stop runs, {at:?}'s row carries the stop accepted and not complete: {row}");
     faults.release("atlas:stop-in-flight").await;
     stop.await.expect("the stop's task");
     let done = atlas_value(&estate, "fabric.atlas.get once the stop completed").await;
