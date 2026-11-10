@@ -136,7 +136,7 @@ impl Reason {
 pub fn matches_topology(finding: &Finding, status: NodeStatus) -> bool {
     use NodeStatus as S;
     match finding {
-        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } if !ROUND_1 => status == S::Stopped,
+        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } => status == S::Stopped,
         Finding::Reached { .. } | Finding::Running => matches!(status, S::Starting | S::Pending | S::Ready | S::ConnectionsDeleting | S::ConnectionsDeleted | S::Stopping | S::Stopped),
         Finding::OsStopped => status == S::Stopped,
         Finding::Exited { .. } => status == S::Dead,
@@ -186,7 +186,7 @@ pub fn follows(finding: &Finding, reason: Reason, status: NodeStatus) -> Follows
         return Follows::Nothing;
     }
     match finding {
-        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } if !ROUND_1 => Follows::Start,
+        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } => Follows::Start,
         Finding::Reached { .. } | Finding::Running => Follows::MeshJoin,
         Finding::OsStopped => Follows::Start,
         Finding::Exited { .. } | Finding::Dead { .. } => Follows::Dead,
@@ -341,9 +341,6 @@ pub(crate) fn fabric_and_mesh_of(view: &Topology, node: &Node) -> (rdm_core::Fab
     (view.fabric.id.clone(), view.meshes.iter().find(|m| m.name == node.mesh).and_then(|m| m.id.clone()))
 }
 
-/// The reviewed code, kept for the red run of the review's cells; removed with them.
-pub(crate) const ROUND_1: bool = true;
-
 /// What the primary that investigated a node writes its result with (node-investigation.md, build.md
 /// §5): the events store, this admin's exact birth (each event's `source`), its rafka-time, and the
 /// application's `on_node_investigated`, sent from the event's write (fabric-node-hooks.md, Q312).
@@ -384,8 +381,8 @@ impl NodeInvestigatedWriter {
     /// here), nothing is written, named on the span current here. Answers whether it was open.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn end(&self, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, result: Option<crate::wiring::NodeInvestigatedResult>, inspected: Option<&crate::deployment::provider::Inspected>, reason: Reason) -> bool {
-        let open = !ROUND_1 && self.open.lock().unwrap().remove(&(node.node_id.clone(), incarnation.clone()));
-        if !ROUND_1 && !open {
+        let open = self.open.lock().unwrap().remove(&(node.node_id.clone(), incarnation.clone()));
+        if !open {
             tracing::info!(node_id = %node.node_id, incarnation_id = %incarnation.as_str(), result = result.map(|r| r.as_str()).unwrap_or("none"), "no investigation of the birth is open here: its result is written already, or none began; nothing is written");
             return false;
         }

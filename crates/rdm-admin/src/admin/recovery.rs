@@ -82,7 +82,7 @@ impl RecoverySubmitter {
     /// no result is written and the application is told nothing (note 0005 R5: `rdm.node.investigated`
     /// is written only by a node investigation).
     pub(crate) async fn recreate(&self, n: &Node) -> Inspected {
-        self.recover_as(n, crate::node_investigation::ROUND_1).await
+        self.recover_as(n, false).await
     }
 
     /// [`Self::recover`], ending the investigation that wrote the birth dead `re-created` when

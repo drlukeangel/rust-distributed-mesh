@@ -926,7 +926,7 @@ impl OfflineTickle {
             // heard after the mark: that digest is its investigation's end (note 0005 R3, R4), with no
             // result when the birth's status in the topology is one it runs in (Q393), else `ready`.
             if self.ordered.contains(&id) {
-                if let (false, Some((reason, status)), true) = (crate::node_investigation::ROUND_1, laddered.get(&id).copied(), in_view(&id)) {
+                if let (Some((reason, status)), true) = (laddered.get(&id).copied(), in_view(&id)) {
                     tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, observer = %self.observer, reason = reason.as_str(), trigger = reason.trigger(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!(node_id = %id, "a birth an ordered investigation's ladder ran for is heard after its mark: the investigation ends"));
                     match crate::node_investigation::follows(&crate::node_investigation::Finding::Running, reason, status) {
@@ -995,9 +995,6 @@ impl OfflineTickle {
                     if follows == crate::node_investigation::Follows::Nothing {
                         verdict_span(&id, &path, "reached", n, crate::node_investigation::Follows::Nothing, &self.observer, seen_at, started_at_ms);
                         report.matched.push(id.clone());
-                        if crate::node_investigation::ROUND_1 {
-                            report.ready.push((id.clone(), n.reason));
-                        }
                         report.reachable_silent.push(id);
                         continue;
                     }

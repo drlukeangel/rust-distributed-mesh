@@ -98,12 +98,11 @@ fn holds_nothing(outcome: &str) -> bool {
 /// nothing holding the birth is sent again, and nothing sent for a command, create or reservation of
 /// the birth in flight, or by an admin that is not its commander, is not sent.
 fn join_attempt(outcome: String, answered: Option<bool>) -> SelfHealEnd {
-    let round_1 = crate::node_investigation::ROUND_1;
     match answered {
-        Some(true) if round_1 || outcome.starts_with("mesh-joined") => SelfHealEnd::Answered(outcome),
+        Some(true) if outcome.starts_with("mesh-joined") => SelfHealEnd::Answered(outcome),
         Some(true) => SelfHealEnd::Refused(outcome),
         Some(false) => SelfHealEnd::Unanswered(outcome),
-        None if !round_1 && holds_nothing(&outcome) => SelfHealEnd::Refused(outcome),
+        None if holds_nothing(&outcome) => SelfHealEnd::Refused(outcome),
         None => SelfHealEnd::NotSent(outcome),
     }
 }
@@ -119,7 +118,6 @@ fn start_attempt(admission: crate::deployment::pipeline::CommandAdmission) -> Se
         A::Indeterminate { reason, .. } => SelfHealEnd::Unanswered(format!("Indeterminate: {reason}")),
         A::Refused { reply, .. } if reply.starts_with("rejected-invalid-node-transition") => SelfHealEnd::Live(reply),
         started @ (A::Started {} | A::AlreadyAdmitted {}) => SelfHealEnd::Answered(format!("{started:?}")),
-        other if crate::node_investigation::ROUND_1 => SelfHealEnd::Answered(format!("{other:?}")),
         other => SelfHealEnd::Refused(format!("{other:?}")),
     }
 }
@@ -134,7 +132,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = SelfHealEnd>,
 {
-    let attempts = if crate::node_investigation::ROUND_1 { 1 } else { send.attempts.max(1) };
+    let attempts = send.attempts.max(1);
     let mut last = String::new();
     for n in 1..=attempts {
         if n > 1 {
@@ -187,12 +185,9 @@ impl HeardAgain {
         let end = if start { self.self_heal_start(node, incarnation, inspected, reason).await } else { self.self_heal_join(node, incarnation, inspected, reason).await };
         let SelfHealEnd::Live(_) = &end else { return end };
         match follows(&Finding::Running, reason, status) {
-            Follows::MeshJoin if crate::node_investigation::ROUND_1 => self.self_heal_join(node, incarnation, &crate::deployment::provider::Inspected::Running, reason).await,
             Follows::MeshJoin => self.self_heal_join(node, incarnation, inspected, reason).await,
             _ => {
-                if !crate::node_investigation::ROUND_1 {
-                    self.write_end(node, incarnation, crate::wiring::NodeInvestigatedResult::Ready, None, reason).await;
-                }
+                self.write_end(node, incarnation, crate::wiring::NodeInvestigatedResult::Ready, None, reason).await;
                 end
             }
         }
@@ -248,7 +243,7 @@ impl HeardAgain {
             outcome = tracing::field::Empty,
             "otel.kind" = "internal"
         );
-        let unsent = |why: String| if crate::node_investigation::ROUND_1 { SelfHealEnd::NotSent(why) } else { SelfHealEnd::Refused(why) };
+        let unsent = SelfHealEnd::Refused;
         let ended = async {
             let Some(runner) = self.runner.get() else { return unsent("no-runner".into()) };
             let Some(status_service) = self.status_service.get() else { return unsent("no-status-service".into()) };
@@ -461,7 +456,7 @@ async fn command_mesh_join(
     // `MeshJoined`) is looked at again on the next pass, and sent again under a self-heal's `Send`, not
     // held for a floor: the refusal is the birth's knowledge at that instant, not a new silence, and not a
     // return (note 0005 R1).
-    let refused = !crate::node_investigation::ROUND_1 && answered == Some(true) && !outcome.starts_with("mesh-joined");
+    let refused = answered == Some(true) && !outcome.starts_with("mesh-joined");
     if refused || outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-primary") || outcome.starts_with("not-ready") || outcome.starts_with("not-commander") {
         commanded().lock().unwrap().remove(&key);
     }

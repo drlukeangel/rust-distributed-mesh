@@ -221,7 +221,7 @@ impl Looker {
 /// mesh-primary no successor took, or the mesh's own primary's tick), or this admin is not the
 /// primary above the birth and writes nothing.
 pub(crate) fn look_ends(finding: &Finding, reason: crate::node_investigation::Reason, status: NodeStatus, commander: bool) -> Option<Option<crate::wiring::NodeInvestigatedResult>> {
-    if crate::node_investigation::ROUND_1 || !commander || !matches!(finding, Finding::Reached { .. }) {
+    if !commander || !matches!(finding, Finding::Reached { .. }) {
         return None;
     }
     Some((crate::node_investigation::follows(finding, reason, status) != crate::node_investigation::Follows::Nothing).then_some(crate::wiring::NodeInvestigatedResult::Ready))
@@ -423,7 +423,7 @@ pub async fn run(w: Watch) {
                     // This fabric-primary's investigation of the lost mesh-primary ends `re-created`, with
                     // the inspect's answer that led to it, written once before its recovery is submitted
                     // (node-investigation.md; review finding 3, note 0005 D).
-                    if let (false, Some(incarnation)) = (crate::node_investigation::ROUND_1, node.incarnation_id.as_ref()) {
+                    if let Some(incarnation) = node.incarnation_id.as_ref() {
                         recovery.investigated.end(crate::node_investigation::fabric_and_mesh_of(&view, &node), &node, incarnation, Some(crate::wiring::NodeInvestigatedResult::ReCreated), Some(&inspected), reason).await;
                     }
                     let (node, topology, me_id, digest_view) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.topology_view.digest_view.clone());
