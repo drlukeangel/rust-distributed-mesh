@@ -67,12 +67,18 @@ impl Capture {
 }
 
 // @feature: fabric-atlas-read
-/// CONTRACT: docs/architecture/query.md:11
-/// "A caller outside the node sends `fabric.get`, `mesh.get` and `node.get` to the
-///  fabric-primary, which answers from its atlas: every mesh's node records, held in memory, filled
-///  from the node records once at its start or hand-over and written by each op after that"
+/// CONTRACT: docs/architecture/query.md §1 (Q439)
+/// "The atlas, `fabric.atlas.get` and `mesh.atlas.get`: the topology plus what is in flight (Q439),
+///  laid out as `fabric.get` answers: a list of fabrics, each with its fields as `fabric.get` answers
+///  them and the current Build and its phase, and inside it its meshes in name order, each as
+///  `mesh.get` answers it, with its nodes in `(path, name)` order."
+/// CONTRACT: before the admin's atlas is filled, `fabric.atlas.get` is refused `NotReady`; after it,
+/// the answer is one fabric whose fields are `fabric.get`'s, under its names, with the current Build
+/// and its phase, then mesh1 with `mesh.get`'s fields and its live nodes in `(path, name)` order, each
+/// the topology's node row read from its record. Must NOT happen: a flat node list, a fabric or a
+/// mesh spelled other than its own read spells it, or the deleted node listed.
 #[test]
-fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planned_nodes_with_in_flight_commands(
+fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_the_fabric_then_its_meshes_and_nodes(
 ) {
     let capture = Capture::new("fabric-atlas-read-functional");
     let _guard = tracing::dispatcher::set_default(&capture.dispatch);
@@ -127,7 +133,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
                 status: ScopeStatus::Ready,
                 provider: ProviderKind::Process,
             },
-            meshes: Vec::new(),
+            meshes: vec![rdm_admin::model::Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![admin_node, rpc_node],
         }));
 
@@ -212,7 +218,8 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(), rejoin: Default::default(),
-            loads: None,
+            // The fabric's own read (`fabric.get`) answers from a view with its digest view's loads.
+            loads: Some(Arc::new(BTreeMap::new)),
             digest_view: None,
             unreachable: Default::default(),
             builds,
@@ -266,9 +273,22 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             other => panic!("expected NotReady reply, got {other:?}"),
         }
 
-        // 2. Install the atlas and verify GetAtlas answers live nodes in path.name order and omits deleted ones.
-        let _ = atlas_slot.set(Arc::new(Atlas::default()));
+        // 2. Install the fabric-primary's atlas, over mesh1: GetAtlas answers the fabric as fabric.get
+        // answers it, then mesh1 and its live nodes in (path, name) order; the deleted node is not listed.
+        let held = Arc::new(Atlas::default());
+        held.scope(["mesh1".to_string()].into());
+        let _ = atlas_slot.set(held);
 
+        let (fabric_out, _) = client
+            .call::<Status>(&NodeTarget::ExactNode(admin_id.clone()), &StatusRequest::GetFabric, &CallOptions::default())
+            .await;
+        let fabric_get = match fabric_out {
+            RpcOutcome::Reply(r) => match r.into_value() {
+                StatusReply::Fabric { fabric } => serde_json::to_value(&fabric).unwrap(),
+                other => panic!("expected StatusReply::Fabric, got {other:?}"),
+            },
+            other => panic!("expected Reply, got {other:?}"),
+        };
         let (after_out, _) = client
             .call::<Status>(
                 &NodeTarget::ExactNode(admin_id.clone()),
@@ -276,23 +296,35 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
                 &CallOptions::default(),
             )
             .await;
-        match after_out {
+        let atlas = match after_out {
             RpcOutcome::Reply(r) => match r.into_value() {
-                StatusReply::Atlas { atlas } => {
-                    assert_eq!(atlas.nodes.len(), 2);
-                    assert_eq!(atlas.nodes[1].location(), admin_name);
-                    assert_eq!(atlas.nodes[1].node_id, admin_id);
-                    assert_eq!(atlas.nodes[1].incarnation_id, Some(admin_inc));
-                    assert_eq!(atlas.nodes[1].status, rdm_core::views::NodeStatus::Ready);
-                    assert_eq!(atlas.nodes[0].location(), rpc_name);
-                    assert_eq!(atlas.nodes[0].node_id, rpc_id);
-                    assert_eq!(atlas.nodes[0].incarnation_id, Some(rpc_inc));
-                    assert_eq!(atlas.nodes[0].status, rdm_core::views::NodeStatus::Ready);
-                }
+                StatusReply::Atlas { atlas } => serde_json::to_value(&atlas).unwrap(),
                 other => panic!("expected StatusReply::Atlas, got {other:?}"),
             },
             other => panic!("expected Reply, got {other:?}"),
-        }
+        };
+        let fabrics = atlas["fabrics"].as_array().unwrap_or_else(|| panic!("Q439: the atlas is a list of fabrics, as fabric.get answers: {atlas}"));
+        assert_eq!(fabrics.len(), 1, "one fabric: {atlas}");
+        let fabric = &fabrics[0];
+        // The fabric's fields are fabric.get's, under its names; its meshes are the atlas's own.
+        let without = |v: &serde_json::Value, keys: &[&str]| {
+            let mut v = v.clone();
+            for k in keys {
+                v.as_object_mut().expect("an object").remove(*k);
+            }
+            v
+        };
+        assert_eq!(without(fabric, &["build", "meshes"]), without(&fabric_get, &["meshes"]), "Q439: the atlas's fabric carries fabric.get's fields, under its names: {atlas}");
+        assert_eq!(fabric["build"]["build_id"], serde_json::json!(build_id.to_string()), "the current Build: {atlas}");
+        assert_eq!(fabric["build"]["phase"], serde_json::json!(rdm_core::build::BuildPhase::Pending), "the current Build's phase: {atlas}");
+        let meshes = fabric["meshes"].as_array().unwrap_or_else(|| panic!("the fabric's meshes: {atlas}"));
+        assert_eq!(meshes.iter().map(|m| m["name"].clone()).collect::<Vec<_>>(), vec![serde_json::json!("mesh1")], "the meshes the atlas holds: {atlas}");
+        let mesh_get = fabric_get["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh1").cloned().expect("fabric.get answers mesh1");
+        assert_eq!(without(&meshes[0], &["nodes"]), without(&mesh_get, &["nodes"]), "Q439: the atlas's mesh carries mesh.get's fields, under its names: {atlas}");
+        let nodes = meshes[0]["nodes"].as_array().unwrap_or_else(|| panic!("mesh1's nodes: {atlas}"));
+        let row = |n: &serde_json::Value| (n["node"]["path"].clone(), n["node"]["name"].clone(), n["node"]["node_id"].clone(), n["node"]["incarnation"].clone(), n["node"]["type"].clone(), n["node"]["status"].clone(), n["stopped"].clone(), n["accepted"].clone());
+        let want = |at: &PathName, id: &NodeId, inc: &IncarnationId, r#type: &str| (serde_json::json!(at.path), serde_json::json!(at.name), serde_json::json!(id), serde_json::json!(inc), serde_json::json!(r#type), serde_json::json!("ready"), serde_json::json!(false), serde_json::Value::Null);
+        assert_eq!(nodes.iter().map(row).collect::<Vec<_>>(), vec![want(&rpc_name, &rpc_id, &rpc_inc, "node"), want(&admin_name, &admin_id, &admin_inc, "node-admin")], "mesh1's live nodes in (path, name) order, each the topology's node row, the deleted one not listed: {atlas}");
 
         let _ = router.shutdown().await;
         caller_ep.close().await;

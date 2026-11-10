@@ -149,27 +149,97 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
     assert!(refused_stops.is_empty() && refused.is_empty(), "R-FA2: the fabric-primary refused a stop sent on its node.start's Complete: {refused_stops:#?}; node-not-live spans: {refused:#?}");
 }
 
-/// CONTRACT (fabric-atlas.md R-FA4: "`fabric.atlas.get` returns it (Q167's read naming); `fabric.get`
-/// is unchanged"): on a ready fabric of two meshes, `fabric.atlas.get` at the fabric-primary answers
-/// the atlas, one row for every node the fabric-primary's node view holds, each the same birth (node
-/// id and incarnation) and status; `fabric.get` still answers the Fabric as before. Must NOT happen:
-/// the read refused or absent, a node of either mesh missing from it, or `fabric.get` changed by it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
-    let test = "fabrics_atlas_get_answers_every_node_the_fabric_primary_holds";
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let _ = two_meshes(&mut estate).await;
-    let fabric = estate.fabric_view().await;
-    let views = estate.node_values().await;
-    let read = atlas(&estate, "R-FA4: fabric.atlas.get at the fabric-primary").await;
-    for v in &views {
-        let name = path_of(v);
-        let row = read.node(&id_of(v)).unwrap_or_else(|| panic!("R-FA4: the atlas holds no row of {name:?}: {read:#?}"));
-        assert_eq!((row.node_id.to_string().as_str(), row.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or_default(), status_of(row).as_str(), row.stopped), (v["node_id"].as_str().unwrap_or_default(), v["incarnation"].as_str().unwrap_or_default(), v["state"].as_str().unwrap_or_default(), v["state"] == "stopped"), "R-FA4: the atlas row of {name:?} is its birth as the node view holds it: {row:#?} vs {v}");
+/// The atlas as JSON, the shape a caller reads.
+async fn atlas_value(estate: &Estate, why: &str) -> Value {
+    serde_json::to_value(atlas(estate, why).await).expect("the atlas serializes")
+}
+
+/// `v` without the keys `keys`.
+fn without(v: &Value, keys: &[&str]) -> Value {
+    let mut v = v.clone();
+    for k in keys {
+        v.as_object_mut().expect("an object").remove(*k);
     }
-    assert_eq!(read.nodes.len(), views.len(), "R-FA4: the atlas holds exactly the nodes the node view holds: {read:#?}");
-    let again = estate.fabric_view().await;
-    assert_eq!((&again.id, &again.name, &again.fabric_primary, &again.build_id), (&fabric.id, &fabric.name, &fabric.fabric_primary, &fabric.build_id), "fabric.get answers the Fabric as before the atlas read");
+    v
+}
+
+/// The node row of `node_id` in the atlas `read`, fabric by fabric and mesh by mesh.
+fn atlas_row<'a>(read: &'a Value, node_id: &Value) -> Option<&'a Value> {
+    read["fabrics"].as_array()?.iter().flat_map(|f| f["meshes"].as_array().into_iter().flatten()).flat_map(|m| m["nodes"].as_array().into_iter().flatten()).find(|n| n["node"]["node_id"] == *node_id)
+}
+
+/// CONTRACT (query.md §1, Q439: "The atlas, `fabric.atlas.get` and `mesh.atlas.get`: the topology plus
+/// what is in flight (Q439), laid out as `fabric.get` answers: a list of fabrics, each with its fields as
+/// `fabric.get` answers them and the current Build and its phase, and inside it its meshes in name order,
+/// each as `mesh.get` answers it, with its nodes in `(path, name)` order. Each node is the topology's node
+/// row as `node.topology.get` serves it, read from the node's record, beside what is in flight on it: the
+/// operation accepted and not yet complete, whether it is stopped, ..."; node-investigation.md: "A
+/// node-admin's atlas is its topology and its in-flight commands"): on a ready fabric of two meshes,
+/// `fabric.atlas.get` at the fabric-primary answers one fabric with `fabric.get`'s fields under its names
+/// and the current Build complete, then mesh1 and mesh2, each with `mesh.get`'s fields and every node the
+/// node view holds of it in `(path, name)` order, the same birth, type and status. While the
+/// fabric-primary holds a node.stop of a mesh1 node it commands (its stopped frame held), that node's row
+/// carries the stop as accepted and is not stopped; once the stop completes it is stopped with nothing
+/// accepted. Must NOT happen: a flat node list, a mesh or a node missing or out of order, a field spelled
+/// other than its own read spells it, or the stop absent from its node's row while it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_atlas_answers_the_fabric_then_its_meshes_and_nodes_with_a_stop_in_flight() {
+    use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
+    let test = "the_atlas_answers_the_fabric_then_its_meshes_and_nodes_with_a_stop_in_flight";
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
+    let shape = [("mesh1", 1, 2), ("mesh2", 2, 2)];
+    estate.resize_shape("fabric1", &shape).await;
+    estate.settled_views(&shape).await;
+    estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
+    estate.enter_fabric_primary().await;
+    let fp = estate.entry().await;
+    // mesh1's node that is not its type's primary: the fabric-primary, mesh1's mesh-primary, commands its
+    // stop, and the stop moves no role.
+    let estate_ref: &Estate = &estate;
+    let node = rdm_test::estate::wait_for("mesh1's views name its node type's primary", std::time::Duration::from_secs(60), || async move {
+        let views = estate_ref.node_values().await;
+        views.iter().any(|n| rdm_test::estate::mesh_of(n) == "mesh1" && n["type"] == "node" && n["is_primary"] == true).then_some(())?;
+        views.into_iter().find(|n| rdm_test::estate::mesh_of(n) == "mesh1" && n["type"] == "node" && n["is_primary"] != true)
+    })
+    .await;
+    let fabric = serde_json::to_value(estate.fabric_view().await).expect("fabric.get serializes");
+    let meshes_get = serde_json::to_value(estate.meshes_obj().await.get(&rdm_client::Filter::new()).await.expect("mesh.get at the fabric-primary")).expect("mesh.get serializes");
+    let views = estate.node_values().await;
+    let read = atlas_value(&estate, "Q439: fabric.atlas.get at the fabric-primary").await;
+    let fabrics = read["fabrics"].as_array().unwrap_or_else(|| panic!("Q439: the atlas is a list of fabrics, as fabric.get answers: {read}"));
+    assert_eq!(fabrics.len(), 1, "one fabric: {read}");
+    let f = &fabrics[0];
+    assert_eq!(without(f, &["build", "meshes"]), without(&fabric, &["meshes"]), "Q439: the atlas's fabric carries fabric.get's fields, under its names: {read}");
+    assert_eq!((&f["build"]["build_id"], &f["build"]["phase"]), (&fabric["build_id"], &json!(rdm_core::build::BuildPhase::Complete)), "Q439: what is in flight at the fabric, the current Build and its phase: {read}");
+    let meshes = f["meshes"].as_array().unwrap_or_else(|| panic!("the fabric's meshes: {read}"));
+    assert_eq!(meshes.iter().map(|m| m["name"].clone()).collect::<Vec<_>>(), vec![json!("mesh1"), json!("mesh2")], "Q439: every mesh, in name order: {read}");
+    for m in meshes {
+        let name = m["name"].as_str().unwrap_or_default();
+        let get = meshes_get.as_array().into_iter().flatten().find(|g| g["name"] == m["name"]).unwrap_or_else(|| panic!("mesh.get answers {name}: {meshes_get}"));
+        assert_eq!(without(m, &["nodes"]), without(get, &["nodes"]), "Q439: the atlas's {name} carries mesh.get's fields, under its names: {read}");
+        let rows: Vec<(Value, Value, Value, Value, Value, Value)> = m["nodes"].as_array().unwrap_or_else(|| panic!("{name}'s nodes: {read}")).iter().map(|n| (n["node"]["path"].clone(), n["node"]["name"].clone(), n["node"]["node_id"].clone(), n["node"]["incarnation"].clone(), n["node"]["type"].clone(), n["node"]["status"].clone())).collect();
+        let mut want: Vec<(Value, Value, Value, Value, Value, Value)> = views.iter().filter(|v| rdm_test::estate::mesh_of(v) == name).map(|v| (v["path"].clone(), v["name"].clone(), v["node_id"].clone(), v["incarnation"].clone(), v["type"].clone(), v["state"].clone())).collect();
+        want.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
+        assert_eq!(rows, want, "Q439: {name}'s nodes are every node the node view holds of it, in (path, name) order, each the same birth, type and status: {read}");
+    }
+    // A stop in flight at the fabric-primary: the node's row carries it, accepted and not complete.
+    let (at, node_id) = (path_of(&node), node["node_id"].clone());
+    let faults = FaultClient::at(&estate, &fp).await;
+    faults.arm("atlas:stop-in-flight", json!({"kind": "event", "event": "stopped", "node": node_id})).await;
+    let stop = tokio::spawn({
+        let (nodes, at) = (estate.nodes_obj().await, at.clone());
+        async move { Estate::workflow(&format!("node.stop of {at:?}"), nodes.stop(&at).await).await }
+    });
+    faults.wait_held("atlas:stop-in-flight").await;
+    let in_flight = atlas_value(&estate, "fabric.atlas.get while the stop is held").await;
+    let row = atlas_row(&in_flight, &node_id).unwrap_or_else(|| panic!("the atlas holds no row of {at:?}: {in_flight}"));
+    assert_eq!((&row["accepted"]["action"], &row["stopped"]), (&json!("node.stop"), &json!(false)), "node-investigation.md: while its stop runs, {at:?}'s row carries the stop accepted and not complete: {row}");
+    faults.release("atlas:stop-in-flight").await;
+    stop.await.expect("the stop's task");
+    let done = atlas_value(&estate, "fabric.atlas.get once the stop completed").await;
+    let row = atlas_row(&done, &node_id).unwrap_or_else(|| panic!("the atlas holds no row of {at:?}: {done}"));
+    assert_eq!((&row["accepted"], &row["stopped"]), (&Value::Null, &json!(true)), "once its stop completed, {at:?} is stopped with nothing accepted: {row}");
     estate.stop().await;
 }
 
