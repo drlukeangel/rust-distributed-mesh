@@ -149,9 +149,8 @@ impl ResolvedNodeLaunch {
 pub enum Found {
     /// The launch's runtime runs: its exact handle.
     Running(DeploymentHandle),
-    /// The launch started a runtime, and that runtime has exited: its exact handle when the provider
-    /// names one (the process its launch record names with its start token, the container found by its
-    /// name), so a successor's delete inspects that exact runtime for its exited verdict.
+    /// The launch started a runtime, and that runtime has exited: its exact handle when the launch
+    /// record names one, so a successor's delete inspects that exact runtime for its exited verdict.
     Exited(Option<DeploymentHandle>),
     /// No runtime of the launch was ever started in this provider's control domain.
     NeverLaunched,

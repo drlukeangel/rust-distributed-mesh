@@ -604,7 +604,7 @@ impl ContainerDeploymentProvider {
 
     /// What became of this launch's container, by its name (the name carries the deployment id),
     /// every command under `deadline`: one that runs is the live runtime; one that exited or is dead
-    /// ran and has exited, and is its exact runtime still. One Docker created and never started is never read as absence (Q304): that
+    /// ran and has exited. One Docker created and never started is never read as absence (Q304): that
     /// exact container is removed without `--force` (one that started meanwhile refuses it) and read
     /// absent before the launch record decides; a removal or a read that fails or passes its
     /// deadline fails the find, and nothing is launched. None by that name: the launch's record
@@ -630,14 +630,7 @@ impl ContainerDeploymentProvider {
         };
         match container_launch(status).map_err(named)? {
             ContainerLaunch::Running => {}
-            // A container that ran and has exited is still there by its name: its exact runtime, which a
-            // delete reads exited and whose terminate removes what it left, its logs kept beside the data
-            // dir first (Q145).
-            ContainerLaunch::Exited => {
-                let id = id.to_string();
-                self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
-                return Ok(Found::Exited(Some(self.handle(spec.deployment_id.clone(), id, None))));
-            }
+            ContainerLaunch::Exited => return Ok(Found::Exited(None)),
             ContainerLaunch::NeverStarted => {
                 let on = On { deployment: Some(deployment.as_str()), container: Some(id), ..On::default() };
                 self.docker_text(&["rm", id], deadline, on)
@@ -1263,7 +1256,6 @@ case "$1" in
       absent) echo "Error: No such object: ${{@: -1}}" >&2; exit 1 ;;
       created) echo "created 0 cid1" ;;
       running) echo "running 4242 cid1" ;;
-      exited) echo "exited 137 cid1" ;;
     esac ;;
   rm)
     [ -f $S/hang-rm ] && exec sleep 600
@@ -1367,31 +1359,6 @@ esac
         assert_eq!(fake.runs(), 0);
         std::fs::remove_file(fake.dir.join("start-before-rm")).unwrap();
         assert!(matches!(p.find(&spec, super::super::deadline::Deadline::step()).await.unwrap(), Found::Running(_)), "the next find adopts the runtime that started");
-    }
-
-    /// CONTRACT (Q145: "an exited one has what it left removed (the container and the address it held,
-    /// its logs kept beside the data dir first)"; deployment-provider.md §2.5 `Exited`): a launch whose
-    /// container ran and has exited is found by the container's name as its exact runtime, so the delete
-    /// that inspects it reads it exited and its terminate removes the container, its logs kept beside the
-    /// data dir first. Must NOT happen: the exited container read as a runtime nothing locates, so the
-    /// delete reads `unavailable`, terminates nothing and leaves the container on the host (rdm#374).
-    #[tokio::test]
-    async fn an_exited_container_is_found_by_its_name_read_exited_and_removed_by_its_terminate() {
-        let fake = FakeDocker::new("exited-found");
-        let p = fake.provider().await;
-        let spec = fake.spec();
-        record_launch(&spec.data_dir, &spec.deployment_id).unwrap();
-        fake.set("exited");
-        let h = match p.find(&spec, super::super::deadline::Deadline::step()).await.unwrap() {
-            Found::Exited(Some(h)) => h,
-            other => panic!("an exited container is its launch's exact runtime, got {other:?}"),
-        };
-        assert_eq!(h.container.as_deref(), Some("cid1"), "the container found by its name");
-        assert!(matches!(p.inspect(&h, super::super::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the delete reads it exited");
-        p.terminate(&h, TerminationMode::Graceful { grace: std::time::Duration::from_secs(1) }, super::super::deadline::Deadline::step()).await.unwrap();
-        let calls = fake.calls();
-        assert!(calls.iter().any(|c| c == "rm -f cid1"), "its terminate removes the container: {calls:?}");
-        assert!(spec.data_dir.join("container.log").exists(), "its logs are kept beside the data dir first");
     }
 
     /// A created container whose removal succeeds and whose absence is read: the launch record
