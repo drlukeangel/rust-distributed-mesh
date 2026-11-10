@@ -199,7 +199,9 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let cut_at = now_ns();
     let statuses_seen: Arc<Mutex<BTreeMap<String, BTreeSet<String>>>> = Arc::new(Mutex::new(BTreeMap::new()));
     // Hold the cut until each admin has re-fed each peer-mesh admin twice: a whole repair window
-    // completed after the first attempt.
+    // completed after the first attempt, the retry in a second window (gossip.md §6:667-670: "one
+    // failed rejoin per peer/window or equivalent bounded backoff"; "retries continue only while the
+    // member remains held/current").
     let held = wait_for("every admin re-feeds every peer-mesh admin twice", window * 6 + Duration::from_secs(40), || {
         let seen = statuses_seen.clone();
         let bases = bases.clone();

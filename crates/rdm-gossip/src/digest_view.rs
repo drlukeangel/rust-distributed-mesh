@@ -22,8 +22,10 @@ pub(crate) enum Carried {
 
 /// How a held member was last heard. Only `Direct` and `Forwarded` are liveness: a word received
 /// on the mesh channel or the backbone. `Topology` is a member known only from forwarded topology
-/// (a delta, a full, a replay, an entry answer): it is held, and never ages to silent for want of
-/// a forwarded frame (gossip.md §3.3).
+/// (a delta, a full, a replay, an entry answer): it is held and refreshes no liveness. An ordinary
+/// node never ages it to silent for want of a forwarded frame (gossip.md §3.3); a node-admin, whose
+/// coverage of a peer mesh comes only from what it hears on the backbone (gossip.md §6), holds a peer
+/// mesh's member known only this way unheard since it was first held ([`unheard`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Heard {
     /// The member's own digest, received here.
@@ -32,7 +34,8 @@ pub enum Heard {
     /// receipt at the staleness floor, as a member heard directly does (R-G2: a node-admin judges a
     /// peer mesh from direct backbone receipt).
     Forwarded,
-    /// Known only from topology forwarded onto the mesh channel.
+    /// Known only from topology: forwarded onto the mesh channel, or a read. Its instant is when it
+    /// was first held, or when the view's silence last restarted ([`DigestView::restart_silence`]).
     Topology,
 }
 
@@ -383,13 +386,30 @@ pub(crate) fn reject_deleted(d: &MeshDigest, via: &'static str) {
     .in_scope(|| tracing::info!("a digest of a deleted node: refused, the departure stands"));
 }
 
-/// How long a member has gone unheard at `now`: the time since its receipt, a member heard directly
-/// or on the backbone alike. A member known only from forwarded topology never ages, whatever status
-/// it is listed with (R-G2: forwarded topology carries topology, never liveness).
-pub(crate) fn unheard(at: &Instant, heard: Heard, now: Instant) -> Duration {
+/// Whether a member `d` held as `heard` ages to silent in a view whose node is a node-admin of
+/// `admin_mesh` (`None` at an ordinary node): a member heard directly or on the backbone does. A member
+/// known only from topology is not liveness (R-G2): an ordinary node never ages it, nor a node-admin
+/// one of its own mesh. A node-admin's coverage of a peer mesh comes only from what it hears on the
+/// backbone (gossip.md §6), so a peer mesh's member it holds only from topology ages from when it was
+/// first held: never heard there is the stalest coverage there is, as for a birth held only from its
+/// mesh-primary's projection ([`DigestView::projected_unheard_at`]).
+pub(crate) fn ages(d: &MeshDigest, heard: Heard, admin_mesh: Option<&str>) -> bool {
     match heard {
-        Heard::Topology => Duration::ZERO,
-        _ => now.saturating_duration_since(*at),
+        Heard::Topology => admin_mesh.is_some_and(|own| d.node.mesh != own),
+        Heard::Direct | Heard::Forwarded => true,
+    }
+}
+
+/// How long a member `d`, held at `at` as `heard`, has gone unheard at `now` in a view whose node is a
+/// node-admin of `admin_mesh` ([`DigestView::admin_mesh`]): the time since its receipt, or since it was
+/// first held for a peer mesh's member a node-admin holds only from topology; zero, whatever status it
+/// is listed with, for a member that does not age there ([`ages`]). The one measure of a held member's
+/// silence.
+pub(crate) fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, admin_mesh: Option<&str>, now: Instant) -> Duration {
+    if ages(d, heard, admin_mesh) {
+        now.saturating_duration_since(*at)
+    } else {
+        Duration::ZERO
     }
 }
 
@@ -1732,6 +1752,7 @@ impl DigestView {
             return false;
         }
         let own_mesh = self.own_mesh_member(&d);
+        let admin_mesh = self.admin_mesh();
 
         let mut inner = self.inner.lock().unwrap();
         // A stop taken between the refusal above and this hold refuses it here, under the hold: a
@@ -1758,7 +1779,7 @@ impl DigestView {
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         // A forwarded copy is its forwarder's word that the member is heard (it forwards only what it
         // hears): a birth held silent past the staleness floor is heard again here, as on its own digest.
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || held.status != d.status || unheard(at, *heard, now) > self.staleness_floor);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || held.status != d.status || unheard(held, at, *heard, admin_mesh.as_deref(), now) > self.staleness_floor);
         let prior = inner.get(d.node.node_id.as_str()).filter(|(held, _, _)| held.node.incarnation == d.node.incarnation).map(|(held, _, _)| held.status);
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
@@ -1821,7 +1842,8 @@ impl DigestView {
     /// departure proof), and every mesh topology carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
         self.woken();
-        let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect();
+        let admin_mesh = self.admin_mesh();
+        let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(d, at, fw)| unheard(d, at, *fw, admin_mesh.as_deref(), now) <= fresh).map(|(d, _, _)| d.clone()).collect();
         self.hand_out(ds.iter_mut());
         ds
     }
@@ -1901,7 +1923,8 @@ impl DigestView {
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
         self.woken();
-        let mut held = self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
+        let admin_mesh = self.admin_mesh();
+        let mut held = self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, admin_mesh.as_deref(), now)));
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
     }
@@ -1916,7 +1939,8 @@ impl DigestView {
     /// [`Self::get_by_endpoint`] at `now`.
     pub fn get_by_endpoint_at(&self, endpoint_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
         self.woken();
-        let mut held = self.inner.lock().unwrap().at_endpoint(endpoint_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
+        let admin_mesh = self.admin_mesh();
+        let mut held = self.inner.lock().unwrap().at_endpoint(endpoint_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, admin_mesh.as_deref(), now)));
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
     }
@@ -1931,7 +1955,8 @@ impl DigestView {
     /// [`Self::get_by_path_name`] at `now`.
     pub fn get_by_path_name_at(&self, name: &rdm_core::PathName, now: Instant) -> Option<(MeshDigest, Duration)> {
         self.woken();
-        let mut held = self.inner.lock().unwrap().at_name(name).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
+        let admin_mesh = self.admin_mesh();
+        let mut held = self.inner.lock().unwrap().at_name(name).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, admin_mesh.as_deref(), now)));
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
     }
@@ -1946,7 +1971,8 @@ impl DigestView {
         self.woken();
         let now = Instant::now();
         let floor = self.staleness_floor();
-        let held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
+        let admin_mesh = self.admin_mesh();
+        let held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, admin_mesh.as_deref(), now))).collect();
         held.into_iter()
             .filter(|(d, silent)| *silent > floor && d.node.mesh == own_mesh && d.node.node_id.to_string() != me)
             .filter(|(d, _)| d.status != rdm_core::model::NodeStatus::Leaving && !self.is_deleted_at(d.node.node_id.as_str(), now))
@@ -1968,12 +1994,13 @@ impl DigestView {
     pub fn mark_silence_at(&self, now: Instant) -> bool {
         self.expire_deleted_at(now);
         let floor = self.staleness_floor;
+        let admin_mesh = self.admin_mesh();
         let mut silent: BTreeSet<(String, String)> = self
             .inner
             .lock()
             .unwrap()
             .values()
-            .filter(|(_, at, fw)| unheard(at, *fw, now) > floor)
+            .filter(|(d, at, fw)| unheard(d, at, *fw, admin_mesh.as_deref(), now) > floor)
             .map(|(d, _, _)| (d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()))
             .collect();
         let projected: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
@@ -2074,12 +2101,21 @@ impl DigestView {
         self.inner.lock().unwrap().get(own.as_str()).is_some_and(|(d, _, _)| rdm_core::is_node_admin(&d.node.r#type))
     }
 
+    /// This view's own mesh when its node is a node-admin, which judges a peer mesh by what it hears
+    /// on the backbone (gossip.md §6): what [`unheard`] measures a held member's silence with. `None` at
+    /// an ordinary node. Read before the members' lock: it takes it.
+    pub(crate) fn admin_mesh(&self) -> Option<String> {
+        let own_mesh = self.own_mesh.lock().unwrap().clone();
+        (!own_mesh.is_empty() && self.own_is_node_admin()).then_some(own_mesh)
+    }
+
     /// The births of `mesh` this view holds heard within the staleness floor, other than its own and
     /// none held leaving, of which it holds no runtime fact: the births a node-admin's not-ready check
     /// names "no runtime fact is held of it" (Q400). Read under the locks (Q268): only their ids are
     /// copied.
     pub(crate) fn without_runtime_fact(&self, mesh: &str) -> Vec<(NodeId, IncarnationId)> {
         let own = self.own.lock().unwrap().clone();
+        let admin_mesh = self.admin_mesh();
         let now = Instant::now();
         let held: Vec<(NodeId, IncarnationId)> = self
             .inner
@@ -2087,7 +2123,7 @@ impl DigestView {
             .unwrap()
             .values()
             .filter(|(d, at, heard)| {
-                d.node.mesh == mesh && own.as_deref() != Some(d.node.node_id.as_str()) && d.status != rdm_core::model::NodeStatus::Leaving && unheard(at, *heard, now) <= self.staleness_floor
+                d.node.mesh == mesh && own.as_deref() != Some(d.node.node_id.as_str()) && d.status != rdm_core::model::NodeStatus::Leaving && unheard(d, at, *heard, admin_mesh.as_deref(), now) <= self.staleness_floor
             })
             .map(|(d, _, _)| (d.node.node_id.clone(), d.node.incarnation.clone()))
             .collect();
@@ -2137,16 +2173,20 @@ impl DigestView {
     }
 
     /// How long it has been since `mesh` was last heard on the backbone at `now`: the youngest
-    /// receipt of any of its members listed in a mesh topology received here. `None` when no member of
-    /// the mesh was ever received that way (a mesh known only from forwarded topology, an entry
-    /// answer or this node's own mesh has no backbone receipt: topology is not liveness, R-G2).
+    /// receipt of any of its members listed in a mesh topology received here. At a node-admin, a member
+    /// of a peer mesh it holds only from topology (a read, a forwarded delta) counts from when it was
+    /// first held: its coverage of a peer mesh comes only from what it hears on the backbone (gossip.md
+    /// §6), so a peer mesh it has never heard there is unheard since it held it ([`unheard`]). `None`
+    /// for this node's own mesh, and at an ordinary node for a mesh known only from forwarded
+    /// topology or an entry answer (topology is not liveness, R-G2).
     pub fn mesh_unheard(&self, mesh: &str, now: Instant) -> Option<Duration> {
+        let admin_mesh = self.admin_mesh();
         self.inner
             .lock()
             .unwrap()
             .values()
-            .filter(|(d, _, heard)| d.node.mesh == mesh && *heard == Heard::Forwarded)
-            .map(|(_, at, _)| now.saturating_duration_since(*at))
+            .filter(|(d, _, heard)| d.node.mesh == mesh && *heard != Heard::Direct && ages(d, *heard, admin_mesh.as_deref()))
+            .map(|(d, at, heard)| unheard(d, at, *heard, admin_mesh.as_deref(), now))
             .min()
     }
 
@@ -2174,7 +2214,8 @@ impl DigestView {
     /// Every held member with how long it has gone unheard at `now` (a deleted birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
         self.woken();
-        let mut held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
+        let admin_mesh = self.admin_mesh();
+        let mut held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, admin_mesh.as_deref(), now))).collect();
         self.hand_out(held.iter_mut().map(|(d, _)| d));
         held
     }

@@ -51,8 +51,9 @@ pub struct ControlPlane {
     /// How long a peer mesh has gone unheard on the backbone, in milliseconds, once at or past the
     /// staleness floor (`DigestView::mesh_unheard`; gossip.md: its mesh-primary is marked silent at the
     /// floor, as any birth): a node of a mesh held unheard is not restarted, stopped or deleted from
-    /// here (R-D1). `None` for a mesh heard within the floor or never heard on the backbone. Set once by
-    /// the admin that owns the digest view.
+    /// here (R-D1). `None` for a mesh heard within the floor; a mesh this admin holds only from a read
+    /// or forwarded topology, never heard on the backbone, is unheard since it first held it (gossip.md
+    /// §6). Set once by the admin that owns the digest view.
     pub mesh_unheard: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>>,
     /// Node investigation of one exact birth (node-investigation.md; Q107 item 1), the one primitive:
     /// gate 5 admits a delete of a birth neither stopped nor heard live only on its `exited` verdict
