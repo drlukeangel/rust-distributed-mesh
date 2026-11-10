@@ -13,7 +13,7 @@ never decides an RDM transition.
 | Hook | Called by | When | Gates |
 |---|---|---|---|
 | [`pre_node_ready`](#pre_node_ready) | every node | before the node reaches Ready: after the join and the mesh-channel join, before topology is written to the topology view | the node's Ready |
-| [`pre_node_recreate`](#pre_node_recreate) | each mesh-primary running a node recovery | after the investigation's verdict, before node.delete and node.create of the recovered birth | the recovery's re-create |
+| [`pre_node_recreate`](#pre_node_recreate) | the node-admin running a node recovery | before node.delete and node.create of a birth node recovery re-creates, on every route to it | the recovery's re-create |
 | [`on_node_ready`](#on_node_ready) | every node | after its Ready | nothing; it is a notice |
 | [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready is on its Mesh record | nothing; it is a notice |
 | [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready state is set | nothing; it is a notice |
@@ -137,7 +137,7 @@ becomes ready can still be removed.
 
 ## pre_node_recreate
 
-Once it writes a node investigation's verdict whose `next` is `recreate` ([node recovery](lifecycles/node-recovery.md) step 1), the mesh-primary running the recovery calls `pre_node_recreate` with the `NodeInvestigatedCtx` of [`on_node_investigated`](#on_node_investigated), before node.delete of the target birth and node.create at its path and name: nothing is created at that path and name until the application answers. The application releases what the lost birth held there (Rafka: a broker's departure close, its `write → none` rows durable, replica-routing.md §6) and answers `Ok`, and the recovery runs on, or `Failed { reason }`, and the recovery ends `failed { reason }`, named on its span, still owed: the next recovery tick runs it again, the hook included (Q344). There is no `Pending`: the application's work is one call under the hook's `Send`, whose time limit covers it. A `rejoin` calls no `pre_node_recreate`; an application that registers none is answered `Ok`.
+Before node recovery re-creates a birth, on every route to it (a node investigation's result `re-created`, [node recovery](lifecycles/node-recovery.md) step 1; fabric recovery; storage's re-create of a node that will not move, [storage.md](storage.md) §2 step 4), the node-admin running the recovery calls `pre_node_recreate` with the `NodeInvestigatedCtx` of [`on_node_investigated`](#on_node_investigated), before node.delete of the target birth and node.create at its path and name: nothing is created at that path and name until the application answers. The application releases what the lost birth held there (Rafka: a broker's departure close, its `write → none` rows durable, replica-routing.md §6) and answers `Ok`, and the recovery runs on, or `Failed { reason }`, and the recovery ends `failed { reason }`, named on its span, still owed: the next recovery tick runs it again, the hook included (Q344). There is no `Pending`: the application's work is one call under the hook's `Send`, whose time limit covers it. A `ready` or `rejoined` result calls no `pre_node_recreate`; an application that registers none is answered `Ok`.
 
 ## on_node_ready
 
