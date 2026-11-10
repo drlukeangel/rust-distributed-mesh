@@ -295,7 +295,7 @@ pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs
 pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "ConnectionsDeleted", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 40;
+pub const STATUS_REQUESTS: u32 = 41;
 pub const STATUS_REPLIES: u32 = 66;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -648,7 +648,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_forty_variant_wire_schema",
+                    "fn requests_match_the_frozen_forty_one_variant_wire_schema",
                     "fn replies_match_the_frozen_sixty_six_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
