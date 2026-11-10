@@ -354,7 +354,7 @@ impl BuildStateAdapter for FramedBuilds {
         if let Some((events, _)) = &self.steps {
             let state = step.outcome.state();
             let span = tracing::info_span!("rdm.node_admin.build.update.via-step-event", build_id = %step.build_id.log(), mesh = %mesh, op = %op, step = %step.step, state = ?state, event_id = tracing::field::Empty);
-            let written = events.append(|source, time_ms| crate::events_storage::Event::build_step(source, time_ms, step.subject.as_ref().or(step.operation.node_id()), &step.build_id, &mesh, &step.step, &op, &state)).instrument(span.clone()).await;
+            let written = events.append(|source, time_ms| crate::events_storage::Event::build_step(source, time_ms, step.operation.node_id(), &step.build_id, &mesh, &step.step, &op, &state)).instrument(span.clone()).await;
             match written {
                 Ok(id) => {
                     span.record("event_id", id.as_str());

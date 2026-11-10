@@ -165,10 +165,6 @@ pub struct StepWrite {
     pub step: String,
     /// How the step ended.
     pub outcome: StepOutcome,
-    /// The node the step acted on when it is not its operation's own (the event's `subject`, build.md
-    /// §5): the node.id a create's `AllocateIdentity` minted for its birth lost before Ready
-    /// (deployment-provider.md §3). `None`: the operation's own node.
-    pub subject: Option<rdm_core::NodeId>,
 }
 
 /// One appended record of the Build log.
@@ -335,29 +331,6 @@ impl BuildProjection {
     /// Whether `operation` is done: its `Complete` step ended `complete`.
     pub fn operation_completed(&self, operation: &rdm_core::OperationId) -> bool {
         self.completed(&operation.to_string(), "Complete")
-    }
-
-    /// The node.id the create `node.create:<node_id>` minted for its birth lost before Ready, when it
-    /// minted one: the subject of that operation's newest `AllocateIdentity` event, when it names another
-    /// node (deployment-provider.md §3: AllocateIdentity's step event's subject is the minted id).
-    pub fn minted_after(&self, node_id: &rdm_core::NodeId) -> Option<rdm_core::NodeId> {
-        let op = rdm_core::OperationId::node("node.create", node_id).to_string();
-        let allocate = crate::deployment::pipeline::CreateStep::AllocateIdentity.name();
-        self.steps.iter().rev().find(|s| s.operation == op && s.step == allocate && s.outcome == StepOutcome::Complete).and_then(|s| s.subject.clone()).filter(|s| s != node_id)
-    }
-
-    /// The births this Build's create of `node_id` made, in order: `node_id`, then each node.id minted
-    /// for the one before it, lost before Ready ([`Self::minted_after`]). The last is the birth the
-    /// create makes now: a resubmitted create resumes it (deployment-provider.md §3).
-    pub fn created_chain(&self, node_id: &rdm_core::NodeId) -> Vec<rdm_core::NodeId> {
-        let mut chain = vec![node_id.clone()];
-        while let Some(next) = chain.last().and_then(|at| self.minted_after(at)) {
-            if chain.contains(&next) {
-                break;
-            }
-            chain.push(next);
-        }
-        chain
     }
 
     /// The steps of `operation` whose event ended `complete`, by step name.

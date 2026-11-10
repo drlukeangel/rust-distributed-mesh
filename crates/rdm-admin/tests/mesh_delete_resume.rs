@@ -263,7 +263,7 @@ async fn node_delete_receipts(builds: &dyn BuildStateAdapter, key: &MeshDeleteKe
     let operation = rdm_core::OperationId::node("node.delete", &subject_birth.node_id);
     for step in ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"] {
         builds
-            .write_step(&rdm_admin::build_state::StepWrite { build_id: key.build_id.clone(), mesh: None, subject: None, operation: operation.clone(), step: step.into(), outcome: rdm_admin::build_state::StepOutcome::Complete })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: key.build_id.clone(), mesh: None, operation: operation.clone(), step: step.into(), outcome: rdm_admin::build_state::StepOutcome::Complete })
             .await
             .unwrap();
     }

@@ -324,7 +324,7 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let receipt = |step: CreateMeshStep, outcome: StepOutcome| StepWrite { build_id: build_id.clone(), mesh: None, subject: None, operation: operation.clone(), step: step.name().into(), outcome };
+    let receipt = |step: CreateMeshStep, outcome: StepOutcome| StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: step.name().into(), outcome };
     let run = async {
         let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation:?}: the Build {build_id} could not be read for its receipts: {e}")))?;
         if held.completed(&operation.to_string(), CreateMeshStep::Complete.name()) {

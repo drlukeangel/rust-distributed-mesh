@@ -63,7 +63,7 @@ pub trait DeploymentProvider: Send + Sync {
     fn control_domain(&self) -> String;
     /// Launch `spec`; the launch record is durable in the data dir before the executable runs.
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
-    /// What became of this exact launch in this domain: Running(handle) | Exited(the handle while the exact runtime is still named: a process's recorded pid with its start token, a container by its name; none when the launch ran and nothing names its runtime) | NeverLaunched.
+    /// What became of this exact launch in this domain: Running(handle) | Exited(handle, when its record names one) | NeverLaunched.
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError>;
     /// The state of the exact runtime `handle`: Running | OsStopped | Exited { code } | Unknown.
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
@@ -250,7 +250,7 @@ Once a handle is adopted or spawned, the provider's `Exited` for that exact hand
 The provider is driven by the DeploymentPipeline, whose steps are the Build's `rdm.build.step` events (build.md §4.1). The canonical managed creation:
 
 ```text
-AllocateIdentity          mint the node.id: its step event's subject is the minted id, and a resubmitted create resumes the newest one its Build holds, never minting while that launch is unresolved
+AllocateIdentity
 CheckName                 the mesh-primary checks the path and name against its records; NameHeld launches nothing
 AllocateEndpoints
 PrepareStorage            a fresh data_dir or the predecessor's, never inspected; a new endpoint key written there (§4)

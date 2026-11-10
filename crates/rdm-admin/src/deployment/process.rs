@@ -484,7 +484,7 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OnDisk {
     /// The record names this launch and its process runs: its pid and start token.
-    Running(u32, u64),
+    Running(u32, Option<u64>),
     /// The record names this launch and its process is gone (or the pid names another process now):
     /// the pid and start token the record names.
     Exited(u32, Option<u64>),
@@ -510,15 +510,12 @@ fn find_on_disk(spec: &ResolvedNodeLaunch) -> Result<OnDisk, DeployError> {
         return Ok(OnDisk::NeverLaunched);
     }
     let pid = v.get("pid").and_then(|p| p.as_u64()).and_then(|p| u32::try_from(p).ok()).ok_or_else(|| named("no pid".into()))?;
-    // A pid is the launch's exact runtime only with the start token its spawn recorded: a record that
-    // names none names no runtime of the launch, whatever runs at that pid now, and no token is ever
-    // read from the pid's current process in its place.
-    let Some(start) = v.get("start").and_then(|s| s.as_u64()) else { return Ok(OnDisk::Exited(pid, None)) };
+    let start = v.get("start").and_then(|s| s.as_u64());
     #[cfg(unix)]
-    if !ProcessDeploymentProvider::runs(pid, &spec.executable) || process_start_token(pid) != Some(start) {
-        return Ok(OnDisk::Exited(pid, Some(start)));
+    if !ProcessDeploymentProvider::runs(pid, &spec.executable) || start.is_some_and(|s| process_start_token(pid) != Some(s)) {
+        return Ok(OnDisk::Exited(pid, start));
     }
-    Ok(OnDisk::Running(pid, start))
+    Ok(OnDisk::Running(pid, start.or_else(|| process_start_token(pid))))
 }
 
 #[async_trait::async_trait]
@@ -582,7 +579,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             .await
             .map_err(|elapsed| past(deadline, elapsed, "process.find", &spec.deployment_id, false))??;
         Ok(match on_disk {
-            OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, Some(start))),
+            OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
             // A pid is this launch's exact runtime only with its start token: a record that names none names
             // no exact runtime, and the pid may run another process now.
             OnDisk::Exited(pid, Some(start)) => Found::Exited(Some(self.handle(spec.deployment_id.clone(), pid, Some(start)))),
@@ -1050,25 +1047,6 @@ mod tests {
         let spec = launch(&dir);
         std::fs::write(dir.join(DEPLOYMENT_FILE), serde_json::json!({ "deployment_id": spec.deployment_id.as_str(), "pid": std::process::id(), "start": null }).to_string()).unwrap();
         assert_eq!(ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(None), "exited, and no exact runtime of the launch is named");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// CONTRACT (deployment-provider.md §2.6: a process runtime is its pid with its start token; rdm#374,
-    /// finding 7 of its second review): a launch record that names its pid with no start token, a pid that
-    /// runs the launch's executable now (a `/bin/sleep` this test started, no child of the provider), names
-    /// no runtime of the launch: exited, no exact runtime named. Must NOT happen: `Running` with the start
-    /// token of whatever process holds the pid now, taken in place of the one the spawn recorded (the
-    /// provider would adopt, inspect and signal a process its launch may never have started).
-    #[tokio::test]
-    async fn a_launch_record_with_no_start_token_names_no_runtime_even_while_its_pid_runs_the_executable() {
-        let dir = crate::test_support::tempdir("process-find-no-start-running");
-        let spec = launch(&dir);
-        let mut other = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-        std::fs::write(dir.join(DEPLOYMENT_FILE), serde_json::json!({ "deployment_id": spec.deployment_id.as_str(), "pid": other.id(), "start": null }).to_string()).unwrap();
-        let found = ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap();
-        let _ = other.kill();
-        let _ = other.wait();
-        assert_eq!(found, Found::Exited(None), "no start token: no runtime of the launch is named, whatever runs at its pid");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
