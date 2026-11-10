@@ -83,10 +83,17 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
 
 /// `n` with `load` and `gossip`, and every field its node record `row` holds (Q366), under the record's
 /// names; the view's own word stands for a field the record does not hold (a node with no record yet).
-/// `n`'s state and role flags are the view's as the atlas read them (Q197, Q355).
+/// `n`'s state is the one [`Atlas::read`] took from the record. Its role flags, `is_primary` and
+/// `is_fabric_primary`, are the record's when the record is of `n`'s birth (query.md §1: "the status
+/// and role flags ... in the same record"; Q323, Q356: the node records its own role); a record of
+/// another birth, or none, leaves the view's.
 fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRecord>) -> NodeView {
     let mut v = node_view(n, load, gossip, Default::default(), Default::default());
     if let Some(r) = row {
+        if Some(&r.incarnation) == n.incarnation_id.as_ref() {
+            v.is_primary = r.is_primary.is_some();
+            v.is_fabric_primary = r.is_fabric_primary.is_some();
+        }
         v.incarnation = Some(r.incarnation.clone());
         v.endpoint_id = Some(r.endpoint_id.0.clone());
         v.transport_addr = Some(r.transport_addr);
@@ -105,8 +112,8 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// Every birth `view` holds, sorted by `(path, name)`, each with what `loads` carries for it and what its
 /// record carries, stopped renamed nodes included: each record read through `current` (query.md §1: the
 /// lifecycle record at its node id, never a copy an atlas holds), the lifecycle the ops
-/// left each birth in from `atlas` ([`Atlas::read`]), and `is_primary` and `is_fabric_primary` as the
-/// primary updates' answers `atlas` holds set them ([`Atlas::primaries`], Q355). A node `ids` names that the view no longer holds is
+/// left each birth in from `atlas` ([`Atlas::read`]), and `is_primary` and `is_fabric_primary` as its
+/// record holds them ([`record_view`]). A node `ids` names that the view no longer holds is
 /// answered from its record at that id, its latest line current, a Deleted one included (query.md §1:
 /// "Historical records, including Deleted nodes, remain queryable by their own IDs"); an id with no
 /// record is not answered. A `(path, name)` of `names` that no answered birth stands at is the
@@ -117,9 +124,6 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// (query.md §1: "Record read errors remain named errors, not empty results or fabricated lifecycle
 /// status").
 async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, atlas: &Atlas, current: Option<&crate::current_record::CurrentRecords<'_>>, ids: &BTreeSet<crate::model::NodeId>, names: &BTreeSet<PathName>) -> Result<Vec<NodeView>, String> {
-    let mut held = view.clone();
-    atlas.primaries(&mut held);
-    let view = &held;
     let mut out: Vec<NodeView> = Vec::new();
     for b in view.births() {
         let row = match current {
@@ -166,16 +170,14 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
 
 /// A node's own whole record as its mesh-primary answers it (Q234: every node property; the hydration
 /// sync's `OwnRow`): the birth `view` holds of `row`'s node, as `row`, the node's record, carries it and
-/// the ops left it (`atlas`), `is_primary` and `is_fabric_primary` as the primary updates' answers `atlas`
-/// holds set them ([`Atlas::primaries`], Q355), as [`nodes`] reads them; a birth `view` does not hold yet
-/// is answered from its record alone. No store read here: the caller read `row`.
+/// the ops left it (`atlas`), its role flags the record's ([`record_view`]), as [`nodes`] reads them; a
+/// birth `view` does not hold yet is answered from its record alone. No store read here: the caller
+/// read `row`.
 pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRecord) -> NodeView {
-    let mut held = view.clone();
-    atlas.primaries(&mut held);
-    row_view(&held, atlas, row)
+    row_view(view, atlas, row)
 }
 
-/// [`own_row_view`] of `row` in `view`, its primaries already set from `atlas`.
+/// [`own_row_view`] of `row` in `view`.
 fn row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRecord) -> NodeView {
     if let Some(b) = view.births().find(|n| n.node_id == row.node_id) {
         let mut n = b.clone();

@@ -410,7 +410,9 @@ impl Atlas {
     /// `t` with `is_primary` and `is_fabric_primary` as the primary updates' answers this atlas holds
     /// set them (Q355): this admin reads a node's mesh-primary, every node type's primary and the
     /// fabric-primary from here wherever it decides which node runs a node command (the Build drive and
-    /// a section's plan included), and in its `node.get` answer. An answer stands while this
+    /// a section's plan included; Q197: actions read the ops' answers, never gossip). Its `node.get`
+    /// answer reads the role flags from each node's record instead (query.md §1;
+    /// [`crate::views`]). An answer stands while this
     /// admin's record of the role still names the node the update was sent to. A record that names
     /// another replaces it (node-primary-update.md): while `t` still names the node the update was sent
     /// to, `t` was made before that record, so the role is read from the record; once `t` names another
