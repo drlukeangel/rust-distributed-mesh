@@ -310,14 +310,17 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     let run = in_trace(&spans, &recovery);
     assert_mesh_primary_ran_the_recovery(&run, &mesh_primary, &before);
     // This estate's node-admins are RDM's own executable, which registers no `pre_node_recreate`: the
-    // mesh-primary's hook span under the submit is `none-registered`, and the recovery runs on to
-    // node.delete as before (fabric-node-hooks.md "pre_node_recreate", Q416).
+    // mesh-primary's hook span under the submit is `none-registered`, asked after node.delete of the
+    // exited birth and before node.create of its successor (fabric-node-hooks.md "pre_node_recreate",
+    // Q416, Q437 B).
     let of_birth = |name: &str| named(&run, name).into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned();
     let asked = of_birth("rdm.node_admin.node.update.via-pre-node-recreate").expect("the recovery's pre_node_recreate span in its trace");
     assert_eq!(asked["parent_span_id"], recovery["span_id"], "under the recovery's submit: {asked}");
     assert_eq!((s(&asked["attributes"]["outcome"]), s(&asked["attributes"]["inspected"])), ("none-registered".to_string(), "exited".to_string()), "{asked}");
     let deleting = of_birth("rdm.node_admin.node.delete.via-node-recovery").expect("the recovery's node.delete");
-    assert!(end(&asked) <= start(&deleting), "the hook span closes before node.delete of the exited birth: {asked} vs {deleting}");
+    assert!(end(&deleting) <= start(&asked), "the hook span opens after node.delete of the exited birth closes: {deleting} vs {asked}");
+    let creating = recovery_create_span(&run, node).expect("the recovery's node.create");
+    assert!(end(&asked) <= start(creating), "the hook span closes before node.create of the successor: {asked} vs {creating}");
     let mut last = 0u64;
     for step in ["NodeDeleting", "NodeDeleted", "RemoveTopologyMembership", "DeployRuntime", "WaitForNodeReady"] {
         let sp = step_span(&run, NO_BUILD, node, step).unwrap_or_else(|| panic!("the recovery's {step} step span"));

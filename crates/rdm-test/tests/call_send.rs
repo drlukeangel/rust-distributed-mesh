@@ -195,8 +195,9 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     assert_eq!((event.data.get("result").and_then(Value::as_str), event.data.get("inspected").and_then(Value::as_str)), (Some("re-created"), Some("running")), "{event:?}");
     assert!(event.source.contains(&primary_id), "written by the member's mesh-primary, its exact birth: {event:?}");
     assert_eq!(attr(told, "event_id"), event.id.to_string(), "the notice is sent from the event's write: {told}");
-    // 5. pre_node_recreate once, after the result is written and before node.delete of the hung birth,
-    //    under the submit; the application's own work under the hook's span.
+    // 5. pre_node_recreate once, after the result is written and node.delete of the hung birth, and
+    //    before node.create of its successor, under the submit; the application's own work under the
+    //    hook's span (Q437 B).
     let asked: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-pre-node-recreate").into_iter().filter(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str()).collect();
     assert_eq!(asked.len(), 1, "the application is asked pre_node_recreate once for the birth: {asked:#?}");
     let asked = asked[0];
@@ -211,7 +212,13 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
         .cloned()
         .unwrap_or_else(|| panic!("the recovery's node.delete of {path:?} is exported"));
     assert_eq!(s(&deleting["parent_span_id"]), s(&recovery["span_id"]), "node.delete runs under the submit: {deleting}");
-    assert!(end(asked) <= at(&deleting), "the application answered before node.delete of the hung birth: asked ..{}, node.delete {}..", end(asked), at(&deleting));
+    assert!(end(&deleting) <= at(asked), "the application is asked after node.delete of the hung birth: node.delete ..{}, asked {}..", end(&deleting), at(asked));
+    let creating = named(&spans, "rdm.node_admin.node.create.via-node-recovery")
+        .into_iter()
+        .find(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("the recovery's node.create at {path:?} is exported"));
+    assert!(end(asked) <= at(&creating), "the application answered before node.create of the successor: asked ..{}, node.create {}..", end(asked), at(&creating));
 
     eprintln!(
         "send: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms result {} inspected {} | pre_node_recreate +{}..+{} ms outcome {} | node.delete +{} ms | new birth {} at {path:?}",
