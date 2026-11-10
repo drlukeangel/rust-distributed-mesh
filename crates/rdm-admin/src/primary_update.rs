@@ -715,13 +715,16 @@ impl PrimaryUpdate {
     /// The create step's command of a node type's first primary in its mesh (Q407; node-create.md):
     /// `node`, of a type other than node-admin, which this admin's create made Ready, is commanded
     /// `node.primary.update` when this admin, its mesh's mesh-primary, holds no primary of its type: no
-    /// record, or a record whose birth is known gone. The call is the one a successor answers,
+    /// answer of a node.primary.update of that type it commanded stands in its atlas (Q433, Q355: the
+    /// role moved to the node the answer names, whether or not its gossip came), and it holds no record,
+    /// or a record whose birth is known gone. The call is the one a successor answers,
     /// `PrimaryUpdate` on the node's exact birth (lifecycles/node-primary-update.md step 4): one entry
     /// naming the node at the next revision over the record held (1 with none), in the entry's primary
     /// place too, as no primary precedes it. The node installs the role, records `is_primary` on its own
     /// record and its next Digest carries it (Q392). On its `node.primary.updated` this admin holds the
     /// record it sent, the answer it obtained as the commander (Q355). `Ok(false)`: nothing is commanded
-    /// (a node-admin, a node of a mesh this admin is not the mesh-primary of, a type that holds a primary).
+    /// (a node-admin, a node of a mesh this admin is not the mesh-primary of, a type whose move this admin
+    /// commanded and was answered, a type that holds a primary).
     /// `Err` names how the call ended without the answer: the create's `Complete` fails with it.
     pub async fn command_first_primary(&self, node: &crate::model::Node, build_id: &str, operation: &rdm_core::OperationId) -> Result<bool, String> {
         if rdm_core::is_node_admin(&node.r#type) {
@@ -744,6 +747,12 @@ impl PrimaryUpdate {
         let primary_view = self.topology_view.primaries();
         if self.topology_view.mesh_name() != node.mesh || !primary_view.mesh(&node.mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
             tracing::Span::current().record("outcome", "not-mesh-primary");
+            return Ok(None);
+        }
+        // The answer of this admin's own node.primary.update of the type, while it stands: the role moved
+        // to the node it names (Q355). Gossip of the move is never the reason to command over it (Q433).
+        if let Some(answered) = self.atlas.answered_primary(&node.mesh, &node.r#type) {
+            tracing::Span::current().record("outcome", "answered").record("detail", format!("node_id={answered}").as_str());
             return Ok(None);
         }
         // A record whose birth is gone holds no primary: the node created after it is commanded. The type's

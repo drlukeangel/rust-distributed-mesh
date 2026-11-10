@@ -70,7 +70,7 @@ struct Held {
     meshes: std::collections::BTreeSet<String>,
     /// Each primary as the answer to a node.primary.update this admin sent, or the answer streamed
     /// back to it, names it (Q355), by mesh and node type: a mesh's mesh-primary under the `node-admin`
-    /// type, and every other node type's primary ([`Atlas::primaries`]).
+    /// type, and every other node type's primary ([`Atlas::primaries`], [`Atlas::answered_primary`]).
     is_primary: BTreeMap<(String, String), Updated>,
     /// The fabric-primary as the answer to the node.fabric-primary.update this admin made names it
     /// (Q355) ([`Atlas::primaries`]).
@@ -397,13 +397,22 @@ impl Atlas {
     }
 
     /// The mesh-primary of `mesh` as the answer to the node.primary.update this admin commanded names
-    /// it (Q355), while that answer stands: the node a command for the mesh goes to (Q373), whether or
-    /// not the view holds that node yet.
+    /// it (Q355), while that answer stands ([`Self::answered_primary`] of the `node-admin` type): the
+    /// node a command for the mesh goes to (Q373), whether or not the view holds that node yet.
     pub fn answered_mesh_primary(&self, mesh: &str) -> Option<NodeId> {
+        self.answered_primary(mesh, rdm_core::NODE_ADMIN)
+    }
+
+    /// The primary of `type` in `mesh` as the answer to the node.primary.update this admin commanded, or
+    /// the answer streamed back to it, names it (Q355), while that answer stands: this admin's record of
+    /// the role is still the one it held when the answer came (the update's gossip has not reached it),
+    /// or it names the answer's node (the gossip came). A record naming another node carried a later
+    /// change, and no answer is read. The create step reads it before its own record (Q433).
+    pub fn answered_primary(&self, mesh: &str, r#type: &str) -> Option<NodeId> {
         let records = self.records.get()?;
         let held = self.held.lock().unwrap();
-        let u = held.is_primary.get(&(mesh.to_string(), rdm_core::NODE_ADMIN.to_string()))?;
-        let record = records.node_type_primary(mesh, rdm_core::NODE_ADMIN);
+        let u = held.is_primary.get(&(mesh.to_string(), r#type.to_string()))?;
+        let record = records.node_type_primary(mesh, r#type);
         (record.as_ref() == Some(&u.record) || record.is_some_and(|r| r.node_id == u.node_id)).then(|| u.node_id.clone())
     }
 
