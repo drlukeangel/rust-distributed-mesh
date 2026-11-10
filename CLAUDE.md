@@ -62,9 +62,6 @@ packet without a section 5 delta is returned, not reviewed. Every question and r
 - A lane is a folder with a source tree: `/home/admin/rdm-lanes/<n>`, numbered `1`–`7`. Reuse it;
   never a new worktree, never `.claude/worktrees`, never delete one. `/home/admin/rust-distributed-mesh`
   holds `main` and is not a lane.
-- **Never stop a working agent (Luke 2026-11-09: "you never kill a fuckknig anget").** A mistake the lead or a
-  seat made is corrected forward: a `lane-note.sh`, the next unit's dispatch, the right type next time. Only a
-  seat that has handed off and is finished is stopped; one at work is never TaskStopped, whatever went wrong.
 - Every unit has one issue in this repo, one lane, one seat and one agent at a time, and runs through the
   lane verbs in `scripts/` (adapted from rafka-v2's `docs/eng/testing-lane-scripts.md`), never by hand:
   `lane-status.sh [lane…]` (free?); `lane-prep.sh <lane> <branch>` (claim on a fresh branch from
