@@ -390,16 +390,16 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.fabric.delete.via-lone-birth` | `crates/rdm-admin/src/admin/boot.rs` | 373 |
 | `rdm.node_admin.fabric.reject.via-atlas-unread` | `crates/rdm-admin/src/status_rpc.rs` | 1231 |
 | `rdm.node_admin.fabric.reject.via-atlas-unread` | `crates/rdm-admin/src/status_rpc.rs` | 1232 |
-| `rdm.node_admin.fabric.reject.via-filter` | `crates/rdm-admin/src/views.rs` | 328 |
+| `rdm.node_admin.fabric.reject.via-filter` | `crates/rdm-admin/src/views.rs` | 397 |
 | `rdm.node_admin.fabric.resolve.via-atlas-call` | `crates/rdm-core/src/names.rs` | 149 |
-| `rdm.node_admin.fabric.resolve.via-atlas-row` | `crates/rdm-admin/src/atlas.rs` | 848 |
+| `rdm.node_admin.fabric.resolve.via-atlas-row` | `crates/rdm-admin/src/atlas.rs` | 850 |
 | `rdm.node_admin.fabric.resolve.via-call` | `crates/rdm-core/src/names.rs` | 148 |
 | `rdm.node_admin.fabric.serve.via-forward` | `crates/rdm-admin/src/node_config.rs` | 529 |
-| `rdm.node_admin.fabric.serve.via-get` | `crates/rdm-admin/src/views.rs` | 334 |
+| `rdm.node_admin.fabric.serve.via-get` | `crates/rdm-admin/src/views.rs` | 403 |
 | `rdm.node_admin.fabric.serve.via-read` | `crates/rdm-admin/src/read_op.rs` | 45 |
 | `rdm.node_admin.fabric.update.via-adoption-check` | `crates/rdm-admin/src/admin/adoption.rs` | 183 |
 | `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/admin/reconcile.rs` | 149 |
-| `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/atlas.rs` | 792 |
+| `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/atlas.rs` | 794 |
 | `rdm.node_admin.fabric.update.via-atlas-scope` | `crates/rdm-admin/src/admin/boot.rs` | 3202 |
 | `rdm.node_admin.fabric.update.via-blocked` | `crates/rdm-admin/src/fabric_status.rs` | 353 |
 | `rdm.node_admin.fabric.update.via-change` | `crates/rdm-admin/src/fabric_status.rs` | 396 |
@@ -425,7 +425,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.create.via-mesh-row` | `crates/rdm-admin/src/admin/rows_writer.rs` | 179 |
 | `rdm.node_admin.mesh.create.via-receipt` | `crates/rdm-admin/src/admin/rows_writer.rs` | 317 |
 | `rdm.node_admin.mesh.reject.via-conflicting-workflow` | `crates/rdm-admin/src/mesh_delete.rs` | 751 |
-| `rdm.node_admin.mesh.reject.via-filter` | `crates/rdm-admin/src/views.rs` | 304 |
+| `rdm.node_admin.mesh.reject.via-filter` | `crates/rdm-admin/src/views.rs` | 373 |
 | `rdm.node_admin.mesh.reject.via-held-state-unread` | `crates/rdm-admin/src/admin/reconcile.rs` | 302 |
 | `rdm.node_admin.mesh.reject.via-incomplete-handoff` | `crates/rdm-admin/src/mesh_delete.rs` | 597 |
 | `rdm.node_admin.mesh.reject.via-local-topology-read` | `crates/rdm-admin/src/reenter.rs` | 291 |
@@ -445,7 +445,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.resolve.via-retained-receipts` | `crates/rdm-admin/src/mesh_delete.rs` | 387 |
 | `rdm.node_admin.mesh.resolve.via-roster-birth` | `crates/rdm-admin/src/mesh_delete.rs` | 400 |
 | `rdm.node_admin.mesh.serve.via-forward` | `crates/rdm-admin/src/node_config.rs` | 528 |
-| `rdm.node_admin.mesh.serve.via-get` | `crates/rdm-admin/src/views.rs` | 310 |
+| `rdm.node_admin.mesh.serve.via-get` | `crates/rdm-admin/src/views.rs` | 379 |
 | `rdm.node_admin.mesh.serve.via-read` | `crates/rdm-admin/src/read_op.rs` | 44 |
 | `rdm.node_admin.mesh.update.via-applied` | `crates/rdm-admin/src/admin/boot.rs` | 1575 |
 | `rdm.node_admin.mesh.update.via-block` | `crates/rdm-admin/src/storage_change.rs` | 766 |
@@ -544,7 +544,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.resolve.via-verdict` | `crates/rdm-admin/src/offline.rs` | 696 |
 | `rdm.node_admin.node.serve.via-connection-get` | `crates/rdm-node/src/node_self.rs` | 1723 |
 | `rdm.node_admin.node.serve.via-forward` | `crates/rdm-admin/src/node_config.rs` | 527 |
-| `rdm.node_admin.node.serve.via-get` | `crates/rdm-admin/src/views.rs` | 205 |
+| `rdm.node_admin.node.serve.via-get` | `crates/rdm-admin/src/views.rs` | 271 |
 | `rdm.node_admin.node.serve.via-own-row` | `crates/rdm-admin/src/admin/boot.rs` | 2057 |
 | `rdm.node_admin.node.serve.via-read` | `crates/rdm-admin/src/read_op.rs` | 43 |
 | `rdm.node_admin.node.serve.via-view-holds-birth` | `crates/rdm-admin/src/admin/records.rs` | 436 |
