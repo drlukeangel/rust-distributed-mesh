@@ -129,9 +129,10 @@ Every term below links to the architecture pages that define it.
   [Query](architecture/query.md)): A node's local in-memory projection of the latest gossiped
   digests, primaries, and mesh and fabric statuses it has heard, queryable locally inside the
   process via `TopologyView::nodes_get`, `meshes_get`, and `fabrics_get`.
-- **atlas** ([Query](architecture/query.md)): The `fabric-primary`'s in-memory control state: its
-  Builds, accepted topology and in-flight facts. Node rows and property maps are not copied into it;
-  `node.get` reads the node records.
+- **atlas** ([Query](architecture/query.md)): A node-admin's topology and its in-flight commands over
+  the meshes it is primary for: every mesh at the `fabric-primary`, its own at a `mesh-primary`
+  ([Node investigation](architecture/lifecycles/node-investigation.md)). Node rows and property maps are
+  not copied into it; `node.get`, `fabric.atlas.get` and `mesh.atlas.get` read the node records.
 - **hydration sync** ([Node start](architecture/lifecycles/node-start.md),
   [Node topology get](architecture/lifecycles/node-topology-get.md),
   [Query](architecture/query.md)): The [`node.topology.get`](architecture/lifecycles/node-topology-get.md)
