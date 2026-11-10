@@ -705,6 +705,13 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                         },
                         // A fabric-primary holding no atlas yet answers the read once it holds one.
                         Ok(Answer::Atlas(Err(rdm_client::CallEnd::Rejected { reason, detail }))) if reason == "not-ready" => format!("{primary} answered not-ready ({detail})"),
+                        // The root's answer is the fabric-primary's own (node-investigation.md: the decision is
+                        // verified at the root). An admin whose fabric names another fabric-primary answers only
+                        // the meshes it is primary for, so the read goes to the fabric-primary the view names next,
+                        // as a Status call refused `ReceiverNotPrimary` does.
+                        Ok(Answer::Atlas(Ok(atlas))) if atlas.fabrics.first().and_then(|f| f.fabric_primary.as_ref()) != Some(&primary) => {
+                            format!("{primary} answered as no fabric-primary (its fabric names {})", atlas.fabrics.first().and_then(|f| f.fabric_primary.as_ref()).map_or("none", |p| p.as_str()))
+                        }
                         Ok(Answer::Atlas(read)) => return Owed::Atlas(read),
                         // No answer: the call's attempts are spent (or the role names no birth). The owner
                         // never resends it (node-rpc.md §43): the command ends unanswered, by name.
