@@ -22,6 +22,13 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
     }
 }
 
+/// The state the hand-off at `mesh`'s first admin gives ([`AdminRunner::mesh_state_hook`]): the
+/// furthest state this admin holds for the mesh, from the mesh primary's declaration it applied by
+/// the mesh's MeshId (`declared`; the fabric-primary sets a mesh ready on that report, states.md)
+/// and from the MeshStatus its gossip view holds, a state moving only forward. A declaration applied
+/// here is held whether or not the mesh's MeshStatus frame arrived before its node-admin was lost.
+/// `Pending` for a mesh it holds no state for (a new mesh, e4.s11). A held word that is no Mesh
+/// lifecycle state is no state held.
 /// The Rafka-time this admin holds for `mesh` entering `state`: the held MeshStatus's changed_at when it
 /// names `state`, else the declaration's applied here by the mesh's MeshId; 0 when it holds neither
 /// (node-create.md "A node-admin created into a live mesh" step 4: the successor republishes the held MeshStatus, preserving changed_at).
@@ -35,18 +42,8 @@ pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, 
     heard.or_else(declared).unwrap_or(0)
 }
 
-/// The state the hand-off at `mesh`'s first admin gives ([`AdminRunner::mesh_state_hook`]): the
-/// furthest state this admin holds for the mesh, from the mesh primary's declaration it applied by
-/// the mesh's MeshId (`declared`; the fabric-primary sets a mesh ready on that report, states.md)
-/// and from the MeshStatus its gossip view holds, a state moving only forward. A declaration applied
-/// here is held whether or not the mesh's MeshStatus frame arrived before its node-admin was lost.
-/// `Pending` for a mesh it holds no state for (a new mesh, e4.s11). A held word that is no Mesh
-/// lifecycle state is no state held, and neither is a held Dead: the gossip view holds a MeshStatus
-/// by the mesh's name, and the mesh a first admin is created into is alive, so a Dead held under its
-/// name is a deleted mesh's of that name (states.md: a mesh id is never reissued and deleted is
-/// final; a mesh created again under that name is a new mesh with a new id).
 pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
-    let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok()).filter(|state| *state != rdm_core::status::MeshState::Deleted);
+    let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
     let mesh_id = digest_view.mesh_id_of(mesh);
     let declared = mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
     heard.max(declared).unwrap_or(rdm_core::status::MeshState::Pending)
