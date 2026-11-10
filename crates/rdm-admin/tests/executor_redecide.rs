@@ -378,8 +378,12 @@ async fn lost_run(fleet: &Fleet, lost: &Executor, build_id: &BuildId, node: &Pat
     *fleet.dies.lock().unwrap() = Dies::Not;
 }
 
+/// The complete `step` events of the Build's create of `node` that act on its own node.id: an
+/// `AllocateIdentity` event whose subject is another node is the record of the node.id minted for its birth
+/// lost before Ready (deployment-provider.md §3), never a run of the step again.
 fn complete_steps(view: &rdm_admin::build_state::BuildProjection, step: CreateStep, node: &PathName) -> usize {
-    view.steps.iter().filter(|r| r.step == step.name() && r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(node)).to_string() && r.outcome == StepOutcome::Complete).count()
+    let own = rdm_core::fixture_node_id(node);
+    view.steps.iter().filter(|r| r.step == step.name() && r.operation == rdm_core::OperationId::node("node.create", &own).to_string() && r.outcome == StepOutcome::Complete && r.subject.as_ref().is_none_or(|s| *s == own)).count()
 }
 
 /// CONTRACT (build.md §1: "A step whose `rdm.build.step` event ended `complete` is not run again";
