@@ -914,7 +914,7 @@ impl AdminRunner {
                         None => self.launched_by_build(node, &from.node_id).await.map_err(|why| format!("{op}:path {node_path:?}, name {node_name:?}: {why}", node_path = &node.path, node_name = &node.name))?,
                     };
                     let Some(by) = by else { return Err(e) };
-                    tracing::info_span!("rdm.node_admin.node.resolve.via-unrecorded-birth", operation = op, node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), mesh = %by.mesh, r#type = %by.r#type, build_id = ?by.build_id, "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.create.via-unrecorded-birth", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), mesh = %by.mesh, r#type = %by.r#type, build_id = ?by.build_id, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the exited birth wrote no record before it was lost: the create that launched it names its mesh and type"));
                     let mut exact = Node::allocated(node.clone(), &by.mesh, &by.r#type);
                     exact.node_id = from.node_id.clone();
