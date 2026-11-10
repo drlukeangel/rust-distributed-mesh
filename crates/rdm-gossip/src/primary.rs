@@ -119,6 +119,25 @@ impl PrimaryView {
         }
     }
 
+    /// [`Self::take`], for a node's own claim of its node type's role (Q406): a claim that does not
+    /// supersede the record held is held all the same when `unheard` says this view does not hear the
+    /// birth that record names. The recorded primary stays primary while it is heard
+    /// (fabric-node-lifecycle-elections.md §1), and a record of a birth nobody hears (deleted, gone, or
+    /// never held here) never outweighs a heard node's own claim; this decides on what is heard, never on
+    /// the two records' order. `unheard` is asked under this view's hold, so it reads no `PrimaryView`.
+    pub fn take_claim(&self, role: PrimaryRole, primary: &Primary, unheard: impl Fn(&Primary) -> bool) -> RoleTaken {
+        let mut held = self.inner.lock().unwrap();
+        match held.get(role.clone(), &primary.mesh) {
+            Some(c) if &c == primary => RoleTaken::Same,
+            Some(c) if !primary.supersedes(&c) && !unheard(&c) => RoleTaken::Refused { held: c },
+            previous => {
+                held.put(role, &primary.mesh, primary.clone());
+                self.changed.send_modify(|v| *v += 1);
+                RoleTaken::Held { previous }
+            }
+        }
+    }
+
     /// How long this view has held the fabric-primary's current primary as the primary: a primary is unheard
     /// past the staleness floor only once its view has held it as the primary for a floor (a record
     /// learned a moment ago, after a heal, names a primary whose silence predates it).

@@ -2564,6 +2564,37 @@ mod tests {
         assert_eq!(primaries.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
     }
 
+    /// CONTRACT (fabric-node-lifecycle-elections.md §1: "the primary stays primary while it is heard"; "A
+    /// published or recorded `is_primary` or `is_fabric_primary` bit is a projection of this result. It never
+    /// makes a primary by advertisement or by a write"; Q406; rdm#375): a node type's record naming a birth
+    /// this view does not hear (one read from storage after every runtime of the fabric was lost) yields to a
+    /// heard node's own claim of the role, though the claim's revision is no later and the unheard birth's
+    /// NodeId is lower. A record of a birth the view hears is replaced only as before. Must NOT happen: the
+    /// live node's claim refused, so the view names no primary of its type.
+    #[test]
+    fn a_node_type_record_of_a_birth_this_view_does_not_hear_yields_to_a_heard_nodes_own_claim() {
+        let digest_view = DigestView::default();
+        let mut ids = [NodeId::mint(), NodeId::mint(), NodeId::mint()];
+        ids.sort();
+        let [unheard, claimant, later] = ids;
+        let role = PrimaryRole::NodePrimary("node".into());
+        let stored = Primary { mesh: "mesh1".into(), node_id: unheard, incarnation: IncarnationId::mint(), revision: 1 };
+        assert!(matches!(digest_view.primaries.take(role.clone(), &stored), RoleTaken::Held { .. }));
+        let claim = |id: &NodeId| {
+            let mut d = digest(id, &IncarnationId::mint(), None, NodeStatus::Ready, 10);
+            d.primary = vec![rdm_core::RoleRevision { role: role.clone(), revision: 1 }];
+            d
+        };
+        let live = claim(&claimant);
+        assert!(digest_view.record(live.clone()));
+        assert_eq!(digest_view.primaries.node_type_primary("mesh1", "node"), Some(primary_of(&live, 1)), "the heard node's own claim is held over the record of a birth this view does not hear");
+        // The record held now names a birth this view hears: another claim at its revision, of a higher
+        // NodeId, is refused by the supersede rule as before.
+        let other = claim(&later);
+        assert!(digest_view.record(other));
+        assert_eq!(digest_view.primaries.node_type_primary("mesh1", "node"), Some(primary_of(&live, 1)), "a heard primary's record stays");
+    }
+
     /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the
     /// birth its held primary record names, never from an election of its own. With the role on the
     /// admin whose NodeId is the higher of two Ready admins, the member's primary is that primary.
