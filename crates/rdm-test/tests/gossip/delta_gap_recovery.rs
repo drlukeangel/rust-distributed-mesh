@@ -335,14 +335,14 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert_eq!((num(&gap, "held_version"), num(&gap, "base_version")), (latest, latest + 1), "{gap}");
     let topped = wait_for("the member tops up from its own primary", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.entry.update.via-top-up", &member_id, t_gap).into_iter().find(|sp| attr(sp, "installed").contains("mesh2@")).cloned()
+        spans_of(&spans, "rdm.mesh.entry.update.via-top-up", &member_id, t_gap).into_iter().find(|sp| attr(sp, "written").contains("mesh2@")).cloned()
     })
     .await;
     assert_eq!((attr(&topped, "mesh_primary_path"), attr(&topped, "mesh_primary_name")), ("mesh1.node-admin".to_string(), "1".to_string()), "the member's own mesh-primary: {topped}");
     assert_eq!((attr(&topped, "served_by_path"), attr(&topped, "served_by_name")), ("mesh1.node-admin".to_string(), "1".to_string()), "{topped}");
     assert!(attr(&topped, "meshes").split(',').all(|m| m == "mesh2"), "only the desynchronized source is topped up: {topped}");
     assert!(attr(&topped, "still_desynced").is_empty(), "the top-up resumed the source: {topped}");
-    let installed_version: u64 = attr(&topped, "installed").split(',').find_map(|e| e.strip_prefix("mesh2@")).unwrap().parse().unwrap();
+    let installed_version: u64 = attr(&topped, "written").split(',').find_map(|e| e.strip_prefix("mesh2@")).unwrap().parse().unwrap();
     assert_eq!(installed_version, latest, "the baseline is the version the primary last published into mesh1");
 
     // ---- resumed: the next real change is a delta that applies at the baseline
