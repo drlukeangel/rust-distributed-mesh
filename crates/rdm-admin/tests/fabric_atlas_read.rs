@@ -1,8 +1,9 @@
 //! Functional cell for `fabric-atlas-read` (`docs/architecture/query.md:11`).
 
 use iroh::SecretKey;
-use rdm_admin::accepted::FabricTopology;
+use rdm_admin::accepted::{FabricTopology, MeshTopology};
 use rdm_admin::atlas::Atlas;
+use rdm_admin::build::MeshDesired;
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::fabric_storage::MemoryFabricStorage;
 use rdm_admin::model::{
@@ -72,6 +73,94 @@ async fn answer(client: &NodeRpcClient, to: &NodeId, req: &StatusRequest) -> Sta
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("expected a reply to {}, got {other:?}", req.op()),
     }
+}
+
+/// The fabric-primary `admin_name` (born `admin_id`)'s `StatusService` over `topology`: the atlas it
+/// answers is read from `nodes_storage` (bound on `configs`), `meshes_storage`, `builds` and the meshes
+/// `atlas` holds.
+#[allow(clippy::too_many_arguments)]
+fn status_service(
+    admin_name: &PathName,
+    admin_id: &NodeId,
+    fabric_id: FabricId,
+    topology: Arc<tokio::sync::RwLock<Topology>>,
+    meshes_storage: Arc<MemoryMeshStorage>,
+    nodes_storage: Arc<MemoryNodesStorage>,
+    mesh_ids: BTreeMap<String, MeshId>,
+    atlas: Arc<OnceLock<Arc<Atlas>>>,
+    configs: rdm_admin::node_config::NodeConfigsSlot,
+    builds: Arc<MemoryBuildStateAdapter>,
+) -> Arc<StatusService> {
+    Arc::new(StatusService {
+        certs: None,
+        topology_view: None,
+        declaration_seam: None,
+        command_frame_seam: None,
+        operation_effects: Default::default(),
+        stopped: Default::default(),
+        me: admin_name.clone(),
+        node_id: admin_id.clone(),
+        fabric_id,
+        topology,
+        declared: Arc::new(Mutex::new(Declared::default())),
+        meshes_storage,
+        fabric_storage: Arc::new(MemoryFabricStorage::default()),
+        nodes_storage,
+        caches: Default::default(),
+        mesh_ids: Arc::new(move || mesh_ids.clone()),
+        durable: Default::default(),
+        commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
+        own: Arc::new(OnceLock::new()),
+        mesh_deleter: Arc::new(OnceLock::new()),
+        primary_commands: Default::default(),
+        storage_changes: Default::default(),
+        wake: Default::default(),
+        fabric_states: Default::default(),
+        atlas,
+        fabric_recovery: Default::default(),
+        configs,
+        republish: Default::default(),
+        pre_node_ready: Default::default(),
+        rename: Default::default(),
+        row_moved: Default::default(), rejoin: Default::default(),
+        // The fabric's own read (`fabric.get`) answers from a view with its digest view's loads.
+        loads: Some(Arc::new(BTreeMap::new)),
+        digest_view: None,
+        unreachable: Default::default(),
+        builds,
+    })
+}
+
+/// `service` served at `admin_ep` as the birth `(admin_id, admin_inc)`, as an admin serves it: Status
+/// (0x1B) and the reads (Read 0x23).
+fn serve_admin(admin_ep: &iroh::Endpoint, admin_id: &NodeId, admin_inc: &IncarnationId, service: Arc<StatusService>) -> iroh::protocol::Router {
+    let slot = Arc::new(OnceLock::new());
+    let _ = slot.set(service);
+    let server = rdm_admin::read_op::serve(rdm_admin::status_rpc::serve(ServerBuilder::new(), slot.clone()), slot)
+        .build(ServedBirth { node_id: admin_id.to_string(), incarnation: admin_inc.to_string() })
+        .expect("build the admin's server");
+    iroh::protocol::Router::builder(admin_ep.clone()).accept(rdm_transport::ALPN, server).spawn()
+}
+
+/// A caller's client at its own endpoint that resolves the admin `admin` at `admin_key`, `admin_addr`.
+async fn caller_of(admin: &Node, admin_key: &SecretKey, admin_addr: std::net::SocketAddr) -> (iroh::Endpoint, Arc<NodeRpcClient>) {
+    let caller_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind caller ep");
+    let resolver = Arc::new(LiveNodeResolver::default());
+    resolver.apply(
+        ResolvedNode {
+            r#type: "node-admin".into(),
+            mesh: admin.mesh.clone(),
+            node_id: admin.node_id.clone(),
+            path: admin.path.clone(),
+            name: admin.name.clone(),
+            endpoint_id: admin_key.public(),
+            transport_addr: admin_addr,
+            incarnation: admin.incarnation_id.clone().expect("the admin's birth"),
+        },
+        None,
+    );
+    let client = Arc::new(NodeRpcClient::new(caller_ep.clone(), resolver).with_caller_system("rdm"));
+    (caller_ep, client)
 }
 
 // @feature: fabric-atlas-read
@@ -194,76 +283,10 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_the_fa
         let mut mesh_ids = BTreeMap::new();
         mesh_ids.insert("mesh1".to_string(), mesh_id);
 
-        let service = Arc::new(StatusService {
-            certs: None,
-            topology_view: None,
-            declaration_seam: None,
-            command_frame_seam: None,
-            operation_effects: Default::default(),
-            stopped: Default::default(),
-            me: admin_name.clone(),
-            node_id: admin_id.clone(),
-            fabric_id,
-            topology,
-            declared: Arc::new(Mutex::new(Declared::default())),
-            meshes_storage: meshes_storage.clone(),
-            fabric_storage: Arc::new(MemoryFabricStorage::default()),
-            nodes_storage: nodes_storage.clone(),
-            caches: Default::default(),
-            mesh_ids: Arc::new(move || mesh_ids.clone()),
-            durable: Default::default(),
-            commands: Arc::new(rdm_admin::node_commands::CommandView::default()),
-            own: Arc::new(OnceLock::new()),
-            mesh_deleter: Arc::new(OnceLock::new()),
-            primary_commands: Default::default(),
-            storage_changes: Default::default(),
-            wake: Default::default(),
-            fabric_states: Default::default(),
-            atlas: atlas_slot.clone(),
-            fabric_recovery: Default::default(),
-            configs: configs_slot.clone(),
-            republish: Default::default(),
-            pre_node_ready: Default::default(),
-            rename: Default::default(),
-            row_moved: Default::default(), rejoin: Default::default(),
-            // The fabric's own read (`fabric.get`) answers from a view with its digest view's loads.
-            loads: Some(Arc::new(BTreeMap::new)),
-            digest_view: None,
-            unreachable: Default::default(),
-            builds,
-        });
-
-        let slot = Arc::new(OnceLock::new());
-        let _ = slot.set(service);
-        let server = rdm_admin::status_rpc::serve(ServerBuilder::new(), slot)
-            .build(ServedBirth {
-                node_id: admin_id.to_string(),
-                incarnation: admin_inc.to_string(),
-            })
-            .expect("build status server");
-        let router = iroh::protocol::Router::builder(admin_ep.clone())
-            .accept(rdm_transport::ALPN, server)
-            .spawn();
-
-        let caller_key = SecretKey::generate();
-        let caller_ep = rdm_transport::endpoint::bind(
-            caller_key,
-            "127.0.0.1:0".parse().expect("addr"),
-        )
-        .await
-        .expect("bind caller ep");
-        let resolver = Arc::new(LiveNodeResolver::default());
-        resolver.apply(
-            ResolvedNode { r#type: "node-admin".into(), mesh: "mesh1".to_owned(),
-                node_id: admin_id.clone(),
-                path: admin_name.path.clone(), name: admin_name.name.clone(),
-                endpoint_id: admin_key.public(),
-                transport_addr: admin_addr,
-                incarnation: admin_inc.clone(),
-            },
-            None,
-        );
-        let client = NodeRpcClient::new(caller_ep.clone(), resolver).with_caller_system("rdm");
+        let admin_node = topology.read().await.own(&admin_id).cloned().expect("the view holds the admin");
+        let service = status_service(&admin_name, &admin_id, fabric_id, topology, meshes_storage.clone(), nodes_storage.clone(), mesh_ids, atlas_slot.clone(), configs_slot.clone(), builds);
+        let router = serve_admin(&admin_ep, &admin_id, &admin_inc, service);
+        let (caller_ep, client) = caller_of(&admin_node, &admin_key, admin_addr).await;
 
         // 1. Before the fabric-primary's atlas slot is filled, GetAtlas answers NotReady.
         let (before_out, _) = client
@@ -386,4 +409,117 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_the_fa
     let served = |op: &str| spans.iter().filter(|s| s.name == "rdm.node_admin.fabric.serve.via-atlas" && s.attributes.get("op").map(String::as_str) == Some(op)).map(|s| (s.attributes.get("meshes").cloned().unwrap_or_default(), s.attributes.get("nodes").cloned().unwrap_or_default(), s.attributes.get("accepted").cloned().unwrap_or_default())).collect::<Vec<_>>();
     assert_eq!(served("fabric.atlas.get"), vec![("mesh1".to_string(), "2".to_string(), String::new()), ("mesh1".to_string(), "2".to_string(), "mesh1.node/1 node.stop".to_string()), ("mesh1".to_string(), "2".to_string(), String::new())], "each fabric.atlas.get answered names its meshes, its nodes and the command in flight");
     assert_eq!(served("mesh.atlas.get"), vec![("mesh1".to_string(), "2".to_string(), String::new()), (String::new(), "0".to_string(), String::new())], "each mesh.atlas.get answered names only the meshes it names; the refused one answers none");
+}
+
+// @feature: fabric-atlas-read
+/// CONTRACT: docs/architecture/query.md §1 (Q439, Q285)
+/// "`fabric.atlas.get` answers every mesh of the current Build's topology that the answering node-admin
+///  is primary for ... Both are streamed in frames on op 0x23 (Q285), never bounded as one frame"
+/// CONTRACT: an atlas of more than 600 nodes (L4's 10 meshes of 20 nodes, three times over), each
+/// node's record written straight to the fabric-primary's nodes store, reads whole through
+/// `Fabrics::atlas_get` at the fabric-primary: its one fabric, its meshes in name order, each with every
+/// node row in `(path, name)` order. The serve span names the rows and the data frames sent: every row,
+/// in more than one frame. Must NOT happen: `read-over-bound` for the whole answer, a row left out, a
+/// row under another mesh, or the answer sent as one frame.
+#[test]
+fn an_atlas_of_more_than_six_hundred_nodes_reads_whole_at_the_fabric_primary() {
+    // Two meshes of 450 nodes and the admin: each mesh is more than one frame of rows.
+    const PER_MESH: u32 = 450;
+    let capture = Capture::new("fabric-atlas-read-streamed");
+    let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build current-thread runtime");
+
+    let total = rt.block_on(async {
+        let fabric_id = FabricId::mint();
+        let admin_name = PathName::numbered("mesh1", "node-admin", 1);
+        let (admin_id, admin_inc, admin_key) = (NodeId::mint(), IncarnationId::mint(), SecretKey::generate());
+        let admin_ep = rdm_transport::endpoint::bind(admin_key.clone(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind admin ep");
+        let admin_addr = admin_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4");
+        let mut admin = Node::allocated(admin_name.clone(), "mesh1", "node-admin");
+        admin.node_id = admin_id.clone();
+        admin.incarnation_id = Some(admin_inc.clone());
+        admin.endpoint_id = Some(EndpointId(admin_key.public().to_string()));
+        admin.transport_addr = Some(admin_addr);
+        admin.status = NodeStatus::Ready;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+
+        // The current Build's topology: mesh1 (the admin and PER_MESH nodes) and mesh2 (PER_MESH nodes).
+        let mesh1_id = MeshId::mint();
+        let mut top = FabricTopology::root("fabric1", "mesh1", mesh1_id.clone());
+        top.meshes.get_mut("mesh1").unwrap().nodes.extend((1..=PER_MESH).map(|i| PathName::numbered("mesh1", "node", i)));
+        let mesh2 = MeshTopology::of(&MeshDesired::of("mesh2", [("node", PER_MESH)]));
+        let mesh2_id = mesh2.mesh_id.clone();
+        top.meshes.insert("mesh2".into(), mesh2);
+
+        // Every node's record, written straight to the nodes store.
+        let nodes_storage = Arc::new(MemoryNodesStorage::default());
+        let mut ids = BTreeMap::new();
+        for path in top.meshes.values().flat_map(|m| m.nodes.iter()) {
+            let (r#type, id, inc) = if *path == admin_name { ("node-admin", admin_id.clone(), admin_inc.clone()) } else { ("node", NodeId::mint(), IncarnationId::mint()) };
+            nodes_storage.put_node(&rdm_node::nodes_storage::fixture_record(path, r#type, id.clone(), inc, NodeStatus::Ready)).await.unwrap();
+            ids.insert(path.clone(), id);
+        }
+        let meshes_storage = Arc::new(MemoryMeshStorage::default());
+        for (name, id) in [("mesh1", &mesh1_id), ("mesh2", &mesh2_id)] {
+            rdm_admin::storage::MeshStorage::put_mesh(&*meshes_storage, &rdm_admin::storage::MeshRecord::new(id.clone(), name)).await.unwrap();
+        }
+        let configs = crate::bound_configs_over(nodes_storage.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(admin_ep.clone(), Arc::new(LiveNodeResolver::default()))))).await;
+        let configs_slot: rdm_admin::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
+        let _ = configs_slot.set(Arc::new(configs));
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let build_id = rdm_admin::build::BuildId::parse(&rdm_core::fixture_crockford60("b-atlas-streamed")).unwrap();
+        let want: Vec<(String, Vec<(String, String, NodeId)>)> =
+            top.meshes.iter().map(|(name, m)| (name.clone(), m.nodes.iter().map(|p| (p.path.clone(), p.name.clone(), ids[p].clone())).collect())).collect();
+        builds
+            .publish_accepted(&BuildAccepted { build_id, topology: top, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_000 })
+            .await
+            .unwrap();
+
+        // The fabric-primary's view and its atlas, over both meshes.
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![
+                rdm_admin::model::Mesh { id: Some(mesh1_id.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                rdm_admin::model::Mesh { id: Some(mesh2_id.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
+            ],
+            nodes: vec![admin.clone()],
+        }));
+        let atlas_slot: Arc<OnceLock<Arc<Atlas>>> = Arc::new(OnceLock::new());
+        let held = Arc::new(Atlas::default());
+        held.scope(["mesh1".to_string(), "mesh2".to_string()].into());
+        let _ = atlas_slot.set(held);
+        let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), mesh1_id), ("mesh2".to_string(), mesh2_id)].into();
+        let service = status_service(&admin_name, &admin_id, fabric_id, topology, meshes_storage, nodes_storage, mesh_ids, atlas_slot, configs_slot, builds);
+        let router = serve_admin(&admin_ep, &admin_id, &admin_inc, service);
+        let (caller_ep, client) = caller_of(&admin, &admin_key, admin_addr).await;
+
+        let total: usize = want.iter().map(|(_, nodes)| nodes.len()).sum();
+        assert!(total > 600, "the atlas holds more than 600 nodes: {total}");
+        let atlas = rdm_client::Fabrics::new(rdm_client::BuildCarrier::at_node(client, admin_id.clone()))
+            .atlas_get()
+            .await
+            .unwrap_or_else(|e| panic!("fabric.atlas.get of {total} nodes at the fabric-primary reads whole: {e}"));
+        assert_eq!(atlas.fabrics.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["fabric1"], "one fabric");
+        let got: Vec<(String, Vec<(String, String, NodeId)>)> =
+            atlas.fabrics[0].meshes.iter().map(|m| (m.name.clone(), m.nodes.iter().map(|n| (n.node.path.clone(), n.node.name.clone(), n.node.node_id.clone())).collect())).collect();
+        assert_eq!(got, want, "every mesh in name order, each with every node row in (path, name) order, none left out");
+
+        let _ = router.shutdown().await;
+        caller_ep.close().await;
+        admin_ep.close().await;
+        total
+    });
+    drop(rt);
+
+    let spans = capture.all();
+    let served: Vec<(String, String)> = spans
+        .iter()
+        .filter(|s| s.name == "rdm.node_admin.fabric.serve.via-atlas" && s.attributes.get("op").map(String::as_str) == Some("fabric.atlas.get"))
+        .map(|s| (s.attributes.get("rows").cloned().unwrap_or_default(), s.attributes.get("frames").cloned().unwrap_or_default()))
+        .collect();
+    assert_eq!(served.len(), 1, "one fabric.atlas.get served: {served:?}");
+    let (rows, frames) = &served[0];
+    assert_eq!(rows, &total.to_string(), "the serve span counts every node row sent");
+    assert!(frames.parse::<u32>().is_ok_and(|f| f > 2), "the rows went in more than one data frame per mesh: {frames} frames");
 }
