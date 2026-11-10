@@ -165,7 +165,7 @@ async fn record_recreate(started: &Started, told: &NodeInvestigatedCtx) {
     let request = RecordsRequest::Produce {
         operation: operation.clone(),
         topic: "system".into(),
-        record: format!("path {:?}, name {:?}, node {} investigated ({}, inspected {}): re-created as a new node id", told.path, told.name, told.node_id, told.result.as_str(), told.inspected.as_ref().map(rdm_admin::admin::verdict_name).unwrap_or("none")),
+        record: format!("path {:?}, name {:?}, node {} investigated ({}, inspected {}): re-created as a new node id", told.path, told.name, told.node_id, told.result.as_str(), match told.inspected_name() { "" => "none", name => name }),
     };
     match ask_each_gateway(&ready_gateways(started), &mut BTreeMap::new(), |gateway| ask_gateway(started, gateway, &request)).await {
         Ok(offset) => tracing::info!(target: "rshape", %operation, offset, "on_node_investigated: the re-creation is recorded in the system topic"),
@@ -214,7 +214,7 @@ fn notices(own: Own) -> FabricHooks {
     let on_node_investigated: NodeInvestigatedNotice = Arc::new(move |told: NodeInvestigatedCtx| {
         let own = own_investigated.clone();
         Box::pin(async move {
-            tracing::info!(target: "rshape", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, node_path = %told.path, node_name = %told.name, node_type = %told.r#type, result = told.result.as_str(), inspected = told.inspected.as_ref().map(rdm_admin::admin::verdict_name).unwrap_or_default(), "on_node_investigated: a node investigation's result is recorded");
+            tracing::info!(target: "rshape", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, node_path = %told.path, node_name = %told.name, node_type = %told.r#type, result = told.result.as_str(), inspected = told.inspected_name(), "on_node_investigated: a node investigation's result is recorded");
             if told.result != NodeInvestigatedResult::ReCreated {
                 return;
             }

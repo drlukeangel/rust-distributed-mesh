@@ -341,6 +341,20 @@ pub enum Inspected {
     Unavailable(String),
 }
 
+impl Inspected {
+    /// The answer's name, as node.runtime.inspect's span, the `rdm.node.investigated` event and the
+    /// application's `on_node_investigated` say it (node-runtime-inspect.md "Spans";
+    /// node-investigation.md): `running`, `os-stopped`, `exited` or `unavailable`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::OsStopped => "os-stopped",
+            Self::Exited(..) => "exited",
+            Self::Unavailable(_) => "unavailable",
+        }
+    }
+}
+
 /// node.runtime.inspect of the exact runtime `fact` names, the birth `incarnation`'s, by `provider`
 /// (`docs/architecture/lifecycles/node-runtime-inspect.md` steps 2 and 5): the fact adopted in this
 /// provider's control domain ([`adopt`]) and inspected, the code the runtime's own exit record proves

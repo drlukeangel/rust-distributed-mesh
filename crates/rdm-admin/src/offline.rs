@@ -659,10 +659,14 @@ pub(crate) struct OfflineTickReport {
     pub offline: Vec<String>,
     /// Silent nodes heard again: the view holds them live.
     pub returned: Vec<String>,
-    /// Of `returned`, the births heard again by their digest while their investigation's ladder ran,
-    /// before a tick folded it: the investigation ends `ready` (node-recovery.md step 3: "a held birth
-    /// that answered, or that is heard again by its digest"; Q420).
-    pub returned_investigated: Vec<String>,
+    /// The births whose investigation ends `ready` at this tick, with the reason it ran for
+    /// (node-investigation.md: "to a tickle, the investigation ends `ready`"; Q420; note 0005 R2 to R4):
+    /// a reached birth whose answer needs no start (its `Current` commanded back for its view only,
+    /// Q87), and a birth heard again by its digest while its investigation's ladder ran, before a tick
+    /// folded it (node-recovery.md step 3: "a held birth that answered, or that is heard again by its
+    /// digest"). An ordered investigation whose answer matches the birth's status in the topology is
+    /// `matched` instead, with no result (Q393).
+    pub ready: Vec<(String, crate::node_investigation::Reason)>,
     /// Silent nodes the view no longer holds (deleted, or recovered under a new node.id at their
     /// path and name): not heard again, gone.
     pub gone: Vec<String>,
@@ -670,8 +674,12 @@ pub(crate) struct OfflineTickReport {
     /// sent until answered (node-recovery.md step 3, Q393).
     pub rejoin: Vec<String>,
     /// Births whose verdict, `os-stopped`, follows the self-heal: commanded to start (node.start), sent
-    /// until answered.
+    /// until answered; and reached births that answered `CurrentStopped`, which no command stopped
+    /// (Q393: "stopped is asked to start"; note 0006).
     pub start: Vec<String>,
+    /// node.runtime.inspect's answer, as the investigation's inspect gave it, of each birth of `rejoin`
+    /// and `start`: what its result names as the answer that led to it (note 0005 R6).
+    pub inspected: HashMap<String, crate::deployment::provider::Inspected>,
     /// Births whose ordered investigation's verdict matched their status in the topology: nothing was
     /// done, and the mark that ordered it ends.
     pub matched: Vec<String>,
@@ -704,9 +712,10 @@ fn verdict_span(id: &str, path: &crate::model::PathName, verdict: &str, n: &Sile
 /// How one ladder of the ladder ended (node-recovery.md step 2): the tickle's result, or no ladder run.
 #[derive(Debug)]
 enum LadderEnd {
-    /// The exact birth answered the tickle (`reached`): its answer's name, whether it was `Current`,
-    /// and the carrier that carried it (`None`: direct).
-    Reached { answer: &'static str, current: bool, carrier: Option<crate::model::NodeId> },
+    /// The exact birth answered the tickle (`reached`): its answer, the carrier that carried it
+    /// (`None`: direct), and node.runtime.inspect's answer, read before the tickle (`None`: the ladder
+    /// carried none).
+    Reached { answer: rdm_core::status::StatusReply, carrier: Option<crate::model::NodeId>, inspected: Option<crate::deployment::provider::Inspected> },
     /// The investigation's verdict on a birth nobody reached, or one the inspect proved gone:
     /// `running`, `os-stopped`, `exited` or `dead`; how the direct probe ended, the carriers asked, and
     /// the instant on the tick clock the ladder ended (`verdict_at_ms`: the ladder's probes ended).
@@ -727,6 +736,16 @@ pub enum Ladder {
     Gone(crate::node_investigation::Finding),
     /// The ladder ran and reached the birth, or no ladder ran (by name).
     Tickled(Result<Tickle, String>),
+    /// The exact birth answered the tickle: its answer, the carrier that carried it (`None`: direct),
+    /// and node.runtime.inspect's answer, read before the tickle (`running`, or `unavailable`).
+    Answered {
+        /// The birth's own answer.
+        answer: rdm_core::status::StatusReply,
+        /// The peer that carried the kick; `None`: it answered the direct probe.
+        carrier: Option<crate::model::NodeId>,
+        /// The inspect's answer before the tickle.
+        inspected: crate::deployment::provider::Inspected,
+    },
     /// Nobody reached the birth: the tickle's end and the investigation's verdict, the inspect's
     /// answer after the retries (`running`, `os-stopped`, `exited` or `dead`; Q393).
     Unreached(Unreached, crate::node_investigation::Finding),
@@ -750,11 +769,13 @@ pub fn hears_none(view: &rdm_gossip::digest_view::DigestView, me: &crate::model:
 /// an investigator that hears no other node (`hears_none`, asked only then), is
 /// [`Ladder::InvestigatorHearsNone`]; any other unreached birth is [`Ladder::Unreached`] with its
 /// verdict, a `running` with no peer to try from an investigator that hears others included (Q153);
-/// a reached birth, or no ladder, is the tickle's own result.
+/// a reached birth is [`Ladder::Answered`] with the inspect's answer (`finding`'s); no ladder is the
+/// tickle's own result.
 pub fn ladder_of(finding: crate::node_investigation::Finding, tickled: Result<Tickle, String>, hears_none: impl FnOnce() -> bool) -> Ladder {
     match tickled {
         Ok(Tickle::Unreached(unreached)) if matches!(finding, crate::node_investigation::Finding::Running) && hears_none() => Ladder::InvestigatorHearsNone(unreached),
         Ok(Tickle::Unreached(unreached)) => Ladder::Unreached(unreached, finding),
+        Ok(Tickle::Reached { answer, carrier }) => Ladder::Answered { answer, carrier, inspected: finding.inspected().unwrap_or_else(|| crate::deployment::provider::Inspected::Unavailable("the inspect was not asked".into())) },
         tickled => Ladder::Tickled(tickled),
     }
 }
@@ -768,6 +789,10 @@ struct LadderRun {
     path: crate::model::PathName,
     /// The mark (or first sighting) the ladder ran on, named on its spans.
     seen_at: u64,
+    /// Why the birth was investigated, and its status in the topology, at the tick that started the
+    /// ladder: what a ladder that ends with the birth's silence ends with.
+    reason: crate::node_investigation::Reason,
+    status: crate::model::NodeStatus,
     /// `None`: the ladder was cancelled at a stop.
     task: tokio::task::JoinHandle<Option<LadderEnd>>,
 }
@@ -881,9 +906,10 @@ impl OfflineTickle {
         // id), and every birth while this admin does not hold the role: its ladder's probes are
         // dropped (step 2: an answer "cancels the probes still running"; a new primary runs its own).
         let births: HashSet<Birth> = silent.iter().map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
-        // A birth whose ladder ran when it left the silent set: its investigation began and no tick
-        // folded it.
-        let laddered: HashSet<String> = self.running.keys().filter(|(id, _)| !silent_ids.contains(id)).map(|(id, _)| id.clone()).collect();
+        // A birth whose ladder ran when it left the silent set, while this admin holds the role: its
+        // investigation began and no tick folded it, so the silence's end is its end. Why it ran and the
+        // birth's status then, by node id.
+        let laddered: HashMap<String, (crate::node_investigation::Reason, crate::model::NodeStatus)> = if holds_role { self.running.iter().filter(|((id, _), _)| !silent_ids.contains(id)).map(|((id, _), r)| (id.clone(), (r.reason, r.status))).collect() } else { HashMap::new() };
         self.running.retain(|birth, ladder| {
             let keep = holds_role && births.contains(birth);
             if !keep {
@@ -896,8 +922,18 @@ impl OfflineTickle {
         self.offline.retain(|id| silent_ids.contains(id));
         for id in left {
             // A birth listed only for an ordered investigation was never held off its mesh: its mark
-            // ended, and it is not heard again (Q393).
+            // ended, and it is not heard again (Q393). Its mark ended with its ladder running when it was
+            // heard after the mark: that digest is its investigation's end (note 0005 R3, R4), with no
+            // result when the birth's status in the topology is one it runs in (Q393), else `ready`.
             if self.ordered.contains(&id) {
+                if let (false, Some((reason, status)), true) = (crate::node_investigation::ROUND_1, laddered.get(&id).copied(), in_view(&id)) {
+                    tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, observer = %self.observer, reason = reason.as_str(), trigger = reason.trigger(), "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!(node_id = %id, "a birth an ordered investigation's ladder ran for is heard after its mark: the investigation ends"));
+                    match crate::node_investigation::follows(&crate::node_investigation::Finding::Running, reason, status) {
+                        crate::node_investigation::Follows::Nothing => report.matched.push(id),
+                        _ => report.ready.push((id, reason)),
+                    }
+                }
                 continue;
             }
             // Heard again while the tick still watches the node (its view, or the durable rows that
@@ -906,8 +942,8 @@ impl OfflineTickle {
             if in_view(&id) {
                 tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, observer = %self.observer, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
-                if laddered.contains(&id) {
-                    report.returned_investigated.push(id.clone());
+                if let Some((reason, _)) = laddered.get(&id) {
+                    report.ready.push((id.clone(), *reason));
                 }
                 report.returned.push(id);
             } else {
@@ -936,7 +972,7 @@ impl OfflineTickle {
             if !self.running.get(&birth).is_some_and(|r| r.task.is_finished()) {
                 continue;
             }
-            let Some(LadderRun { started_at_ms, path, seen_at, task }) = self.running.remove(&birth) else { continue };
+            let Some(LadderRun { started_at_ms, path, seen_at, task, .. }) = self.running.remove(&birth) else { continue };
             // A ladder that panicked takes the loop with it, as one run inside the pass did. A ladder
             // cancelled at a stop found nothing: nothing is folded, and the birth is due again.
             let end = match task.await {
@@ -946,16 +982,22 @@ impl OfflineTickle {
             };
             let id = n.node_id.clone();
             match end {
-                LadderEnd::Reached { answer, current, carrier } => {
+                LadderEnd::Reached { answer, carrier, inspected } => {
                     // An answer is reachable-silent: recorded (node-recovery.md step 2). The tickle's own
                     // span carried the answer; this is the mesh-primary's record of it.
                     self.offline.remove(&id);
                     self.settled.insert(id.clone());
-                    // An ordered investigation whose birth answered while the topology holds it running
-                    // does nothing (Q393): it is not commanded back.
-                    if crate::node_investigation::follows_reached(n.reason, n.status) == crate::node_investigation::Follows::Nothing {
+                    let current = matches!(answer, rdm_core::status::StatusReply::Current { .. });
+                    let follows = crate::node_investigation::follows_reached(&answer, n.reason, n.status);
+                    let answer = answer.name();
+                    // An ordered investigation whose birth's answer matches the topology does nothing
+                    // and ends with no result (Q393; note 0005 R3): it is not commanded back.
+                    if follows == crate::node_investigation::Follows::Nothing {
                         verdict_span(&id, &path, "reached", n, crate::node_investigation::Follows::Nothing, &self.observer, seen_at, started_at_ms);
                         report.matched.push(id.clone());
+                        if crate::node_investigation::ROUND_1 {
+                            report.ready.push((id.clone(), n.reason));
+                        }
                         report.reachable_silent.push(id);
                         continue;
                     }
@@ -974,8 +1016,21 @@ impl OfflineTickle {
                         "otel.kind" = "internal"
                     )
                     .in_scope(|| tracing::info!(node_id = %id, answer, carrier = %carrier, "the tickle reached the birth: reachable-silent, recorded, no action"));
-                    if current {
-                        report.answered_current.push(id.clone());
+                    if follows == crate::node_investigation::Follows::Start {
+                        // `CurrentStopped`, and the topology does not hold it stopped: no command stopped
+                        // it, so it is commanded to start, and the start's end is the result (Q393, note
+                        // 0006; note 0005 R2).
+                        verdict_span(&id, &path, answer, n, follows, &self.observer, seen_at, started_at_ms);
+                        report.inspected.insert(id.clone(), inspected.unwrap_or_else(|| crate::deployment::provider::Inspected::Unavailable("the ladder carried no inspect answer".into())));
+                        report.start.push(id.clone());
+                    } else {
+                        // Any other answer ends the investigation `ready`, a `Current` one commanded back
+                        // for its view only (node-investigation.md: "to a tickle, the investigation ends
+                        // `ready`"; Q87, Q420).
+                        report.ready.push((id.clone(), n.reason));
+                        if current {
+                            report.answered_current.push(id.clone());
+                        }
                     }
                     report.reachable_silent.push(id);
                 }
@@ -999,6 +1054,9 @@ impl OfflineTickle {
                     self.settled.insert(id.clone());
                     let follows = crate::node_investigation::follows(&finding, n.reason, n.status);
                     verdict_span(&id, &path, finding.name(), n, follows, &self.observer, seen_at, started_at_ms);
+                    if let (crate::node_investigation::Follows::MeshJoin | crate::node_investigation::Follows::Start, Some(inspected)) = (follows, finding.inspected()) {
+                        report.inspected.insert(id.clone(), inspected);
+                    }
                     match follows {
                         crate::node_investigation::Follows::Nothing => report.matched.push(id),
                         crate::node_investigation::Follows::MeshJoin => report.rejoin.push(id),
@@ -1034,7 +1092,7 @@ impl OfflineTickle {
                 }
             }
         }
-        for SilentNode { node_id: id, path, incarnation, .. } in silent {
+        for SilentNode { node_id: id, path, incarnation, reason, status, .. } in silent {
             // The mark (or, with none, the instant this admin first saw the node silent): a role taken
             // mid-window tickles on it.
             let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
@@ -1061,7 +1119,8 @@ impl OfflineTickle {
                     // The inspect proved the runtime gone: no tickle was sent, and its verdict is the
                     // investigation's.
                     Ladder::Gone(finding) => LadderEnd::Found { direct: format!("not probed: node.runtime.inspect answered {}", finding.name()), finding, asked: String::new(), verdict_at_ms: tick_ms + tick_began.elapsed().as_millis() as u64 },
-                    Ladder::Tickled(Ok(Tickle::Reached { answer, carrier })) => LadderEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
+                    Ladder::Answered { answer, carrier, inspected } => LadderEnd::Reached { answer, carrier, inspected: Some(inspected) },
+                    Ladder::Tickled(Ok(Tickle::Reached { answer, carrier })) => LadderEnd::Reached { answer, carrier, inspected: None },
                     Ladder::Tickled(Ok(Tickle::Unreached(unreached))) => {
                         // A ladder that carried no verdict of its own: the inspect never proved the
                         // runtime.
@@ -1088,7 +1147,7 @@ impl OfflineTickle {
                 }
                 end
             });
-            self.running.insert(birth, LadderRun { started_at_ms: now_ms, path, seen_at, task });
+            self.running.insert(birth, LadderRun { started_at_ms: now_ms, path, seen_at, reason, status, task });
         }
         report
     }
@@ -1209,7 +1268,8 @@ pub(crate) mod tests {
         report.answered_current.extend(folded.answered_current);
         report.offline.extend(folded.offline);
         report.returned.extend(folded.returned);
-        report.returned_investigated.extend(folded.returned_investigated);
+        report.ready.extend(folded.ready);
+        report.inspected.extend(folded.inspected);
         report.gone.extend(folded.gone);
         report
     }
@@ -1473,7 +1533,7 @@ pub(crate) mod tests {
             assert_eq!(t.ladders(), (1, 0), "one ladder, still running");
             let r = tick(&mut t, PROBE_DELAY + 2_500, vec![]).await;
             assert_eq!((r.returned, t.ladders()), (vec!["a".to_string()], (0, 0)), "heard again: its ladder is dropped");
-            assert_eq!(r.returned_investigated, vec!["a".to_string()], "heard again while its ladder ran: its investigation ends `ready` (node-recovery.md step 3, Q420)");
+            assert_eq!(r.ready, vec![("a".to_string(), crate::node_investigation::Reason::SelfHeal)], "heard again while its ladder ran: its investigation ends `ready` (node-recovery.md step 3, Q420)");
             sleep(DIAL).await;
             assert_eq!(ended.load(Ordering::SeqCst), 0, "the dropped ladder's probe never ran to its end");
 
@@ -2149,6 +2209,89 @@ pub(crate) mod tests {
         once(t, PROBE_DELAY + 1).await
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:14
+    /// "Only an answer from the exact birth counts: to a tickle, the investigation ends `ready`; to the
+    ///  command back or the start, `rejoined`."
+    /// CONTRACT: docs/architecture/lifecycles/node-recovery.md:58
+    /// "An ordered investigation ... sets no `PendingReconnect`: an inspect's answer that matches the
+    ///  birth's status in the topology does nothing"
+    /// (review finding 2, R2, R3; note 0006: `CurrentStopped` goes to the start, Q393 "stopped is asked to
+    /// start"; `Pending` and `StartFailed` end `ready`): the fold of a reached birth's ladder ends a
+    /// self-heal `ready` on `Current` (commanded back for its view), `Pending` and `StartFailed`, and
+    /// sends a `CurrentStopped` to the start with the inspect's answer the ladder read; an ordered
+    /// investigation whose answer matches the birth's status in the topology is matched, with no result:
+    /// `Current` and a live status, `CurrentStopped` and `stopped`; one whose answer differs follows the
+    /// self-heal. Must NOT happen: `ready` for a matched ordered investigation, for a commanded-stopped
+    /// node answering `CurrentStopped`, or for a `CurrentStopped` that is sent to the start.
+    // @feature: node-investigation
+    #[tokio::test(start_paused = true)]
+    async fn a_reached_birth_ends_ready_unless_it_answered_stopped_or_its_ordered_answer_matches() {
+        use crate::deployment::provider::Inspected;
+        use crate::model::NodeStatus as S;
+        use crate::node_investigation::Reason;
+        use rdm_core::status::StatusReply as A;
+        let (node_id, incarnation) = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let current = A::Current { node_id: node_id.clone(), incarnation: incarnation.clone(), state: rdm_core::status::NodeState::Ready };
+        let pending = A::Pending { node_id: node_id.clone(), incarnation: incarnation.clone(), reason: "its hook runs".into() };
+        let failed = A::StartFailed { step: "pre_node_ready".into(), reason: "refused".into() };
+        let stopped = A::CurrentStopped { node_id, incarnation };
+        let ordered = Reason::Ordered { trigger: "report-call-failed" };
+        let ready = |reason: Reason| vec![("a".to_string(), reason)];
+        for (answer, reason, status, ends_ready, current_back, starts, matched) in [
+            (current.clone(), Reason::SelfHeal, S::PendingReconnect, true, true, false, false),
+            (pending.clone(), Reason::SelfHeal, S::PendingReconnect, true, false, false, false),
+            (failed.clone(), Reason::SelfHeal, S::PendingReconnect, true, false, false, false),
+            (stopped.clone(), Reason::SelfHeal, S::PendingReconnect, false, false, true, false),
+            (current.clone(), ordered, S::Ready, false, false, false, true),
+            (stopped.clone(), ordered, S::Stopped, false, false, false, true),
+            (stopped.clone(), ordered, S::Ready, false, false, true, false),
+            (current.clone(), ordered, S::Leaving, true, true, false, false),
+        ] {
+            let said = answer.name();
+            let a = answer.clone();
+            let r = investigated_as(&mut OfflineTickle::new(), reason, status, move || Ladder::Answered { answer: a.clone(), carrier: None, inspected: Inspected::Running }).await;
+            assert_eq!(r.reachable_silent, vec!["a".to_string()], "{said} {reason:?} {status:?}: the birth answered its tickle");
+            assert_eq!(r.ready, if ends_ready { ready(reason) } else { vec![] }, "{said} {reason:?} {status:?}: ends `ready`: {ends_ready}");
+            assert_eq!(r.answered_current, if current_back { vec!["a".to_string()] } else { vec![] }, "{said} {reason:?} {status:?}: commanded back for its view: {current_back}");
+            assert_eq!(r.start, if starts { vec!["a".to_string()] } else { vec![] }, "{said} {reason:?} {status:?}: commanded to start: {starts}");
+            assert_eq!(r.matched, if matched { vec!["a".to_string()] } else { vec![] }, "{said} {reason:?} {status:?}: matched, with no result: {matched}");
+            if starts {
+                assert_eq!(r.inspected.get("a"), Some(&Inspected::Running), "{said}: the start's result names the inspect's answer the ladder read (R6)");
+            }
+        }
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-recovery.md:37
+    /// "`PendingReconnect` ... ends when a digest of the exact birth arrives after it, when the birth
+    ///  answers its tickle, or when the view no longer holds that birth."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:56
+    /// "Result: `ready`, `rejoined` or `re-created` (Q420-Q423); none from an investigator that hears no
+    ///  other node (Q153), nor from an ordered investigation whose inspect's answer matches the birth's
+    ///  status in the topology (Q393)"
+    /// (review finding 6, R3, R4): a birth an ordered investigation's ladder runs for, heard after its
+    /// mark before a tick folds the ladder, leaves the silent set; its investigation ends there, with no
+    /// result (`matched`) when the topology holds it in a status it runs in, and `ready` when it holds it
+    /// otherwise; never heard again as a held birth (`returned`), and nothing ends for an admin that no
+    /// longer holds the role. Must NOT happen: the ladder dropped with no end.
+    // @feature: node-investigation
+    #[tokio::test(start_paused = true)]
+    async fn an_ordered_birth_heard_after_its_mark_while_its_ladder_runs_ends_its_investigation() {
+        use crate::model::NodeStatus as S;
+        use crate::node_investigation::Reason;
+        let ordered = Reason::Ordered { trigger: "connect-refused" };
+        for (status, holds_role, ready, matched) in [(S::Ready, true, false, true), (S::Leaving, true, true, false), (S::Ready, false, false, false)] {
+            let mut t = OfflineTickle::new();
+            let set = vec![SilentNode { node_id: "a".into(), path: crate::model::PathName::new("mesh1.node", "a").unwrap(), incarnation: None, marked_at_ms: Some(0), reason: ordered, status }];
+            let first = t.tick(PROBE_DELAY, true, set, |_| true, PROBE_DELAY, |_| std::future::pending::<Ladder>(), |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() }).await;
+            assert_eq!((first.tickled, t.ladders()), (vec!["a".to_string()], (1, 0)), "{status:?}: its ladder runs");
+            let r = t.tick(PROBE_DELAY + 1, holds_role, vec![], |_| true, PROBE_DELAY, |_| std::future::pending::<Ladder>(), |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() }).await;
+            assert_eq!(t.ladders(), (0, 0), "{status:?}: its ladder is dropped with its silence");
+            assert!(r.returned.is_empty(), "{status:?}: an ordered birth was never held off its mesh: not heard again: {r:?}");
+            assert_eq!(r.ready, if ready { vec![("a".to_string(), ordered)] } else { vec![] }, "{status:?}, role {holds_role}: ends `ready`: {ready}");
+            assert_eq!(r.matched, if matched { vec!["a".to_string()] } else { vec![] }, "{status:?}, role {holds_role}: ends with no result: {matched}");
+        }
+    }
+
     fn found(finding: crate::node_investigation::Finding) -> Ladder {
         Ladder::Unreached(match unreached(&[]) { Tickle::Unreached(u) => u, _ => unreachable!("an unreached ladder") }, finding)
     }
@@ -2226,7 +2369,7 @@ pub(crate) mod tests {
         assert!(t.is_offline("a"));
         let r = tick(&mut t, PROBE_DELAY + FLOOR + 1, true, vec![], false, no_path()).await;
         assert_eq!(r.returned, vec!["a".to_string()]);
-        assert!(r.returned_investigated.is_empty(), "its ladder was folded before it was heard again: its investigation ended there, not `ready`");
+        assert!(!r.ready.iter().any(|(id, _)| id == "a"), "its ladder was folded before it was heard again: its investigation ended there, not `ready`");
         assert!(r.gone.is_empty());
         assert!(!t.is_offline("a"));
     }

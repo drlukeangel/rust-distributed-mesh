@@ -127,13 +127,16 @@ impl Reason {
 }
 
 /// Whether an ordered investigation's `finding` matches `status`, the birth's status in the topology,
-/// so it does nothing (node-recovery.md step 3, Q393): the inspect's answer `running` (and `reached`, the
-/// birth's own answer that it runs) and a live status or a lifecycle state the node reported, in which
-/// its runtime runs; `os-stopped` and `stopped`; `exited` and `dead`. Anything else differs and follows
-/// the self-heal. An unreached birth that matches ends with no result (node-investigation.md, Q393).
+/// so it does nothing and ends with no result (node-recovery.md step 3, Q393, Q425: "an ordered
+/// investigation's `os-stopped` matches `stopped` and does nothing"): the inspect's answer `running`
+/// (and `reached` with any answer but `CurrentStopped`, the birth's own word that it runs) and a live
+/// status or a lifecycle state the node reported, in which its runtime runs; `os-stopped` (and
+/// `reached` answering `CurrentStopped`, the birth's own word that it is stopped) and `stopped`;
+/// `exited` and `dead`. Anything else differs and follows the self-heal.
 pub fn matches_topology(finding: &Finding, status: NodeStatus) -> bool {
     use NodeStatus as S;
     match finding {
+        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } if !ROUND_1 => status == S::Stopped,
         Finding::Reached { .. } | Finding::Running => matches!(status, S::Starting | S::Pending | S::Ready | S::ConnectionsDeleting | S::ConnectionsDeleted | S::Stopping | S::Stopped),
         Finding::OsStopped => status == S::Stopped,
         Finding::Exited { .. } => status == S::Dead,
@@ -147,10 +150,13 @@ pub fn matches_topology(finding: &Finding, status: NodeStatus) -> bool {
 pub enum Follows {
     /// An ordered investigation whose finding matches the birth's status in the topology: nothing.
     Nothing,
-    /// The birth is commanded back through node.mesh.join, sent until answered: a reached birth for its
-    /// view (Q87), which is `ready`; an unreached `running` one, which answered is `rejoined`.
+    /// A reached birth ends `ready`, and one that answered `Current` is commanded back through
+    /// node.mesh.join for its view (Q87), which writes nothing; an unreached `running` one is commanded
+    /// back, sent until answered: answered, `rejoined`.
     MeshJoin,
-    /// The birth is commanded to start (node.start), sent until answered: answered, `rejoined`.
+    /// The birth is commanded to start (node.start), sent until answered: answered, `rejoined`. An
+    /// `os-stopped` inspect, or a reached birth answering `CurrentStopped` that no command stopped
+    /// (Q393: "stopped is asked to start").
     Start,
     /// The birth is written `dead`, and its recovery runs at once: `re-created`.
     Dead,
@@ -171,22 +177,25 @@ impl Follows {
 /// What follows `finding` for an investigation run for `reason` of a birth whose status in the
 /// topology is `status` (node-recovery.md step 3, Q393): an ordered investigation whose finding
 /// matches the status ([`matches_topology`]) does nothing; any other finding follows the self-heal:
-/// `reached` and `running` are commanded back through node.mesh.join, `os-stopped` is commanded to
-/// start, and `exited` or `dead` (not proven by the end of the retries) is written `dead`.
+/// `reached` ends `ready` ([`Follows::MeshJoin`], node-investigation.md: "to a tickle, the
+/// investigation ends `ready`"), but answering `CurrentStopped` is commanded to start (Q393, note
+/// 0006); `running` is commanded back through node.mesh.join, `os-stopped` is commanded to start, and
+/// `exited` or `dead` (not proven by the end of the retries) is written `dead`.
 pub fn follows(finding: &Finding, reason: Reason, status: NodeStatus) -> Follows {
     if matches!(reason, Reason::Ordered { .. }) && matches_topology(finding, status) {
         return Follows::Nothing;
     }
     match finding {
+        Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { .. }, .. } if !ROUND_1 => Follows::Start,
         Finding::Reached { .. } | Finding::Running => Follows::MeshJoin,
         Finding::OsStopped => Follows::Start,
         Finding::Exited { .. } | Finding::Dead { .. } => Follows::Dead,
     }
 }
 
-/// [`follows`] for a `reached` birth, its answer whatever it said: the birth runs.
-pub fn follows_reached(reason: Reason, status: NodeStatus) -> Follows {
-    follows(&Finding::Running, reason, status)
+/// [`follows`] for a birth that gave `answer` to its tickle.
+pub fn follows_reached(answer: &rdm_core::status::StatusReply, reason: Reason, status: NodeStatus) -> Follows {
+    follows(&Finding::Reached { answer: answer.clone(), carrier: None }, reason, status)
 }
 
 /// node.runtime.inspect's answer ([`crate::deployment::provider::inspect_runtime`]) as the
@@ -332,9 +341,14 @@ pub(crate) fn fabric_and_mesh_of(view: &Topology, node: &Node) -> (rdm_core::Fab
     (view.fabric.id.clone(), view.meshes.iter().find(|m| m.name == node.mesh).and_then(|m| m.id.clone()))
 }
 
+/// The reviewed code, kept for the red run of the review's cells; removed with them.
+pub(crate) const ROUND_1: bool = true;
+
 /// What the primary that investigated a node writes its result with (node-investigation.md, build.md
 /// §5): the events store, this admin's exact birth (each event's `source`), its rafka-time, and the
 /// application's `on_node_investigated`, sent from the event's write (fabric-node-hooks.md, Q312).
+/// One per admin, shared by every place an investigation of it ends: the recovery tick, the self-heal's
+/// command back or start, the recovery and the primary watch.
 #[derive(Clone)]
 pub struct NodeInvestigatedWriter {
     /// What the result is written with: `events.storage`, this admin's exact birth (the event's
@@ -342,13 +356,43 @@ pub struct NodeInvestigatedWriter {
     pub events: crate::events_storage::EventsWriter,
     /// The application's `on_node_investigated`; `None` when it registers none.
     pub on_node_investigated: Option<crate::wiring::NodeInvestigatedNotice>,
+    /// The births whose investigation began here ([`Self::begin`]) and has not ended: each ends once
+    /// ([`Self::end`]), so its result is written at most once.
+    pub open: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(NodeId, crate::model::IncarnationId)>>>,
 }
 
 impl NodeInvestigatedWriter {
     /// A writer on an events store held in memory, by the birth `node_id` of `fabric_id`, at
     /// rafka-time `1`, with no hook: what a rig with no topology storage writes its results with.
     pub fn in_memory(fabric_id: &rdm_core::FabricId, node_id: &NodeId) -> Self {
-        Self { events: crate::events_storage::EventsWriter::in_memory(fabric_id, node_id), on_node_investigated: None }
+        Self { events: crate::events_storage::EventsWriter::in_memory(fabric_id, node_id), on_node_investigated: None, open: Default::default() }
+    }
+
+    /// An investigation of the birth `node_id` at `incarnation` began here: the recovery tick started its
+    /// ladder, or a primary above it started its look. Its one result is written once ([`Self::end`]); an
+    /// investigation already open for that birth stays the one.
+    pub(crate) fn begin(&self, node_id: &NodeId, incarnation: &crate::model::IncarnationId) {
+        self.open.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
+    }
+
+    /// The investigation of `node`'s birth at `incarnation`, run for `reason`, ends here with `result`
+    /// and `inspected`, node.runtime.inspect's answer that led to it (`None` for `ready`), the one place
+    /// a result is written (node-investigation.md: "The result is the one decision"; Q420-Q423). Open,
+    /// it is written as its one event ([`write_node_investigated`]) and is open no more; `result`
+    /// `None` ends it with no result: an ordered investigation whose answer matches the birth's status
+    /// in the topology (Q393). Not open (its result already written, or no investigation of it began
+    /// here), nothing is written, named on the span current here. Answers whether it was open.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn end(&self, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, result: Option<crate::wiring::NodeInvestigatedResult>, inspected: Option<&crate::deployment::provider::Inspected>, reason: Reason) -> bool {
+        let open = !ROUND_1 && self.open.lock().unwrap().remove(&(node.node_id.clone(), incarnation.clone()));
+        if !ROUND_1 && !open {
+            tracing::info!(node_id = %node.node_id, incarnation_id = %incarnation.as_str(), result = result.map(|r| r.as_str()).unwrap_or("none"), "no investigation of the birth is open here: its result is written already, or none began; nothing is written");
+            return false;
+        }
+        if let Some(result) = result {
+            write_node_investigated(self, ids, node, incarnation, result, inspected, reason).await;
+        }
+        true
     }
 }
 
@@ -363,11 +407,11 @@ impl NodeInvestigatedWriter {
 /// and the birth's mesh's ([`fabric_and_mesh_of`]). The notice gates nothing and orders nothing; an
 /// event not written sends none, named on the span.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, result: crate::wiring::NodeInvestigatedResult, inspected: Option<&crate::deployment::provider::Inspected>, reason: Reason) {
+async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, result: crate::wiring::NodeInvestigatedResult, inspected: Option<&crate::deployment::provider::Inspected>, reason: Reason) {
     use tracing::Instrument as _;
     let context = crate::build::current_context();
     let (fabric_id, mesh_id) = ids;
-    let inspected_name = inspected.map(crate::admin::verdict_name);
+    let inspected_name = inspected.map(crate::deployment::provider::Inspected::name);
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-on-node-investigated",
         node_path = %node.path, node_name = %node.name,
@@ -430,16 +474,6 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
     );
 }
 
-/// The result `ready` of the investigation of `node`'s birth at `incarnation`, run for `reason`: the
-/// exact birth answered its tickle, or was heard again by its digest while the investigation's ladder
-/// ran, so it was ready the whole time (node-investigation.md, node-recovery.md step 3, Q420, Q423).
-/// Written once per investigation by the mesh-primary of the birth's mesh, at the ladder's fold for
-/// every reached birth of its mesh or at the tick that hears it again, with no inspect's answer. The
-/// command back a held birth off its mesh is then sent for its view (Q87) writes nothing of its own.
-pub(crate) async fn write_ready(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, reason: Reason) {
-    write_node_investigated(writer, ids, node, incarnation, crate::wiring::NodeInvestigatedResult::Ready, None, reason).await;
-}
-
 /// node.runtime.inspect's span (node-runtime-inspect.md "Observability contract"), the one every
 /// caller's inspection emits: `inspector` the caller's node ID, `handle` the exact runtime handle the
 /// provider was asked about (empty when nothing was asked), `verdict` the provider's answer and `why`
@@ -453,7 +487,7 @@ pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment
     };
     let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
     let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
-    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = crate::admin::verdict_name(outcome), exit_code, reason = %reason)
+    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = outcome.name(), exit_code, reason = %reason)
         .in_scope(|| tracing::info!("{why}"));
 }
 
@@ -810,10 +844,15 @@ mod tests {
         let all = [S::Starting, S::Pending, S::Ready, S::ConnectionsDeleting, S::ConnectionsDeleted, S::Leaving, S::Stopping, S::Stopped, S::PendingReconnect, S::Dead, S::Deleting, S::Deleted, S::Withdrawn];
         let (node, _) = world();
         let reached = Finding::Reached { answer: current(&node), carrier: None };
+        let stopped = Finding::Reached { answer: rdm_core::status::StatusReply::CurrentStopped { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() }, carrier: None };
         let runs = [S::Starting, S::Pending, S::Ready, S::ConnectionsDeleting, S::ConnectionsDeleted, S::Stopping, S::Stopped];
         for status in all {
             assert_eq!(matches_topology(&Finding::Running, status), runs.contains(&status), "running and {status:?}");
             assert_eq!(matches_topology(&reached, status), runs.contains(&status), "reached and {status:?}");
+            // Review finding 2, R3: the birth's own word that it is stopped matches `stopped` only, as
+            // os-stopped does (Q425).
+            assert_eq!(matches_topology(&stopped, status), status == S::Stopped, "reached answering CurrentStopped and {status:?}");
+            assert_eq!(follows(&stopped, Reason::SelfHeal, status), Follows::Start, "a self-heal's CurrentStopped is commanded to start (Q393, note 0006): {status:?}");
             assert_eq!(matches_topology(&Finding::OsStopped, status), status == S::Stopped, "os-stopped and {status:?}");
             assert_eq!(matches_topology(&Finding::Exited { code: None }, status), status == S::Dead, "exited and {status:?}");
             assert!(!matches_topology(&Finding::Dead { reason: String::new() }, status), "dead (not proven) and {status:?}");
@@ -976,5 +1015,43 @@ mod tests {
                 .map(String::as_str),
             Some("running")
         );
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:25
+    /// "The result is the one decision (Q111). The primary that investigated writes it as one
+    ///  `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, result and
+    ///  the inspect's answer that led to it"
+    /// (review finding 10: every result write goes through one function that writes at most once per
+    /// investigation of a birth): an investigation begun here ends once. Its first end writes one event;
+    /// a second end of the same investigation, whatever result it names, writes nothing; an end with no
+    /// investigation begun here writes nothing; an end with no result (an ordered investigation that
+    /// matches the topology, Q393) closes it, and nothing is written after it; a new investigation of the
+    /// same birth, begun again, writes its own one result. Must NOT happen: two events for one
+    /// investigation, or an event with no investigation begun.
+    // @feature: node-investigation
+    #[tokio::test]
+    async fn one_investigation_of_a_birth_writes_one_result() {
+        use crate::deployment::provider::Inspected;
+        use crate::wiring::NodeInvestigatedResult as R;
+        let (node, view) = world();
+        let incarnation = node.incarnation_id.clone().unwrap();
+        let writer = NodeInvestigatedWriter::in_memory(&view.fabric.id, &NodeId::mint());
+        let ids = || fabric_and_mesh_of(&view, &node);
+        let results = || async { writer.events.events.of_node(&node.node_id).await.unwrap().iter().map(|e| e.data.get("result").and_then(|v| v.as_str()).unwrap_or_default().to_string()).collect::<Vec<_>>() };
+        assert!(!writer.end(ids(), &node, &incarnation, Some(R::Ready), None, Reason::SelfHeal).await, "no investigation of the birth began here: nothing to end");
+        assert_eq!(results().await, Vec::<String>::new(), "no investigation began: no result is written");
+        writer.begin(&node.node_id, &incarnation);
+        writer.begin(&node.node_id, &incarnation);
+        assert!(writer.end(ids(), &node, &incarnation, Some(R::Rejoined), Some(&Inspected::Running), Reason::SelfHeal).await, "the open investigation ends");
+        assert!(!writer.end(ids(), &node, &incarnation, Some(R::ReCreated), Some(&Inspected::Running), Reason::SelfHeal).await, "ended already");
+        assert!(!writer.end(ids(), &node, &incarnation, Some(R::Ready), None, Reason::SelfHeal).await, "ended already");
+        assert_eq!(results().await, vec!["rejoined".to_string()], "one investigation, one result, the first end's");
+        writer.begin(&node.node_id, &incarnation);
+        assert!(writer.end(ids(), &node, &incarnation, None, None, Reason::Ordered { trigger: "report-call-failed" }).await, "an ordered investigation that matched ends with no result");
+        assert!(!writer.end(ids(), &node, &incarnation, Some(R::Ready), None, Reason::Ordered { trigger: "report-call-failed" }).await, "and nothing is written after its end");
+        assert_eq!(results().await, vec!["rejoined".to_string()], "the matched ordered investigation wrote nothing");
+        writer.begin(&node.node_id, &incarnation);
+        assert!(writer.end(ids(), &node, &incarnation, Some(R::Ready), None, Reason::SelfHeal).await);
+        assert_eq!(results().await, vec!["rejoined".to_string(), "ready".to_string()], "a new investigation of the birth writes its own one result");
     }
 }

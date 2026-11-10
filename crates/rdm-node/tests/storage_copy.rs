@@ -181,7 +181,7 @@ impl History {
         // Each event is its own line, its `id` the event's, by its one writer (build.md §5).
         let e = log(&root, EVENTS_FILE).await;
         e.append_with(Attributes { subject: None, ..Attributes::of(&fp1, "rdm.build.started", "event/1", "") }, &json!({"build_id": build})).await.unwrap();
-        e.append(&mp1, "rdm.node.investigated", "event/1", first.as_str(), &json!({"verdict": "exited", "next": "recreate"})).await.unwrap();
+        e.append(&mp1, "rdm.node.investigated", "event/1", first.as_str(), &json!({"result": "re-created", "inspected": "exited"})).await.unwrap();
 
         // The nodes' own parts of their records are history too, each at its node id in the nodes store (Q333).
         let records = log(&root, NODES_FILE).await;

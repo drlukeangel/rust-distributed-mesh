@@ -495,7 +495,7 @@ impl AdminRunner {
         };
         let verdict = match row {
             Ok(row) => match crate::mesh_delete::predecessor_verdict(&*self.provider, row.as_ref(), lost).await {
-                Ok(found) => crate::admin::verdict_name(&found).to_string(),
+                Ok(found) => found.name().to_string(),
                 Err(reason) => reason,
             },
             Err(reason) => reason,

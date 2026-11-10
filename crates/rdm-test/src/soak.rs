@@ -719,8 +719,8 @@ fn created_at(b: &Value, path: &PathName) -> Option<String> {
 
 /// The `rdm.node.investigated` events of the exact birth `(node.id, incarnation)` on the estate's
 /// fabric store root (build.md §5; node-investigation.md: the primary that investigated writes its
-/// verdict as one event), each its `data`: `incarnation`, `path`, `name`, `verdict` and `next`
-/// (`rejoin`, or `recreate`: node recovery, never a Build, Q342).
+/// result as one event), each its `data`: `incarnation`, `path`, `name`, `result` (`ready`,
+/// `rejoined`, or `re-created`: node recovery, never a Build, Q342) and `inspected`.
 fn investigated(estate: &Estate, birth: &(String, String)) -> Vec<Value> {
     let file = estate.fabric_store_root().join(rdm_admin::store_root::EVENTS_FILE);
     rdm_admin::store_log::read_file(&file)
@@ -1863,7 +1863,7 @@ impl Driver {
         let during = nodes_during.iter().find(|x| location(x) == path).cloned();
         let build_during = (self.read)(&self.estate, &self.build_id).await;
         // What acted on the held birth while it was held: a step of the current Build on its node.id, or
-        // node recovery's re-create (its `rdm.node.investigated` event, `next` `recreate`); a step on
+        // node recovery's re-create (its `rdm.node.investigated` event, `result` `re-created`); a step on
         // another node, a role move among them, did nothing to it (fabric-recovery.md step 4).
         let acted_during = acted_on(before, &build_during, &investigated(&self.estate, &birth), &birth);
         entry["acted_on_held"] = json!({"build_steps": [before["steps"].as_array().map_or(0, Vec::len), build_during["steps"].as_array().map_or(0, Vec::len)], "acted": acted_during});
@@ -1958,7 +1958,7 @@ impl Driver {
             if is_rpc {
                 rec.check("the re-created node serves at the path", kept["outcome"] == "Reply" && kept["reply"]["executing_node"] == back["node_id"], kept.to_string());
             }
-            rec.check("only node recovery acted on the held birth: its rdm.node.investigated event names recreate", !acted_after.is_empty() && acted_after.iter().all(|r| r.starts_with("node recovery")), format!("{acted_after:?}"));
+            rec.check("only node recovery acted on the held birth: its rdm.node.investigated event's result is re-created", !acted_after.is_empty() && acted_after.iter().all(|r| r.starts_with("node recovery")), format!("{acted_after:?}"));
         } else {
             if is_rpc {
                 rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-hold"}), kept.to_string());

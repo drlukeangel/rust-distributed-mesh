@@ -494,7 +494,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         source: crate::events_storage::EventSource { fabric_id: cfg.fabric_id.clone(), node_id: minted_node_id.clone(), incarnation: incarnation.clone() },
         time: rafka_time.clone(),
     };
-    let investigated = crate::node_investigation::NodeInvestigatedWriter { events: events.clone(), on_node_investigated: on_node_investigated.clone() };
+    let investigated = crate::node_investigation::NodeInvestigatedWriter { events: events.clone(), on_node_investigated: on_node_investigated.clone(), open: Default::default() };
     // The Build-level events this admin writes as the fabric-primary, `rdm.build.started`,
     // `rdm.build.dispatched` and `rdm.build.ended`, by this birth; each Build notice is sent from its
     // event's write (build.md §5, fabric-node-hooks.md).
@@ -2544,7 +2544,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let _ = storage_changes.recreate.set(Arc::new(move |node: crate::model::Node| {
                                                         let recovery = recovery.clone();
                                                         Box::pin(async move {
-                                                            recovery.recover(&node).await;
+                                                            recovery.recreate(&node).await;
                                                         })
                                                     }));
                                                 }
@@ -2757,6 +2757,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         },
                                                     )
                                                     .await;
+                                                // Each ladder started is an investigation begun: its one result is written once
+                                                // (`NodeInvestigatedWriter::end`, review finding 10).
+                                                for n in report.tickled.iter().filter_map(|id| watched.get(id)) {
+                                                    if let Some(incarnation) = n.incarnation_id.as_ref() {
+                                                        recovery.investigated.begin(&n.node_id, incarnation);
+                                                    }
+                                                }
                                                 // The self-heal starts: its mesh-primary writes the birth PendingReconnect on its
                                                 // record as its investigation runs (node-recovery.md step 1, Q393). An ordered
                                                 // investigation writes none.
@@ -2782,29 +2789,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 // A self-heal's `running` is commanded back through node.mesh.join and its
-                                                // `os-stopped` commanded to start, each sent until answered; unanswered at the end of
-                                                // its attempts, the birth is written dead and recovered (Q393). Each on its own task.
+                                                // `os-stopped` (or a birth's `CurrentStopped`) commanded to start, each sent until
+                                                // answered; unanswered at the end of its attempts, the birth is written dead and
+                                                // recovered (Q393). Each on its own task, its result written by `HeardAgain::self_heal`
+                                                // or the recovery.
                                                 if let Some(heard_again) = ladder_heard_again.get().cloned() {
                                                     for (id, start) in report.rejoin.iter().map(|id| (id, false)).chain(report.start.iter().map(|id| (id, true))) {
-                                                        let (Some(n), Some((reason, status))) = (watched.get(id).cloned(), listed.get(id).copied()) else { continue };
+                                                        let (Some(n), Some((reason, status)), Some(inspected)) = (watched.get(id).cloned(), listed.get(id).copied(), report.inspected.get(id).cloned()) else { continue };
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let (heard_again, records, recovery, rows, observer, unwritten_dead) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), me_id.to_string(), unwritten_dead.clone());
                                                         tokio::spawn(stop.until_stopped(async move {
-                                                            use crate::deployment::provider::Inspected;
                                                             use crate::heard_again::SelfHealEnd;
-                                                            // Answered, the investigation ends `rejoined`, with the inspect's answer
-                                                            // that led to it (Q422, Q423).
-                                                            let mut end = if start { heard_again.self_heal_start(&n, &incarnation, reason).await } else { heard_again.self_heal_join(&n, &incarnation, Inspected::Running, reason).await };
-                                                            // A start refused as already live: the birth runs, and the inspect's
-                                                            // answer is taken as `running`.
-                                                            if matches!(end, SelfHealEnd::Live(_)) {
-                                                                end = match crate::node_investigation::follows(&crate::node_investigation::Finding::Running, reason, status) {
-                                                                    crate::node_investigation::Follows::MeshJoin => heard_again.self_heal_join(&n, &incarnation, Inspected::Running, reason).await,
-                                                                    _ => end,
-                                                                };
-                                                            }
+                                                            let end = heard_again.self_heal(&n, &incarnation, start, &inspected, reason, status).await;
                                                             if let SelfHealEnd::Unanswered(how) = &end {
-                                                                let verdict = if start { "os-stopped" } else { "running" };
+                                                                let verdict = inspected.name();
                                                                 tracing::info_span!("rdm.node_admin.node.update.via-dead", node_id = %n.node_id, node_path = %n.path, node_name = %n.name, verdict, detail = %how, reason = reason.as_str(), trigger = reason.trigger(), observer = %observer, "otel.kind" = "internal")
                                                                     .in_scope(|| tracing::info!(node_id = %n.node_id, verdict, "the self-heal's command went unanswered to the end of its attempts: the birth is written dead, and its recovery follows at once"));
                                                                 if write_dead(&records, &recovery.reasons, rows.as_deref(), &n, reason).await == DeadWrite::Spent {
@@ -2815,77 +2813,55 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 // An ordered investigation whose verdict matched the topology did nothing: the mark
-                                                // that ordered it ends.
+                                                // that ordered it ends, and so does the investigation, with no result (Q393).
                                                 for id in &report.matched {
                                                     if matches!(listed.get(id), Some((crate::node_investigation::Reason::Ordered { .. }, _))) {
                                                         records.unreachable.lock().unwrap().retain(|nid, _| nid.as_str() != id);
+                                                    }
+                                                    if let Some((n, Some(incarnation))) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).map(|n| (n, n.incarnation_id.as_ref())) {
+                                                        let reason = listed.get(id).map(|(reason, _)| *reason).unwrap_or(crate::node_investigation::Reason::SelfHeal);
+                                                        let _ = recovery.investigated.end(crate::node_investigation::fabric_and_mesh_of(&view, n), n, incarnation, None, None, reason).await;
                                                     }
                                                 }
                                                 // A birth heard again, or answering its tickle, is reached (node-recovery.md step 3).
                                                 for id in report.returned.iter().chain(&report.reachable_silent) {
                                                     records.unreachable.lock().unwrap().retain(|nid, _| nid.as_str() != id);
                                                 }
-                                                for id in &report.returned {
-                                                    // A held birth heard again by its digest is commanded back through node.mesh.join
-                                                    // too (Q87: the view returns on the bare digest, its cert, time and cache do not):
-                                                    // by the mesh-primary, on its own task. One heard again while its investigation's
-                                                    // ladder ran, before a tick folded it, ends that investigation `ready`
-                                                    // (node-recovery.md step 3, Q420): written first, once, on the same task; the
-                                                    // command writes nothing.
-                                                    if holds_role {
-                                                        if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
-                                                            // A birth listed only for an ordered investigation is never heard again
-                                                            // (`OfflineTickle::tick`): a returned birth's investigation is a self-heal.
-                                                            let ready = report.returned_investigated.contains(id).then(|| (recovery.investigated.clone(), crate::node_investigation::fabric_and_mesh_of(&view, &n), crate::node_investigation::Reason::SelfHeal));
-                                                            // The tick held this birth off its mesh (it was tickled and returned): the view's
-                                                            // ready, when it shows one, is the birth's own last word before the
-                                                            // silence, not where it stands now (Q87).
-                                                            if n.status == NodeStatus::Ready {
-                                                                n.status = NodeStatus::PendingReconnect;
-                                                            }
-                                                            if let Some(incarnation) = n.incarnation_id.clone() {
-                                                                // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
-                                                                tokio::spawn(stop.until_stopped(async move {
-                                                                    if let Some((writer, ids, reason)) = ready {
-                                                                        crate::node_investigation::write_ready(&writer, ids, &n, &incarnation, reason).await;
-                                                                    }
-                                                                    heard_again.command(&n, &incarnation).await;
-                                                                }));
-                                                            }
+                                                // The investigations that end `ready` at this tick (node-investigation.md: "to a tickle,
+                                                // the investigation ends `ready`"; Q420; note 0005 R2 to R4), and the held births commanded
+                                                // back through node.mesh.join for their view (Q87: the view returns on the bare digest,
+                                                // its cert, time and cache do not): one heard again by its digest, and one that answered
+                                                // its probe `Current`. The result is written first, once, then the command, which writes
+                                                // nothing, on one task each. Only the mesh-primary writes and commands its nodes
+                                                // (commands go down); every admin keeps the bookkeeping.
+                                                if holds_role {
+                                                    let commanded_back: HashSet<&String> = report.returned.iter().chain(&report.answered_current).collect();
+                                                    let ends: std::collections::BTreeSet<&String> = report.ready.iter().map(|(id, _)| id).chain(commanded_back.iter().copied()).collect();
+                                                    for id in ends {
+                                                        let Some(mut n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned() else { continue };
+                                                        let Some(incarnation) = n.incarnation_id.clone() else { continue };
+                                                        let ready = report.ready.iter().find(|(r, _)| r == id).map(|(_, reason)| (*reason, recovery.investigated.clone(), crate::node_investigation::fabric_and_mesh_of(&view, &n)));
+                                                        let heard_again = if commanded_back.contains(id) { ladder_heard_again.get().cloned() } else { None };
+                                                        // Held off its mesh in the tick's eyes (it was tickled, or heard again): the view's
+                                                        // ready, when it shows one, is the birth's own last word before the silence (Q87).
+                                                        if n.status == NodeStatus::Ready {
+                                                            n.status = NodeStatus::PendingReconnect;
                                                         }
+                                                        // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
+                                                        tokio::spawn(stop.until_stopped(async move {
+                                                            if let Some((reason, writer, ids)) = ready {
+                                                                writer.end(ids, &n, &incarnation, Some(crate::wiring::NodeInvestigatedResult::Ready), None, reason).await;
+                                                            }
+                                                            if let Some(heard_again) = heard_again {
+                                                                heard_again.command(&n, &incarnation).await;
+                                                            }
+                                                        }));
                                                     }
-                                                    // The mark goes before the rows are cleared: a follower in flight reads the
-                                                    // mark after its own write and removes what it wrote (`RecoverySubmitter::offline`).
-                                                    records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                 }
-                                                for id in &report.reachable_silent {
-                                                    // The exact birth answered its tickle: its investigation ends `ready`
-                                                    // (node-investigation.md, Q420), written once, at this fold, by the mesh-primary
-                                                    // for every reached birth of its mesh. A held birth that answered its probe
-                                                    // `Current` (`report.answered_current`) is then commanded back through
-                                                    // node.mesh.join for its view (Q87), on the same task after the write; the command
-                                                    // writes nothing. Only the mesh-primary writes and commands its members (commands
-                                                    // go down); every admin keeps the bookkeeping.
-                                                    if !holds_role {
-                                                        continue;
-                                                    }
-                                                    let Some(mut n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned() else { continue };
-                                                    let Some(incarnation) = n.incarnation_id.clone() else { continue };
-                                                    let reason = listed.get(id).map(|(reason, _)| *reason).unwrap_or(crate::node_investigation::Reason::SelfHeal);
-                                                    let (writer, ids) = (recovery.investigated.clone(), crate::node_investigation::fabric_and_mesh_of(&view, &n));
-                                                    let heard_again = if report.answered_current.contains(id) { ladder_heard_again.get().cloned() } else { None };
-                                                    // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
-                                                    // ready is its last word before the silence (Q87).
-                                                    if n.status == NodeStatus::Ready {
-                                                        n.status = NodeStatus::PendingReconnect;
-                                                    }
-                                                    // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
-                                                    tokio::spawn(stop.until_stopped(async move {
-                                                        crate::node_investigation::write_ready(&writer, ids, &n, &incarnation, reason).await;
-                                                        if let Some(heard_again) = heard_again {
-                                                            heard_again.command(&n, &incarnation).await;
-                                                        }
-                                                    }));
+                                                // The mark goes before the rows are cleared: a follower in flight reads the mark after
+                                                // its own write and removes what it wrote (`RecoverySubmitter::offline`).
+                                                for id in &report.returned {
+                                                    records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                 }
                                                 clear_unwatched(&watched, &mut records.offline.lock().unwrap());
                                                 if *records.offline.lock().unwrap() != offline_before {

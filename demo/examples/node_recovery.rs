@@ -4,8 +4,8 @@
 //! A silent member is never restarted or deleted for being silent: its mesh-primary marks it
 //! `PendingReconnect` at the staleness floor, runs the reach ladder `node.tickle` half a floor later
 //! (`tickle_ladder_at_default_budget()`, direct then `VIA_PEER_TICKLE_FANOUT` live peers at once), and
-//! on `unreached` inspects the birth's runtime (`node.runtime.inspect`). On `exited`, the verdict is
-//! written as one `rdm.node.investigated` event naming `recreate`, and the mesh-primary runs the
+//! on `unreached` inspects the birth's runtime (`node.runtime.inspect`). On `exited`, the investigation
+//! ends `re-created`, written as one `rdm.node.investigated` event, and the mesh-primary runs the
 //! recovery itself, its own workflow and never a Build (Q342): `node.delete` of the exited birth, then
 //! `node.create` at the same `(path, name)` over the inherited `data_dir`, minting a new `node_id` and
 //! `incarnation`. The member may be of any mesh: its own mesh-primary recovers it. The fabric's

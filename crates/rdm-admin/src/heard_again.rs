@@ -52,35 +52,106 @@ pub type HeardAgainSlot = Arc<OnceLock<Arc<HeardAgain>>>;
 /// How a self-heal's command to its birth ended (node-recovery.md step 3, Q393).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelfHealEnd {
-    /// The birth answered: its answer's name.
+    /// The birth answered with the command's own answer (`MeshJoined` to the command back, `Started` to
+    /// the start): it is back, and the investigation ends `rejoined`.
     Answered(String),
-    /// The command went out and was not answered by the end of its attempts: how it ended. The birth
-    /// is written `dead`, and its recovery follows.
+    /// The command went out and was not answered by the end of its attempts, or was refused (or not
+    /// sent, with nothing in flight holding the birth) to the end of the self-heal's `Send`: how it
+    /// ended. The birth is written `dead`, and its recovery follows.
     Unanswered(String),
-    /// node.start refused as already live: the birth runs, and the inspect's answer is taken as
-    /// `running`.
+    /// node.start refused as already live: the birth runs.
     Live(String),
-    /// No command went out, by name (a command of the primary's in flight, one already sent this
-    /// silence, no `StatusService` open yet): nothing is concluded.
+    /// No command went out, by name: a command or create of the primary's in flight on the birth, or
+    /// one already sent this silence, whose own end is the birth's; or this admin is not the birth's
+    /// commander now, and the primary its view names runs its own investigation. Nothing is concluded
+    /// here.
     NotSent(String),
+    /// One attempt the birth refused (any answer but the command's own), or one that sent nothing
+    /// with nothing in flight holding the birth (no runner, no `StatusService`, a join not registered):
+    /// not a return (note 0005 R1, R4), and sent again under the self-heal's `Send`. Never how a
+    /// self-heal ends.
+    Refused(String),
 }
 
 impl SelfHealEnd {
-    /// `answered`, `unanswered`, `live` or `not-sent`.
+    /// `answered`, `unanswered`, `live`, `not-sent` or `refused`.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Answered(_) => "answered",
             Self::Unanswered(_) => "unanswered",
             Self::Live(_) => "live",
             Self::NotSent(_) => "not-sent",
+            Self::Refused(_) => "refused",
         }
     }
+}
+
+/// An attempt that sent nothing and names nothing in flight that holds the birth: this admin's runner
+/// or `StatusService` not built yet, or the birth's join not registered (note 0005 R4).
+fn holds_nothing(outcome: &str) -> bool {
+    ["no-runner", "no-authority", "no-status-service", "join-not-registered"].iter().any(|p| outcome.starts_with(p))
+}
+
+/// How one attempt of a self-heal's command back ended, from `command_mesh_join`'s outcome and whether
+/// its call was answered (note 0005 R1, R4): `MeshJoined` is the birth back; any other answer is a
+/// refusal, sent again; a call whose attempts were spent unanswered is unanswered; nothing sent with
+/// nothing holding the birth is sent again, and nothing sent for a command, create or reservation of
+/// the birth in flight, or by an admin that is not its commander, is not sent.
+fn join_attempt(outcome: String, answered: Option<bool>) -> SelfHealEnd {
+    let round_1 = crate::node_investigation::ROUND_1;
+    match answered {
+        Some(true) if round_1 || outcome.starts_with("mesh-joined") => SelfHealEnd::Answered(outcome),
+        Some(true) => SelfHealEnd::Refused(outcome),
+        Some(false) => SelfHealEnd::Unanswered(outcome),
+        None if !round_1 && holds_nothing(&outcome) => SelfHealEnd::Refused(outcome),
+        None => SelfHealEnd::NotSent(outcome),
+    }
+}
+
+/// How one attempt of a self-heal's start ended, from the birth's admission of the command (note 0005
+/// R1): `Started` is the birth back; a start refused as already live is [`SelfHealEnd::Live`]; any
+/// other refusal, and a start that failed at a step (it is stopped still), is sent again; a call that
+/// never reached the birth, or whose reply never came, is unanswered.
+fn start_attempt(admission: crate::deployment::pipeline::CommandAdmission) -> SelfHealEnd {
+    use crate::deployment::pipeline::CommandAdmission as A;
+    match admission {
+        A::NotSent { reason, .. } => SelfHealEnd::Unanswered(format!("NotSent: {reason}")),
+        A::Indeterminate { reason, .. } => SelfHealEnd::Unanswered(format!("Indeterminate: {reason}")),
+        A::Refused { reply, .. } if reply.starts_with("rejected-invalid-node-transition") => SelfHealEnd::Live(reply),
+        started @ (A::Started {} | A::AlreadyAdmitted {}) => SelfHealEnd::Answered(format!("{started:?}")),
+        other if crate::node_investigation::ROUND_1 => SelfHealEnd::Answered(format!("{other:?}")),
+        other => SelfHealEnd::Refused(format!("{other:?}")),
+    }
+}
+
+/// A self-heal's command sent under its one `Send` (Q344; node-investigation.md step 5; note 0005 R1):
+/// `attempt` is one command, bounded by its own call's `Send`, and an attempt [`SelfHealEnd::Refused`]
+/// is made again after its delay on `pacing`, the one schedule (node-rpc.md §43), up to `send`'s
+/// attempts. Still refused when they are spent, the command is [`SelfHealEnd::Unanswered`]: the birth
+/// is written `dead`. Any other end of an attempt is the command's end.
+pub(crate) async fn sent_until_answered<F, Fut>(send: rdm_transport::Send, pacing: rdm_transport::Pacing, mut attempt: F) -> SelfHealEnd
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = SelfHealEnd>,
+{
+    let attempts = if crate::node_investigation::ROUND_1 { 1 } else { send.attempts.max(1) };
+    let mut last = String::new();
+    for n in 1..=attempts {
+        if n > 1 {
+            tokio::time::sleep(pacing.after(u32::from(n - 1))).await;
+        }
+        match attempt().await {
+            SelfHealEnd::Refused(why) => last = why,
+            end => return end,
+        }
+    }
+    SelfHealEnd::Unanswered(format!("{last} (refused to the end of the self-heal's Send: {attempts} attempts)"))
 }
 
 impl HeardAgain {
     /// Command `node`'s exact birth back through `node.mesh.join` (`command_mesh_join`) for its view
     /// (Q87). The command writes no result: a held birth that answered its tickle, or was heard again by
-    /// its digest while its ladder ran, is `ready`, written by the tick (`node_investigation::write_ready`;
+    /// its digest while its ladder ran, is `ready`, written by the tick (`NodeInvestigatedWriter::end`;
     /// node-investigation.md, Q420).
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
         self.command_on(node, incarnation).await.0
@@ -101,33 +172,69 @@ impl HeardAgain {
         (outcome, answered)
     }
 
-    /// A self-heal whose inspect answered `running` (node-recovery.md step 3, Q393): `node`'s exact birth
-    /// commanded back through node.mesh.join, sent until answered (the call's `Send`). Answered, the
-    /// investigation ends `rejoined` (Q422, Q423), written as its `rdm.node.investigated` event with
-    /// `inspected`, the inspect's answer that led to it, for `reason`; a call that went out and was never
-    /// answered by the end of its attempts is [`SelfHealEnd::Unanswered`], which the birth's mesh-primary
-    /// writes `dead`.
-    pub async fn self_heal_join(&self, node: &Node, incarnation: &IncarnationId, inspected: crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason) -> SelfHealEnd {
-        let (outcome, answered) = self.command_on(node, incarnation).await;
-        match answered {
-            Some(true) => {
-                self.write_rejoined(node, incarnation, inspected, reason).await;
-                SelfHealEnd::Answered(outcome)
+    /// A self-heal's command (node-recovery.md step 3, Q393; node-investigation.md step 5): `node`'s
+    /// exact birth commanded to start (`start`) or back through node.mesh.join, for `reason`, its status
+    /// in the topology `status`, `inspected` node.runtime.inspect's answer that led to the command.
+    /// Answered, the investigation ends `rejoined` (Q422, Q423), written with `inspected`. A start
+    /// refused as already live is the birth running: commanded back when [`crate::node_investigation::follows`]
+    /// says so, its result naming `inspected` still (note 0005 R6); else (an ordered investigation whose
+    /// topology holds the birth in a status it runs in) it ends `ready`, the birth's answer that it runs
+    /// (note 0005 B). [`SelfHealEnd::Unanswered`] the birth's mesh-primary writes `dead`, and its
+    /// re-create ends it `re-created`; [`SelfHealEnd::NotSent`] leaves its end to the command, create or
+    /// primary that holds the birth (note 0005 R4).
+    pub async fn self_heal(&self, node: &Node, incarnation: &IncarnationId, start: bool, inspected: &crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason, status: crate::model::NodeStatus) -> SelfHealEnd {
+        use crate::node_investigation::{follows, Finding, Follows};
+        let end = if start { self.self_heal_start(node, incarnation, inspected, reason).await } else { self.self_heal_join(node, incarnation, inspected, reason).await };
+        let SelfHealEnd::Live(_) = &end else { return end };
+        match follows(&Finding::Running, reason, status) {
+            Follows::MeshJoin if crate::node_investigation::ROUND_1 => self.self_heal_join(node, incarnation, &crate::deployment::provider::Inspected::Running, reason).await,
+            Follows::MeshJoin => self.self_heal_join(node, incarnation, inspected, reason).await,
+            _ => {
+                if !crate::node_investigation::ROUND_1 {
+                    self.write_end(node, incarnation, crate::wiring::NodeInvestigatedResult::Ready, None, reason).await;
+                }
+                end
             }
-            Some(false) => SelfHealEnd::Unanswered(outcome),
-            None => SelfHealEnd::NotSent(outcome),
         }
     }
 
-    /// A self-heal whose inspect answered `os-stopped` (node-recovery.md step 3, Q393): `node`'s exact
-    /// birth commanded to start (node.start, NodeCommand 0x22 `StartNode`), the mesh-primary's own command
-    /// to its node, sent until answered (`StatusService::carry_lifecycle`, under its `Send`). A suspended
-    /// runtime answers nothing, [`SelfHealEnd::Unanswered`]; a start it refuses as already live
-    /// (`rejected-invalid-node-transition`: its cycle is live) is [`SelfHealEnd::Live`], which is
-    /// `running`; any other answer is answered, and the investigation ends `rejoined`, written as its
-    /// event with `inspected` `os-stopped`. One `rdm.node_admin.node.update.via-start-commanded` span.
-    pub async fn self_heal_start(&self, node: &Node, incarnation: &IncarnationId, reason: crate::node_investigation::Reason) -> SelfHealEnd {
-        use crate::deployment::pipeline::CommandAdmission as A;
+    /// A self-heal whose inspect answered `running` (node-recovery.md step 3, Q393): `node`'s exact birth
+    /// commanded back through node.mesh.join under the self-heal's `Send` ([`sent_until_answered`]), each
+    /// attempt under its call's own. Answered with `MeshJoined`, the investigation ends `rejoined` (Q422,
+    /// Q423), written as its `rdm.node.investigated` event with `inspected`, the inspect's answer that
+    /// led to it, for `reason`; refused or unanswered to the end, [`SelfHealEnd::Unanswered`], which the
+    /// birth's mesh-primary writes `dead`.
+    async fn self_heal_join(&self, node: &Node, incarnation: &IncarnationId, inspected: &crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason) -> SelfHealEnd {
+        let end = sent_until_answered(rdm_transport::Send::default(), rdm_transport::Pacing::from_cadences(), || async {
+            let (outcome, answered) = self.command_on(node, incarnation).await;
+            join_attempt(outcome, answered)
+        })
+        .await;
+        if let SelfHealEnd::Answered(_) = &end {
+            self.write_end(node, incarnation, crate::wiring::NodeInvestigatedResult::Rejoined, Some(inspected), reason).await;
+        }
+        end
+    }
+
+    /// A self-heal whose birth is stopped by no command (node-recovery.md step 3, Q393): its inspect
+    /// answered `os-stopped`, or it answered its tickle `CurrentStopped` (note 0006). `node`'s exact birth
+    /// commanded to start under the self-heal's `Send` ([`sent_until_answered`]), each attempt one
+    /// [`Self::start_once`]. `Started`, the investigation ends `rejoined`, written as its event with
+    /// `inspected`, the inspect's answer that led to it; a start refused as already live is
+    /// [`SelfHealEnd::Live`]; refused or unanswered to the end, [`SelfHealEnd::Unanswered`].
+    async fn self_heal_start(&self, node: &Node, incarnation: &IncarnationId, inspected: &crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason) -> SelfHealEnd {
+        let end = sent_until_answered(rdm_transport::Send::default(), rdm_transport::Pacing::from_cadences(), || self.start_once(node, incarnation, reason)).await;
+        if let SelfHealEnd::Answered(_) = &end {
+            self.write_end(node, incarnation, crate::wiring::NodeInvestigatedResult::Rejoined, Some(inspected), reason).await;
+        }
+        end
+    }
+
+    /// One attempt of a self-heal's start: `node`'s exact birth commanded to start (node.start,
+    /// NodeCommand 0x22 `StartNode`), the mesh-primary's own command to its node, under its call's
+    /// `Send` (`StatusService::carry_lifecycle`), its end read by [`start_attempt`]. A suspended runtime
+    /// answers nothing. One `rdm.node_admin.node.update.via-start-commanded` span.
+    async fn start_once(&self, node: &Node, incarnation: &IncarnationId, reason: crate::node_investigation::Reason) -> SelfHealEnd {
         let operation = rdm_core::OperationId::new("node.start", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
             .in_occurrence(rdm_core::OperationOccurrenceId::mint());
         let span = tracing::info_span!(
@@ -141,9 +248,10 @@ impl HeardAgain {
             outcome = tracing::field::Empty,
             "otel.kind" = "internal"
         );
+        let unsent = |why: String| if crate::node_investigation::ROUND_1 { SelfHealEnd::NotSent(why) } else { SelfHealEnd::Refused(why) };
         let ended = async {
-            let Some(runner) = self.runner.get() else { return SelfHealEnd::NotSent("no-runner".into()) };
-            let Some(status_service) = self.status_service.get() else { return SelfHealEnd::NotSent("no-status-service".into()) };
+            let Some(runner) = self.runner.get() else { return unsent("no-runner".into()) };
+            let Some(status_service) = self.status_service.get() else { return unsent("no-status-service".into()) };
             {
                 let view = status_service.topology.read().await;
                 if let Err(why) = commands_join(&view, &status_service.node_id, node) {
@@ -153,36 +261,29 @@ impl HeardAgain {
             // The start runs node.mesh.join on the birth (node-start.md step 2): its join report is
             // verified against the deployment this admin holds of it, as a commanded join's is.
             if let Err(why) = runner.stopped_birth_or_live(node).await.map(|(_, _, deployed)| runner.joins.expect(deployed)) {
-                return SelfHealEnd::NotSent(format!("join-not-registered: {why}"));
+                return unsent(format!("join-not-registered: {why}"));
             }
             let ctx = crate::deployment::pipeline::CommandContext { build_id: rdm_core::LifecycleOp::NO_BUILD.to_string(), operation };
-            match status_service.carry_lifecycle(node, true, &ctx).await {
-                A::NotSent { reason, .. } => SelfHealEnd::Unanswered(format!("NotSent: {reason}")),
-                A::Indeterminate { reason, .. } => SelfHealEnd::Unanswered(format!("Indeterminate: {reason}")),
-                A::Refused { reply, .. } if reply.starts_with("rejected-invalid-node-transition") => SelfHealEnd::Live(reply),
-                answered => SelfHealEnd::Answered(format!("{answered:?}")),
-            }
+            start_attempt(status_service.carry_lifecycle(node, true, &ctx).await)
         };
         let ended = tracing::Instrument::instrument(ended, span.clone()).await;
         span.record("outcome", ended.name());
-        span.in_scope(|| tracing::info!(outcome = ended.name(), "an os-stopped birth is commanded to start, sent until answered"));
-        if matches!(ended, SelfHealEnd::Answered(_)) {
-            self.write_rejoined(node, incarnation, crate::deployment::provider::Inspected::OsStopped, reason).await;
-        }
+        span.in_scope(|| tracing::info!(outcome = ended.name(), "a birth stopped by no command is commanded to start, sent until answered"));
         ended
     }
 
-    /// The result `rejoined` of a birth the self-heal commanded back or started that answered, with
-    /// `inspected`, the inspect's answer that led to it, written as its event by the mesh-primary of its
-    /// mesh (fabric-node-hooks.md "on_node_investigated").
-    async fn write_rejoined(&self, node: &Node, incarnation: &IncarnationId, inspected: crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason) {
+    /// The investigation of `node`'s birth at `incarnation` ends `result`, with `inspected`, the
+    /// inspect's answer that led to it, written by the mesh-primary of its mesh once
+    /// ([`crate::node_investigation::NodeInvestigatedWriter::end`]; fabric-node-hooks.md
+    /// "on_node_investigated").
+    async fn write_end(&self, node: &Node, incarnation: &IncarnationId, result: crate::wiring::NodeInvestigatedResult, inspected: Option<&crate::deployment::provider::Inspected>, reason: crate::node_investigation::Reason) {
         let Some(status_service) = self.status_service.get() else { return };
         let ids = {
             let view = status_service.topology.read().await;
             view.is_mesh_primary(&node.mesh, &status_service.node_id).then(|| crate::node_investigation::fabric_and_mesh_of(&view, node))
         };
         if let Some(ids) = ids {
-            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedResult::Rejoined, Some(&inspected), reason).await;
+            self.investigated.end(ids, node, incarnation, Some(result), inspected, reason).await;
         }
     }
 
@@ -356,9 +457,12 @@ async fn command_mesh_join(
         }
     };
     let (outcome, answered) = tracing::Instrument::instrument(outcome, span.clone()).await;
-    // A command the birth refused by name (it is not ready for one yet) is looked at again on the next
-    // pass, not held for a floor: the refusal is the birth's knowledge at that instant, not a new silence.
-    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-primary") || outcome.starts_with("not-ready") || outcome.starts_with("not-commander") {
+    // A command the birth refused by name (it is not ready for one yet, or it answered anything but
+    // `MeshJoined`) is looked at again on the next pass, and sent again under a self-heal's `Send`, not
+    // held for a floor: the refusal is the birth's knowledge at that instant, not a new silence, and not a
+    // return (note 0005 R1).
+    let refused = !crate::node_investigation::ROUND_1 && answered == Some(true) && !outcome.starts_with("mesh-joined");
+    if refused || outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") || outcome.starts_with("rejected-not-primary") || outcome.starts_with("not-ready") || outcome.starts_with("not-commander") {
         commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());
@@ -391,6 +495,55 @@ mod tests {
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
         n
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:12
+    /// "5. The command back or the start, each under its `Send`: answered, the investigation ends
+    ///  `rejoined`; unanswered at the end of its attempts, the birth is written `dead`. A birth written
+    ///  `dead` ends it `re-created`."
+    /// (review finding 1, R1: a refusal of the command back or the start is not a return, and the Send
+    /// goes on to its end; note 0005 B): only `MeshJoined` answers a command back and only `Started`
+    /// answers a start; every other answer is a refusal, sent again, as is an attempt that sent nothing
+    /// with nothing in flight holding the birth; a start refused as already live re-routes; an attempt
+    /// not sent for a command, create or reservation in flight, or by an admin that is no commander,
+    /// ends the command there. Under the self-heal's one Send a refused command is made again after its
+    /// delay up to the Send's attempts and is unanswered once they are spent. Must NOT happen: a refusal
+    /// read as answered, or a command made once and given up on a refusal.
+    // @feature: node-recovery
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_command_back_or_start_is_sent_again_and_never_ends_rejoined() {
+        use crate::deployment::pipeline::CommandAdmission as A;
+        use rdm_core::outcome::Code;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        assert_eq!(join_attempt("mesh-joined".into(), Some(true)), SelfHealEnd::Answered("mesh-joined".into()));
+        for refusal in ["not-ready", "rejected-not-primary", "start-failed", "rejected-stale-incarnation"] {
+            assert_eq!(join_attempt(refusal.into(), Some(true)), SelfHealEnd::Refused(refusal.into()), "a command back refused {refusal} is no return");
+        }
+        assert_eq!(join_attempt("not-sent".into(), Some(false)), SelfHealEnd::Unanswered("not-sent".into()));
+        for unsent in ["no-runner", "no-authority", "join-not-registered: no deployment held"] {
+            assert_eq!(join_attempt(unsent.into(), None), SelfHealEnd::Refused(unsent.into()), "{unsent}: nothing holds the birth, so it is sent again");
+        }
+        for held in ["commanded-already", "in-flight: node.stop", "create-in-flight: node.create", "command-open: a start", "not-commander: another mesh-primary"] {
+            assert_eq!(join_attempt(held.into(), None), SelfHealEnd::NotSent(held.into()), "{held}: the command ends there");
+        }
+        assert!(matches!(start_attempt(A::Started {}), SelfHealEnd::Answered(_)));
+        assert!(matches!(start_attempt(A::Refused { reply: "rejected-invalid-node-transition: Ready".into(), code: Code::FailedPrecondition }), SelfHealEnd::Live(_)));
+        for refused in [A::Refused { reply: "not-ready: a stop is still under way".into(), code: Code::Unavailable }, A::StartFailed { step: "pre_node_ready".into(), reason: "refused".into(), code: Code::FailedPrecondition }] {
+            assert!(matches!(start_attempt(refused.clone()), SelfHealEnd::Refused(_)), "a start {refused:?} is no return");
+        }
+        assert!(matches!(start_attempt(A::NotSent { reason: "dial refused".into(), code: Code::Unavailable }), SelfHealEnd::Unanswered(_)));
+        let pacing = rdm_transport::Pacing { jitter: false, ..rdm_transport::Pacing::from_cadences() };
+        let send = rdm_transport::Send::default();
+        let made = AtomicUsize::new(0);
+        let end = sent_until_answered(send, pacing, || async { made.fetch_add(1, Ordering::SeqCst); SelfHealEnd::Refused("not-ready".into()) }).await;
+        assert!(matches!(&end, SelfHealEnd::Unanswered(why) if why.contains("not-ready")), "refused to the end of the Send: unanswered: {end:?}");
+        assert_eq!(made.load(Ordering::SeqCst), usize::from(send.attempts), "the Send's every attempt is made");
+        made.store(0, Ordering::SeqCst);
+        let end = sent_until_answered(send, pacing, || async { if made.fetch_add(1, Ordering::SeqCst) == 0 { SelfHealEnd::Refused("not-ready".into()) } else { SelfHealEnd::Answered("mesh-joined".into()) } }).await;
+        assert_eq!((end, made.load(Ordering::SeqCst)), (SelfHealEnd::Answered("mesh-joined".into()), 2), "answered at the second attempt");
+        made.store(0, Ordering::SeqCst);
+        let end = sent_until_answered(send, pacing, || async { made.fetch_add(1, Ordering::SeqCst); SelfHealEnd::NotSent("commanded-already".into()) }).await;
+        assert_eq!((end, made.load(Ordering::SeqCst)), (SelfHealEnd::NotSent("commanded-already".into()), 1), "not sent for a command in flight: no second attempt");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:25

@@ -228,6 +228,14 @@ pub struct NodeInvestigatedCtx {
     pub context: CallContext,
 }
 
+impl NodeInvestigatedCtx {
+    /// node.runtime.inspect's answer that led to the result, by name ([`crate::deployment::provider::Inspected::name`]);
+    /// empty for `ready`, which carries none.
+    pub fn inspected_name(&self) -> &'static str {
+        self.inspected.as_ref().map_or("", crate::deployment::provider::Inspected::name)
+    }
+}
+
 /// What `on_mesh_ready` is told: the fabric and the mesh that is ready
 /// (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]

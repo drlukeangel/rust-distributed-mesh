@@ -153,11 +153,22 @@ impl Looker {
     }
 
     /// [`Self::look`] for an investigation run for `reason` (Q393): an ordered one whose birth answers
-    /// while the view holds it running is not commanded back.
+    /// while the view holds it running is not commanded back. A look by the primary above the birth (its
+    /// mesh-primary for a node of its mesh, the fabric-primary for a mesh-primary: `heard_again::commands_join`) is
+    /// that primary's investigation, begun here and, when it reaches the birth, ended here
+    /// ([`look_ends`]); one that does not reach is ended by the investigation the birth goes on to.
     pub async fn look_for(&self, view: &Topology, n: &Node, reason: crate::node_investigation::Reason) -> Finding {
         let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: self.connections.clone() };
+        let commander = crate::heard_again::commands_join(view, &self.me_id, n).is_ok();
+        let writer = self.heard_again.get().filter(|_| commander).map(|h| h.investigated.clone());
+        if let (Some(writer), Some(incarnation)) = (&writer, n.incarnation_id.as_ref()) {
+            writer.begin(&n.node_id, incarnation);
+        }
         let finding = crate::node_investigation::investigate(n, view, &calls, || self.inspect(n)).await;
-        let commanded_back = crate::node_investigation::follows_reached(reason, n.status) != crate::node_investigation::Follows::Nothing;
+        if let (Some(writer), Some(incarnation), Some(result)) = (&writer, n.incarnation_id.as_ref(), look_ends(&finding, reason, n.status, commander)) {
+            writer.end(crate::node_investigation::fabric_and_mesh_of(view, n), n, incarnation, result, None, reason).await;
+        }
+        let commanded_back = crate::node_investigation::follows(&finding, reason, n.status) != crate::node_investigation::Follows::Nothing;
         if let (true, Finding::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. }) = (commanded_back, &finding) {
             // A primary this admin holds off its mesh that answers Current is commanded back
             // through node.mesh.join (node-tickle.md "What follows", Q87) by the fabric-primary, the
@@ -199,6 +210,21 @@ impl Looker {
         crate::node_investigation::span_inspection(self.me_id.as_str(), n, &inspected, handle.as_ref(), "the primary watch's investigation asked the provider about the unreached birth's exact runtime");
         inspected.into()
     }
+}
+
+/// How a look of `finding` ends the investigation of a birth for `reason` whose status in the topology
+/// is `status`, by `commander`, whether this admin is the primary above it (review finding 3, note
+/// 0005 D): a look that reaches the birth ends `ready` (node-investigation.md: "to a tickle, the
+/// investigation ends `ready`"), and an ordered one whose answer matches the topology ends with no
+/// result (`Some(None)`, Q393). `None`, the look ends nothing: it did not reach the birth, which goes
+/// on to its investigation's next step and the end written there (this watch's recovery of a lost
+/// mesh-primary no successor took, or the mesh's own primary's tick), or this admin is not the
+/// primary above the birth and writes nothing.
+pub(crate) fn look_ends(finding: &Finding, reason: crate::node_investigation::Reason, status: NodeStatus, commander: bool) -> Option<Option<crate::wiring::NodeInvestigatedResult>> {
+    if crate::node_investigation::ROUND_1 || !commander || !matches!(finding, Finding::Reached { .. }) {
+        return None;
+    }
+    Some((crate::node_investigation::follows(finding, reason, status) != crate::node_investigation::Follows::Nothing).then_some(crate::wiring::NodeInvestigatedResult::Ready))
 }
 
 /// The provider's inspection of the exact runtime of `n`'s birth: node.runtime.inspect over the one
@@ -394,6 +420,12 @@ pub async fn run(w: Watch) {
                 (Finding::Reached { .. }, _, _) => false,
                 _ if unheard_primary && left.is_some() => true,
                 (_, Some(recovery), Some(inspected)) if recovers => {
+                    // This fabric-primary's investigation of the lost mesh-primary ends `re-created`, with
+                    // the inspect's answer that led to it, written once before its recovery is submitted
+                    // (node-investigation.md; review finding 3, note 0005 D).
+                    if let (false, Some(incarnation)) = (crate::node_investigation::ROUND_1, node.incarnation_id.as_ref()) {
+                        recovery.investigated.end(crate::node_investigation::fabric_and_mesh_of(&view, &node), &node, incarnation, Some(crate::wiring::NodeInvestigatedResult::ReCreated), Some(&inspected), reason).await;
+                    }
                     let (node, topology, me_id, digest_view) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.topology_view.digest_view.clone());
                     // Owed until opened, and ended at this admin's stop where it stands (the stop gate's
                     // `until_stopped`): a stopping node takes no new lifecycle step.
@@ -484,6 +516,38 @@ mod tests {
         let mut outsider = admin(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", "100000000000", "o1", NodeStatus::Ready);
         outsider.is_primary = true;
         (view(vec![primary.clone(), standby.clone(), outsider.clone()]), primary, standby, outsider)
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:14
+    /// "Only an answer from the exact birth counts: to a tickle, the investigation ends `ready`"
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:53
+    /// "Caller: The primary above the node: its mesh-primary for a member of any type, the fabric-primary
+    ///  for a mesh-primary or another mesh's node-admin"
+    /// (review finding 3, R2, R4, note 0005 D): a look of the primary watch by the primary above the
+    /// birth that reaches it ends its investigation `ready`, whatever it answered; an ordered look whose
+    /// answer matches the topology ends with no result; a look that does not reach ends nothing here,
+    /// the birth going on to the end written by the investigation it goes on to; a look by any other
+    /// admin (a standby or an outsider looking at the fabric-primary, `node_admin_left`'s looks at a
+    /// mesh's other node-admins) ends nothing. Must NOT happen: a reached look by the primary above with
+    /// no result, or a result from an admin that is not the primary above.
+    // @feature: node-investigation
+    #[test]
+    fn a_look_that_reaches_ends_ready_for_the_primary_above_and_nothing_for_another_looker() {
+        use crate::node_investigation::Reason;
+        use crate::wiring::NodeInvestigatedResult as R;
+        let (_, primary, _, _) = world();
+        let birth = me_of(&primary);
+        let current = rdm_core::status::StatusReply::Current { node_id: birth.0.clone(), incarnation: birth.1.clone(), state: rdm_core::status::NodeState::Ready };
+        let stopped = rdm_core::status::StatusReply::CurrentStopped { node_id: birth.0.clone(), incarnation: birth.1.clone() };
+        let reached = |answer: &rdm_core::status::StatusReply| Finding::Reached { answer: answer.clone(), carrier: None };
+        let ordered = Reason::Ordered { trigger: "attempts-spent" };
+        assert_eq!(look_ends(&reached(&current), Reason::SelfHeal, NodeStatus::PendingReconnect, true), Some(Some(R::Ready)), "the primary above reached it: `ready`");
+        assert_eq!(look_ends(&reached(&stopped), Reason::SelfHeal, NodeStatus::PendingReconnect, true), Some(Some(R::Ready)), "the watch starts nothing: the tickle's answer ends it `ready`");
+        assert_eq!(look_ends(&reached(&current), ordered, NodeStatus::Ready, true), Some(None), "an ordered look whose answer matches: no result (Q393)");
+        assert_eq!(look_ends(&reached(&current), Reason::SelfHeal, NodeStatus::PendingReconnect, false), None, "another looker writes nothing");
+        for unreached in [Finding::Running, Finding::OsStopped, Finding::Exited { code: None }, Finding::Dead { reason: "unavailable".into() }] {
+            assert_eq!(look_ends(&unreached, Reason::SelfHeal, NodeStatus::PendingReconnect, true), None, "{unreached:?}: not reached, its end is written where it goes on");
+        }
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:14

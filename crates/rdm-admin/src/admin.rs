@@ -1508,7 +1508,7 @@ mod tests {
         use crate::deployment::provider::{DeploymentStatus, Inspected};
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-on-investigated")).unwrap();
         for (status, inspected) in [(DeploymentStatus::Running, Inspected::Running), (DeploymentStatus::Exited { code: Some(137) }, Inspected::Exited(Some(137)))] {
-            let answer = crate::admin::verdict_name(&inspected);
+            let answer = inspected.name();
             let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
             let digest_view = DigestView::default();
             // The runtime its join report carried, held apart from its digest.
@@ -1523,6 +1523,8 @@ mod tests {
             crate::storage::NodesStorage::put_node(&*nodes, &crate::storage::NodeRecord { runtime: fact.clone(), ..record_of(&member) }).await.unwrap();
             let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: status.clone(), inspected: Default::default() });
             let (mut recovery, _, node) = recovery_of(&view, digest_view, provider, nodes);
+            // The tick's investigation that wrote the node dead began with its ladder.
+            recovery.investigated.begin(&node.node_id, node.incarnation_id.as_ref().unwrap());
             let told: Arc<Mutex<Vec<NodeInvestigatedCtx>>> = Arc::default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             recovery.investigated.on_node_investigated = Some({
@@ -1572,6 +1574,51 @@ mod tests {
             assert_eq!(recovery.investigated.events.events.event(&e.id).await.unwrap().as_ref(), Some(e), "the event read by its id");
             eprintln!("span rdm.node_admin.node.update.via-on-node-investigated trace_id={} {a:?}", notices[0].trace_id);
         }
+    }
+
+    /// CONTRACT: docs/architecture/storage.md §2 step 4 (a node that will not move in a storage
+    /// change's mesh.unblock is re-created by its mesh-primary's node recovery, never part of the change)
+    /// and docs/architecture/lifecycles/node-investigation.md:25 ("The primary that investigated writes it
+    /// as one `rdm.node.investigated` event")
+    /// (review finding 5, R5: `rdm.node.investigated` is written only by a node investigation; a
+    /// re-create no investigation ran writes no investigated event and fires no hook): storage's
+    /// re-create of a node writes no event and tells the application nothing, even while an
+    /// investigation of that birth is open; that investigation's own end, the tick's recovery, writes its
+    /// one `re-created`. Must NOT happen: an `rdm.node.investigated` event or an `on_node_investigated`
+    /// notice from the storage change's re-create.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_storage_changes_recreate_writes_no_investigated_event_and_tells_the_application_nothing() {
+        use crate::deployment::provider::DeploymentStatus;
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-storage-recreate")).unwrap();
+        let subject = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
+        let digest_view = DigestView::default();
+        digest_view.hold_runtime(&subject.node.node_id, &subject.node.incarnation, rdm_core::NodeRuntime { runtime: Some(fact.clone()), data_dir: None });
+        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", rdm_core::model::NodeStatus::Ready), subject.clone()] {
+            digest_view.record(d);
+        }
+        digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+        crate::storage::NodesStorage::put_node(&*nodes, &crate::storage::NodeRecord { runtime: fact.clone(), ..record_of(&subject) }).await.unwrap();
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: DeploymentStatus::Running, inspected: Default::default() });
+        let (mut recovery, _, node) = recovery_of(&view, digest_view, provider, nodes);
+        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        recovery.investigated.on_node_investigated = Some({
+            let told = told.clone();
+            Arc::new(move |_| {
+                told.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {})
+            })
+        });
+        recovery.investigated.begin(&node.node_id, node.incarnation_id.as_ref().unwrap());
+        recovery.recreate(&node).await;
+        tokio::task::yield_now().await;
+        let events = recovery.investigated.events.events.of_node(&subject.node.node_id).await.unwrap();
+        assert_eq!((events.len(), told.load(std::sync::atomic::Ordering::SeqCst)), (0, 0), "the storage change's re-create is no investigation's end: no event, no notice: {events:#?}");
+        recovery.recover(&node).await;
+        let events = recovery.investigated.events.events.of_node(&subject.node.node_id).await.unwrap();
+        assert_eq!(events.iter().map(|e| e.data.get("result").cloned()).collect::<Vec<_>>(), vec![Some(serde_json::json!("re-created"))], "the open investigation's own end writes its one result");
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
