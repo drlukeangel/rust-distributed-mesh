@@ -670,18 +670,15 @@ impl AdminRunner {
                     // ([`Self::unrecorded_launch`]), which the delete terminates.
                     let by = LaunchedBy { req: &req, executable: executable.map(|b| b.executable.as_path()) };
                     let terminal = self.delete_unreached_by(&*self.builds, Some(build_id), node, &from, Some(by), false, false, &rdm_core::OperationId::node("node.delete", &from.node_id)).await?;
-                    // The create's own birth, lost before Ready, or, its own node.id deleted already (an
-                    // earlier run deleted its own birth and minted the birth now lost too), the birth that
-                    // held the path: a deleted node never returns (every view refuses its digest) and a
-                    // deleted node.id is never created again (Q217), so the path takes a new node.id, minted
-                    // here as node recovery mints its own (node-recovery.md, node-investigation.md: re-created
-                    // "with a new node.id", Q110). This Build's create of the path is complete once that
-                    // birth is Ready, as when another birth holds the path.
-                    if prev.node_id == *node_id || self.create_node_id_deleted(build_id, node_id).await {
+                    // The create's own birth, lost before Ready: a deleted node never returns (every view
+                    // refuses its digest), so the path takes a new node.id, minted here as node recovery
+                    // mints its own (node-recovery.md, Q110). This Build's create of the path is complete
+                    // once that birth is Ready, as when another birth holds the path.
+                    if prev.node_id == *node_id {
                         let new_node_id = crate::model::NodeId::mint();
                         let _new_turn = self.node_work(&new_node_id).await;
-                        tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id, lost_node_id = %prev.node_id, new_node_id = %new_node_id)
-                            .in_scope(|| tracing::info!("the path's birth is deleted, and a deleted node never returns: the path takes a new node.id"));
+                        tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id, new_node_id = %new_node_id)
+                            .in_scope(|| tracing::info!("the create's own birth is deleted, and a deleted node never returns: the path takes a new node.id"));
                         let new_req = CreateRequest { operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id.clone(), ..req.clone() };
                         self.create_over(&*self.builds, Some(build_id), node, &from, &new_node_id, read_exited(&terminal), executable, Some((&new_req, launch_of))).await?;
                         let r = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete };
@@ -690,51 +687,16 @@ impl AdminRunner {
                     return self.create_over(&*self.builds, Some(build_id), node, &from, node_id, read_exited(&terminal), executable, Some((&req, launch_of))).await;
                 }
             }
-            TargetOutcome::Clear { gone: None } => {
-                // No birth holds the path, and this create's own node.id is deleted already (an earlier run
-                // deleted its own birth, lost before Ready, and the birth it minted never joined): a deleted
-                // node.id is never created again (Q217), so the path takes a new node.id, and this Build's
-                // create of the path is complete once that birth is Ready.
-                if self.create_node_id_deleted(build_id, node_id).await {
-                    let new_node_id = crate::model::NodeId::mint();
-                    let _new_turn = self.node_work(&new_node_id).await;
-                    tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id, lost_node_id = "", new_node_id = %new_node_id)
-                        .in_scope(|| tracing::info!("the create's own node.id is deleted, and a deleted node.id is never created again: the path takes a new node.id"));
-                    let new_req = CreateRequest { operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id.clone(), ..req.clone() };
-                    self.create_launched(&new_req, node, &mesh, r#type, executable, launch_of, pre_node_ready).await?;
-                    let r = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete };
-                    return self.builds.write_step(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: the birth {new_node_id} took the path, and its Complete could not be recorded: {e}")));
-                }
-            }
+            TargetOutcome::Clear { gone: None } => {}
         }
-        self.create_launched(&req, node, &mesh, r#type, executable, launch_of, pre_node_ready).await
-    }
-
-    /// The create `req` at `node`, with no birth at the path to delete first: its template (the executable
-    /// its step names, a node-admin's issuing material), the pipeline's create, then its Ready brought
-    /// into traffic and its runtime held.
-    #[allow(clippy::too_many_arguments)]
-    async fn create_launched(&self, req: &CreateRequest, node: &PathName, mesh: &str, r#type: &str, executable: Option<&rdm_core::binding::Binding>, launch_of: crate::deployment::pipeline::LaunchOf, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>) -> Result<(), crate::executor::RunEnd> {
-        let mut template = self.create_template(node, mesh, r#type, executable, req.predecessor.as_ref()).await?;
-        if rdm_core::is_node_admin(r#type) {
-            template = self.with_issuing_material(template, mesh).await?;
+        let mut template = self.create_template(node, &mesh, r#type, executable, req.predecessor.as_ref()).await?;
+        if rdm_core::is_node_admin(&r#type) {
+            template = self.with_issuing_material(template, &mesh).await?;
         }
-        let created = self.pipeline(&template).create_with_launch_of(req, launch_of, pre_node_ready, None).await.map_err(crate::executor::RunEnd::from)?;
+        let created = self.pipeline(&template).create_with_launch_of(&req, launch_of, pre_node_ready, None).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
         Ok(())
-    }
-
-    /// Whether this Build's create's own node.id `node_id` is deleted: a deleted node.id is never created
-    /// or admitted again (Q217), and a re-create at the path is a new node.id (node-investigation.md).
-    /// Its node.delete in `build_id` completed (an earlier run of the create deleted its own birth, lost
-    /// before Ready, whether or not it wrote its record), its record is written `Deleted`, or this view
-    /// holds its deletion. A store that does not answer names nothing deleted here: the create's own
-    /// reads of it fail by name.
-    async fn create_node_id_deleted(&self, build_id: &crate::build::BuildId, node_id: &NodeId) -> bool {
-        let deleted_in_build = self.builds.read_build(build_id).await.is_ok_and(|b| b.operation_completed(&rdm_core::OperationId::node("node.delete", node_id)));
-        let written_deleted = matches!(self.nodes_storage.node(node_id).await, Ok(Some(l)) if l.record.state == NodeStatus::Deleted);
-        deleted_in_build || written_deleted || self.digest_view.is_deleted(node_id.as_str())
     }
 
     /// The data dir a node's executable replacement's create at `node` takes (build-deployment.md §3;
