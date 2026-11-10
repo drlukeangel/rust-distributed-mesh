@@ -48,23 +48,6 @@ fn births(nodes: &[Value]) -> BTreeMap<PathName, String> {
     nodes.iter().map(|n| (location(&n), s(&n["incarnation"]))).collect()
 }
 
-/// The fabric-primary role handed over before any loss (Luke 2026-10-12, i143-prd.md e12.s57): a node.stop of
-/// the fabric-primary's admin `former`, whose first step moves its roles to its same-mesh successor
-/// (node-primary-update.md step 1). The move ends the caller's stream with the new role, and the
-/// Build is followed there to its end: the former primary is down only once the stop completes, and
-/// the successor's view names it the fabric-primary. Returns the successor.
-async fn hand_fabric_primary_over(estate: &mut Estate, former: &PathName) -> PathName {
-    let successor = former.with_name(if former.name == "1" { "2" } else { "1" }).expect("a sibling admin's location");
-    estate.enter(&successor).await;
-    // A stop is a node command to the primary above the node, never a Build (Q342): its stream ends
-    // with the stop's own completion.
-    let mut stream = estate.nodes_obj().await.stop(former).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {former:?}: {e}"));
-    let frames = Estate::frames_of(&mut stream).await;
-    assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "node.stop of {former:?} completes: {frames:?}");
-    estate.until_node(&successor, &format!("{successor:?} holds the fabric-primary role {former:?} handed over"), Duration::from_secs(60), |n| n.filter(|n| n.is_fabric_primary).map(|_| ())).await;
-    successor
-}
-
 /// CONTRACT (#2803 acceptance 2, 3, 10, 13, 14, 15, 16, 19; node-admin-lifecycle.md 4.1-4.3): a peer
 /// mesh loses every node-admin (exact SIGKILL of both admin runtimes) and, while it has
 /// no admin, one ordinary member dies as well (`node.3`). The fabric primary's investigation of the
@@ -300,10 +283,10 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
 
 /// CONTRACT (#2803 acceptance 4, 5, 8, 9, 10; node-admin-lifecycle.md 3, 4.4): every node-admin of the
 /// fabric is lost at once (exact SIGKILL of all four admin runtimes) and, with no admin running,
-/// one ordinary member of the fabric primary's mesh dies as well. Before the loss the fabric-primary role is
-/// handed over: node.stop of the fabric-primary's admin moves its roles to its same-mesh successor
-/// first and takes it down only once that transfer is confirmed. A person starts ONE node-admin on
-/// the current fabric primary's data dir with both primary flags. It is not Day 0: it comes back as
+/// one ordinary member of the fabric primary's mesh dies as well. The fabric-primary is
+/// mesh1.node-admin.1 and its role never moves (Q430): nothing hands it over before the loss. A person
+/// starts ONE node-admin on mesh1.node-admin.1's data dir, at its own path, with both primary flags.
+/// It is not Day 0: it comes back as
 /// the same node (same NodeId, a new incarnation) with no maker, takes its durable map as the
 /// topology, connects to a local node of its own mesh, sweeps its own mesh once with a Ping (the
 /// dead sibling and the dead member do not answer), and sends them to the standard decommission.
@@ -322,10 +305,10 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     // The fault falls on an established fabric: the person's admin restarts from the Fabric record the
     // fabric-primary writes at the state commit, so the fabric is ready first.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
-    let primary = hand_fabric_primary_over(&mut estate, &former).await;
+    let primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
+    assert_eq!(primary, Estate::path("mesh1.node-admin", "1"), "the fabric-primary is mesh1.node-admin.1 (Q430)");
     let primary_mesh = primary.path.split('.').next().unwrap().to_string();
-    let primary_dir = if primary == Estate::path("mesh1.node-admin", "1") { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&primary).await };
+    let primary_dir = estate.bootstrap_data_dir("mesh1").display().to_string();
     let mesh_ids: BTreeMap<String, String> = {
         let mut m = BTreeMap::new();
         for mesh in ["mesh1", "mesh2"] {
@@ -341,7 +324,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     // A runtime's data dir is named by its birth's node id.
     let admin_ids: Vec<String> = before.iter().filter(|n| n["type"] == "node-admin").map(|n| s(&n["node_id"])).collect();
 
-    // The fault: every node-admin, at once, the stopped former primary's process with them; then, with
+    // The fault: every node-admin, at once, the fabric-primary among them (the Day-0 admin); then, with
     // the fabric admin-less, one ordinary member.
     let mut killed = Vec::new();
     for (path, pid) in estate.live_runtimes() {
@@ -362,8 +345,9 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     }
     assert_eq!(killed.len(), 5, "the member died with no admin running: {killed:?}");
 
-    // The person starts one node-admin on the current fabric primary's data dir.
+    // The person starts one node-admin on the fabric-primary's data dir, at its own path.
     let restarted = estate.restart_admin_with(std::path::Path::new(&primary_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    assert_eq!(restarted, primary, "the fabric-primary is recovered at its own path");
     estate.enter(&restarted).await;
     let after = values(&estate.settles_to(&shape, Duration::from_secs(240)).await);
 
