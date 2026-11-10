@@ -454,3 +454,97 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     estate.enter_fabric_primary().await;
     estate.stop().await;
 }
+
+const READ_ONLY_CELL: &str = "an_admin_cut_from_a_peer_mesh_it_holds_only_from_its_read_marks_it_silent_and_refeeds_its_admins";
+
+/// CONTRACT (gossip.md §6:651-653, :668-670): a node-admin's coverage of peer-mesh admins comes only
+/// from what it hears directly on the backbone, so a peer mesh it holds only from its start's topology
+/// read, and has never heard there, goes stale in it, and it re-feeds that mesh's admins, one attempt
+/// per window. With mesh1 (two admins) and mesh2's first admin settled, mesh1's admins withhold their
+/// mesh's topology from the backbone (the faulted admin's `announcement` cut, R-NS2: best-effort
+/// dissemination), so no publication of mesh1 is out for mesh2's primary to pass on; mesh2.node-admin.2
+/// is created and held at the faulted admin's `topology-read` cut (node-start.md step 4: its channels
+/// joined, its read not made); while it is held all UDP between the two meshes' admins is dropped
+/// (`netfault::Partition`) and the withhold is lifted, and released it reads the fabric's topology
+/// from its own mesh-primary, so it holds mesh1 from that read alone. What must happen: it marks mesh1 silent
+/// and re-feeds both mesh1 admins (`stale-held-member`, each after a whole window). What must NOT
+/// happen: a mesh topology of mesh1 reaching it on the backbone before the cut ends (that is the
+/// backbone-heard case partitioned_meshes_rejoin_with_neighbors_preserve_live_births covers, not this one).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admin_cut_from_a_peer_mesh_it_holds_only_from_its_read_marks_it_silent_and_refeeds_its_admins() {
+    let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+    let window = Duration::from_millis(window_ms);
+    let sha = rdm_test::faults::candidate_sha();
+    let set = rdm_test::faults::binding_set(&sha);
+    let mut estate = Estate::bootstrap_on(Owner { test: READ_ONLY_CELL.into(), ..owner() }, "fabric1", "mesh1", &set, &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
+    let settled = [("mesh1", 2, 0), ("mesh2", 1, 0)];
+    estate.resize_shape("fabric1", &settled).await;
+    estate.settled_views(&settled).await;
+    let held_admin = Estate::path("mesh2.node-admin", "2");
+    let mesh1_admins = [Estate::path("mesh1.node-admin", "1"), Estate::path("mesh1.node-admin", "2")];
+    let mesh2_admins = [Estate::path("mesh2.node-admin", "1"), held_admin.clone()];
+    // mesh1's topology is withheld from the backbone (whichever of its admins publishes it) until the
+    // cut is in: a publication of mesh1 that reached mesh2's primary would reach the held admin through it.
+    let withhold_id = "mesh1-topology-withheld";
+    let mut withholding = Vec::new();
+    for admin in &mesh1_admins {
+        let f = rdm_test::faults::FaultClient::at(&estate, admin).await;
+        f.arm(withhold_id, json!({"kind": "announcement", "announcement": "aggregate", "channel": "backbone"})).await;
+        withholding.push(f);
+    }
+    let cut_id = "held-before-its-topology-read";
+    let boot = rdm_test::admin_faults::boot_cuts_file(&estate.root, &held_admin);
+    std::fs::create_dir_all(boot.parent().expect("the boot file is in the faults directory")).unwrap();
+    std::fs::write(&boot, serde_json::to_vec(&json!([{"id": cut_id, "kind": "topology-read"}])).unwrap()).unwrap();
+    let stream = estate.submit_shape("fabric1", &[("mesh1", 2, 0), ("mesh2", 2, 0)]).await;
+
+    // The cut, between the two meshes' admins, as soon as the held admin's address is in the views;
+    // then mesh1's topology goes out again, to no admin of mesh2.
+    let (nodes, mesh1_ports, mesh2_ports) = wait_for("the held admin's address is in the views", Duration::from_secs(60), || async {
+        let nodes = estate.node_values().await;
+        let (a, b) = (udp_ports(&nodes, &mesh1_admins), udp_ports(&nodes, &mesh2_admins));
+        (a.len() == 2 && b.len() == 2).then_some((nodes, a, b))
+    })
+    .await;
+    let cut = Partition::start(&mesh1_ports, &mesh2_ports).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between the meshes: {why}"));
+    let cut_at = now_ns();
+    for f in &withholding {
+        f.release(withhold_id).await;
+    }
+    let id_at = |name: &PathName| nodes.iter().find(|n| location(n) == *name).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{name:?} is in the views: {nodes:#?}"));
+    let held_id = id_at(&held_admin);
+    let mesh1_ids: BTreeSet<String> = mesh1_admins.iter().map(|n| id_at(n)).collect();
+    let faults = rdm_test::faults::FaultClient::at(&estate, &held_admin).await;
+    faults.wait_held(cut_id).await;
+    faults.release(cut_id).await;
+    faults.wait_released(cut_id).await;
+
+    let found = wait_for("the held admin marks mesh1 silent and re-feeds both mesh1 admins", window * 6 + Duration::from_secs(40), || async {
+        let spans = estate.spans();
+        let heard: Vec<Value> = named(&spans, "rdm.mesh.topology.update.via-full")
+            .into_iter()
+            .filter(|sp| attr(sp, "node") == held_id && attr(sp, "mesh") == "mesh1" && attr(sp, "channel") == "backbone")
+            .map(|sp| json!({"start_unix_nano": at(sp), "trace_id": sp["trace_id"], "topology_version": attr(sp, "topology_version")}))
+            .collect();
+        assert!(heard.is_empty(), "the held admin took a mesh topology of mesh1 on the backbone (cut at {cut_at}): it does not hold mesh1 from its read alone: {heard:?}");
+        let silent = named(&spans, "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| at(sp) >= cut_at && attr(sp, "node") == held_id && attr(sp, "mesh") == "mesh1");
+        let att: Vec<&Value> = attempts(&spans, cut_at).into_iter().filter(|sp| attr(sp, "node") == held_id).collect();
+        let refed: BTreeSet<String> = att.iter().map(|sp| attr(sp, "peer_node")).collect();
+        (silent && mesh1_ids.iter().all(|id| refed.contains(id))).then(|| att.iter().map(|sp| attempt_json(sp)).collect::<Vec<_>>())
+    })
+    .await;
+    for a in &found {
+        assert!(a["channel"] == "backbone" && mesh1_ids.contains(&s(&a["peer_node"])), "only mesh1's admins are re-fed, on the backbone: {a}");
+        assert!(a["coverage_age_ms"].as_u64().unwrap_or(0) >= window_ms, "a member is re-fed only after its coverage was stale for the window: {a}");
+    }
+    let _ = drop_cut(cut).await;
+    // The cut ends the fabric-primary's section call to mesh2's primary mid-section, so the Build may
+    // end incomplete; it is resubmitted by its build_id once the meshes hear each other (build.md §4).
+    let ended = estate.follow_to_terminal(stream).await;
+    if !matches!(ended.frames.last(), Some(rdm_client::BuildFrame::Complete { .. })) {
+        let again = estate.resubmit(&ended.build_id).await;
+        estate.follow(again).await;
+    }
+    estate.enter_fabric_primary().await;
+    estate.stop().await;
+}
