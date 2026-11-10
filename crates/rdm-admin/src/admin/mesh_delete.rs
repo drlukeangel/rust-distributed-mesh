@@ -1646,4 +1646,81 @@ mod tests {
         rig.ep.close().await;
         let _ = std::fs::remove_dir_all(&rig.dir);
     }
+
+    /// CONTRACT (Q217: a deleted node.id is never created or admitted again; node-investigation.md: a birth
+    /// is re-created at its path and name "with a new node.id"; rdm#334 A; Q356): a Build's create of
+    /// mesh1.node.4 whose own birth joined and was lost before it wrote its record is run again (the
+    /// resubmit deletes it and mints a new node.id over it), and the minted birth is lost before its record
+    /// too. (a) The create, run a third time, deletes the minted birth through its launch and the path takes
+    /// another new node.id. (b) Run once more, with no birth holding the path (the third birth never joined),
+    /// the path takes a new node.id again. Must NOT happen: a create of the create's own node.id, deleted by
+    /// its second run (rdm#374 round 2: `create()` ran `create_over` of the Build's node.id after the minted
+    /// birth's loss, and its plain create of it once no birth held the path).
+    #[tokio::test]
+    async fn a_resubmitted_create_whose_own_and_minted_births_were_both_lost_never_creates_its_deleted_node_id_again() {
+        use rdm_gossip::primary::RoleTaken;
+        let capture = crate::span_capture::Capture::new("unrecorded-double-loss");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let rig = rig("unrecorded-double-loss").await;
+        let build_id = crate::build::BuildId::mint();
+        let node = rdm_core::PathName::new("mesh1.node", "4").unwrap();
+        let node_id = NodeId::mint();
+        let operation = rdm_core::OperationId::node("node.create", &node_id);
+        lost_before_its_record(&rig, &build_id, &node, &node_id, crate::deployment::node_data_dir(&rig.dir, &node_id)).await;
+        let runner = &rig.runner;
+        // This admin is mesh1's mesh-primary, so each create runs to its launch.
+        let me = rdm_core::Primary { mesh: "mesh1".into(), node_id: runner.node_id.clone(), incarnation: runner.primary_update.incarnation.clone(), revision: 1 };
+        assert!(matches!(runner.digest_view.primaries.take(rdm_core::PrimaryRole::MeshPrimary, &me), RoleTaken::Held { .. }));
+        let attr = |s: &crate::span_capture::Captured, k: &str| s.attributes.get(k).cloned().unwrap_or_default();
+        let minted = || capture.named("rdm.node_admin.node.create.via-birth-lost-before-ready").into_iter().filter(|s| attr(s, "node_id") == node_id.to_string()).map(|s| attr(&s, "new_node_id")).collect::<Vec<_>>();
+        let binding = sleep_binding();
+        let create = || runner.create(&build_id, &node, "mesh1", "node", Some(&binding), None, None, crate::deployment::pipeline::LaunchOf::Create, &node_id, &operation, None);
+        let launch_record = || std::fs::read_to_string(crate::deployment::node_data_dir(&rig.dir, &node_id).join(crate::deployment::process::DEPLOYMENT_FILE)).unwrap_or_default();
+
+        // The second run: the own birth deleted, a new node.id minted over it; that birth's runtime exits at once.
+        let second = create().await;
+        let first_minted = minted();
+        assert_eq!(first_minted.len(), 1, "the path takes a new node.id over the create's own lost birth: {second:?} {first_minted:?}");
+        let m = NodeId::parse(&first_minted[0]).unwrap();
+        // The minted birth joined and was lost before its record: the view holds this admin, mesh1's
+        // primary, and the minted birth dead; the own birth is gone from it (each run publishes the view
+        // again from its digests, which this rig feeds none).
+        let (m_incarnation, _) = crate::deployment::pipeline::launch_of(&rdm_core::OperationId::node("node.create", &m).to_string(), &m);
+        let admin = || {
+            let mut me = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+            me.node_id = runner.node_id.clone();
+            me.incarnation_id = Some(runner.primary_update.incarnation.clone());
+            me.status = NodeStatus::Ready;
+            me.is_primary = true;
+            me
+        };
+        let mut birth = Node::allocated(node.clone(), "mesh1", "node");
+        birth.node_id = m.clone();
+        birth.incarnation_id = Some(m_incarnation);
+        birth.status = NodeStatus::Dead;
+        runner.topology.write().await.nodes = vec![admin(), birth];
+        let own_launch = launch_record();
+
+        // (a) The third run: the minted birth deleted through its launch, another new node.id.
+        let third = create().await;
+        let after_third = minted();
+        assert_eq!(after_third.len(), 2, "the minted birth's loss takes the path to another new node.id: {third:?} {after_third:?}");
+        assert!(after_third[1] != node_id.to_string() && after_third[1] != m.to_string(), "{after_third:?}");
+        let resolved: Vec<_> = capture.named("rdm.node_admin.node.resolve.via-unrecorded-launch").into_iter().filter(|s| attr(s, "node_id") == m.to_string() && attr(s, "operation") == "node.delete").collect();
+        assert!(!resolved.is_empty(), "the minted birth is deleted through its launch: {third:?}");
+        assert_eq!(launch_record(), own_launch, "the create's own node.id is never launched again");
+
+        // (b) The fourth run: no birth holds the path (the third run's birth never joined).
+        runner.topology.write().await.nodes = vec![admin()];
+        let fourth = create().await;
+        let after_fourth = minted();
+        assert_eq!(after_fourth.len(), 3, "with no birth at the path, the deleted node.id still takes a new one: {fourth:?} {after_fourth:?}");
+        assert!(![node_id.to_string(), m.to_string(), after_third[1].clone()].contains(&after_fourth[2]), "{after_fourth:?}");
+        assert_eq!(launch_record(), own_launch, "the create's own node.id is never launched again");
+        for s in capture.named("rdm.node_admin.node.create.via-birth-lost-before-ready").iter().chain(resolved.iter()) {
+            eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
+        }
+        rig.ep.close().await;
+        let _ = std::fs::remove_dir_all(&rig.dir);
+    }
 }
