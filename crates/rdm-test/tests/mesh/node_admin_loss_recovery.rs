@@ -445,9 +445,10 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
 
 /// CONTRACT (node-identity-and-state.md 2.5: "a node-admin that holds the fabric-primary role and finds no
 /// live node in its durable map adopts its own clock"): every runtime of the fabric is lost at once,
-/// the admins and the ordinary members alike, so no node is left that holds rafka-time. Before the
-/// loss the fabric-primary role is handed over as the cell above hands it. A person starts ONE node-admin on
-/// the current fabric primary's data dir with both primary flags. It asks every node in its durable
+/// the admins and the ordinary members alike, so no node is left that holds rafka-time. The
+/// fabric-primary is mesh1.node-admin.1 and its role never moves (Q430): nothing hands it over before
+/// the loss. A person starts ONE node-admin on mesh1.node-admin.1's data dir, at its own path, with both
+/// primary flags. It asks every node in its durable
 /// map at once for rafka-time (fabric-recovery.md "Nothing alive": "If any node answers, it is not this
 /// case"); none answers, so it adopts its own clock
 /// (`rdm.mesh.entry.update.via-rafka-time-adopted{source=own-clock, reason=nothing-alive}`) within one
@@ -461,11 +462,11 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
     estate.resize_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
-    let primary = hand_fabric_primary_over(&mut estate, &former).await;
-    let primary_dir = if primary == Estate::path("mesh1.node-admin", "1") { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&primary).await };
+    let primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
+    assert_eq!(primary, Estate::path("mesh1.node-admin", "1"), "the fabric-primary is mesh1.node-admin.1 (Q430)");
+    let primary_dir = estate.bootstrap_data_dir("mesh1").display().to_string();
 
-    // The fault: every runtime of the fabric, at once.
+    // The fault: every runtime of the fabric, at once, the fabric-primary's among them.
     for (_, pid) in estate.live_runtimes() {
         estate.kill_pid(pid);
     }
@@ -473,6 +474,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
     assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
 
     let restarted = estate.restart_admin_with(std::path::Path::new(&primary_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    assert_eq!(restarted, primary, "the fabric-primary is recovered at its own path");
     estate.enter(&restarted).await;
     let after = estate.settles_to(&shape, Duration::from_secs(240)).await;
     assert_eq!(after.len(), 6);
