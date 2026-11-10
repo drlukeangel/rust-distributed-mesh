@@ -34,7 +34,6 @@ fn refused(target: &NodeTarget, op: &str, reply: StatusReply) -> CallEnd {
     }
     let detail = match &reply {
         StatusReply::RejectedFilter { reason } => format!("{target:?}: {reason}"),
-        StatusReply::ReadOverBound { read, bytes, max } => format!("{target:?}: the {read} answer encodes to {bytes} bytes, past the {max}-byte Status reply bound"),
         other => format!("{target:?} answered {op} with {other:?}"),
     };
     CallEnd::Rejected { reason: reply.name().into(), detail }
@@ -440,17 +439,13 @@ impl Meshes {
     /// `fabric.atlas.get` answers it, with only the meshes that match every pair of `filter` (the mesh
     /// schema's pairs, `[name: …]`): its fabric, then each of those meshes it is primary for with its
     /// nodes. A mesh it does not hold is answered as its fabric with no mesh; a pair the mesh schema
-    /// refuses ends `Rejected` (`rejected-filter`, naming the pair).
+    /// refuses ends `Rejected` (`rejected-filter`, naming the pair). Read on op `0x23` (Q285), streamed
+    /// in frames and assembled whole ([`crate::NodeRpc::atlas_get`]).
     pub async fn atlas_get(&self, filter: &Filter) -> Result<AtlasView, CallEnd> {
         let span = MeshOp::AtlasGet.span();
         span.record("properties", filter.properties().as_str());
         let target = self.carrier.target().clone();
-        let call = async {
-            match read(&self.carrier, &target, &StatusRequest::GetMeshAtlas { filter: filter.clone() }).await? {
-                StatusReply::Atlas { atlas } => Ok(atlas),
-                other => Err(refused(&target, MeshOp::AtlasGet.name(), other)),
-            }
-        };
+        let call = async { crate::NodeRpc::new(self.carrier.client()).atlas_get(&target, Some(filter), &CallOptions::default()).await };
         let r = tracing::Instrument::instrument(call, span.clone()).await;
         ended_read(&span, MeshOp::AtlasGet.name(), &r);
         r
@@ -492,16 +487,13 @@ impl Fabrics {
     /// order, each with `mesh.get`'s fields and its nodes in `(path, name)` order. Each node is the
     /// topology's node row read from its record, its lifecycle as the ops left it, beside what is in
     /// flight on it: whether it is stopped and the operation accepted on it that has not completed.
-    /// `fabric.get` is unchanged by it.
+    /// `fabric.get` is unchanged by it. Read on op `0x23` (Q285), streamed in frames and assembled
+    /// whole ([`crate::NodeRpc::atlas_get`]); a node row that fits no frame alone ends `Rejected`
+    /// (`read-over-bound`, naming its node_id).
     pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {
         let span = FabricOp::AtlasGet.span();
         let target = self.carrier.target().clone();
-        let call = async {
-            match read(&self.carrier, &target, &StatusRequest::GetAtlas).await? {
-                StatusReply::Atlas { atlas } => Ok(atlas),
-                other => Err(refused(&target, FabricOp::AtlasGet.name(), other)),
-            }
-        };
+        let call = async { crate::NodeRpc::new(self.carrier.client()).atlas_get(&target, None, &CallOptions::default()).await };
         let r = tracing::Instrument::instrument(call, span.clone()).await;
         ended_read(&span, FabricOp::AtlasGet.name(), &r);
         r

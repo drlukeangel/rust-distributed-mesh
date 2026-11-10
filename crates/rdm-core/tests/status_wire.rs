@@ -204,7 +204,8 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
             concat!("24", "016e", "01", "01", "0169", "0173", "0164", "06646972656374", "09636f6e6e6563746564", "00", "010172", "ac02"),
         ),
         (UnknownMesh { mesh: "m".into() }, "25016d"),
-        (ReadOverBound { read: "r".into(), bytes: 300, max: 65536 }, "260172ac02808004"),
+        // position 38, reserved (Q285): never sent, no field; a read's bound is Read 0x23's ReadOverBound
+        (Reserved38 {}, "26"),
         // Reserved (Q344): held { build_id "b" | operation "o" } | offered { "b" | "o" }
         (Reserved39 { held: identity("b"), offered: identity("b") }, "270162016f0000000162016f000000"),
         // held { "b" | "o" } | offered { "c" | "o" }
@@ -236,27 +237,8 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         (IssuerUpdated { node_id: node(), incarnation: birth(), issuer_expires_at: 7 }, "350c3031323334353637383961620c39776370726667777674687907"),
         // reason "x"
         (RejectedCert { reason: "x".into() }, "360178"),
-        // fabric.atlas.get and mesh.atlas.get (query.md §1, Q439): fabrics (len 1) | the fabric's
-        // fabric.get fields (id | name | status Ready | provider Process | fabric_primary Some | build_id
-        // Some("b") | next_expiry None | topology_storage_provider None | previous [] | roots None | ca None)
-        // | build Some(build_id "b" | phase Complete (2)) | meshes (len 1): mesh.get's fields (id Some | name
-        // | status Ready | primary_admin Some | renewals None) | nodes (len 1): the node row (node_id |
-        // incarnation | type | path | name | endpoint_id "k" | transport_addr V4 127.0.0.1:80 | supersedes
-        // None | status Ready | primary [] | digest_seq 7 | runtime None | data_dir Some("/d")) | stopped
-        // false | accepted Some(action "node.stop" | subject Some(Node (0) node_id) | step None | occurrence
-        // None) | observed Some(Ready)
-        (Atlas { atlas: atlas() }, concat!(
-            "37", "01",
-            "0c323132333435363738396162", "0766616272696331", "01", "00", "010c303132333435363738396162", "010162", "00", "00", "00", "00", "00",
-            "01", "0162", "02",
-            "01",
-            "010c313132333435363738396162", "056d65736831", "01", "010c303132333435363738396162", "00",
-            "01",
-            "0c303132333435363738396162", "0c397763707266677776746879", "046e6f6465", "0a6d657368312e6e6f6465", "0131", "016b", "007f00000150", "00", "01", "00", "07", "00", "01022f64",
-            "00",
-            "01", "096e6f64652e73746f70", "01", "00", "0c303132333435363738396162", "00", "00",
-            "0101",
-        )),
+        // position 55, reserved (Q285): never sent, no field; the atlas is read on op 0x23 (read_wire)
+        (Reserved55 {}, "37"),
         // fabrics (len 0) (fabric.get, Q167), appended last
         (Fabrics { fabrics: vec![] }, "3800"),
         // reason "x" (a filter refused naming the pair, Q167), appended last
@@ -368,22 +350,6 @@ fn node_view() -> NodeView {
 /// One mesh as a `mesh.get` answer carries it.
 fn mesh_view() -> MeshView {
     MeshView { renewals: None, id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::Ready, primary_admin: Some(node()), nodes: vec![NodeId::parse("4123456789ab").unwrap()] }
-}
-
-/// An atlas as `fabric.atlas.get` answers it (Q439): one fabric with fabric.get's fields and its current
-/// Build, one mesh with mesh.get's fields, and one node row with a stop accepted on it.
-fn atlas() -> rdm_core::views::AtlasView {
-    use rdm_core::views::{AtlasBuildView, AtlasFabricView, AtlasMeshView, AtlasNodeView, AtlasView};
-    let birth_node = rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: rdm_core::EndpointId("k".into()), transport_addr: "127.0.0.1:80".parse().unwrap(), incarnation: birth(), supersedes: None };
-    let row = AtlasNodeView {
-        node: rdm_core::wire::ReadNode::of_node(&birth_node, rdm_core::model::NodeStatus::Ready, Vec::new(), 7, Some(&rdm_core::NodeRuntime { runtime: None, data_dir: Some("/d".into()) })),
-        stopped: false,
-        accepted: Some(rdm_core::OperationId::node("node.stop", &node())),
-        observed: Some(NodeStatus::Ready),
-    };
-    let fabric = FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: fabric(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process, fabric_primary: Some(node()), meshes: vec![mesh_view()], build_id: Some("b".into()) };
-    let mesh = MeshView { nodes: Vec::new(), ..mesh_view() };
-    AtlasView { fabrics: vec![AtlasFabricView::of(fabric, Some(AtlasBuildView { build_id: "b".into(), phase: rdm_core::build::BuildPhase::Complete }), vec![AtlasMeshView::of(mesh, vec![row])])] }
 }
 
 fn golden<T: serde::Serialize>(value: T, expected: &str) {

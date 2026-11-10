@@ -60,7 +60,7 @@ When RDM refuses a call, rejects a frame or command, or returns an `Unknown` ver
 | `rdm.node.status.reject.via-request-not-handled` | `crates/rdm-admin/src/status_rpc.rs`, `crates/rdm-node/src/node_self.rs` | A `Status` (`0x1B`) service received a request variant for which it has no handler. | [Node RPC envelope](../architecture/node-rpc-envelope.md), [Node status](../architecture/lifecycles/node-status.md) |
 | `rdm.node_admin.status.reject.via-deleted-birth` | `crates/rdm-admin/src/status_rpc.rs` | A call from a birth this admin holds deleted from its recovery's verdict was refused. | [Node recovery](../architecture/lifecycles/node-recovery.md) |
 | `rdm.node_admin.status.reject.via-read-on-0x23` | `crates/rdm-admin/src/status_rpc.rs` | A read arrived on Status (`0x1B`) and was refused by name: reads are the stream on op `0x23`. | [Node RPC envelope](../architecture/node-rpc-envelope.md) |
-| `rdm.node_admin.fabric.reject.via-atlas-unread` | `crates/rdm-admin/src/status_rpc.rs` | `fabric.atlas.get` or `mesh.atlas.get` was refused because a source of the atlas could not be read. | [Node investigation](../architecture/lifecycles/node-investigation.md) |
+| `rdm.node_admin.fabric.reject.via-atlas-unread` | `crates/rdm-admin/src/read_op.rs` | `fabric.atlas.get` or `mesh.atlas.get` was refused because a source of the atlas could not be read. | [Node investigation](../architecture/lifecycles/node-investigation.md) |
 
 ## Node, mesh, cert, and deployment lifecycles
 

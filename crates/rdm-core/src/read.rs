@@ -2,21 +2,22 @@
 //!
 //! Direction: a caller to a node. The call is read-only: it changes nothing at the target. The
 //! reply is a server stream of the rows the target answers for one read, `fabric.get`, `mesh.get`,
-//! `node.get` or `node.connection.get { node }`, captured once in their stable order and packed into
-//! frames:
+//! `node.get`, `node.connection.get { node }`, `fabric.atlas.get` or `mesh.atlas.get`, captured once
+//! in their stable order and packed into frames:
 //!
 //! ```text
-//! Started  (Nodes | Meshes | Fabrics | Connections)*  End { rows, frames }   a stream
-//! RejectedFilter | RejectedSourceFailed | NotReady | ...                     one refusal, nothing started
-//! Started  (Nodes | Meshes | Fabrics | Connections)*  ReadOverBound          a row that fits no frame: the stream ends there
+//! Started  (Nodes | Meshes | Fabrics | Connections | Atlas)*  End { rows, frames }   a stream
+//! RejectedFilter | RejectedSourceFailed | NotReady | ReadOverBound | ...             one refusal, nothing started
 //! ```
 //!
-//! A caller counts the read only when `End` arrives and the rows it holds number `End.rows` across
+//! A row that fits no frame alone is `ReadOverBound` naming it, and nothing of the read is sent. A
+//! caller counts the read only when `End` arrives and the rows it holds number `End.rows` across
 //! `End.frames` data frames; a cut, a deadline or a `ReadOverBound` is a failed read, and no row is
 //! ever left out. Status (0x1B) stays unary: its `Get` of any entity, and the retained `GetNodes`,
-//! `GetMeshes` and `GetConnections`, are refused by name, naming this op; the retained `GetFabric`
-//! stays on Status. `GetConnections` is answered by the exact birth it names, from its own
-//! connections log, never carried.
+//! `GetMeshes`, `GetConnections`, `GetAtlas` and `GetMeshAtlas`, are refused by name, naming this op;
+//! the retained `GetFabric` stays on Status. `GetConnections` is answered by the exact birth it names,
+//! from its own connections log, never carried; `GetAtlas` and `GetMeshAtlas` by the node-admin asked,
+//! over the meshes it is primary for, never carried.
 //!
 //! The family is not forwardable: it is a stream.
 
@@ -25,7 +26,7 @@ use crate::ids::{IncarnationId, NodeId};
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeView};
+use crate::views::{AtlasFabricView, AtlasMeshView, AtlasNodeView, AtlasView, ConnectionView, ConnectionsView, FabricView, MeshView, NodeView};
 use serde::{Deserialize, Serialize};
 
 /// The read protocol: a stream of the rows one read answers.
@@ -58,6 +59,21 @@ pub enum ReadRequest {
         /// The pairs every answered connection matches.
         filter: Filter,
     },
+    /// `fabric.atlas.get` (query.md §1, Q439): the answering node-admin's atlas over every mesh it is
+    /// primary for, streamed in [`ReadReply::Atlas`] frames. Appended last: no variant before it moves.
+    ///
+    /// Position 2 on the wire.
+    GetAtlas,
+    /// `mesh.atlas.get` (query.md §1, Q439): the same, with only the meshes `filter` names (the mesh
+    /// schema's pairs, `[name: …]`); a mesh it does not hold is its fabric with no mesh, and a pair the
+    /// mesh schema refuses is [`ReadReply::RejectedFilter`] naming it. Appended last: no variant before
+    /// it moves.
+    ///
+    /// Position 3 on the wire.
+    GetMeshAtlas {
+        /// The meshes asked for.
+        filter: Filter,
+    },
 }
 
 impl ReadRequest {
@@ -66,6 +82,8 @@ impl ReadRequest {
         match self {
             Self::Get { entity, .. } => entity.read(),
             Self::GetConnections { .. } => "node.connection.get",
+            Self::GetAtlas => "fabric.atlas.get",
+            Self::GetMeshAtlas { .. } => "mesh.atlas.get",
         }
     }
 }
@@ -196,6 +214,20 @@ pub enum ReadReply {
         /// The rows.
         connections: Vec<ConnectionView>,
     },
+    /// A batch of `fabric.atlas.get`'s or `mesh.atlas.get`'s rows (query.md §1, Q439): `fabric` with
+    /// its meshes empty, `mesh` with its nodes empty, and that mesh's node rows in order. A fabric with
+    /// no mesh is one frame with no mesh, a mesh with no node one frame with no node. Appended last: no
+    /// variant before it moves.
+    ///
+    /// Position 15 on the wire.
+    Atlas {
+        /// The fabric, its meshes empty.
+        fabric: AtlasFabricView,
+        /// The mesh, its nodes empty; `None` for a fabric with no mesh.
+        mesh: Option<AtlasMeshView>,
+        /// The mesh's node rows, in `(path, name)` order.
+        nodes: Vec<AtlasNodeView>,
+    },
 }
 
 impl ReadReply {
@@ -204,13 +236,15 @@ impl ReadReply {
         <Read as NodeProtocol>::reply_detail(self)
     }
 
-    /// The rows a data frame carries; `0` for any other frame.
+    /// The rows a data frame carries; `0` for any other frame. An atlas frame's rows are its node
+    /// rows, or the one fabric or mesh it carries with none.
     pub fn rows(&self) -> usize {
         match self {
             Self::Nodes { nodes } => nodes.len(),
             Self::Meshes { meshes } => meshes.len(),
             Self::Fabrics { fabrics } => fabrics.len(),
             Self::Connections { connections, .. } => connections.len(),
+            Self::Atlas { nodes, .. } => nodes.len().max(1),
             _ => 0,
         }
     }
@@ -225,8 +259,8 @@ impl NodeProtocol for Read {
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     const FORWARDABLE: bool = false;
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 2;
-    const REPLY_VARIANTS: u32 = 15;
+    const REQUEST_VARIANTS: u32 = 4;
+    const REPLY_VARIANTS: u32 = 16;
 
     type Request = ReadRequest;
     type Reply = ReadReply;
@@ -238,6 +272,7 @@ impl NodeProtocol for Read {
             ReadReply::Meshes { .. } => "meshes",
             ReadReply::Fabrics { .. } => "fabrics",
             ReadReply::Connections { .. } => "connections",
+            ReadReply::Atlas { .. } => "atlas",
             ReadReply::End { .. } => "end",
             ReadReply::RejectedFilter { .. } => "rejected-filter",
             ReadReply::ReadOverBound { .. } => "read-over-bound",
@@ -253,7 +288,7 @@ impl NodeProtocol for Read {
 
     fn classify_reply(reply: &ReadReply) -> ReplyKind {
         match reply {
-            ReadReply::Started { .. } | ReadReply::Nodes { .. } | ReadReply::Meshes { .. } | ReadReply::Fabrics { .. } | ReadReply::Connections { .. } | ReadReply::End { .. } => ReplyKind::Success,
+            ReadReply::Started { .. } | ReadReply::Nodes { .. } | ReadReply::Meshes { .. } | ReadReply::Fabrics { .. } | ReadReply::Connections { .. } | ReadReply::Atlas { .. } | ReadReply::End { .. } => ReplyKind::Success,
             ReadReply::RejectedFilter { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
             ReadReply::ReadOverBound { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
             ReadReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -290,7 +325,7 @@ impl StreamingProtocol for Read {
     fn frame_kind(frame: &ReadReply) -> FrameKind {
         match frame {
             ReadReply::Started { .. } => FrameKind::Started,
-            ReadReply::Nodes { .. } | ReadReply::Meshes { .. } | ReadReply::Fabrics { .. } | ReadReply::Connections { .. } => FrameKind::Data,
+            ReadReply::Nodes { .. } | ReadReply::Meshes { .. } | ReadReply::Fabrics { .. } | ReadReply::Connections { .. } | ReadReply::Atlas { .. } => FrameKind::Data,
             ReadReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Read::classify_reply(other)),
         }
@@ -308,16 +343,19 @@ pub enum Rows {
     Fabrics(Vec<FabricView>),
     /// `node.connection.get`'s.
     Connections(ConnectionsView),
+    /// `fabric.atlas.get`'s or `mesh.atlas.get`'s: the Q439 atlas, its frames assembled whole.
+    Atlas(AtlasView),
 }
 
 impl Rows {
-    /// The number of rows.
+    /// The number of rows. An atlas row is one node row, or a fabric or mesh with none.
     pub fn len(&self) -> usize {
         match self {
             Self::Nodes(r) => r.len(),
             Self::Meshes(r) => r.len(),
             Self::Fabrics(r) => r.len(),
             Self::Connections(r) => r.connections.len(),
+            Self::Atlas(a) => a.fabrics.iter().map(|f| if f.meshes.is_empty() { 1 } else { f.meshes.iter().map(|m| m.nodes.len().max(1)).sum() }).sum(),
         }
     }
 
@@ -347,8 +385,10 @@ impl Rows {
         }
     }
 
-    /// Append a data frame's rows; `false` for a frame of another entity's rows or a `Connections`
-    /// frame that disagrees with an earlier frame's `node` or `complete`.
+    /// Append a data frame's rows; `false` for a frame of another entity's rows, a `Connections`
+    /// frame that disagrees with an earlier frame's `node` or `complete`, or an `Atlas` frame with
+    /// node rows and no mesh. An `Atlas` frame of the fabric before it adds its mesh, and one of the mesh
+    /// before it adds its nodes.
     pub fn take(&mut self, frame: ReadReply) -> bool {
         match (self, frame) {
             (Self::Nodes(r), ReadReply::Nodes { nodes }) => r.extend(nodes),
@@ -362,12 +402,36 @@ impl Rows {
                 r.complete = complete;
                 r.connections.extend(connections);
             }
+            (Self::Atlas(a), ReadReply::Atlas { fabric, mesh, nodes }) => {
+                if mesh.is_none() && !nodes.is_empty() {
+                    return false;
+                }
+                let fabric = match a.fabrics.last_mut() {
+                    Some(held) if held.id == fabric.id => held,
+                    _ => {
+                        a.fabrics.push(fabric);
+                        a.fabrics.last_mut().expect("the fabric just added")
+                    }
+                };
+                if let Some(mesh) = mesh {
+                    let mesh = match fabric.meshes.last_mut() {
+                        Some(held) if held.name == mesh.name => held,
+                        _ => {
+                            fabric.meshes.push(mesh);
+                            fabric.meshes.last_mut().expect("the mesh just added")
+                        }
+                    };
+                    mesh.nodes.extend(nodes);
+                }
+            }
             _ => return false,
         }
         true
     }
 
-    /// The rows one at a time, in order, for the packer.
+    /// The rows one at a time, in order, for the packer. An atlas is one row per node row, each with
+    /// its fabric (meshes empty) and its mesh (nodes empty); a fabric with no mesh, and a mesh with no
+    /// node, is one row of its own, so every fabric and every mesh reaches the caller in a frame.
     pub fn into_rows(self) -> Vec<Row> {
         match self {
             Self::Nodes(r) => r.into_iter().map(Row::Node).collect(),
@@ -377,6 +441,25 @@ impl Rows {
             Self::Connections(r) => {
                 let (node, complete) = (r.node, r.complete);
                 r.connections.into_iter().map(|c| Row::Connection { node: node.clone(), complete, connection: Some(c) }).collect()
+            }
+            Self::Atlas(a) => {
+                let mut rows = Vec::new();
+                for mut fabric in a.fabrics {
+                    let meshes = std::mem::take(&mut fabric.meshes);
+                    if meshes.is_empty() {
+                        rows.push(Row::Atlas { fabric, mesh: None, node: None });
+                        continue;
+                    }
+                    for mut mesh in meshes {
+                        let nodes = std::mem::take(&mut mesh.nodes);
+                        if nodes.is_empty() {
+                            rows.push(Row::Atlas { fabric: fabric.clone(), mesh: Some(mesh), node: None });
+                            continue;
+                        }
+                        rows.extend(nodes.into_iter().map(|n| Row::Atlas { fabric: fabric.clone(), mesh: Some(mesh.clone()), node: Some(n) }));
+                    }
+                }
+                rows
             }
         }
     }
@@ -401,10 +484,20 @@ pub enum Row {
         /// still carries one `Connections` frame naming `node` and `complete`).
         connection: Option<ConnectionView>,
     },
+    /// An atlas row of `(fabric, mesh)`.
+    Atlas {
+        /// The fabric, its meshes empty.
+        fabric: AtlasFabricView,
+        /// The mesh, its nodes empty; `None` for a fabric with no mesh.
+        mesh: Option<AtlasMeshView>,
+        /// The node row, or `None` for a fabric or a mesh with none (so the stream still carries one
+        /// `Atlas` frame naming it).
+        node: Option<AtlasNodeView>,
+    },
 }
 
 impl Row {
-    /// The row by its name, as a refusal names it.
+    /// The row by its name, as a refusal names it: an atlas node row by its node_id.
     pub fn name(&self) -> String {
         match self {
             Self::Node(n) => n.node_id.to_string(),
@@ -412,10 +505,25 @@ impl Row {
             Self::Fabric(f) => f.name.clone(),
             Self::Connection { connection: Some(c), .. } => c.id.clone(),
             Self::Connection { node, .. } => node.clone(),
+            Self::Atlas { node: Some(n), .. } => n.node.node_id.to_string(),
+            Self::Atlas { mesh: Some(m), .. } => m.name.clone(),
+            Self::Atlas { fabric, .. } => fabric.name.clone(),
         }
     }
 
-    /// One data frame of `batch`, every row of one entity.
+    /// Whether `next` goes in the same data frame as this row: a row of the same entity and, for a
+    /// connection, the same `(node, complete)`, for an atlas row the same fabric and mesh. A batch is
+    /// cut where this changes.
+    pub fn shares_frame(&self, next: &Row) -> bool {
+        match (self, next) {
+            (Self::Node(_), Self::Node(_)) | (Self::Mesh(_), Self::Mesh(_)) | (Self::Fabric(_), Self::Fabric(_)) => true,
+            (Self::Connection { node, complete, .. }, Self::Connection { node: next_node, complete: next_complete, .. }) => node == next_node && complete == next_complete,
+            (Self::Atlas { fabric, mesh, .. }, Self::Atlas { fabric: next_fabric, mesh: next_mesh, .. }) => fabric.id == next_fabric.id && mesh.as_ref().map(|m| &m.name) == next_mesh.as_ref().map(|m| &m.name),
+            _ => false,
+        }
+    }
+
+    /// One data frame of `batch`, every row of one frame ([`Self::shares_frame`]).
     pub fn frame(batch: Vec<Row>) -> ReadReply {
         match batch.first() {
             Some(Row::Mesh(_)) => ReadReply::Meshes { meshes: batch.into_iter().filter_map(|r| if let Row::Mesh(m) = r { Some(m) } else { None }).collect() },
@@ -428,6 +536,10 @@ impl Row {
                     connections: batch.into_iter().filter_map(|r| if let Row::Connection { connection: Some(c), .. } = r { Some(c) } else { None }).collect(),
                 }
             }
+            Some(Row::Atlas { fabric, mesh, .. }) => {
+                let (fabric, mesh) = (fabric.clone(), mesh.clone());
+                ReadReply::Atlas { fabric, mesh, nodes: batch.into_iter().filter_map(|r| if let Row::Atlas { node: Some(n), .. } = r { Some(n) } else { None }).collect() }
+            }
             _ => ReadReply::Nodes { nodes: batch.into_iter().filter_map(|r| if let Row::Node(n) = r { Some(n) } else { None }).collect() },
         }
     }
@@ -438,15 +550,37 @@ mod tests {
     use super::*;
 
     /// CONTRACT: docs/architecture/node-rpc-envelope.md "Read, op `0x23`, rdm" (Q285): a stream, not
-    /// forwardable; two requests, fifteen reply positions in the shown order; Started, the four data
+    /// forwardable; four requests, sixteen reply positions in the shown order; Started, the five data
     /// frames, End terminal, every other position a refusal.
     #[test]
     fn read_protocol_wire_positions_and_stream_classifications_match_contract() {
         assert_eq!(Read::OP, 0x23);
         assert_eq!(Read::NAME, "read");
         assert!(!Read::FORWARDABLE);
-        assert_eq!(Read::REQUEST_VARIANTS, 2);
-        assert_eq!(Read::REPLY_VARIANTS, 15);
+        assert_eq!(Read::REQUEST_VARIANTS, 4);
+        assert_eq!(Read::REPLY_VARIANTS, 16);
+        for (q, op, position) in [(ReadRequest::GetAtlas, "fabric.atlas.get", 2), (ReadRequest::GetMeshAtlas { filter: Filter::new().eq("name", ["mesh1"]) }, "mesh.atlas.get", 3)] {
+            assert_eq!(q.op(), op);
+            let b = Read::encode_request(&q).unwrap();
+            assert_eq!(b[0], position);
+            assert_eq!(Read::decode_request(&b).unwrap(), q);
+        }
+        let fabric = AtlasFabricView {
+            id: crate::FabricId::mint(),
+            name: "fabric1".into(),
+            status: crate::views::ScopeStatus::Ready,
+            provider: crate::views::ProviderKind::Process,
+            fabric_primary: None,
+            build_id: None,
+            next_expiry: None,
+            topology_storage_provider: None,
+            previous_topology_storage_providers: Vec::new(),
+            roots: None,
+            ca: None,
+            build: None,
+            meshes: Vec::new(),
+        };
+        assert_eq!(Read::frame_kind(&ReadReply::Atlas { fabric, mesh: None, nodes: Vec::new() }), FrameKind::Data);
         let q = ReadRequest::Get { entity: Entity::Nodes, filter: Filter::new().eq("mesh", ["mesh1"]) };
         assert_eq!(q.op(), "node.get");
         let b = Read::encode_request(&q).unwrap();

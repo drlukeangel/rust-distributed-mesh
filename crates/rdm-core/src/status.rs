@@ -581,9 +581,8 @@ pub enum StatusRequest {
         /// it (`RDM_ISSUING_KEY` beside `RDM_FABRIC_CA_KEY`; fabric.ca.renew step 2, Q275).
         ca_key: CaKeyHex,
     },
-    /// `fabric.atlas.get` (query.md §1, Q439): a caller asks a node-admin for its atlas over every mesh
-    /// it is primary for, answered [`StatusReply::Atlas`]. A read. Appended last: no variant before it
-    /// moves.
+    /// Reserved position (Q285): `fabric.atlas.get` is read on op 0x23 (`crate::read::ReadRequest::GetAtlas`),
+    /// a stream; refused here by name, [`StatusReply::RejectedFilter`] naming that op.
     ///
     /// Position 32 on the wire.
     GetAtlas,
@@ -690,14 +689,13 @@ pub enum StatusRequest {
         /// The registered name of the provider RDM's records go to.
         topology_storage_provider: String,
     },
-    /// `mesh.atlas.get` (query.md §1, Q439): a caller asks a node-admin for its atlas with only the
-    /// meshes `filter` names (the mesh schema's pairs, `[name: …]`), answered [`StatusReply::Atlas`]: a
-    /// mesh it does not hold is answered as its fabric with no mesh, and a pair the mesh schema refuses
-    /// is [`StatusReply::RejectedFilter`] naming it. A read. Appended last: no variant before it moves.
+    /// Reserved position (Q285): `mesh.atlas.get` is read on op 0x23
+    /// (`crate::read::ReadRequest::GetMeshAtlas`), a stream; refused here by name,
+    /// [`StatusReply::RejectedFilter`] naming that op.
     ///
     /// Position 40 on the wire.
     GetMeshAtlas {
-        /// The meshes asked for.
+        /// Never read.
         filter: crate::filter::Filter,
     },
 }
@@ -1638,18 +1636,11 @@ pub enum StatusReply {
         /// The mesh as the request named it.
         mesh: String,
     },
-    /// A read's answer encodes past the Status reply bound: nothing of it is sent, and the reply
-    /// names the read, the answer's size and the bound.
+    /// Reserved position (Q285): never sent; a read's bound is Read 0x23's
+    /// (`crate::read::ReadReply::ReadOverBound`, a row that fits no frame).
     ///
     /// Position 38 on the wire.
-    ReadOverBound {
-        /// The read (`node.get`, `mesh.get`, `fabric.get`, `node.connection.get`).
-        read: String,
-        /// The answer's encoded size, in bytes.
-        bytes: u64,
-        /// The Status reply bound, in bytes.
-        max: u64,
-    },
+    Reserved38 {},
     /// Reserved: an earlier attempt of the workflow held. A Build has no attempts (Q344), so a workflow is
     /// the one held or another; a receiver never sends it.
     ///
@@ -1831,14 +1822,10 @@ pub enum StatusReply {
         /// Why, by name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// The answer to a `GetAtlas` or a `GetMeshAtlas`: the answering node-admin's atlas (Q439).
-    /// Appended last: no variant before it moves.
+    /// Reserved position (Q285): never sent; the atlas is read on op 0x23 (`crate::read::ReadReply::Atlas`).
     ///
     /// Position 55 on the wire.
-    Atlas {
-        /// The atlas.
-        atlas: crate::views::AtlasView,
-    },
+    Reserved55 {},
     /// The answer to a `fabric.get` ([`StatusRequest::Get`] of `Fabrics`): the fabric the answering
     /// admin holds when it matches every pair, else nothing. Appended last: no variant before it moves.
     ///
@@ -2056,17 +2043,6 @@ impl StatusReply {
         Self::NameNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
-    /// `answer` to the read `read` when it encodes within the Status reply bound; past it,
-    /// [`StatusReply::ReadOverBound`] naming the read, the answer's size and the bound, so the
-    /// caller gets a named refusal and never a reset. An answer that does not encode at all is
-    /// returned as it is: the server's own encode refuses it as a handler fault.
-    pub fn within_reply_bound(answer: Self, read: &str) -> Self {
-        match Status::encode_reply(&answer) {
-            Ok(bytes) if bytes.len() > Status::MAX_REPLY_FRAME_BYTES => Self::ReadOverBound { read: read.to_string(), bytes: bytes.len() as u64, max: Status::MAX_REPLY_FRAME_BYTES as u64 },
-            _ => answer,
-        }
-    }
-
     /// `RejectedSourceFailed` naming what failed (`source`), the operation on it (`op`) and why
     /// (`cause`), each within its budget so the reply always fits the reply bound.
     pub fn source_failed(source: &str, op: &str, cause: &str) -> Self {
@@ -2124,10 +2100,10 @@ impl StatusReply {
             Self::Nodes { .. } => "nodes",
             Self::Meshes { .. } => "meshes",
             Self::Fabric { .. } => "fabric",
-            Self::Atlas { .. } => "atlas",
+            Self::Reserved55 { .. } => "reserved-55",
             Self::Connections { .. } => "connections",
             Self::UnknownMesh { .. } => "unknown-mesh",
-            Self::ReadOverBound { .. } => "read-over-bound",
+            Self::Reserved38 { .. } => "reserved-38",
             Self::Reserved39 { .. } => "reserved-39",
             Self::RejectedConflictingWorkflow { .. } => "rejected-conflicting-workflow",
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
@@ -2179,8 +2155,7 @@ impl NodeProtocol for Status {
     /// `MAX_STATUS_REQUEST_BYTES`.
     const MAX_REQUEST_FRAME_BYTES: usize = MAX_STATUS_REQUEST_BYTES;
     /// A `node.connections.deleted` names every connection it accounts for by id: the bound holds
-    /// [`MAX_REPORTED_CONNECTIONS`] of them. A read's answer past it is
-    /// [`StatusReply::ReadOverBound`] ([`StatusReply::within_reply_bound`]).
+    /// [`MAX_REPORTED_CONNECTIONS`] of them. The reads are op 0x23's, streamed in frames (Q285).
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
@@ -2230,10 +2205,10 @@ impl NodeProtocol for Status {
             StatusReply::Nodes { .. } => "nodes",
             StatusReply::Meshes { .. } => "meshes",
             StatusReply::Fabric { .. } => "fabric",
-            StatusReply::Atlas { .. } => "atlas",
+            StatusReply::Reserved55 { .. } => "reserved55",
             StatusReply::Connections { .. } => "connections",
             StatusReply::UnknownMesh { .. } => "unknown-mesh",
-            StatusReply::ReadOverBound { .. } => "read-over-bound",
+            StatusReply::Reserved38 { .. } => "reserved38",
             StatusReply::Reserved39 { .. } => "reserved39",
             StatusReply::RejectedConflictingWorkflow { .. } => "rejected-conflicting-workflow",
             StatusReply::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
@@ -2303,10 +2278,10 @@ impl NodeProtocol for Status {
             StatusReply::Nodes { .. } => ReplyKind::Success,
             StatusReply::Meshes { .. } => ReplyKind::Success,
             StatusReply::Fabric { .. } => ReplyKind::Success,
-            StatusReply::Atlas { .. } => ReplyKind::Success,
+            StatusReply::Reserved55 { .. } => ReplyKind::Success,
             StatusReply::Connections { .. } => ReplyKind::Success,
             StatusReply::UnknownMesh { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
-            StatusReply::ReadOverBound { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
+            StatusReply::Reserved38 { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
             StatusReply::Reserved39 { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             StatusReply::RejectedConflictingWorkflow { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -2449,7 +2424,7 @@ mod tests {
             (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some(NodeId::mint()), meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.node.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
-            (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
+            (StatusReply::Reserved38 {}, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
             (StatusReply::Reserved39 { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::incomplete_manifest(&["mesh2.node.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
@@ -2466,7 +2441,7 @@ mod tests {
             (StatusReply::CertRenewed { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), expires_at: 7 }, ReplyKind::Success),
             (StatusReply::IssuerUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), issuer_expires_at: 7 }, ReplyKind::Success),
             (StatusReply::RejectedCert { reason: "x".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
-            (StatusReply::Atlas { atlas: crate::views::AtlasView::default() }, ReplyKind::Success),
+            (StatusReply::Reserved55 {}, ReplyKind::Success),
             (StatusReply::Fabrics { fabrics: vec![] }, ReplyKind::Success),
             (StatusReply::rejected_filter("node.get: the pair (zone, [eu-1]) names no property of a node row"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::RootsUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()] }, ReplyKind::Success),
@@ -2700,21 +2675,6 @@ mod tests {
 
     fn connection_view() -> crate::views::ConnectionView {
         crate::views::ConnectionView { id: ConnectionId::mint().to_string(), source: "mesh1.node.1".into(), destination: "mesh1.node-admin.1".into(), kind: "direct".into(), state: "connected".into(), carrier: None, reason: Some("dialled".into()), logged_at_ms: 1_791_332_804_963 }
-    }
-
-    /// CONTRACT (a read past the reply bound is a named refusal, never a reset): an answer within
-    /// the Status reply bound is answered as it is; one past it is `ReadOverBound` naming the read,
-    /// the answer's encoded size and the bound, and that refusal itself fits the bound. One mesh of
-    /// 150 nodes at a realistic size each fits.
-    #[test]
-    fn a_read_answer_past_the_reply_bound_is_refused_naming_its_size() {
-        let mesh = StatusReply::Nodes { nodes: (0..150).map(|_| node_view()).collect() };
-        assert_eq!(StatusReply::within_reply_bound(mesh.clone(), "node.get"), mesh, "150 nodes fit the bound");
-        let over = StatusReply::Nodes { nodes: (0..400).map(|_| node_view()).collect() };
-        let size = Status::encode_reply(&over).unwrap().len() as u64;
-        let refused = StatusReply::within_reply_bound(over, "node.get");
-        assert_eq!(refused, StatusReply::ReadOverBound { read: "node.get".into(), bytes: size, max: Status::MAX_REPLY_FRAME_BYTES as u64 });
-        assert!(Status::encode_reply(&refused).unwrap().len() <= Status::MAX_REPLY_FRAME_BYTES);
     }
 
     /// CONTRACT (an error carries every detail it can, and still reaches the caller): an incomplete

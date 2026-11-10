@@ -77,8 +77,6 @@ pub fn name_not_applied(node: String, answered: String, reason: String) -> Statu
 /// Construct the typed rejected-connection-scope outcome.
 /// Construct the typed unknown-mesh outcome.
 pub fn unknown_mesh(mesh: String) -> StatusReply { StatusReply::UnknownMesh { mesh } }
-/// Construct the typed read-over-bound outcome.
-pub fn read_over_bound(read: String, bytes: u64, max: u64) -> StatusReply { StatusReply::ReadOverBound { read, bytes, max } }
 /// Construct the typed rejected-conflicting-workflow outcome.
 pub fn rejected_conflicting_workflow(held: MeshDeleteIdentity, offered: MeshDeleteIdentity) -> StatusReply { StatusReply::RejectedConflictingWorkflow { held, offered } }
 /// Construct the typed rejected-incomplete-manifest outcome.

@@ -1857,6 +1857,11 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     return Ok(ReadReply::End { rows, frames: n });
                 }
                 ReadRequest::Get { entity, filter } => (entity, filter),
+                // The atlas is a node-admin's, answered over the meshes it is primary for and never carried
+                // (query.md §1, Q439): a node that is no node-admin keeps none, and refuses it by name.
+                ReadRequest::GetAtlas | ReadRequest::GetMeshAtlas { .. } => {
+                    return Ok(ReadReply::RejectedFilter { reason: format!("{node:?} is no node-admin and keeps no atlas: {op} is answered by the node-admin asked, over the meshes it is primary for, never carried") });
+                }
             };
             if entity == Entity::Connections {
                 return Ok(ReadReply::RejectedFilter { reason: format!("{op} is GetConnections (with its node and incarnation), never Get") });

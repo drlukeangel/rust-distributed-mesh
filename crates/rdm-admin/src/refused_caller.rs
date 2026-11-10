@@ -219,13 +219,13 @@ impl RefusedCallers {
         Ok((own, path, planned, record))
     }
 
-    /// The root's atlas to verify a decision against: `fabric.atlas.get` owed to the fabric-primary this
-    /// admin's view names until it answers (node-rpc.md §43; `crate::node_config::owed`): sent again to
-    /// the fabric-primary the view names when a view is installed or after the resend schedule's next
-    /// delay, a view naming none, a refusal that the receiver is not the fabric-primary and a
-    /// fabric-primary holding no atlas yet included. `None` when this admin is the fabric-primary: it
-    /// decides from its own atlas. `Err` names why nothing verifies the decision: no node-RPC client,
-    /// or an answer that is not an atlas.
+    /// The root's atlas to verify a decision against: `fabric.atlas.get` on Read 0x23 (Q285), owed to the
+    /// fabric-primary this admin's view names until it answers (node-rpc.md §43;
+    /// `crate::node_config::owed`): sent again to the fabric-primary the view names when a view is
+    /// installed or after the resend schedule's next delay, a view naming none and a fabric-primary
+    /// holding no atlas yet included. `None` when this admin is the fabric-primary: it decides from its
+    /// own atlas. `Err` names why nothing verifies the decision: no node-RPC client, or a refusal of the
+    /// read.
     async fn root_atlas(&self) -> Result<Option<rdm_core::views::AtlasView>, String> {
         let first = self.recovery.topology.read().await.clone();
         if first.is_fabric_primary(&self.node_id) {
@@ -235,10 +235,11 @@ impl RefusedCallers {
             return Err("this admin has no node-RPC client to call the fabric-primary".into());
         };
         let me = self.recovery.held_name();
-        match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, crate::node_config::PropertyCall::Status(&rdm_core::status::StatusRequest::GetAtlas), crate::node_config::Hop::Root).await {
+        match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, crate::node_config::PropertyCall::Atlas, crate::node_config::Hop::Root).await {
             crate::node_config::Owed::InProcess(_) => Ok(None),
-            crate::node_config::Owed::Answered(rdm_core::status::StatusReply::Atlas { atlas }) => Ok(Some(atlas)),
-            crate::node_config::Owed::Answered(rdm_core::status::StatusReply::RejectedSourceFailed { source, op, cause }) => Err(format!("fabric.atlas.get at the fabric-primary answered rejected-source-failed (source {source}, op {op}: {cause}): nothing acts until the root answers its atlas")),
+            crate::node_config::Owed::Atlas(Ok(atlas)) => Ok(Some(atlas)),
+            crate::node_config::Owed::Atlas(Err(rdm_client::CallEnd::Rejected { reason, detail })) => Err(format!("fabric.atlas.get at the fabric-primary answered {reason} ({detail}): nothing acts until the root answers its atlas")),
+            crate::node_config::Owed::Atlas(Err(end)) => Err(format!("fabric.atlas.get at the fabric-primary ended {} ({end}): nothing acts until the root answers its atlas", end.outcome())),
             crate::node_config::Owed::Answered(other) => Err(format!("fabric.atlas.get at the fabric-primary answered {}: nothing acts until the root answers its atlas", other.name())),
             crate::node_config::Owed::Gone(_) => Err("fabric.atlas.get was withdrawn".into()),
             crate::node_config::Owed::Unanswered(why) => Err(format!("fabric.atlas.get at the fabric-primary ended unanswered: nothing acts until the root answers its atlas ({why})")),
@@ -668,8 +669,8 @@ mod tests {
             r.incarnation = n.incarnation_id.clone().unwrap();
             rows.put_node(&r).await.unwrap();
         }
-        // The fabric-primary: its `StatusService` answers fabric.atlas.get from its atlas, which holds the caller's
-        // birth at mesh2.node-admin.1, and counts the reads.
+        // The fabric-primary: it answers fabric.atlas.get on Read 0x23 from its atlas, which holds the
+        // caller's birth at mesh2.node-admin.1, streamed in frames, and counts the reads.
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -679,16 +680,30 @@ mod tests {
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = asked.clone();
         let server = rdm_transport::ServerBuilder::new()
-            .serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
+            .serve_stream::<rdm_core::read::Read, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: rdm_core::read::ReadRequest, sink: rdm_transport::stream::ReplySink<rdm_core::read::Read, rdm_transport::stream::NotStarted>| {
                 let (root, counted) = (root.clone(), counted.clone());
                 async move {
-                    Ok(match req {
-                        StatusRequest::GetAtlas => {
-                            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            StatusReply::Atlas { atlas: root }
+                    use rdm_core::read::ReadReply;
+                    if req != rdm_core::read::ReadRequest::GetAtlas {
+                        return Ok(ReadReply::NotReady { reason: format!("the cell's fabric-primary answers fabric.atlas.get only, not {}", req.op()) });
+                    }
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let rows = rdm_core::read::Rows::Atlas(root);
+                    let count = rows.len() as u32;
+                    let frames = match rdm_client::read_frames(rows.into_rows(), req.op()) {
+                        Ok(frames) => frames,
+                        Err(over) => return Ok(over),
+                    };
+                    let n = frames.len() as u32;
+                    let Ok(mut sink) = sink.started(ReadReply::Started { read: req.op().into() }).await else {
+                        return Ok(ReadReply::NotReady { reason: "the caller left".into() });
+                    };
+                    for f in frames {
+                        if sink.data(f).await.is_err() {
+                            return Ok(ReadReply::NotReady { reason: "the caller left".into() });
                         }
-                        other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabric.atlas.get only, not {}", other.op()) },
-                    })
+                    }
+                    Ok(ReadReply::End { rows: count, frames: n })
                 }
             })
             .build(rdm_transport::ServedBirth { node_id: fp.node_id.to_string(), incarnation: fp.incarnation_id.as_ref().unwrap().as_str().to_string() })

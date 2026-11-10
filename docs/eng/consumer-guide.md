@@ -83,7 +83,7 @@ A pair naming a property the row has not (`zone` without `config.`), a value the
 (`is_primary: yes`) or no value is refused `INVALID_ARGUMENT` naming the pair; a mesh the admin does
 not hold is the empty list.
 
-A read past the 64 KiB reply bound is refused ReadOverBound (RESOURCE_EXHAUSTED); read by mesh, and a mesh past the bound by id in batches.
+Every read, the atlas reads included, is streamed in frames on op 0x23 and is never bounded as one reply (Q285); only a single row that fits no 64 KiB frame alone is refused ReadOverBound (RESOURCE_EXHAUSTED), naming it.
 
 Pairs combine with AND, so [id: x][mesh: m] answers empty when x is absent or when x is in another mesh; to tell them apart, read [id: x] and look at the row's mesh.
 

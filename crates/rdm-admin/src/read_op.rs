@@ -8,10 +8,15 @@
 //! frame alone is `ReadOverBound` naming it, and nothing is sent: no row is ever left out. One span,
 //! `rdm.node_admin.<entity>.serve.via-read`, names the read, its pairs, the rows and frames sent and
 //! the outcome.
+//!
+//! `fabric.atlas.get` and `mesh.atlas.get` (query.md §1, Q439) are answered by this admin over the
+//! meshes it is primary for ([`crate::status_rpc::StatusService::atlas_answer`]), never carried, and
+//! streamed the same way in `Atlas` frames: `rdm.node_admin.fabric.serve.via-atlas` names the atlas
+//! sent, its rows and frames; `rdm.node_admin.fabric.reject.via-atlas-unread` its refusal.
 
 use rdm_core::catalog::OpOwner;
-use rdm_core::filter::Entity;
-use rdm_core::read::{Read, ReadReply, ReadRequest};
+use rdm_core::filter::{Entity, Filter};
+use rdm_core::read::{Read, ReadReply, ReadRequest, Rows};
 use rdm_transport::stream::{NotStarted, ReplySink};
 use rdm_transport::ServerBuilder;
 use tracing::Instrument as _;
@@ -36,6 +41,8 @@ async fn answer(service: &crate::status_rpc::StatusService, req: ReadRequest, si
     let (entity, node, filter) = match req {
         ReadRequest::Get { entity, filter } => (entity, None, filter),
         ReadRequest::GetConnections { node, incarnation, filter } => (Entity::Connections, Some((node, incarnation)), filter),
+        ReadRequest::GetAtlas => return atlas(service, read, None, sink).await,
+        ReadRequest::GetMeshAtlas { filter } => return atlas(service, read, Some(filter), sink).await,
     };
     let empty = tracing::field::Empty;
     let pairs = crate::views::pairs(&filter);
@@ -63,14 +70,8 @@ async fn answer(service: &crate::status_rpc::StatusService, req: ReadRequest, si
             Err(over) => return refused(over),
         };
         let n = frames.len() as u32;
-        let mut sink = match sink.started(ReadReply::Started { read: read.to_string() }).await {
-            Ok(s) => s,
-            Err(e) => return refused(ReadReply::NotReady { reason: format!("the caller left before the read started: {e:?}") }),
-        };
-        for f in frames {
-            if let Err(e) = sink.data(f).await {
-                return refused(ReadReply::NotReady { reason: format!("the caller left during the read: {e:?}") });
-            }
+        if let Err(r) = send(read, frames, sink).await {
+            return refused(r);
         }
         span.record("rows", count).record("frames", n).record("outcome", "served");
         span.in_scope(|| tracing::info!("the read's rows streamed in frames"));
@@ -78,6 +79,58 @@ async fn answer(service: &crate::status_rpc::StatusService, req: ReadRequest, si
     }
     .instrument(span)
     .await
+}
+
+/// `Started`, then the read's data `frames` in order, to `sink`; `NotReady` naming when the caller
+/// left. The caller answers `End` once they are all sent.
+async fn send(read: &str, frames: Vec<ReadReply>, sink: ReplySink<Read, NotStarted>) -> Result<(), ReadReply> {
+    let mut sink = sink.started(ReadReply::Started { read: read.to_string() }).await.map_err(|e| ReadReply::NotReady { reason: format!("the caller left before the read started: {e:?}") })?;
+    for f in frames {
+        sink.data(f).await.map_err(|e| ReadReply::NotReady { reason: format!("the caller left during the read: {e:?}") })?;
+    }
+    Ok(())
+}
+
+/// `fabric.atlas.get`, or `mesh.atlas.get` of the meshes `filter` names (query.md §1, Q439): this
+/// admin's atlas over the meshes it is primary for ([`crate::status_rpc::StatusService::atlas_answer`]),
+/// packed in order into `Atlas` frames, cut where the fabric or the mesh changes, and streamed. The
+/// atlas sent is one `rdm.node_admin.fabric.serve.via-atlas` span over its stream (its meshes, its node
+/// rows, what is in flight on them, then the rows and frames sent); its refusal, here at the answering
+/// admin, is `rdm.node_admin.fabric.reject.via-atlas-unread`, naming the source and cause of a source
+/// of the atlas that could not be read. The caller that acts on the atlas (a refused caller's
+/// decision) waits on it.
+async fn atlas(service: &crate::status_rpc::StatusService, read: &'static str, filter: Option<Filter>, sink: ReplySink<Read, NotStarted>) -> ReadReply {
+    let me = service.held_name().await;
+    let refused = |r: ReadReply| {
+        match &r {
+            ReadReply::RejectedSourceFailed { source, cause, .. } => tracing::info_span!("rdm.node_admin.fabric.reject.via-atlas-unread", node_path = %me.path, node_name = %me.name, op = read, outcome = "rejected-source-failed", source = %source, cause = %cause, "otel.kind" = "internal").in_scope(|| tracing::info!("the atlas read is refused: a source of the atlas could not be read")),
+            other => tracing::info_span!("rdm.node_admin.fabric.reject.via-atlas-unread", node_path = %me.path, node_name = %me.name, op = read, outcome = %other.name(), "otel.kind" = "internal").in_scope(|| tracing::info!("the atlas read is refused")),
+        }
+        r
+    };
+    let atlas = match service.atlas_answer(read, filter.as_ref()).await {
+        Ok(atlas) => atlas,
+        Err(r) => return refused(r),
+    };
+    let meshes: Vec<String> = atlas.fabrics.iter().flat_map(|f| f.meshes.iter()).map(|m| m.name.clone()).collect();
+    let accepted: Vec<String> = atlas.nodes().filter_map(|n| n.accepted.as_ref().map(|op| format!("{}/{} {}", n.node.path, n.node.name, op.action))).collect();
+    let build_id = atlas.fabrics.first().and_then(|f| f.build.as_ref()).map(|b| b.build_id.clone()).unwrap_or_default();
+    let (nodes, stopped) = (atlas.nodes().count(), atlas.nodes().filter(|n| n.stopped).count());
+    let rows = Rows::Atlas(atlas);
+    let count = rows.len() as u32;
+    let frames = match rdm_client::read_frames(rows.into_rows(), read) {
+        Ok(f) => f,
+        Err(over) => return refused(over),
+    };
+    let n = frames.len() as u32;
+    let empty = tracing::field::Empty;
+    let span = tracing::info_span!("rdm.node_admin.fabric.serve.via-atlas", node_path = %me.path, node_name = %me.name, op = read, properties = %filter.as_ref().map(|f| f.properties()).unwrap_or_default(), build_id = %build_id, meshes = %meshes.join(","), nodes, stopped, accepted = %accepted.join(","), rows = empty, frames = empty, "otel.kind" = "internal");
+    if let Err(r) = send(read, frames, sink).instrument(span.clone()).await {
+        return refused(r);
+    }
+    span.record("rows", count).record("frames", n);
+    span.in_scope(|| tracing::info!("the atlas answered in frames: the fabric, then the meshes this admin is primary for and their nodes, with what is in flight"));
+    ReadReply::End { rows: count, frames: n }
 }
 
 #[cfg(test)]

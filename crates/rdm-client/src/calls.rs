@@ -596,6 +596,22 @@ impl<'a> NodeRpc<'a> {
         }
     }
 
+    /// `fabric.atlas.get`, or `mesh.atlas.get` of the meshes `filter` names, on op `0x23` (Q285, Q439):
+    /// the atlas of the node-admin at `target`, its `Atlas` frames assembled whole under
+    /// [`Self::read`]'s rules: a frame of the fabric before it adds its mesh, a frame of the mesh before
+    /// it adds its nodes.
+    pub async fn atlas_get(&self, target: &NodeTarget, filter: Option<&rdm_core::filter::Filter>, opts: &CallOptions) -> Result<rdm_core::views::AtlasView, CallEnd> {
+        use rdm_core::read::{ReadRequest, Rows};
+        let req = match filter {
+            Some(filter) => ReadRequest::GetMeshAtlas { filter: filter.clone() },
+            None => ReadRequest::GetAtlas,
+        };
+        match self.read_stream(target, req, Rows::Atlas(rdm_core::views::AtlasView::default()), opts).await? {
+            Rows::Atlas(atlas) => Ok(atlas),
+            _ => Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: "the atlas stream answered another read's rows".into() }),
+        }
+    }
+
     async fn read_stream(&self, target: &NodeTarget, req: rdm_core::read::ReadRequest, mut rows: rdm_core::read::Rows, opts: &CallOptions) -> Result<rdm_core::read::Rows, CallEnd> {
         use rdm_core::read::{Read, ReadReply};
         let op = req.op();
@@ -746,23 +762,36 @@ impl<'a> NodeRpc<'a> {
 
 /// A plural read's `rows` (op `0x23`, Q285) packed, in order, into data frames that each encode within
 /// the reply frame (`rdm_transport::chunking::pack_in_order`): what a server streams between `Started`
-/// and `End`. A row that fits no frame alone is `ReadOverBound` naming it; nothing is packed then.
+/// and `End`. A batch is cut where the frame its rows go in changes ([`rdm_core::read::Row::shares_frame`]:
+/// a connection's `(node, complete)`, an atlas row's fabric and mesh), then packed. A row that fits no
+/// frame alone is `ReadOverBound` naming it; nothing is packed then.
 pub fn read_frames(rows: Vec<rdm_core::read::Row>, read: &str) -> Result<Vec<rdm_core::read::ReadReply>, rdm_core::read::ReadReply> {
     use rdm_core::protocol::NodeProtocol as _;
     use rdm_core::read::{Read, ReadReply, Row};
     let max = Read::MAX_REPLY_FRAME_BYTES;
-    let (packed, over) = rdm_transport::chunking::pack_in_order(rows, |batch: &[Row]| {
-        let bytes = Read::encode_reply(&Row::frame(batch.to_vec())).map(|b| b.len()).unwrap_or(usize::MAX);
-        if bytes <= max {
-            Ok(bytes::Bytes::new())
-        } else {
-            Err((batch.first().map(Row::name).unwrap_or_default(), bytes))
+    let mut batches: Vec<Vec<Row>> = Vec::new();
+    for row in rows {
+        match batches.last_mut() {
+            Some(batch) if batch.last().is_some_and(|last| last.shares_frame(&row)) => batch.push(row),
+            _ => batches.push(vec![row]),
         }
-    });
-    if let Some((row, bytes)) = over.into_iter().next() {
-        return Err(ReadReply::ReadOverBound { read: read.to_string(), row, bytes: bytes as u64, max: max as u64 });
     }
-    Ok(packed.into_iter().map(|(batch, _)| Row::frame(batch)).collect())
+    let mut frames = Vec::new();
+    for batch in batches {
+        let (packed, over) = rdm_transport::chunking::pack_in_order(batch, |batch: &[Row]| {
+            let bytes = Read::encode_reply(&Row::frame(batch.to_vec())).map(|b| b.len()).unwrap_or(usize::MAX);
+            if bytes <= max {
+                Ok(bytes::Bytes::new())
+            } else {
+                Err((batch.first().map(Row::name).unwrap_or_default(), bytes))
+            }
+        });
+        if let Some((row, bytes)) = over.into_iter().next() {
+            return Err(ReadReply::ReadOverBound { read: read.to_string(), row, bytes: bytes as u64, max: max as u64 });
+        }
+        frames.extend(packed.into_iter().map(|(batch, _)| Row::frame(batch)));
+    }
+    Ok(frames)
 }
 
 #[cfg(test)]

@@ -1186,42 +1186,23 @@ impl StatusService {
             // and carries any other read up to the fabric-primary (query.md §1; Q224); a node-admin that
             // is not a primary keeps no atlas and forwards every read but its own node.connection.get to its
             // own mesh-primary, never to the fabric-primary (query.md §1; Q243).
-            StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
-                let read = req.as_read().expect("a read request is a read");
+            StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::GetAtlas | StatusRequest::GetMeshAtlas { .. } => {
                 // The reads are op 0x23's, a stream (Q285): Status's `Get` of any entity, and the retained
-                // `GetNodes`, `GetMeshes` and `GetConnections`, are refused by name naming it; the retained
-                // `GetFabric` answers its one fabric.
+                // `GetNodes`, `GetMeshes`, `GetConnections`, `GetAtlas` and `GetMeshAtlas`, are refused by
+                // name naming it; the retained `GetFabric` answers its one fabric.
                 if !matches!(req, StatusRequest::GetFabric) {
-                    tracing::info_span!("rdm.node_admin.status.reject.via-read-on-0x23", node_path = %me_name.path, node_name = %me_name.name, read = read.entity.read(), request = req.op(), "otel.kind" = "internal")
+                    let read = req.as_read().map_or(req.op(), |r| r.entity.read());
+                    tracing::info_span!("rdm.node_admin.status.reject.via-read-on-0x23", node_path = %me_name.path, node_name = %me_name.name, read, request = req.op(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("a read on Status refused by name: it is op 0x23's stream"));
-                    return rdm_core::reply::status::bounded_rejected_filter(&format!("{} is read on op 0x23 (read), a stream (Q285)", read.entity.read()));
+                    return rdm_core::reply::status::bounded_rejected_filter(&format!("{read} is read on op 0x23 (read), a stream (Q285)"));
                 }
+                let read = req.as_read().expect("GetFabric is a read");
                 return match self.read_rows(&read).await {
                     Ok(rdm_core::read::Rows::Fabrics(mut fabrics)) if !fabrics.is_empty() => StatusReply::Fabric { fabric: fabrics.remove(0) },
                     Ok(rdm_core::read::Rows::Fabrics(fabrics)) => StatusReply::Fabrics { fabrics },
                     Ok(_) => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} answered fabric.get with another entity's rows", me_name_path = &me_name.path, me_name_name = &me_name.name)),
                     Err(refusal) => status_of_read_refusal(refusal),
                 };
-            }
-            StatusRequest::GetAtlas | StatusRequest::GetMeshAtlas { .. } => {
-                let filter = match req {
-                    StatusRequest::GetMeshAtlas { filter } => Some(filter),
-                    _ => None,
-                };
-                let reply = self.atlas_answer(&me_name, &view, req.op(), filter).await;
-                // The answer, or its refusal naming its source and cause, here at the answering admin: the
-                // caller that acts on the atlas (a refused caller's decision) waits on it.
-                match &reply {
-                    StatusReply::Atlas { atlas } => {
-                        let meshes: Vec<&str> = atlas.fabrics.iter().flat_map(|f| f.meshes.iter()).map(|m| m.name.as_str()).collect();
-                        let accepted: Vec<String> = atlas.nodes().filter_map(|n| n.accepted.as_ref().map(|op| format!("{}/{} {}", n.node.path, n.node.name, op.action))).collect();
-                        tracing::info_span!("rdm.node_admin.fabric.serve.via-atlas", node_path = %me_name.path, node_name = %me_name.name, op = req.op(), properties = %filter.map(|f| f.properties()).unwrap_or_default(), build_id = %atlas.fabrics.first().and_then(|f| f.build.as_ref()).map(|b| b.build_id.as_str()).unwrap_or_default(), meshes = %meshes.join(","), nodes = atlas.nodes().count(), stopped = atlas.nodes().filter(|n| n.stopped).count(), accepted = %accepted.join(","), "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!("the atlas answered: the fabric, then the meshes this admin is primary for and their nodes, with what is in flight"));
-                    }
-                    StatusReply::RejectedSourceFailed { source, cause, .. } => tracing::info_span!("rdm.node_admin.fabric.reject.via-atlas-unread", node_path = %me_name.path, node_name = %me_name.name, op = req.op(), outcome = "rejected-source-failed", source = %source, cause = %cause, "otel.kind" = "internal").in_scope(|| tracing::info!("the atlas read is refused: a source of the atlas could not be read")),
-                    other => tracing::info_span!("rdm.node_admin.fabric.reject.via-atlas-unread", node_path = %me_name.path, node_name = %me_name.name, op = req.op(), outcome = %other.name(), "otel.kind" = "internal").in_scope(|| tracing::info!("the atlas read is refused")),
-                }
-                return reply;
             }
             StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert, req).await,
             StatusRequest::UpdateIssuer { incarnation, key, cert, ca_key, .. } => {
@@ -1636,27 +1617,33 @@ impl StatusService {
     /// phase; then each of those meshes the current Build's topology names, in name order, as its
     /// `fabric.get` answers the mesh (`mesh.get`'s fields), with its nodes' rows ([`crate::atlas::Atlas::node_rows`]).
     /// `filter` (`mesh.atlas.get`) keeps only the meshes matching every pair; a mesh this admin does not
-    /// hold leaves the fabric with no mesh, and a pair the mesh schema refuses is `RejectedFilter`.
-    async fn atlas_answer(&self, me_name: &crate::model::PathName, view: &Topology, op: &str, filter: Option<&rdm_core::filter::Filter>) -> StatusReply {
+    /// hold leaves the fabric with no mesh, and a pair the mesh schema refuses is `RejectedFilter`. Read
+    /// on op 0x23 (Q285, [`crate::read_op`]): the answer is streamed in frames, never bounded as one; a
+    /// refusal is the read's own frame.
+    pub async fn atlas_answer(&self, op: &str, filter: Option<&rdm_core::filter::Filter>) -> Result<rdm_core::views::AtlasView, rdm_core::read::ReadReply> {
         use rdm_core::filter::{Entity, Filter};
+        use rdm_core::read::{ReadReply, Rows};
         use rdm_core::views::{AtlasBuildView, AtlasFabricView, AtlasMeshView, AtlasView};
+        let view = self.topology.read().await.clone();
+        let me_name = self.held_name_in(&view);
         let Some(atlas) = self.atlas.get() else {
-            return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no fabric atlas yet; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name));
+            return Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} holds no fabric atlas yet; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name) });
         };
         if let Some(reason) = filter.and_then(|f| f.refusal(Entity::Meshes)) {
-            return rdm_core::reply::status::bounded_rejected_filter(&reason);
+            return Err(ReadReply::RejectedFilter { reason });
         }
         let current = match self.builds.current().await {
             Ok(current) => current,
-            Err(e) => return rdm_core::reply::status::bounded_source_failed("builds.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
+            Err(e) => return Err(ReadReply::RejectedSourceFailed { source: "builds.storage".into(), op: op.into(), cause: format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name) }),
         };
         if self.configs.get().and_then(|c| c.records()).is_none() {
-            return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no node records yet; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name));
+            return Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} holds no node records yet; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name) });
         }
         // The fabric as this admin's fabric.get answers it: its fields, and its meshes' fields.
-        let fabrics = match self.read(me_name, view, &rdm_core::status::Read { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
-            StatusReply::Fabrics { fabrics } => fabrics,
-            other => return other,
+        let read = rdm_core::status::Read { entity: Entity::Fabrics, node: None, filter: Filter::new() };
+        let fabrics = match rows_of(&me_name, &read, self.read(&me_name, &view, &read).await)? {
+            Rows::Fabrics(fabrics) => fabrics,
+            other => return Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} answered fabric.get with {}", crate::node_config::rows_name(&other), me_name_path = &me_name.path, me_name_name = &me_name.name) }),
         };
         let build = current.as_ref().map(|p| AtlasBuildView { build_id: p.build_id.to_string(), phase: crate::build_op::phase_of(p.state) });
         let held = atlas.meshes();
@@ -1672,14 +1659,14 @@ impl StatusService {
                 if !held.contains(&mesh.name) || filter.is_some_and(|f| !f.matches(&mesh)) {
                     continue;
                 }
-                match atlas.node_rows(planned.nodes.iter().cloned(), &records, view, &digest).await {
+                match atlas.node_rows(planned.nodes.iter().cloned(), &records, &view, &digest).await {
                     Ok(nodes) => rows.push(AtlasMeshView::of(mesh, nodes)),
-                    Err(e) => return rdm_core::reply::status::bounded_source_failed("nodes.storage", op, &e),
+                    Err(cause) => return Err(ReadReply::RejectedSourceFailed { source: "nodes.storage".into(), op: op.into(), cause }),
                 }
             }
             answer.push(AtlasFabricView::of(fabric, build.clone(), rows));
         }
-        StatusReply::within_reply_bound(StatusReply::Atlas { atlas: AtlasView { fabrics: answer } }, op)
+        Ok(AtlasView { fabrics: answer })
     }
 
     /// The rows a plural read answers (Q167; query.md §1): from this admin's atlas when it holds them,
@@ -1687,7 +1674,7 @@ impl StatusService {
     /// stable order. A refusal is the read's own frame: `RejectedFilter` naming the pair,
     /// `RejectedSourceFailed` naming the source, `NotReady` naming what this admin waits for.
     pub async fn read_rows(&self, read: &rdm_core::status::Read) -> Result<rdm_core::read::Rows, rdm_core::read::ReadReply> {
-        use rdm_core::read::{ReadReply, Rows};
+        use rdm_core::read::ReadReply;
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
         let held = self.atlas.get().map(|a| a.meshes()).unwrap_or_default();
@@ -1706,16 +1693,7 @@ impl StatusService {
                 None => Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} has no node-RPC client yet to send {} on to {}", read.entity.read(), to.whom(), me_name_path = &me_name.path, me_name_name = &me_name.name) }),
             };
         }
-        match self.read(&me_name, &view, read).await {
-            StatusReply::Nodes { nodes } => Ok(Rows::Nodes(nodes)),
-            StatusReply::Meshes { meshes } => Ok(Rows::Meshes(meshes)),
-            StatusReply::Fabrics { fabrics } => Ok(Rows::Fabrics(fabrics)),
-            StatusReply::Connections { connections } => Ok(Rows::Connections(connections)),
-            StatusReply::RejectedFilter { reason } => Err(ReadReply::RejectedFilter { reason }),
-            StatusReply::RejectedSourceFailed { source, op, cause } => Err(ReadReply::RejectedSourceFailed { source, op, cause }),
-            StatusReply::NotReady { reason } => Err(ReadReply::NotReady { reason }),
-            other => Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} answered {} with {}", read.entity.read(), other.name(), me_name_path = &me_name.path, me_name_name = &me_name.name) }),
-        }
+        rows_of(&me_name, read, self.read(&me_name, &view, read).await)
     }
 
     /// The name of the mesh carrying `mesh_id`: a mesh this admin's Build created, else one its view
@@ -2810,6 +2788,22 @@ const _: fn() = || {
 };
 
 /// A plural read's refusal as Status answers it (the retained `GetFabric`).
+/// The rows `read` answers, from this admin's own answer `reply` to it ([`StatusService::read`] at
+/// `me_name`): its data as the read's rows, or its refusal as the read's own frame.
+fn rows_of(me_name: &crate::model::PathName, read: &rdm_core::status::Read, reply: StatusReply) -> Result<rdm_core::read::Rows, rdm_core::read::ReadReply> {
+    use rdm_core::read::{ReadReply, Rows};
+    match reply {
+        StatusReply::Nodes { nodes } => Ok(Rows::Nodes(nodes)),
+        StatusReply::Meshes { meshes } => Ok(Rows::Meshes(meshes)),
+        StatusReply::Fabrics { fabrics } => Ok(Rows::Fabrics(fabrics)),
+        StatusReply::Connections { connections } => Ok(Rows::Connections(connections)),
+        StatusReply::RejectedFilter { reason } => Err(ReadReply::RejectedFilter { reason }),
+        StatusReply::RejectedSourceFailed { source, op, cause } => Err(ReadReply::RejectedSourceFailed { source, op, cause }),
+        StatusReply::NotReady { reason } => Err(ReadReply::NotReady { reason }),
+        other => Err(ReadReply::NotReady { reason: format!("path {me_name_path:?}, name {me_name_name:?} answered {} with {}", read.entity.read(), other.name(), me_name_path = &me_name.path, me_name_name = &me_name.name) }),
+    }
+}
+
 fn status_of_read_refusal(refusal: rdm_core::read::ReadReply) -> StatusReply {
     use rdm_core::read::ReadReply;
     match refusal {

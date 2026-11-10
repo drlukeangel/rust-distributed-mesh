@@ -68,6 +68,9 @@ pub enum PropertyCall<'a> {
     Status(&'a StatusRequest),
     /// A command on NodeCommand 0x22.
     Command(&'a NodeCommandRequest, &'a mut PropertyFrames),
+    /// `fabric.atlas.get` on Read 0x23 (Q285): up to the fabric-primary for its atlas ([`Hop::Root`]),
+    /// a stream, one direct call whose frames are assembled whole.
+    Atlas,
 }
 
 impl PropertyCall<'_> {
@@ -75,6 +78,7 @@ impl PropertyCall<'_> {
         match self {
             Self::Status(req) => req.op(),
             Self::Command(req, _) => req.op(),
+            Self::Atlas => "fabric.atlas.get",
         }
     }
 
@@ -83,6 +87,7 @@ impl PropertyCall<'_> {
         match self {
             Self::Status(StatusRequest::CreateTags { node_id, .. } | StatusRequest::DeleteTags { node_id, .. }) => node_id,
             Self::Status(other) => unreachable!("forward_up carries a node's property command only, never {}", other.op()),
+            Self::Atlas => unreachable!("forward_up carries a node's property command only, never fabric.atlas.get"),
             Self::Command(req, _) => req.subject().0,
         }
     }
@@ -175,10 +180,20 @@ pub(crate) enum Hop<'a> {
 /// How an owed property command ended ([`NodeConfigs::owed`]).
 pub(crate) enum Owed {
     Answered(StatusReply),
+    /// The fabric-primary's answer to [`PropertyCall::Atlas`]: its atlas, or its refusal by name
+    /// (`CallEnd::Rejected`), not-ready excepted (sent again).
+    Atlas(Result<rdm_core::views::AtlasView, rdm_client::CallEnd>),
     InProcess(Topology),
     Gone(Topology),
     /// The call ended with its attempts spent and no answer: why, by name (node-rpc.md §43).
     Unanswered(String),
+}
+
+/// What the primary answered one send of an owed call: a Status reply (a node command's end is one),
+/// or the fabric-primary's answer to the atlas read on Read 0x23.
+enum Answer {
+    Status(StatusReply),
+    Atlas(Result<rdm_core::views::AtlasView, rdm_client::CallEnd>),
 }
 
 /// The slot an admin fills once its node-RPC client exists.
@@ -429,6 +444,7 @@ impl NodeConfigs {
             Owed::InProcess(view) => Down::InProcess(view),
             Owed::Gone(view) => Down::Gone(view),
             Owed::Unanswered(why) => Down::Unanswered(why),
+            Owed::Atlas(_) => unreachable!("send_down sends a Status call or a node command, never fabric.atlas.get"),
         }
     }
 
@@ -476,6 +492,7 @@ impl NodeConfigs {
                 span.record("outcome", "unanswered");
                 Up::Unanswered(why)
             }
+            Owed::Atlas(_) => unreachable!("forward_up carries a node's property command only, never fabric.atlas.get"),
         };
         span.in_scope(|| tracing::info!("a caller's property command carried up to the fabric-primary ended"));
         up
@@ -559,13 +576,15 @@ impl NodeConfigs {
     }
 }
 
-/// A read's rows by the reply that carries them: `nodes`, `meshes`, `fabrics` or `connections`.
+/// A read's rows by the reply that carries them: `nodes`, `meshes`, `fabrics`, `connections` or
+/// `atlas`.
 pub(crate) fn rows_name(rows: &rdm_core::read::Rows) -> &'static str {
     match rows {
         rdm_core::read::Rows::Nodes(_) => "nodes",
         rdm_core::read::Rows::Meshes(_) => "meshes",
         rdm_core::read::Rows::Fabrics(_) => "fabrics",
         rdm_core::read::Rows::Connections(_) => "connections",
+        rdm_core::read::Rows::Atlas(_) => "atlas",
     }
 }
 
@@ -641,21 +660,33 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                     tracing::Span::current().record(field, primary.as_str());
                     sends += 1;
                     // Answered, or how the call ended with no answer: its name and detail.
-                    let out: Result<StatusReply, (String, String)> = match &mut call {
+                    let out: Result<Answer, (String, String)> = match &mut call {
                         PropertyCall::Status(req) => {
                             let opts = CallOptions { send: rdm_transport::Send::default(), route: Some(primary_route(&view, &mesh, &primary, me_id)), ..CallOptions::default() };
                             match client.call::<Status>(&role, req, &opts).await.0 {
-                                rdm_core::outcome::RpcOutcome::Reply(r) => Ok(r.into_value()),
+                                rdm_core::outcome::RpcOutcome::Reply(r) => Ok(Answer::Status(r.into_value())),
                                 other => Err((other.name().to_string(), other.detail_name().to_string())),
                             }
                         }
                         PropertyCall::Command(req, frames) => {
                             let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
-                            frames.carried(client, &role, req, &opts).await.map_err(|end| (end.outcome().to_string(), describe(&end)))
+                            frames.carried(client, &role, req, &opts).await.map(Answer::Status).map_err(|end| (end.outcome().to_string(), describe(&end)))
+                        }
+                        // A stream, never forwarded (Q285): one direct call, its frames assembled whole.
+                        PropertyCall::Atlas => {
+                            let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
+                            match rdm_client::NodeRpc::new(client).atlas_get(&role, None, &opts).await {
+                                Ok(atlas) => Ok(Answer::Atlas(Ok(atlas))),
+                                Err(refused @ rdm_client::CallEnd::Rejected { .. }) => Ok(Answer::Atlas(Err(refused))),
+                                Err(end) => Err((end.outcome().to_string(), describe(&end))),
+                            }
                         }
                     };
                     let outcome = match &out {
-                        Ok(reply) => reply.name().to_string(),
+                        Ok(Answer::Status(reply)) => reply.name().to_string(),
+                        Ok(Answer::Atlas(Ok(_))) => "atlas".to_string(),
+                        Ok(Answer::Atlas(Err(rdm_client::CallEnd::Rejected { reason, .. }))) => reason.clone(),
+                        Ok(Answer::Atlas(Err(end))) => end.outcome().to_string(),
                         Err((name, _)) => name.clone(),
                     };
                     tracing::Span::current().record("sends", sends);
@@ -665,15 +696,16 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                         Hop::Up | Hop::Root => tracing::info!(to_node_id = %primary, send = sends, outcome = %outcome, "{} carried up to the fabric-primary", op),
                     }
                     match out {
-                        Ok(reply) => match (reply, &hop) {
+                        Ok(Answer::Status(reply)) => match (reply, &hop) {
                             // Down: any refusal that the receiver is not the primary is the primary changing. Up: only
                             // `ReceiverNotPrimary` is; any other answer (a subject the fabric-primary does not hold) is the caller's.
                             (StatusReply::RejectedNotPrimary { why }, Hop::Down(_)) => format!("{primary} answered rejected-not-primary ({})", why.as_str()),
-                            (StatusReply::RejectedNotPrimary { why: why @ NotPrimary::ReceiverNotPrimary { .. } }, Hop::Up | Hop::Root) => format!("{primary} answered rejected-not-primary ({})", why.as_str()),
-                            // A fabric-primary holding no atlas yet takes the push, and answers the read, once it holds one.
-                            (StatusReply::NotReady { reason }, Hop::Root) => format!("{primary} answered not-ready ({reason})"),
+                            (StatusReply::RejectedNotPrimary { why: why @ NotPrimary::ReceiverNotPrimary { .. } }, Hop::Up) => format!("{primary} answered rejected-not-primary ({})", why.as_str()),
                             (answered, _) => return Owed::Answered(answered),
                         },
+                        // A fabric-primary holding no atlas yet answers the read once it holds one.
+                        Ok(Answer::Atlas(Err(rdm_client::CallEnd::Rejected { reason, detail }))) if reason == "not-ready" => format!("{primary} answered not-ready ({detail})"),
+                        Ok(Answer::Atlas(read)) => return Owed::Atlas(read),
                         // No answer: the call's attempts are spent (or the role names no birth). The owner
                         // never resends it (node-rpc.md §43): the command ends unanswered, by name.
                         Err((name, detail)) => {

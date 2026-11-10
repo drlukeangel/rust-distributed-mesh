@@ -215,7 +215,7 @@ sees only the catalog.
 | `0x20` | build | rdm | live | canonical | build.create, build.section.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `UpdatePrimary`; replies `PrimaryUpdating`, `PrimaryUpdated`, `AlreadyApplied`; server-streaming |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `BlockMesh`, `UnblockMesh`, `UpdateConfig`, `UpdateName` (position 4 reserved): `StopNode`, `StartNode` and `DeleteConnections` from the caller to the node's mesh-primary, directly; `UpdateConfig` and `UpdateName` from the caller to the fabric-primary and down to the node's mesh-primary, each hop direct; every variant but `BlockMesh` and `UnblockMesh` from the mesh-primary to the exact node; `BlockMesh` and `UnblockMesh` from the fabric-primary to each mesh-primary; never forwarded; server-streaming; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
-| `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get, server-streaming, never forwarded (Q285) |
+| `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get; `GetConnections`: node.connection.get; `GetAtlas`, `GetMeshAtlas`: fabric.atlas.get, mesh.atlas.get; server-streaming, never forwarded (Q285) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
 | `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
@@ -818,7 +818,7 @@ pub enum StatusRequest {
     Reserved29 { node_id: NodeId, incarnation: IncarnationId, build_id: String, operation: String }, // position 29, refused by name: node.mesh.leave is a step of node.stop only
     RenewCert { node_id: NodeId, incarnation: IncarnationId, cert: Vec<u8> },
     UpdateIssuer { node_id: NodeId, incarnation: IncarnationId, key: IssuingKeyHex, cert: String },
-    GetAtlas, // position 32: fabric.atlas.get (Q439): the answering node-admin's atlas over every mesh it is primary for; answered Atlas { atlas }
+    GetAtlas, // position 32: reserved: fabric.atlas.get is read on 0x23 (Q285), refused here by name
     Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: reserved: every entity is read on 0x23 (Q285), refused here by name
     Reserved34 {}, // removed upward property-copy route; never sent
     UpdateRoots { node_id: NodeId, incarnation: IncarnationId, roots: Vec<String>, phase: RootsPhase, secret: Option<RootSecretHex> }, // position 35
@@ -826,7 +826,7 @@ pub enum StatusRequest {
     ApplyNodeProperties { node_id: NodeId, incarnation: IncarnationId, entry: EntryProperties }, // position 37
     ReportCallFailed { sender: ReportedBirth, receiver: ReportedBirth, reason: String }, // position 38: a caller's report that its call to the exact birth `receiver` ended with its attempts spent and no answer (node-rpc.md §43); answered `Applied`, or `RejectedNotPrimary { why: SubjectUnknown }` by a receiver that is not the primary above that birth; a report is itself never reported
     UpdateStorage { topology_storage_provider: String }, // position 39: fabric.storage.update
-    GetMeshAtlas { filter: Filter }, // position 40: mesh.atlas.get (Q439): the answering node-admin's atlas with only the meshes the filter names (the mesh schema's pairs, [name: …]); answered Atlas { atlas }, a mesh it does not hold answered as its fabric with no mesh; a pair the mesh schema refuses is RejectedFilter
+    GetMeshAtlas { filter: Filter }, // position 40: reserved: mesh.atlas.get is read on 0x23 (Q285), refused here by name
 }
 
 // The reads (one read per entity): fabric.get, mesh.get, node.get and node.connection.get { node }.
@@ -924,7 +924,7 @@ pub enum StatusReply {
     Fabric { fabric: FabricView },
     Connections { connections: ConnectionsView },
     UnknownMesh { mesh: String }, // position 37, never sent: a mesh the admin does not hold is the empty list
-    ReadOverBound { read: String, bytes: u64, max: u64 },
+    Reserved38 {}, // position 38, never sent: a read's bound is Read 0x23's ReadOverBound (Q285)
     Reserved39,
     RejectedConflictingWorkflow { held: MeshDeleteIdentity, offered: MeshDeleteIdentity },
     RejectedIncompleteManifest { missing: u32, without_exit: Vec<String>, reason: String },
@@ -941,7 +941,7 @@ pub enum StatusReply {
     CertRenewed { node_id: NodeId, incarnation: IncarnationId, expires_at: u64 },
     IssuerUpdated { node_id: NodeId, incarnation: IncarnationId, issuer_expires_at: u64 },
     RejectedCert { reason: String },
-    Atlas { atlas: AtlasView },
+    Reserved55 {}, // position 55, never sent: the atlas is read on 0x23 (Q285)
     Fabrics { fabrics: Vec<FabricView> }, // position 56: fabric.get's answer
     RejectedFilter { reason: String }, // position 57: a filter refused naming the pair, INVALID_ARGUMENT
 }
@@ -957,7 +957,7 @@ a receiver refuses each by name and executes nothing; so is position 29 `Reserve
 being a step of node.stop only, and reply position 50 `Reserved50` is never sent. Reply positions 17
 `Stopped`, 18 `Started` and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
 refused by name; Reserved12 and Reserved13 retain positions 12 and 13 (Q171), Reserved14 and
-Reserved15 positions 14 and 15 (Q174), and each is refused by name; Reserved2, Reserved22 and Reserved44 retain StatusReply positions 2, 22 (Q203) and 44. No position is reordered or
+Reserved15 positions 14 and 15 (Q174), and each is refused by name; Reserved2, Reserved22, Reserved38, Reserved44 and Reserved55 retain StatusReply positions 2, 22 (Q203), 38, 44 and 55 (Q285: 38 the one-frame read bound, 55 the atlas). No position is reordered or
 reused.
 
 The stop calls its primitives and streams each one's acknowledgement and completion (Q205): its
@@ -1246,13 +1246,15 @@ Spans: `rdm.node_admin.build.update.via-read-committed`,
 Contract source: `crates/rdm-core/src/read.rs::ReadRequest` and `crates/rdm-core/src/read.rs::ReadReply`;
 ledger: `crates/rdm-core/src/catalog.rs::core_ledger`.
 Direction: a caller to a node. RDM owns this server stream; it is not forwardable. The reads
-(Q167, Q285): fabric.get, mesh.get, node.get and node.connection.get. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 15. Positions
+(Q167, Q285): fabric.get, mesh.get, node.get, node.connection.get, fabric.atlas.get and mesh.atlas.get. REQUEST_VARIANTS is 4; REPLY_VARIANTS is 16. Positions
 are fixed in the shown order, none reordered. Request ceiling 64 KiB; reply frame ceiling 64 KiB.
 
 ```rust
 pub enum ReadRequest {
     Get { entity: Entity, filter: Filter }, // Fabrics, Meshes or Nodes; Connections is refused, naming GetConnections
     GetConnections { node: NodeId, incarnation: IncarnationId, filter: Filter }, // node.connection.get { node }: the exact birth's own connections
+    GetAtlas, // fabric.atlas.get (Q439): the answering node-admin's atlas over every mesh it is primary for
+    GetMeshAtlas { filter: Filter }, // mesh.atlas.get (Q439): the same, with only the meshes the filter names (the mesh schema's pairs, [name: …]); a mesh it does not hold is its fabric with no mesh
 }
 
 pub enum ReadReply {
@@ -1271,10 +1273,11 @@ pub enum ReadReply {
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     Connections { node: String, complete: bool, connections: Vec<ConnectionView> }, // a data frame; every frame of a read names the same node and complete
+    Atlas { fabric: AtlasFabricView, mesh: Option<AtlasMeshView>, nodes: Vec<AtlasNodeView> }, // a data frame: the fabric with its meshes empty, the mesh with its nodes empty, and that mesh's node rows in order; a fabric with no mesh is one frame with no mesh, a mesh with no node one frame with no node
 }
 ```
 
-The stream is Started, then the data frames `Nodes`, `Meshes`, `Fabrics` or `Connections`, then End. The answer is
+The stream is Started, then the data frames `Nodes`, `Meshes`, `Fabrics`, `Connections` or `Atlas`, then End. The answer is
 the read's every matching row, captured once in its stable order (by path and name, by name), from the
 selected shared records as [query.md](query.md) states, or carried to the primary that holds it (Q224,
 Q243) on this same op; it is never bounded as one frame. The rows are packed in order into data frames
@@ -1283,11 +1286,11 @@ that fits no frame alone is `ReadOverBound` naming it (`RESOURCE_EXHAUSTED`), an
 sent: no row is ever left out. An unknown pair is `RejectedFilter` naming it (`INVALID_ARGUMENT`). The
 caller counts the read only when End arrives and the rows it holds number `End.rows` across
 `End.frames` data frames; a cut or a deadline is a failed read, and no partial list is returned. Status
-(0x1B) stays unary: its `Get` of any entity, and the retained `GetNodes`, `GetMeshes` and `GetConnections`,
+(0x1B) stays unary: its `Get` of any entity, and the retained `GetNodes`, `GetMeshes`, `GetConnections`, `GetAtlas` and `GetMeshAtlas`,
 are refused by name, `RejectedFilter` naming this op; the retained `GetFabric` stays on Status.
-`GetConnections` is answered by the exact birth it names, from its own connections log, never carried. Responder spans: `rdm.node_admin.<entity>.serve.via-read` (read, pairs,
+`GetConnections` is answered by the exact birth it names, from its own connections log, never carried. `GetAtlas` and `GetMeshAtlas` are answered by the node-admin asked, over the meshes it is primary for, never carried; the caller assembles the `Atlas` frames into one `AtlasView` ([query.md §1](query.md#1-external-a-query-to-the-fabric-primary)), a frame of the fabric before it adding its mesh and a frame of the mesh before it adding its nodes, and an atlas row is one node row, or a fabric or mesh with none. Responder spans: `rdm.node_admin.<entity>.serve.via-read` (read, pairs,
 rows, frames, outcome); a carried read `rdm.node_admin.<entity>.serve.via-forward`, at a node that is
-not a node-admin `rdm.node.<entity>.serve.via-forward`.
+not a node-admin `rdm.node.<entity>.serve.via-forward`; the atlas reads `rdm.node_admin.fabric.serve.via-atlas` (op, properties, build_id, meshes, nodes, stopped, accepted, rows, frames) and, refused, `rdm.node_admin.fabric.reject.via-atlas-unread`.
 
 ## Build, op `0x20`, rdm
 
