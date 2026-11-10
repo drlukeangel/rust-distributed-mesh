@@ -3741,3 +3741,16 @@ rdm#174 with the lead's conforming text.
 - 2026-11-10 rdm#385 LANDED 47252223d (lane 6, decided by Q285): the atlas reads stream on Read 0x23 (`GetAtlas` 2, `GetMeshAtlas` 3, `ReadReply::Atlas` 15, frames cut where the fabric or mesh changes). Status 32 and 40 are refused by name; StatusReply 38 and 55 are reserved; `within_reply_bound` is gone, so no read is bounded as one frame. Red first: 901 nodes, 141,389 bytes, now whole. In review the lead added the root read's fabric-primary guard: a refused caller takes the atlas only from an admin whose fabric names it fabric-primary, else sends again. This closes the gap rdm#384's narrowing opened. Flame c8e365a3483da9a539d22670715c0826 (rows=5 frames=2). The rafka session has the SHA for its pin.
 - 2026-11-10 RDM RELEASE GATE CLEAN at dc76830f8 (lane 3, 693 s): 127 ok, no failure. The product is 47252223d: rdm#384 and rdm#385 since a06515e53. No RDM issue is open. The joint release waits on rafka main re-pinning RDM to 47252223d (the atlas roster on laneG6, the pin on laneG7) and rafka's own gates there.
 - 2026-11-10 rafka main pins RDM 47252223d at cde43c4a3e (rafka's landing gate GREEN at 485311b036 before the rebase; the workspace compiles clean). The RDM release gate is clean at dc76830f8, whose product is 47252223d. The joint release's next full run is rafka's 03:00 nightly under the pin; the rafka session reports any RDM-side red. Open beside it: rafka#2859 (laneG1, the lone broker's re-entry, reproduce first) and the rafka session's laneG6 close fix (Luke's direction: never read a dead node's records; the successor over the kept data dir, or the topic's other replica).
+- 2026-11-10 evening: the rafka i128 milestone is at 0 open, with rafka main pinning RDM 47252223d (the release pin). Landed today:
+  - #3486 round 2 (979c232d9c);
+  - #3473 (exact-pid loss phases, RDM heals);
+  - #2859 (a lost lone broker comes back over its kept dir: laneG6's 28a64867d2, then c4a6d1a32e, after which a no-rows close emits no refusal and two sequential losses each re-sync clean);
+  - #3114 and #3115 (re-checked green at main, closed);
+  - the op 9 fix (laneG7, d68a50d230). Its at-scale A/B on #3486: 8,840 pending scan misses to 0, op 9 p50 219 ms to 0.5 ms, OffsetCommit about 2x;
+  - the suite-run rung fix (c54b648a30);
+  - the span export queue with named drops (f759cf5400).
+
+  Still open toward the joint release:
+  - #3526 on rafka's 03:00 nightly;
+  - rafka#3263 (the gate's wall);
+  - the export measurement (laneG1), with the stacked tonic-inside-ours retry finding.
