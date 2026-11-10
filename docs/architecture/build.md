@@ -347,7 +347,7 @@ A Build is one record, `BuildAccepted`, written once. What happened while execut
 | `rdm.build.dispatched` | the fabric-primary | none | `build_id`, `mesh` |
 | `rdm.build.step` | the mesh's mesh-primary | the node acted on | `build_id`, `mesh`, `step`, `op`, `state` (`complete` or `failed { reason, code }`) |
 | `rdm.build.ended` | the fabric-primary | none | `build_id`, `state` (`complete`; `incomplete { sections }`, each unfinished section's `mesh`, `op`, `step`, `reason` and `code`; or `failed { reason, code }`, why it could not start) |
-| `rdm.node.investigated` | the primary above the node | node.id | `incarnation`, `path`, `name`, `verdict`, `next` |
+| `rdm.node.investigated` | the primary above the node | node.id | `incarnation`, `path`, `name`, `result`, `inspected`, `reason`, `trigger` |
 | `rdm.storage.started`, `rdm.storage.committed`, `rdm.storage.ended` | the fabric-primary | none | `change_id`, `topology_storage_provider`, and for the ending its `state` |
 | `rdm.mesh.pending`, `rdm.mesh.ready`, `rdm.mesh.deleting`, `rdm.mesh.deleted` | the mesh's mesh-primary (the fabric-primary while the mesh has none) | none | `mesh_id`, `mesh` |
 | `rdm.fabric.pending`, `rdm.fabric.ready` | the fabric-primary | none | `fabric_id` |

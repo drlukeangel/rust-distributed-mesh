@@ -6,10 +6,10 @@ A primitive. `node.runtime.inspect` asks the deployment provider, the process pr
 container runtime that launched a birth, about the exact runtime handle it recorded at launch:
 the PID with its start identity, or the immutable container id. It answers `running`,
 `os-stopped` or `exited { code }`. It is the provider step of [node investigation](node-investigation.md),
-whose verdict is the one decision about an unheard node (Q111); nothing waits on it as the provider's
+whose result is the one decision about an unheard node (Q111); nothing waits on it as the provider's
 `Exited`. It touches no network and asks the node nothing. It is run by:
 
-- [node investigation](node-investigation.md), as its first step after the index read: `exited` or `os-stopped` is the verdict and no tickle is sent; on `running` or `unavailable` the tickles follow;
+- [node investigation](node-investigation.md), as its first step after the index read: on `exited` or `os-stopped` no tickle is sent (an `exited` birth is written `dead`; an `os-stopped` one is commanded to start); on `running` or `unavailable` the tickles follow;
 - [node.delete](node-delete.md), at its start (an `os-stopped` runtime answers no stop: the delete skips the stop by name and begins at `TerminateRuntime`);
 - node recovery's `TerminateRuntime`, at the step's own instant, before it asks the provider to
   terminate ([node recovery](node-recovery.md) step 3);
@@ -25,10 +25,10 @@ whose verdict is the one decision about an unheard node (Q111); nothing waits on
 | Caller | The primary that holds the birth's launch record: its mesh-primary for a member, the fabric-primary for a mesh-primary or a mesh's last admin, the booting node-admin for the old birth on its own data dir |
 | Target | The exact runtime handle recorded at launch: `provider_control_domain + pid + start identity` for a process, `provider_control_domain + container id` for a container. A PID or a container name alone is insufficient and is refused by name |
 | Domain | The handle is acted on only inside its control domain; a cross-domain handle is routed to a domain-local execution path or refused by name ([deployment-provider §2.4](../deployment-provider.md#24-exact-provider-locator-and-control-domain)) |
-| Result | `running`: the exact runtime is alive, however silent the node. `os-stopped`: the operating system holds the exact runtime suspended, so no `node.stop` completed ([deployment provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)). `exited { code }`: the provider's terminal status for that exact handle. Each is a verdict of [node investigation](node-investigation.md) when the tickles did not reach the birth |
+| Result | `running`: the exact runtime is alive, however silent the node. `os-stopped`: the operating system holds the exact runtime suspended, so no `node.stop` completed ([deployment provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)). `exited { code }`: the provider's terminal status for that exact handle. Each is a step inside [node investigation](node-investigation.md), never its result (Q420) |
 | Not a result | A RuntimeFact's presence says neither running nor gone; a provider that cannot answer for the domain answers `unavailable { reason }`, which investigation asks again under its retries; a birth not proven at their end is `dead` (Q393) |
 | Bound | The provider answers within 2 s. Expiry answers `unavailable { reason }`, never evidence of exit, and the provider ends the subprocess it started; node investigation's tickles follow |
-| What follows | The caller's: investigation's verdict follows [node recovery](node-recovery.md) step 3 (Q393); a birth written `dead` is re-created (`exited` over the inherited data dir, the others over a newly allocated one), with `TerminateRuntime` first on every answer but `os-stopped` (of an `exited` runtime the provider removes what it left, Q145); delete writes the row deleted and publishes `NodeDeleted`; a boot on an inherited dir proceeds as recovery. On an explicit delete, an `os-stopped` result skips the unexecutable Node RPC stop by name and proceeds to `TerminateRuntime` on the exact handle |
+| What follows | The caller's: the investigation goes on as [node recovery](node-recovery.md) step 3 says (Q393); a birth written `dead` is re-created (`exited` over the inherited data dir, the others over a newly allocated one), with `TerminateRuntime` first on every answer but `os-stopped` (of an `exited` runtime the provider removes what it left, Q145); delete writes the row deleted and publishes `NodeDeleted`; a boot on an inherited dir proceeds as recovery. On an explicit delete, an `os-stopped` result skips the unexecutable Node RPC stop by name and proceeds to `TerminateRuntime` on the exact handle |
 | Not a Node RPC | The inspect is a provider call from the caller's process; it has no op number and no frame. Its span is the evidence |
 | Spans | `rdm.node_admin.node.resolve.via-provider-inspection` with node, node_id, incarnation, the handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), `exit_code` and the reason |
 
@@ -37,15 +37,15 @@ whose verdict is the one decision about an unheard node (Q111); nothing waits on
 1. The caller holds the birth's launch record: the handle the provider returned when it launched
    this exact incarnation.
 2. It asks the provider for that handle's status inside the handle's control domain.
-3. `running`: the caller acts as its page says for a live but unreached node (investigation's
-   verdict: [node recovery](node-recovery.md) step 3 (Q393); written `dead`, re-created, `TerminateRuntime` first; delete has a defect to explain, since it stopped the
+3. `running`: the caller acts as its page says for a live but unreached node (investigation:
+   [node recovery](node-recovery.md) step 3 (Q393); commanded back through node.mesh.join, sent until answered; unanswered, written `dead`, re-created, `TerminateRuntime` first; delete has a defect to explain, since it stopped the
    node first).
-4. `os-stopped`: the caller acts as its page says (investigation's verdict: [node recovery](node-recovery.md) step 3 (Q393); written `dead`, re-created over a newly
+4. `os-stopped`: the caller acts as its page says (investigation: [node recovery](node-recovery.md) step 3 (Q393); commanded to start, sent until answered; unanswered, written `dead`, re-created over a newly
    allocated data dir; delete skips the stop and terminates).
-5. `exited { code }`: the caller acts as its page says (investigation's verdict: [node recovery](node-recovery.md) step 3 (Q393); written `dead`, re-created over the
+5. `exited { code }`: the caller acts as its page says (investigation: [node recovery](node-recovery.md) step 3 (Q393); written `dead`, re-created over the
    inherited data dir; delete proceeds to `node.deleted`).
 6. The caller continues per its page: `node.deleted`, the recovery, the investigation's
-   verdict.
+   result.
 
 ## Command, completion and gossip messages
 
@@ -93,7 +93,7 @@ caller's own, never the primitive's.
 
 ## States written
 
-This operation writes no state. Its verdict is told to its caller, whose page says what follows.
+This operation writes no state. Its answer is told to its caller, whose page says what follows.
 
 ## Failure
 

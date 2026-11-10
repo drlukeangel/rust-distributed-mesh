@@ -848,9 +848,9 @@ fn fabric_primaries(nodes: &[Value]) -> String {
 /// every `rdm.build.step` event Build `after` gained since `before` (the same Build, its steps in
 /// event.id order) whose subject is the birth's node.id and whose operation creates, deletes, stops or
 /// starts it (build.md §5), and every `rdm.node.investigated` event of the birth, of `investigated`, whose
-/// `next` is `recreate`: node recovery re-creates it, its mesh-primary's own workflow and never a Build
-/// (node-recovery.md, Q111, Q342). A step on another node, a role move among them, did nothing to it;
-/// an investigation whose `next` is `rejoin` commands the same birth back.
+/// `result` is `re-created`: node recovery re-creates it, its mesh-primary's own workflow and never a
+/// Build (node-recovery.md, Q111, Q342, Q423). A step on another node, a role move among them, did nothing
+/// to it; an investigation that ends `ready` or `rejoined` keeps the same birth.
 fn acted_on(before: &Value, after: &Value, investigated: &[Value], birth: &(String, String)) -> Vec<String> {
     const ACTS: [&str; 4] = ["node.create", "node.delete", "node.stop", "node.start"];
     let mut out = Vec::new();
@@ -864,8 +864,8 @@ fn acted_on(before: &Value, after: &Value, investigated: &[Value], birth: &(Stri
             }
         }
     }
-    for e in investigated.iter().filter(|e| e["next"] == "recreate" && e["incarnation"] == birth.1.as_str()) {
-        out.push(format!("node recovery: investigated {} at {}.{}, verdict {}, next {}", birth.0, s(&e["path"]), s(&e["name"]), s(&e["verdict"]), s(&e["next"])));
+    for e in investigated.iter().filter(|e| e["result"] == "re-created" && e["incarnation"] == birth.1.as_str()) {
+        out.push(format!("node recovery: investigated {} at {}.{}, result {}, inspected {}", birth.0, s(&e["path"]), s(&e["name"]), s(&e["result"]), s(&e["inspected"])));
     }
     out
 }
@@ -2414,10 +2414,11 @@ mod tests {
     }
 
     /// CONTRACT (build.md §5: a Build's progress is its `rdm.build.step` events; node-recovery.md: node
-    /// recovery is never a Build, Q342, and its verdict is one `rdm.node.investigated` event): what acted
+    /// recovery is never a Build, Q342, and its result is one `rdm.node.investigated` event): what acted
     /// on a held birth is a step the current Build gained on its node.id that creates, deletes, stops or
-    /// starts it, or node recovery's `recreate` of that exact birth. Must NOT happen: a role move, a step
-    /// on another node, a step the Build held before the hold, or a `rejoin` read as acting on it.
+    /// starts it, or an investigation of that exact birth that ends `re-created`. Must NOT happen: a role
+    /// move, a step on another node, a step the Build held before the hold, or a `rejoined` read as
+    /// acting on it.
     #[test]
     fn only_a_step_on_the_held_node_or_its_recovery_acts_on_a_held_birth() {
         let (_, birth) = held_fixture();
@@ -2431,10 +2432,11 @@ mod tests {
         assert!(rows[0].contains("node.delete:100000000000") && rows[0].contains("TerminateRuntime"), "{rows:?}");
         let other = json!({ "build_id": "b00000000000", "steps": deleted["steps"] });
         assert!(acted_on(&before, &other, &[], &birth).is_empty(), "another Build's steps are not gained by this one");
-        let verdict = |inc: &str, next: &str| json!({ "incarnation": inc, "path": "mesh1.broker", "name": "2", "verdict": "os-stopped", "next": next });
-        assert!(acted_on(&before, &before, &[verdict(&birth.1, "rejoin")], &birth).is_empty(), "a rejoin commands the same birth back");
-        assert!(acted_on(&before, &before, &[verdict("800000000000", "recreate")], &birth).is_empty(), "another incarnation is another birth");
-        let recovered = acted_on(&before, &before, &[verdict(&birth.1, "recreate")], &birth);
+        let investigated = |inc: &str, result: &str| json!({ "incarnation": inc, "path": "mesh1.broker", "name": "2", "result": result, "inspected": "os-stopped" });
+        assert!(acted_on(&before, &before, &[investigated(&birth.1, "rejoined")], &birth).is_empty(), "a rejoined birth is the same birth, back");
+        assert!(acted_on(&before, &before, &[investigated(&birth.1, "ready")], &birth).is_empty(), "a ready birth is the same birth");
+        assert!(acted_on(&before, &before, &[investigated("800000000000", "re-created")], &birth).is_empty(), "another incarnation is another birth");
+        let recovered = acted_on(&before, &before, &[investigated(&birth.1, "re-created")], &birth);
         assert_eq!(recovered.len(), 1, "{recovered:?}");
         assert!(recovered[0].starts_with("node recovery") && recovered[0].contains("os-stopped"), "{recovered:?}");
     }

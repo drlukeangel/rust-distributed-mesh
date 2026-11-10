@@ -2,19 +2,16 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [node.tickle](node-tickle.md) · [node.runtime.inspect](node-runtime-inspect.md) · [Connections](../connections.md#31-declared-indexes)
 
-A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
-one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
-retries is `dead` (Q393). Its steps, in order:
+A primitive. Node investigation is the one function every caller uses on one exact birth, ending in one result for its client (Q420–Q423): `ready` (the birth answered: it was ready the whole time), `rejoined` (the investigation brought it back: commanded back through node.mesh.join, or started) or `re-created` (it could not be brought back: written `dead`, and [node recovery](node-recovery.md) deletes it and creates it again at its path and name with a new node.id). node.runtime.inspect's answers (`running`, `os-stopped`, `exited`, `unavailable`) are steps inside it, never a result. Its steps, in order:
 
 1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
    It names the peers to try; it never shows the node is reachable.
-2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
+2. [node.runtime.inspect](node-runtime-inspect.md). On `exited` or `os-stopped` no tickle is sent: an `exited` birth is written `dead`; an `os-stopped` one is commanded to start (step 5).
 3. [node.tickle](node-tickle.md), direct.
-4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an inspect that answers `unavailable`
-   is asked again under the investigation's retries, and a birth still not proven at their end is
-   `dead`.
+4. The same tickle via those peers. Unreached, a `running` birth is commanded back through [node.mesh.join](node-mesh-join.md) (step 5); an inspect that answers `unavailable` is asked again under the investigation's retries, and a birth still not proven at their end is written `dead`.
+5. The command back or the start, each under its `Send`: answered, the investigation ends `rejoined`; unanswered at the end of its attempts, the birth is written `dead`. A birth written `dead` ends it `re-created`.
 
-Only an answer from the exact birth counts as `reached`.
+Only an answer from the exact birth counts: to a tickle, the investigation ends `ready`; to the command back or the start, `rejoined`.
 
 A lost mesh-primary is investigated by the successor its election names, as any member of its
 mesh ([node recovery](node-recovery.md) step 2; Q335). When the mesh's aggregate stays unheard for twice the staleness floor (60 s at the default floor; no successor took the role, Q349), the
@@ -25,13 +22,12 @@ A node that does not answer a call is silent, whatever it gossips (Q182): a call
 unanswered starts an ordered investigation of its birth at the primary above it (the caller itself when it is that primary; any
 other caller reports the birth to it with Status `ReportCallFailed`), which sets no `PendingReconnect` ([node recovery](node-recovery.md) step 3, Q393).
 
-The verdict is the one decision (Q111). The primary that investigated writes it as one `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, verdict and what follows ([build.md §5](../build.md#5-buildstateadapter)); an investigation is never an entity of its own. Reached: the node is commanded back through
-[node.mesh.join](node-mesh-join.md). Any other verdict follows the investigation's reason ([node recovery](node-recovery.md) step 3, Q393); a birth written `dead` is re-created at the same path and name with a new node.id (Q110). `running` from an investigator that hears no other node (every other birth it holds is unheard past the floor, so it is the one cut off) is unreachable from that investigator, not lost: nothing is written, and the next investigation decides again (Q153). Fabric recovery's backbone arm excepts `running` ([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
+The result is the one decision (Q111). The primary that investigated writes it as one `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, result and the inspect's answer that led to it ([build.md §5](../build.md#5-buildstateadapter)); an investigation is never an entity of its own. `ready`: a held birth off its mesh is commanded back through [node.mesh.join](node-mesh-join.md) for its view (Q87), and is still `ready`. `re-created`: [node recovery](node-recovery.md) deletes the birth and creates it again at the same path and name with a new node.id (Q110). An investigator that hears no other node (every other birth it holds is unheard past the floor, so it is the one cut off) ends with no result: nothing is written, and the next investigation decides (Q153). Fabric recovery's backbone arm excepts that case ([fabric recovery](fabric-recovery.md) step 3). A wrong result is fixed in the investigation.
 
 Nothing waits on the provider's `Exited`: not node recovery, a primary change, a name's release,
 node.delete or mesh.delete.
 
-Data dir: if the provider step finds the runtime exited, the re-created node takes its predecessor's data dir when its `storage_persistence` is `persistent` and the directory exists; otherwise, and on any other verdict, a newly allocated one (Q359). Its `endpoint_id` and `transport_addr` are always new (Q358).
+Data dir: if the provider step finds the runtime exited, the re-created node takes its predecessor's data dir when its `storage_persistence` is `persistent` and the directory exists; otherwise, and on any other answer, a newly allocated one (Q359). Its `endpoint_id` and `transport_addr` are always new (Q358).
 
 A caller birth a primary does not hold (its Digest refused by name under [gossip.md §3.1 receiver
 rules](../gossip.md#31-frame-catalog), its status declaration refused `SubjectUnknown`, or its join report refused `JoinMismatch` because the row at its path and name holds another node) is decided by
@@ -45,7 +41,7 @@ node-admin's atlas is its topology and its in-flight commands over the meshes it
 mesh as a mesh-primary and every mesh as the fabric-primary, taken as it takes that primary and narrowed off as it hands it away; the caller's record and the record at its path and name are read through the current-pair lookup ([query.md §1](../query.md#1-external-a-query-to-the-fabric-primary)). A node-admin that is not the fabric-primary
 verifies its decision at the root with `fabric.atlas.get` before it acts, and the root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217). A
 deleted caller's runtime is terminated by the primary whose atlas decided it, its own workflow, under `node.terminate:<path>@<incarnation>` (`rdm.node_admin.node.update.via-returned-reported`); each decision is one
-`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back once its verdict is not `reached`, during its successor's creation or after it, is
+`rdm.node_admin.node.update.via-refused-caller` span. A node that comes back once its investigation ends `re-created`, during its successor's creation or after it, is
 such a caller: its recovery or its re-created birth holds its path and name, and it is deleted. A second birth another
 executor made at the path and name across a cut is made a deleted birth by its mesh-primary, which writes its
 row deleted ([node.delete](node-delete.md), releasing the name) and reports it the same way (Q142).
@@ -57,17 +53,17 @@ row deleted ([node.delete](node-delete.md), releasing the name) and reports it t
 | Caller | The primary above the node: its mesh-primary for a member of any type, the fabric-primary for a mesh-primary or another mesh's node-admin |
 | Target | One node, by `(node.id, incarnation)` |
 | Steps | The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers |
-| Result | `reached`, `running`, `os-stopped` or `exited`, or `dead` when not proven by the end of the retries |
-| What follows | Reached: node.mesh.join. Any other verdict: [node recovery](node-recovery.md) step 3 (Q393); a birth written `dead` (except `running` from an investigator that hears no other node, Q153) is re-created at the same path and name with a new node.id, over the predecessor's data dir when the verdict is `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
+| Result | `ready`, `rejoined` or `re-created` (Q420–Q423); none from an investigator that hears no other node (Q153), nor from an ordered investigation whose inspect's answer matches the birth's status in the topology (Q393) |
+| What follows | `ready` and `rejoined`: nothing more from RDM; `on_node_investigated` tells the application. `re-created`: [node recovery](node-recovery.md), over the predecessor's data dir when the inspect answered `exited`, its storage `persistent` and the directory there, over a newly allocated one otherwise |
 | Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |
 
 ## States written
 
-Its mesh-primary writes the birth `PendingReconnect` as a self-heal starts and `dead` when the investigation concludes in failure (Q393); the primary that investigated writes its verdict as one `rdm.node.investigated` line in `events.jsonl`, `subject` the node.id.
+Its mesh-primary writes the birth `PendingReconnect` as a self-heal starts and `dead` when the investigation concludes in failure (Q393); the primary that investigated writes its result as one `rdm.node.investigated` line in `events.jsonl`, `subject` the node.id.
 
 | written | by | when |
 |---|---|---|
-| `rdm.node.investigated` | the primary that investigated | the verdict is decided, except `running` from an investigator that hears no other node, which writes nothing |
+| `rdm.node.investigated` | the primary that investigated | the result is decided; an investigator that hears no other node writes nothing |
 
 As stored:
 
@@ -89,4 +85,4 @@ As stored:
 {"len":482,"specversion":"1.0","id":"01a1ae8d-e0cc-7129-9be0-4c3bdb204341","source":"rdm://3fe2gyr0vby2/3mfm6ref1hfp/2237s0fb95jf","type":"rdm.node.investigated","subject":"9mn1y1x703ft","time":"2026-11-06T01:51:36.138Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c493098f704d67cd64d1d14876e49e4a-abb790c9e3f739f1-01","data":{"incarnation":"psc6we56fj63","name":"1","next":"recreate","path":"mesh2.node","verdict":"os-stopped","reason":"self-heal","trigger":"silence"},"crc32":"b88c01db"}
 ```
 
-`reason` is `self-heal` or `ordered`; `trigger` is `silence` for a self-heal, else what started the ordered investigation: `connect-refused`, `connect-timed-out`, `connect-failed`, `endpoint-unresolved`, `attempts-spent` or `report-call-failed` (Q393).
+`reason` is `self-heal` or `ordered`; `trigger` is `silence` for a self-heal, else what started the ordered investigation: `connect-refused`, `connect-timed-out`, `connect-failed`, `endpoint-unresolved`, `attempts-spent` or `report-call-failed` (Q393). `inspected` is node.runtime.inspect's answer that led to the result: `running`, `os-stopped`, `exited` or `unavailable`; a `ready` event carries none, the tickle's answer having led to it.

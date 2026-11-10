@@ -29,10 +29,11 @@ pub(crate) struct RecoverySubmitter {
     /// The births whose recovery ended failed, with the node each is of: run again by the next tick that
     /// finds the node still lost, whether or not the view still holds the birth (its delete may have
     /// completed), with no wait of its own: the recovery's calls retry only under their `Send` (Q344;
-    /// node-recovery.md "Detection and the verdict", "Failure"). Removed once a recovery of it completed.
+    /// node-recovery.md "Detection and the result", "Failure"). Removed once a recovery of it completed.
     pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), Node>>>,
-    /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
-    /// application's `on_node_investigated`, sent from that write (Q312).
+    /// Where an investigation that ends `re-created` is written as its `rdm.node.investigated` event,
+    /// and the application's `on_node_investigated`, sent from that write (Q312, Q423); and where the
+    /// tick writes `ready` for a birth that answered its tickle.
     pub investigated: crate::node_investigation::NodeInvestigatedWriter,
     /// Why each birth this tick wrote dead was investigated (Q393): its re-create's event names it; a
     /// birth with none held is a self-heal's.
@@ -48,27 +49,15 @@ impl RecoverySubmitter {
 /// ([`crate::deployment::provider::inspect_runtime`]).
 pub use crate::deployment::provider::Inspected;
 
-/// node.runtime.inspect's answer as its span names it (node-runtime-inspect.md "Spans"): `running`,
+/// node.runtime.inspect's answer as its span, the `rdm.node.investigated` event and the application's
+/// `on_node_investigated` name it (node-runtime-inspect.md "Spans"; node-investigation.md): `running`,
 /// `os-stopped`, `exited` or `unavailable`.
-pub(crate) fn verdict_name(outcome: &Inspected) -> &'static str {
+pub fn verdict_name(outcome: &Inspected) -> &'static str {
     match outcome {
         Inspected::Running => "running",
         Inspected::OsStopped => "os-stopped",
         Inspected::Exited(..) => "exited",
         Inspected::Unavailable(_) => "unavailable",
-    }
-}
-
-/// The investigation's verdict on an unreached birth from the inspection's answer `name`
-/// ([`verdict_name`]), or from the verdict's own name: an `unavailable` answer, the investigation's
-/// retries spent, is `dead` (node-investigation.md step 4, Q393).
-fn investigated_verdict(name: &str) -> crate::wiring::NodeInvestigatedVerdict {
-    use crate::wiring::NodeInvestigatedVerdict as V;
-    match name {
-        "running" => V::Running,
-        "os-stopped" => V::OsStopped,
-        "exited" => V::Exited,
-        _ => V::Dead,
     }
 }
 
@@ -90,9 +79,9 @@ impl RecoverySubmitter {
     }
 
     /// One birth written dead on the mesh primary's tick (node-recovery.md step 3, sequence step 1,
-    /// Q393): its investigation concluded in failure, and the recovery runs at once (Q110, Q111); the
-    /// provider's inspection here names the verdict its event carries, and nothing waits for a proof of
-    /// termination. The recovery's node.delete runs
+    /// Q393): its investigation concluded in failure and ends `re-created`, and the recovery runs at once
+    /// (Q110, Q111); the provider's inspection here is the inspect's answer its event carries, and
+    /// nothing waits for a proof of termination. The recovery's node.delete runs
     /// `TerminateRuntime` first when the runtime runs ([`crate::deployment::pipeline`]). A birth whose
     /// removal this admin's view holds announced is that workflow's, read after the inspection (the
     /// tick's view predates it).
@@ -133,7 +122,7 @@ impl RecoverySubmitter {
         }
         match n.incarnation_id.clone() {
             Some(incarnation) => {
-                let _ = self.submit_on_tick(n, &incarnation, verdict_name(&outcome), false).await;
+                let _ = self.submit_on_tick(n, &incarnation, Some(&outcome)).await;
             }
             None => {
                 let _ = self.submit(n, &outcome).await;
@@ -143,19 +132,24 @@ impl RecoverySubmitter {
     }
 
     /// One recovery the tick runs of `node`'s birth at `incarnation` (node-recovery.md "Detection and
-    /// the verdict": the loop on every gossip interval), on the investigation's `verdict`, or again after
-    /// it failed (`again`). A recovery that ends failed is named on its span's `outcome` and stays owed to
-    /// the birth ([`Self::failed`]): the next tick that finds the node still lost runs it again (Q344).
-    async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, verdict: &str, again: bool) -> Result<(), String> {
-        let span = submit_span(&self.me_id, node, incarnation, verdict);
-        if again {
-            span.record("again", true);
-        } else {
-            // The verdict opens the re-create: it is written as its event, and the application is told
-            // once from that write, under the recovery's span (fabric-node-hooks.md "on_node_investigated").
-            let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
-            let reason = self.reasons.lock().unwrap().get(&(node.node_id.clone(), incarnation.clone())).copied().unwrap_or(crate::node_investigation::Reason::SelfHeal);
-            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate, reason).instrument(span.clone()).await;
+    /// the result": the loop on every gossip interval), on `inspected`, node.runtime.inspect's answer of
+    /// the birth written dead, or again after it failed (`None`: nothing is inspected again). A recovery
+    /// that ends failed is named on its span's `outcome` and stays owed to the birth ([`Self::failed`]):
+    /// the next tick that finds the node still lost runs it again (Q344).
+    async fn submit_on_tick(&self, node: &Node, incarnation: &IncarnationId, inspected: Option<&Inspected>) -> Result<(), String> {
+        let span = submit_span(&self.me_id, node, incarnation, inspected.map(verdict_name).unwrap_or_default());
+        match inspected {
+            None => {
+                span.record("again", true);
+            }
+            Some(inspected) => {
+                // The investigation ends `re-created`: written as its event with the inspect's answer
+                // that led to it, and the application is told once from that write, under the recovery's
+                // span (fabric-node-hooks.md "on_node_investigated").
+                let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
+                let reason = self.reasons.lock().unwrap().get(&(node.node_id.clone(), incarnation.clone())).copied().unwrap_or(crate::node_investigation::Reason::SelfHeal);
+                crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedResult::ReCreated, Some(inspected), reason).instrument(span.clone()).await;
+            }
         }
         let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);
@@ -236,7 +230,7 @@ impl RecoverySubmitter {
         settled(&span, end)
     }
 
-    /// The births whose recovery the tick runs again (node-recovery.md "Detection and the verdict": "A
+    /// The births whose recovery the tick runs again (node-recovery.md "Detection and the result": "A
     /// recovery that ends failed is run again by the next check that finds the node still lost"): none
     /// unless this admin holds its mesh's primary role; else every birth of its own mesh whose recovery
     /// failed here, whether or not the view still holds it.
@@ -265,7 +259,7 @@ impl RecoverySubmitter {
             span.in_scope(|| tracing::info!(created_node_id = %created, "a birth already recovered is not recovered again: the node its recovery created stands at its path and name"));
             return Ok(());
         }
-        self.submit_on_tick(node, &incarnation, "", true).await
+        self.submit_on_tick(node, &incarnation, None).await
     }
 
     /// The recovery of `node`'s unreached birth at `incarnation`, run by this admin, the primary above

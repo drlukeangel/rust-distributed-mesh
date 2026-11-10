@@ -1210,7 +1210,7 @@ mod tests {
         assert!(recovery.failed_recoveries(true, "mesh2").is_empty(), "nothing is owed a recovery");
     }
 
-    /// CONTRACT (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again
+    /// CONTRACT (node-recovery.md "Detection and the result": "A recovery that ends failed is run again
     /// by the next check that finds the node still lost; its calls retry only under their `Send` (Q344)";
     /// "Execution": one recovery per birth in flight): the tick's one gate, `take`. A birth whose recovery
     /// is in flight is never taken again until its follower ends; its recovery that ended failed is named
@@ -1273,7 +1273,7 @@ mod tests {
         assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![node], "still owed while it keeps failing");
     }
 
-    /// CONTRACT (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again
+    /// CONTRACT (node-recovery.md "Detection and the result": "A recovery that ends failed is run again
     /// by the next check that finds the node still lost"; "Failure": the mesh-primary's next tick that
     /// finds the member still lost runs the recovery; Q342: the recovery is the primary's own workflow,
     /// never a Build): a recovery of mesh2.node.1 that fails stays owed to that exact birth, whether or not
@@ -1488,26 +1488,27 @@ mod tests {
     }
 
     /// CONTRACT (node-investigation.md: "The primary that investigated writes it as one
-    /// `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, verdict
-    /// and what follows"; fabric-node-hooks.md "on_node_investigated", Q312: "Once it writes a node
-    /// investigation's verdict on a node of its mesh as its `rdm.node.investigated` event, the
-    /// mesh-primary calls `on_node_investigated` once, with `NodeInvestigatedCtx { fabric_id, mesh_id,
-    /// node_id, incarnation, path, name, verdict, next, context }`, on a task of its own"): the
-    /// mesh-primary's investigation of an unreached member ends in the provider's verdict (`running`,
-    /// `exited`), which opens the re-create. The verdict is read back from the events store as one
-    /// `rdm.node.investigated` event of the member's node.id, by this mesh-primary's exact birth, in
-    /// the submit's trace, carrying the incarnation, path, name, verdict and `next` = `recreate`; and
-    /// the application is told once from that write, naming the exact birth, its mesh and fabric, the
-    /// verdict and `next`, under one `rdm.node_admin.node.update.via-on-node-investigated` span, a child
-    /// of the submit's span, which names the event. Must NOT happen: no event, a second event or notice
-    /// for the one verdict, an event or notice naming another birth or `rejoin`.
+    /// `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, result
+    /// and the inspect's answer that led to it"; fabric-node-hooks.md "on_node_investigated", Q312:
+    /// "the mesh-primary calls `on_node_investigated` once, with `NodeInvestigatedCtx { fabric_id,
+    /// mesh_id, node_id, incarnation, path, name, type, result, inspected, context }`, on a task of its
+    /// own"; Q420–Q423): the mesh-primary's investigation of a member written dead ends `re-created`, on
+    /// the provider's answer (`running`, `exited`). The result is read back from the events store as one
+    /// `rdm.node.investigated` event of the member's node.id, by this mesh-primary's exact birth, in the
+    /// submit's trace, carrying the incarnation, path, name, `result` = `re-created` and `inspected`, the
+    /// inspect's answer; and the application is told once from that write, naming the exact birth and
+    /// its node type, its mesh and fabric, the result and the inspect's answer, under one
+    /// `rdm.node_admin.node.update.via-on-node-investigated` span, a child of the submit's span, which
+    /// names the event. Must NOT happen: no event, a second event or notice for the one result, an event
+    /// or notice naming another birth, or a result other than `re-created`.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn an_investigations_verdict_is_one_node_investigated_event_and_on_node_investigated_is_told_once_from_it() {
-        use crate::wiring::{NodeInvestigatedCtx, NodeInvestigatedNext, NodeInvestigatedVerdict};
-        use crate::deployment::provider::DeploymentStatus;
+    async fn an_investigations_result_is_one_node_investigated_event_and_on_node_investigated_is_told_once_from_it() {
+        use crate::wiring::{NodeInvestigatedCtx, NodeInvestigatedResult};
+        use crate::deployment::provider::{DeploymentStatus, Inspected};
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-on-investigated")).unwrap();
-        for (status, verdict) in [(DeploymentStatus::Running, NodeInvestigatedVerdict::Running), (DeploymentStatus::Exited { code: Some(137) }, NodeInvestigatedVerdict::Exited)] {
+        for (status, inspected) in [(DeploymentStatus::Running, Inspected::Running), (DeploymentStatus::Exited { code: Some(137) }, Inspected::Exited(Some(137)))] {
+            let answer = crate::admin::verdict_name(&inspected);
             let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", rdm_core::model::NodeStatus::Ready);
             let digest_view = DigestView::default();
             // The runtime its join report carried, held apart from its digest.
@@ -1532,39 +1533,40 @@ mod tests {
                     Box::pin(async {})
                 })
             });
-            let capture = crate::span_capture::Capture::new(&format!("i151-on-node-investigated-{}", verdict.as_str()));
+            let capture = crate::span_capture::Capture::new(&format!("i151-on-node-investigated-{answer}"));
             {
                 // Held until the notice's task has run on this thread: its span, a child of the submit's,
                 // releases the submit's span through this thread's dispatcher when it closes.
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
                 recovery.recover(&node).await;
                 tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.expect("on_node_investigated is called on its own task").expect("told");
-                // Anything a second notice would have sent is in by now: the verdict's one recover has returned.
+                // Anything a second notice would have sent is in by now: the result's one recover has returned.
                 tokio::task::yield_now().await;
             }
             let told = told.lock().unwrap().clone();
-            assert_eq!(told.len(), 1, "{}: one notice for the one verdict: {told:?}", verdict.as_str());
+            assert_eq!(told.len(), 1, "{answer}: one notice for the one result: {told:?}");
             let ctx = &told[0];
-            assert_eq!((ctx.verdict, ctx.next), (verdict, NodeInvestigatedNext::Recreate), "the verdict recorded and the re-create it opens");
+            assert_eq!((ctx.result, ctx.inspected.as_ref()), (NodeInvestigatedResult::ReCreated, Some(&inspected)), "the result recorded and the inspect's answer that led to it");
+            assert_eq!(ctx.r#type, "node", "the birth's node type");
             assert_eq!((&ctx.node_id, &ctx.incarnation, ctx.path.as_str(), ctx.name.as_str()), (&member.node.node_id, &member.node.incarnation, "mesh2.node", "1"), "the exact birth investigated");
             assert_eq!((&ctx.fabric_id, &ctx.mesh_id), (&fabric1(), &mesh_id("mesh2")), "its fabric and mesh");
             let notices = capture.named("rdm.node_admin.node.update.via-on-node-investigated");
             assert_eq!(notices.len(), 1, "one notice span: {notices:?}");
             let a = &notices[0].attributes;
             let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-            assert_eq!((attr("verdict"), attr("next"), attr("outcome"), attr("node_id")), (verdict.as_str().to_string(), "recreate".to_string(), "sent".to_string(), member.node.node_id.to_string()), "{a:?}");
+            assert_eq!((attr("result"), attr("inspected"), attr("outcome"), attr("node_id")), ("re-created".to_string(), answer.to_string(), "sent".to_string(), member.node.node_id.to_string()), "{a:?}");
             let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
-            assert_eq!(submits.len(), 1, "the verdict's one submit: {submits:?}");
+            assert_eq!(submits.len(), 1, "the result's one submit: {submits:?}");
             assert_eq!(notices[0].trace_id, submits[0].trace_id, "the notice is in the submit's trace");
             assert!(ctx.context.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the notice carries the investigation's trace context: {:?}", ctx.context);
-            // The verdict read back: one event of the member's node.id, written before the notice was sent.
+            // The result read back: one event of the member's node.id, written before the notice was sent.
             let events = recovery.investigated.events.events.of_node(&member.node.node_id).await.unwrap();
-            assert_eq!(events.len(), 1, "{}: one event for the one verdict: {events:#?}", verdict.as_str());
+            assert_eq!(events.len(), 1, "{answer}: one event for the one result: {events:#?}");
             let e = &events[0];
             assert_eq!((e.specversion.as_str(), e.r#type.as_str(), e.datacontenttype.as_str(), e.subject.as_ref()), ("1.0", crate::events_storage::NODE_INVESTIGATED, "application/json", Some(&member.node.node_id)), "a CloudEvents 1.0 rdm.node.investigated event about the member: {e:?}");
             assert_eq!(e.source, recovery.investigated.events.source.uri(), "written by the mesh-primary that investigated, its exact birth");
             let data = serde_json::Value::Object(e.data.clone());
-            assert_eq!(data, serde_json::json!({"incarnation": member.node.incarnation, "path": "mesh2.node", "name": "1", "verdict": verdict.as_str(), "next": "recreate", "reason": "self-heal", "trigger": "silence"}), "the event's data: the investigation's reason and trigger beside its verdict (Q393)");
+            assert_eq!(data, serde_json::json!({"incarnation": member.node.incarnation, "path": "mesh2.node", "name": "1", "result": "re-created", "inspected": answer, "reason": "self-heal", "trigger": "silence"}), "the event's data: the result, the inspect's answer that led to it, and the investigation's reason and trigger (Q393, Q420)");
             assert!(e.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the event carries the investigation's trace context: {e:?}");
             assert_eq!(attr("event_id"), e.id.to_string(), "the notice is sent from the event's write, which its span names");
             assert_eq!(recovery.investigated.events.events.event(&e.id).await.unwrap().as_ref(), Some(e), "the event read by its id");
@@ -3807,7 +3809,7 @@ mod tests {
         }
     }
 
-    /// CONTRACT (node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts";
+    /// CONTRACT (node-recovery.md "Detection and the result" step 2: "Only the mesh-primary acts";
     /// fabric-node-lifecycle-elections.md §4.1: the mesh-primary runs node investigation; build.md §5.3:
     /// the launching admin records the birth's runtime, and each mesh-primary writes the step events of
     /// its mesh): the births only a durable runtime row names are

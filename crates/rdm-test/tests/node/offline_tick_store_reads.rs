@@ -1,7 +1,7 @@
 //! What a node-admin's offline tick reads from the fabric's nodes store.
 //!
 //! Only the mesh-primary runs node investigation on its mesh's births (fabric-node-lifecycle-elections.md
-//! §4.1; node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"), so only it
+//! §4.1; node-recovery.md "Detection and the result" step 2: "Only the mesh-primary acts"), so only it
 //! watches the births a durable node record alone names, by the `runtime` each node wrote on its own
 //! record (Q356, Q366). It reads its mesh's node records once, as it takes the role, and holds them while
 //! it keeps it: a node started later is one its own executor launched (node-recovery.md "Execution": "The
@@ -127,7 +127,7 @@ pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 
 // @feature: node-lifecycle
 /// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "The mesh-primary then runs node investigation";
-/// node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts"; Q366: a node's
+/// node-recovery.md "Detection and the result" step 2: "Only the mesh-primary acts"; Q366: a node's
 /// `runtime` is on its own record): a Day-0 node-admin (mesh1.node-admin.1, its mesh's primary) and
 /// mesh1.node-admin.2, created by it through its `node.create` once its Day-0 Build is complete, are both ready and run their offline ticks for six gossip
 /// intervals. The mesh-primary's tick read mesh1's node records once, as it took the role;

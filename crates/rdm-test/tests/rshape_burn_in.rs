@@ -2789,7 +2789,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let recreated = recovered.admins.iter().find(|n| location(n) == victim_name).cloned().unwrap_or_else(|| panic!("R3: {victim_name:?} stands again"));
     assert_ne!(recreated["node_id"], victim["node_id"], "R3: node recovery re-creates the path under a new node.id (node-recovery.md, Lineage)");
     let investigated: Vec<Value> = crate::build_log::node_investigated(&f.estate, &victim_birth.0).into_iter().filter(|e| e["data"]["incarnation"] == victim_birth.1.as_str()).collect();
-    assert!(investigated.iter().any(|e| e["data"]["next"] == "recreate"), "R3: the dead birth's investigation is one rdm.node.investigated event naming recreate (node-investigation.md): {investigated:?}");
+    assert!(investigated.iter().any(|e| e["data"]["result"] == "re-created"), "R3: the dead birth's investigation is one rdm.node.investigated event ending re-created (node-investigation.md): {investigated:?}");
     a.events.push(json!({"event": "mesh-primary.death", "scenario": "R3", "victim": victim_name, "victim_node_id": victim_birth.0, "victim_incarnation_id": victim_birth.1, "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "recreated_node_id": recreated["node_id"], "investigated": investigated, "kill": kill}));
     trail.push(json!({"after": "R3", "fabric_build_id": recovered.fabric["build_id"], "recreated_node_id": recreated["node_id"]}));
     let proof = prove_path(&mut f, &mut a, &both(2), "R3 after the mesh-primary's death", &mut inv).await;
@@ -3131,7 +3131,7 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName,
     let wall_ms = started.elapsed().as_millis() as u64;
     assert_eq!(build_after, fabric_build, "{scenario}: {node:?}'s recovery accepted no Build (Q342): the fabric names the Build it named before");
     let investigated: Vec<Value> = crate::build_log::node_investigated(&f.estate, &old_id).into_iter().filter(|e| e["data"]["incarnation"] == old_inc.as_str()).map(|e| e["data"].clone()).collect();
-    assert!(investigated.iter().any(|d| d["next"] == "recreate"), "{scenario}: {node:?}'s investigation is one rdm.node.investigated event naming recreate (node-investigation.md): {investigated:?}");
+    assert!(investigated.iter().any(|d| d["result"] == "re-created"), "{scenario}: {node:?}'s investigation is one rdm.node.investigated event ending re-created (node-investigation.md): {investigated:?}");
     assert_ne!(s(&born["incarnation"]), old_inc, "{node:?}: a node recovery is a new incarnation (node-recovery.md, New)");
     assert_ne!(born["endpoint_id"], n["endpoint_id"], "{node:?}: a node recovery gets a new endpoint_id (node-recovery.md, New; Q358)");
     let dir_new = f.estate.data_dir(node).await;
@@ -3965,8 +3965,8 @@ async fn replacement_run(cell: &str, shape: Shape) {
         "node_id_changed": n3["node_id"] != n2["node_id"], "endpoint_id_changed": n3["endpoint_id"] != n2["endpoint_id"], "fabric_build_id": drift_build,
         "investigated": crate::build_log::node_investigated(&f.estate, &id2).into_iter().map(|e| e["data"].clone()).collect::<Vec<_>>(), "kill": kill, "kill_ns": kill_ns, "old_birth_terminal": terminal2, "runtimes": {"old": rt2.record(), "new": rt3.record()}, "wall_ms": drift_fin["wall_ms"],
     });
-    assert!(drift["investigated"].as_array().is_some_and(|v| v.iter().any(|d| d["incarnation"] == inc2.as_str() && d["next"] == "recreate")), "C8 drift: the exited birth's investigation is one rdm.node.investigated event naming recreate: {}", drift["investigated"]);
-    inv.holds("C8 drift: the exact runtime of a gateway was killed (acknowledged by the provider); its mesh-primary's node recovery re-created it in a new runtime under a new node.id, its verdict an rdm.node.investigated event naming recreate; the old runtime is terminal; no new Build was accepted", true, json!({"drift": drift}));
+    assert!(drift["investigated"].as_array().is_some_and(|v| v.iter().any(|d| d["incarnation"] == inc2.as_str() && d["result"] == "re-created")), "C8 drift: the exited birth's investigation is one rdm.node.investigated event ending re-created: {}", drift["investigated"]);
+    inv.holds("C8 drift: the exact runtime of a gateway was killed (acknowledged by the provider); its mesh-primary's node recovery re-created it in a new runtime under a new node.id, its result an rdm.node.investigated event ending re-created; the old runtime is terminal; no new Build was accepted", true, json!({"drift": drift}));
 
     // Final state.
     a.traffic.burst(&f, 6, "steady-after").await;
@@ -4166,7 +4166,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName,
     let fabric_after = a.fabric(f).await.unwrap_or(Value::Null);
     assert_eq!(s(&fabric_after["build_id"]), fabric_build, "{node:?}: the terminate of the released birth minted no Build: {fabric_after}");
     let investigated: Vec<Value> = crate::build_log::node_investigated(&f.estate, &node_id).into_iter().filter(|e| e["data"]["incarnation"] == inc.as_str()).map(|e| e["data"].clone()).collect();
-    assert!(investigated.iter().any(|d| d["next"] == "recreate"), "{node:?}: the held birth's investigation is one rdm.node.investigated event naming recreate: {investigated:?}");
+    assert!(investigated.iter().any(|d| d["result"] == "re-created"), "{node:?}: the held birth's investigation is one rdm.node.investigated event ending re-created: {investigated:?}");
     let rt_after = exact_runtime(f, node).await;
     assert!(!rt.is(&rt_after), "{node:?}: the re-created birth runs in the held birth's runtime: {:?}", rt_after.record());
     let rec = json!({

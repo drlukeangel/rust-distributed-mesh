@@ -2790,13 +2790,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let (heard_again, records, recovery, rows, observer, unwritten_dead) = (heard_again.clone(), records.clone(), recovery.clone(), rows.clone(), me_id.to_string(), unwritten_dead.clone());
                                                         tokio::spawn(stop.until_stopped(async move {
+                                                            use crate::deployment::provider::Inspected;
                                                             use crate::heard_again::SelfHealEnd;
-                                                            use crate::wiring::NodeInvestigatedVerdict as V;
-                                                            let mut end = if start { heard_again.self_heal_start(&n, &incarnation, reason).await } else { heard_again.self_heal_join(&n, &incarnation, V::Running, reason).await };
-                                                            // A start refused as already live: the birth runs, and it is `running`.
+                                                            // Answered, the investigation ends `rejoined`, with the inspect's answer
+                                                            // that led to it (Q422, Q423).
+                                                            let mut end = if start { heard_again.self_heal_start(&n, &incarnation, reason).await } else { heard_again.self_heal_join(&n, &incarnation, Inspected::Running, reason).await };
+                                                            // A start refused as already live: the birth runs, and the inspect's
+                                                            // answer is taken as `running`.
                                                             if matches!(end, SelfHealEnd::Live(_)) {
                                                                 end = match crate::node_investigation::follows(&crate::node_investigation::Finding::Running, reason, status) {
-                                                                    crate::node_investigation::Follows::MeshJoin => heard_again.self_heal_join(&n, &incarnation, V::Running, reason).await,
+                                                                    crate::node_investigation::Follows::MeshJoin => heard_again.self_heal_join(&n, &incarnation, Inspected::Running, reason).await,
                                                                     _ => end,
                                                                 };
                                                             }
@@ -2825,9 +2828,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 for id in &report.returned {
                                                     // A held birth heard again by its digest is commanded back through node.mesh.join
                                                     // too (Q87: the view returns on the bare digest, its cert, time and cache do not):
-                                                    // by the mesh-primary, on its own task.
+                                                    // by the mesh-primary, on its own task. One heard again while its investigation's
+                                                    // ladder ran, before a tick folded it, ends that investigation `ready`
+                                                    // (node-recovery.md step 3, Q420): written first, once, on the same task; the
+                                                    // command writes nothing.
                                                     if holds_role {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
+                                                            // A birth listed only for an ordered investigation is never heard again
+                                                            // (`OfflineTickle::tick`): a returned birth's investigation is a self-heal.
+                                                            let ready = report.returned_investigated.contains(id).then(|| (recovery.investigated.clone(), crate::node_investigation::fabric_and_mesh_of(&view, &n), crate::node_investigation::Reason::SelfHeal));
                                                             // The tick held this birth off its mesh (it was tickled and returned): the view's
                                                             // ready, when it shows one, is the birth's own last word before the
                                                             // silence, not where it stands now (Q87).
@@ -2836,7 +2845,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             }
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
                                                                 // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
-                                                                tokio::spawn(stop.until_stopped(async move { heard_again.command(&n, &incarnation).await; }));
+                                                                tokio::spawn(stop.until_stopped(async move {
+                                                                    if let Some((writer, ids, reason)) = ready {
+                                                                        crate::node_investigation::write_ready(&writer, ids, &n, &incarnation, reason).await;
+                                                                    }
+                                                                    heard_again.command(&n, &incarnation).await;
+                                                                }));
                                                             }
                                                         }
                                                     }
@@ -2845,23 +2859,33 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                 }
                                                 for id in &report.reachable_silent {
-                                                    // A held birth that answered its probe `Current` (`report.answered_current`) is
-                                                    // commanded back through node.mesh.join (Q87): its commanded start runs on its own
-                                                    // task, after the ladder's fold. Only the mesh-primary commands its members
-                                                    // (commands go down); every admin keeps the bookkeeping.
-                                                    if report.answered_current.contains(id) && holds_role {
-                                                        if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
-                                                            // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
-                                                            // ready is its last word before the silence (Q87).
-                                                            if n.status == NodeStatus::Ready {
-                                                                n.status = NodeStatus::PendingReconnect;
-                                                            }
-                                                            if let Some(incarnation) = n.incarnation_id.clone() {
-                                                                // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
-                                                                tokio::spawn(stop.until_stopped(async move { heard_again.command(&n, &incarnation).await; }));
-                                                            }
-                                                        }
+                                                    // The exact birth answered its tickle: its investigation ends `ready`
+                                                    // (node-investigation.md, Q420), written once, at this fold, by the mesh-primary
+                                                    // for every reached birth of its mesh. A held birth that answered its probe
+                                                    // `Current` (`report.answered_current`) is then commanded back through
+                                                    // node.mesh.join for its view (Q87), on the same task after the write; the command
+                                                    // writes nothing. Only the mesh-primary writes and commands its members (commands
+                                                    // go down); every admin keeps the bookkeeping.
+                                                    if !holds_role {
+                                                        continue;
                                                     }
+                                                    let Some(mut n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned() else { continue };
+                                                    let Some(incarnation) = n.incarnation_id.clone() else { continue };
+                                                    let reason = listed.get(id).map(|(reason, _)| *reason).unwrap_or(crate::node_investigation::Reason::SelfHeal);
+                                                    let (writer, ids) = (recovery.investigated.clone(), crate::node_investigation::fabric_and_mesh_of(&view, &n));
+                                                    let heard_again = if report.answered_current.contains(id) { ladder_heard_again.get().cloned() } else { None };
+                                                    // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
+                                                    // ready is its last word before the silence (Q87).
+                                                    if n.status == NodeStatus::Ready {
+                                                        n.status = NodeStatus::PendingReconnect;
+                                                    }
+                                                    // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
+                                                    tokio::spawn(stop.until_stopped(async move {
+                                                        crate::node_investigation::write_ready(&writer, ids, &n, &incarnation, reason).await;
+                                                        if let Some(heard_again) = heard_again {
+                                                            heard_again.command(&n, &incarnation).await;
+                                                        }
+                                                    }));
                                                 }
                                                 clear_unwatched(&watched, &mut records.offline.lock().unwrap());
                                                 if *records.offline.lock().unwrap() != offline_before {

@@ -133,7 +133,7 @@ count against the config cap.
 | traffic opening (and my Day-0 work, which is my own) | [on_fabric_ready](../architecture/fabric-node-hooks.md#on_fabric_ready) |
 | a Build starting and ending (`complete`, `incomplete`, `failed`) | [on_build_started, on_build_ended](../architecture/fabric-node-hooks.md#on_build_started) |
 | a call of mine that spent its attempts | [on_call_failed](../architecture/fabric-node-hooks.md#on_call_failed) |
-| a node investigation's verdict | [on_node_investigated](../architecture/fabric-node-hooks.md#on_node_investigated) |
+| a node investigation's result | [on_node_investigated](../architecture/fabric-node-hooks.md#on_node_investigated) |
 | the clock | [rafka-time](../architecture/fabric-node-hooks.md#rafka-time) |
 
 ## Talking between nodes

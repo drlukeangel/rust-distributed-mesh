@@ -16,12 +16,12 @@
 //!    outcome `marked`), its tick investigates it from that mark (`via-provider-inspection`) before
 //!    silence alone would have, and submits its re-create on the verdict `running` (`via-node-recovery`);
 //!    the member is re-created, ready, as a new node.id at the same `(path, name)`;
-//! 4. `on_node_investigated` is called once for that birth, with verdict `running` and next `recreate`
-//!    (`rdm.node_admin.node.update.via-on-node-investigated`, the application's
-//!    `rdm.testkit.app.update.via-on-node-investigated`), under the span that records the verdict and
+//! 4. `on_node_investigated` is called once for that birth, with result `re-created` and the inspect's
+//!    answer `running` (`rdm.node_admin.node.update.via-on-node-investigated`, the application's
+//!    `rdm.testkit.app.update.via-on-node-investigated`), under the span that records the result and
 //!    opens the re-create: "a re-create may be under way when the application's hook runs"
 //!    (fabric-node-hooks.md "on_node_investigated"), so the notice follows the investigation and the
-//!    submit, and orders nothing against the re-create's end; sent from the write of the verdict's one
+//!    submit, and orders nothing against the re-create's end; sent from the write of the result's one
 //!    `rdm.node.investigated` event of the birth's node.id on the fabric's store root, by the mesh-primary
 //!    (node-investigation.md, build.md §5).
 //!
@@ -168,29 +168,29 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     assert_eq!(attr(&recovery, "submitter"), primary_id, "the member's mesh-primary submits its re-create: {recovery}");
     assert_eq!(attr(&recovery, "verdict"), "running", "on the investigation's verdict: {recovery}");
     assert!(at(&recovery) >= at(&investigation), "the submit follows the investigation: {recovery}");
-    // 4. on_node_investigated once for the birth, recreate, under the submit that records the verdict.
+    // 4. on_node_investigated once for the birth, re-created, under the submit that records the result.
     let investigated: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-on-node-investigated").into_iter().filter(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str()).collect();
     assert_eq!(investigated.len(), 1, "on_node_investigated is called once for the birth: {investigated:#?}");
     let told = investigated[0];
-    assert_eq!((attr(told, "verdict"), attr(told, "next"), attr(told, "outcome")), ("running".to_string(), "recreate".to_string(), "sent".to_string()), "verdict running, next recreate, sent to the application: {told}");
-    assert_eq!(s(&told["parent_span_id"]), s(&recovery["span_id"]), "told under the span that records the verdict and opens the re-create: {told}");
+    assert_eq!((attr(told, "result"), attr(told, "inspected"), attr(told, "outcome")), ("re-created".to_string(), "running".to_string(), "sent".to_string()), "result re-created, inspected running, sent to the application: {told}");
+    assert_eq!(s(&told["parent_span_id"]), s(&recovery["span_id"]), "told under the span that records the result and opens the re-create: {told}");
     assert!(at(told) >= at(&investigation) && at(told) >= at(&notice), "told after the investigation and after on_call_failed: {told}");
     let app_investigated: Vec<&Value> = named(&spans, "rdm.testkit.app.update.via-on-node-investigated").into_iter().filter(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str()).collect();
     assert_eq!(app_investigated.len(), 1, "the application's on_node_investigated ran once: {app_investigated:#?}");
-    assert_eq!((attr(app_investigated[0], "verdict"), attr(app_investigated[0], "next")), ("running".to_string(), "recreate".to_string()), "{}", app_investigated[0]);
-    // The verdict is one `rdm.node.investigated` event of the hung birth's node.id on the fabric's store
+    assert_eq!((attr(app_investigated[0], "result"), attr(app_investigated[0], "inspected"), attr(app_investigated[0], "node_type")), ("re-created".to_string(), "running".to_string(), "node".to_string()), "{}", app_investigated[0]);
+    // The result is one `rdm.node.investigated` event of the hung birth's node.id on the fabric's store
     // root, by its mesh-primary, the event the notice's span names (node-investigation.md, build.md §5).
     let events = rdm_admin::events_storage::FileEventsStorage::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root()).unwrap()).await.expect("the fabric's events store opens");
     let of_node = rdm_admin::events_storage::EventsStorage::of_node(&events, &node.node_id).await.expect("the hung birth's events read");
-    let verdicts: Vec<_> = of_node.iter().filter(|e| e.r#type == rdm_admin::events_storage::NODE_INVESTIGATED && e.data.get("incarnation").and_then(Value::as_str) == Some(incarnation.as_str())).collect();
-    assert_eq!(verdicts.len(), 1, "one rdm.node.investigated event for the birth: {of_node:#?}");
-    let event = verdicts[0];
-    assert_eq!((event.data.get("verdict").and_then(Value::as_str), event.data.get("next").and_then(Value::as_str)), (Some("running"), Some("recreate")), "{event:?}");
+    let results: Vec<_> = of_node.iter().filter(|e| e.r#type == rdm_admin::events_storage::NODE_INVESTIGATED && e.data.get("incarnation").and_then(Value::as_str) == Some(incarnation.as_str())).collect();
+    assert_eq!(results.len(), 1, "one rdm.node.investigated event for the birth: {of_node:#?}");
+    let event = results[0];
+    assert_eq!((event.data.get("result").and_then(Value::as_str), event.data.get("inspected").and_then(Value::as_str)), (Some("re-created"), Some("running")), "{event:?}");
     assert!(event.source.contains(&primary_id), "written by the member's mesh-primary, its exact birth: {event:?}");
     assert_eq!(attr(told, "event_id"), event.id.to_string(), "the notice is sent from the event's write: {told}");
 
     eprintln!(
-        "send: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms verdict {} next {} | new birth {} at {path:?}",
+        "send: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms result {} inspected {} | new birth {} at {path:?}",
         attr(&call, "op"),
         attr(&call, "attempts"),
         attr(&call, "delivery"),
@@ -204,8 +204,8 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
         ms(held_at, at(&recovery)),
         s(&recovery["trace_id"]),
         ms(held_at, at(told)),
-        attr(told, "verdict"),
-        attr(told, "next"),
+        attr(told, "result"),
+        attr(told, "inspected"),
         after.node_id,
     );
     estate.record_trace_url(&s(&call["trace_id"]));

@@ -32,8 +32,8 @@ The contract is in these pages; this runbook only gathers them:
 | Operation | node.id, incarnation | Data dir | Endpoint key | `pre_node_ready` |
 |---|---|---|---|---|
 | `node.stop` then `node.start` | same | same | same | runs again, `start_kind = AfterStop` |
-| node recovery, verdict `exited`, `persistent` storage, the old data dir there | new; same path and name | the old one, inherited | newly minted, written into it | `FirstStart`, `inherited = true` |
-| node recovery, `ephemeral` storage, the old data dir gone, or any other verdict but `os-stopped` | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
+| node recovery, the inspect's answer `exited`, `persistent` storage, the old data dir there | new; same path and name | the old one, inherited | newly minted, written into it | `FirstStart`, `inherited = true` |
+| node recovery, `ephemeral` storage, the old data dir gone, or any other answer of the inspect | new; same path and name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
 | `node.delete` | released | kept on disk; a later node at the path may inherit it | never reused | none |
 
 A new executable is a new node, a Build that adds it (build-deployment.md §3). To keep the old node's
@@ -71,6 +71,6 @@ until a Delete removes it, and moving its data is Rafka's own step, with its own
    touch the disk.
 3. For a re-birth: read `inherited` on the pre-node-ready attempt span.
    - `true`: the old data dir is in use, and the broker should open it.
-   - `false`: read the recovery's verdict and the path's `storage_persistence`. The broker started empty and
+   - `false`: read the inspect's answer on the recovery's span and the path's `storage_persistence`. The broker started empty and
      must resync.
 4. Check the path's storage in the accepted Build: a broker path should be `Persistent`.

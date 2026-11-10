@@ -1,6 +1,6 @@
 //! node-recovery.md "Execution": "The mesh-primary runs the recovery itself and records each step on
 //! the node record ... It is never a Build: no build.create, no Build record, nothing claimed" (Q342),
-//! and "Detection and the verdict": the mesh-primary runs one loop for its own members on every gossip
+//! and "Detection and the result": the mesh-primary runs one loop for its own members on every gossip
 //! interval.
 //!
 //! CONTRACT: in a two-mesh estate (two node-admins and two nodes each, the fabric-primary mesh1.node-admin.1)

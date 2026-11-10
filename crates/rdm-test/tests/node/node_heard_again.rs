@@ -223,12 +223,103 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         // The cert: issued again for the same birth at the heard-again join.
         let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
         assert!(!certs.is_empty(), "{node:?}: the accepting primary issues a fresh member cert at the heard-again join");
+        // The hold's one investigation ends `ready` (its tickle answered, or it was heard again by its
+        // digest while the ladder ran) or `rejoined` (its command back answered): one
+        // `rdm.node.investigated` event of the birth, never `re-created` (node-investigation.md,
+        // node-recovery.md step 3, Q420–Q423).
+        let results: Vec<Value> = crate::build_log::node_investigated(&estate, node.node_id.as_str()).into_iter().filter(|e| e["data"]["incarnation"] == node.incarnation.as_ref().unwrap().as_str()).map(|e| e["data"].clone()).collect();
+        assert_eq!(results.len(), 1, "{node:?}: the hold's investigation is one rdm.node.investigated event: {results:?}");
+        match s(&results[0]["result"]).as_str() {
+            "ready" => assert!(results[0].get("inspected").is_none(), "{node:?}: `ready` carries no inspect's answer: {results:?}"),
+            "rejoined" => assert_eq!(s(&results[0]["inspected"]), "running", "{node:?}: `rejoined` from the inspect's `running`: {results:?}"),
+            other => panic!("{node:?}: a held birth released is `ready` or `rejoined`, never {other:?}: {results:?}"),
+        }
+        assert_eq!(s(&results[0]["reason"]), "self-heal", "{node:?}: {results:?}");
+        let told = after(&spans, "rdm.node_admin.node.update.via-on-node-investigated", node, 0);
+        assert!(told.len() == 1 && s(&told[0]["attributes"]["result"]) == s(&results[0]["result"]), "{node:?}: the result's one span names it: {told:?}");
+        eprintln!("{node:?}: investigation result {} (trace {})", s(&results[0]["result"]), s(&told[0]["trace_id"]));
         // Must NOT: a terminate, a new birth, a create.
         let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["attributes"]["node_id"] == node.node_id.as_str() && sp["attributes"]["incarnation"] == node.incarnation.as_ref().unwrap().as_str() && s(&sp["attributes"]["outcome"]) == "unreached").count();
         assert_eq!(terminated, 0, "{node:?}: a held runtime is never terminated");
         let created: Vec<_> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| same_location(sp, node) && at(sp) >= since).collect();
         assert!(created.is_empty(), "{node:?}: no new birth at the path: {created:?}");
     }
+}
+
+/// CONTRACT: docs/architecture/lifecycles/node-investigation.md:14
+/// "5. The command back or the start, each under its `Send`: answered, the investigation ends
+///  `rejoined`; unanswered at the end of its attempts, the birth is written `dead`."
+/// CONTRACT (fabric-node-hooks.md "on_node_investigated": "`result` is the investigation's: `ready`,
+/// `rejoined` or `re-created`; `inspected` is node.runtime.inspect's answer that led to it"; Q422,
+/// Q423): in a one-mesh estate whose node-admins are the testkit's, an rpc member that holds no role is
+/// hung (the provider reads it running) until its mesh-primary's self-heal has folded its ladder:
+/// nobody reached it and the inspect read it running, so it is commanded back through node.mesh.join
+/// under the call's `Send` (`via-verdict`, follows `node.mesh.join`). The hang is then released while
+/// that command is sent. The command is answered, and the investigation ends `rejoined`: one
+/// `rdm.node.investigated` event of the birth, result `rejoined`, inspected `running`, reason
+/// `self-heal`, by its mesh-primary; `on_node_investigated` told once from that write (outcome `sent`,
+/// the application's span naming the result, the inspect's answer and the node type); the birth ready
+/// again as the same birth. Must NOT happen: a new node.id at its path and name, a `re-created` or
+/// `ready` event of the birth (its tickle went unanswered), or a second event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hung_node_released_while_its_command_back_is_sent_ends_its_investigation_rejoined() {
+    let sha = rdm_test::faults::candidate_sha();
+    let test = "a_hung_node_released_while_its_command_back_is_sent_ends_its_investigation_rejoined";
+    let mut estate = Estate::bootstrap_on_with_env(owner_of(test), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["node"], &[]).await.expect("the testkit binding set is accepted");
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    let views = estate.settles_to(&[("mesh1", 1, 2)], Duration::from_secs(120)).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let floor = rdm_core::cadence::staleness_floor();
+    let primary = views.iter().find(|n| n.r#type == "node-admin" && n.is_primary).cloned().expect("the view names mesh1's mesh-primary");
+    let node = views.iter().filter(|n| n.r#type == "node" && !n.is_primary && !n.is_fabric_primary).min_by_key(|n| n.name.clone()).cloned().expect("an rpc member of mesh1 that holds no role");
+    let (node_id, incarnation) = (node.node_id.to_string(), node.incarnation.clone().expect("the member's birth"));
+
+    let rt = ExactRuntime::published(Path::new(&estate.data_dir(&node.location()).await)).expect("the member's published runtime");
+    let held_at = now_nano();
+    let hung = rt.hang().expect("the hang is acknowledged by the OS");
+    // The self-heal's fold: unreached, the inspect's `running`, and the command back follows.
+    let folded = wait_for(&format!("{node_id}: the mesh-primary's ladder folds unreached, running, commanded back"), floor * 8 + Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.node.resolve.via-verdict")
+            .into_iter()
+            .find(|sp| s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["verdict"]) == "running" && s(&sp["attributes"]["follows"]) == "node.mesh.join" && at(sp) >= held_at)
+            .cloned()
+    })
+    .await;
+    // Released while the command back is sent under its `Send`: a later attempt, or the first one
+    // resumed, is answered.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let released_at = now_nano();
+    hung.release();
+    let event = wait_for(&format!("{node_id}: its investigation's rdm.node.investigated event"), floor * 8 + Duration::from_secs(60), || async {
+        crate::build_log::node_investigated(&estate, &node_id).into_iter().find(|e| e["data"]["incarnation"] == incarnation.as_str())
+    })
+    .await;
+    let back = estate
+        .until_node(&node.location(), &format!("{node_id} ready again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
+            n.filter(|n| n.state == NodeStatus::Ready && n.node_id == node.node_id && n.incarnation == node.incarnation).cloned()
+        })
+        .await;
+    estate.stop().await;
+    let spans = estate.spans();
+
+    let events: Vec<Value> = crate::build_log::node_investigated(&estate, &node_id).into_iter().filter(|e| e["data"]["incarnation"] == incarnation.as_str()).collect();
+    assert_eq!(events.len(), 1, "one rdm.node.investigated event for the birth: {events:#?}");
+    let data = &event["data"];
+    assert_eq!((s(&data["result"]), s(&data["inspected"]), s(&data["reason"]), s(&data["trigger"])), ("rejoined".to_string(), "running".to_string(), "self-heal".to_string(), "silence".to_string()), "the command back answered: rejoined, from the inspect's running: {event}");
+    assert!(s(&event["source"]).contains(&primary.node_id.to_string()), "written by the member's mesh-primary, its exact birth: {event}");
+    let commanded: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == node_id && at(sp) >= at(&folded)).collect();
+    assert!(commanded.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "mesh-joined" && at(sp) < released_at), "the command back went out before the release and was answered mesh-joined: {commanded:#?}");
+    let told: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-on-node-investigated").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == node_id).collect();
+    assert_eq!(told.len(), 1, "on_node_investigated is told once for the birth: {told:#?}");
+    assert_eq!((s(&told[0]["attributes"]["result"]), s(&told[0]["attributes"]["inspected"]), s(&told[0]["attributes"]["outcome"]), s(&told[0]["attributes"]["event_id"])), ("rejoined".to_string(), "running".to_string(), "sent".to_string(), s(&event["id"])), "told from the event's write: {}", told[0]);
+    let app: Vec<&Value> = named(&spans, "rdm.testkit.app.update.via-on-node-investigated").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == node_id).collect();
+    assert_eq!(app.len(), 1, "the application's on_node_investigated ran once: {app:#?}");
+    assert_eq!((s(&app[0]["attributes"]["result"]), s(&app[0]["attributes"]["inspected"]), s(&app[0]["attributes"]["node_type"])), ("rejoined".to_string(), "running".to_string(), "node".to_string()), "{}", app[0]);
+    assert_eq!((&back.node_id, &back.incarnation), (&node.node_id, &node.incarnation), "the same birth, back: no re-create");
+    let created: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-recovery").into_iter().filter(|sp| same_location(sp, &node)).collect();
+    assert!(created.is_empty(), "no new birth at the path: {created:#?}");
+    eprintln!("{node_id}: fold +{} ms, release +{} ms, result {} (trace {}), command back (trace {})", (at(&folded) - held_at) / 1_000_000, (released_at - held_at) / 1_000_000, s(&data["result"]), s(&told[0]["trace_id"]), commanded.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
+    estate.record_trace_url(&s(&told[0]["trace_id"]));
 }
 
 /// CONTRACT (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted join report, per join and

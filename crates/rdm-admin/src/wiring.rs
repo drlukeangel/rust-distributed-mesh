@@ -172,58 +172,37 @@ pub struct BuildEndedCtx {
     pub context: CallContext,
 }
 
-/// A node investigation's verdict as `on_node_investigated` carries it (node-investigation.md:
-/// `reached`, `running`, `os-stopped` or `exited`, or `dead` when not proven by the end of the
-/// retries, Q393).
+/// A node investigation's result for its client, as `on_node_investigated` carries it
+/// (node-investigation.md, Q420–Q423). node.runtime.inspect's answers are steps inside the
+/// investigation, never a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeInvestigatedVerdict {
-    /// The exact birth answered, or was heard again by its digest.
-    Reached,
-    /// The provider inspected its exact runtime and it still runs.
-    Running,
-    /// The provider inspected its exact runtime and the operating system holds it suspended.
-    OsStopped,
-    /// The provider inspected its exact runtime and it exited.
-    Exited,
-    /// The birth is not proven alive or exited by the end of the investigation's retries.
-    Dead,
+pub enum NodeInvestigatedResult {
+    /// `ready`: the birth answered a tickle; it was ready the whole time. A held birth off its mesh
+    /// is still commanded back through node.mesh.join for its view (Q87).
+    Ready,
+    /// `rejoined`: the investigation brought it back, by a command back through node.mesh.join or a
+    /// start, answered under its `Send`.
+    Rejoined,
+    /// `re-created`: written `dead`; node recovery deletes it and creates it again at its path and
+    /// name with a new node.id.
+    ReCreated,
 }
 
-impl NodeInvestigatedVerdict {
-    /// The verdict's name, as node-investigation.md and the notice's span carry it.
+impl NodeInvestigatedResult {
+    /// The result's name, as node-investigation.md, the `rdm.node.investigated` event and the
+    /// notice's span carry it: `ready`, `rejoined` or `re-created`.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Reached => "reached",
-            Self::Running => "running",
-            Self::OsStopped => "os-stopped",
-            Self::Exited => "exited",
-            Self::Dead => "dead",
+            Self::Ready => "ready",
+            Self::Rejoined => "rejoined",
+            Self::ReCreated => "re-created",
         }
     }
 }
 
-/// What RDM does with an investigated birth (node-investigation.md "What follows").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeInvestigatedNext {
-    /// Commanded back through node.mesh.join.
-    Rejoin,
-    /// Re-created at the same path and name with a new node.id.
-    Recreate,
-}
-
-impl NodeInvestigatedNext {
-    /// The name, as the notice's span carries it: `rejoin` or `recreate`.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Rejoin => "rejoin",
-            Self::Recreate => "recreate",
-        }
-    }
-}
-
-/// What `on_node_investigated` is told (Q312): the investigated birth, the verdict its mesh-primary
-/// recorded, what RDM does with the birth next, and the investigation's observability context
-/// (`docs/architecture/fabric-node-hooks.md`).
+/// What `on_node_investigated` is told (Q312): the investigated birth and its node type, the result
+/// its mesh-primary recorded, node.runtime.inspect's answer that led to it, and the investigation's
+/// observability context (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInvestigatedCtx {
     /// The fabric.
@@ -238,10 +217,13 @@ pub struct NodeInvestigatedCtx {
     pub path: String,
     /// The birth's name.
     pub name: String,
-    /// The investigation's verdict.
-    pub verdict: NodeInvestigatedVerdict,
-    /// What RDM does with the birth: `rejoin` or `recreate`.
-    pub next: NodeInvestigatedNext,
+    /// The birth's node type.
+    pub r#type: String,
+    /// The investigation's result: `ready`, `rejoined` or `re-created`.
+    pub result: NodeInvestigatedResult,
+    /// node.runtime.inspect's answer that led to the result; `None` for `ready`, which the birth's
+    /// answer to a tickle led to.
+    pub inspected: Option<crate::deployment::provider::Inspected>,
     /// The investigation's observability context.
     pub context: CallContext,
 }
@@ -291,7 +273,7 @@ pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<
 pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// `on_node_investigated`: the notice a mesh-primary calls once it writes a node investigation's
-/// verdict on a node of its mesh as its `rdm.node.investigated` event
+/// result on a node of its mesh as its `rdm.node.investigated` event
 /// (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type NodeInvestigatedNotice = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 

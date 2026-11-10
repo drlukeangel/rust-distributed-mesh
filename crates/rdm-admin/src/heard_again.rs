@@ -40,8 +40,9 @@ pub struct HeardAgain {
     pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
     /// This admin's digest view: whether the birth has been heard ready since.
     pub digest_view: DigestView,
-    /// Where this admin, its mesh's primary, writes the verdict `reached` on a birth of its mesh it
-    /// commands back, and the application's `on_node_investigated`, sent from that write (Q312).
+    /// Where this admin, its mesh's primary, writes the result `rejoined` of a self-heal that brought a
+    /// birth of its mesh back, and the application's `on_node_investigated`, sent from that write (Q312,
+    /// Q422).
     pub investigated: crate::node_investigation::NodeInvestigatedWriter,
 }
 
@@ -56,7 +57,8 @@ pub enum SelfHealEnd {
     /// The command went out and was not answered by the end of its attempts: how it ended. The birth
     /// is written `dead`, and its recovery follows.
     Unanswered(String),
-    /// node.start refused as already live: the birth runs, and it is `running`.
+    /// node.start refused as already live: the birth runs, and the inspect's answer is taken as
+    /// `running`.
     Live(String),
     /// No command went out, by name (a command of the primary's in flight, one already sent this
     /// silence, no `StatusService` open yet): nothing is concluded.
@@ -76,24 +78,20 @@ impl SelfHealEnd {
 }
 
 impl HeardAgain {
-    /// Command `node`'s exact birth back through `node.mesh.join` (`command_mesh_join`), its verdict
-    /// `reached` written as its event before the command goes out.
+    /// Command `node`'s exact birth back through `node.mesh.join` (`command_mesh_join`) for its view
+    /// (Q87). The command writes no result: a held birth that answered its tickle, or was heard again by
+    /// its digest while its ladder ran, is `ready`, written by the tick (`node_investigation::write_ready`;
+    /// node-investigation.md, Q420).
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
-        self.command_for(node, incarnation, crate::node_investigation::Reason::SelfHeal).await
+        self.command_on(node, incarnation).await.0
     }
 
-    /// [`Self::command`] for an investigation run for `reason` (Q393: its event names it).
-    pub async fn command_for(&self, node: &Node, incarnation: &IncarnationId, reason: crate::node_investigation::Reason) -> String {
-        self.command_on(node, incarnation, Some((crate::wiring::NodeInvestigatedVerdict::Reached, reason))).await.0
-    }
-
-    /// `command_mesh_join` of `node`'s exact birth, `notice` the verdict and reason written as its event
-    /// before the command goes out (`None`: none is written here): the outcome's name, and whether the
-    /// call that went out was answered (`None`: no call went out).
-    async fn command_on(&self, node: &Node, incarnation: &IncarnationId, notice: Option<(crate::wiring::NodeInvestigatedVerdict, crate::node_investigation::Reason)>) -> (String, Option<bool>) {
+    /// `command_mesh_join` of `node`'s exact birth: the outcome's name, and whether the call that went out
+    /// was answered (`None`: no call went out).
+    async fn command_on(&self, node: &Node, incarnation: &IncarnationId) -> (String, Option<bool>) {
         let (outcome, answered) = match self.runner.get() {
             None => ("no-runner".to_string(), None),
-            Some(runner) => command_mesh_join(&self.client, &self.status_service, &self.builds, runner, &self.digest_view, &self.investigated, node, incarnation, notice).await,
+            Some(runner) => command_mesh_join(&self.client, &self.status_service, &self.builds, runner, &self.digest_view, node, incarnation).await,
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
         if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
@@ -103,16 +101,17 @@ impl HeardAgain {
         (outcome, answered)
     }
 
-    /// A self-heal's `running` (node-recovery.md step 3, Q393): `node`'s exact birth commanded back
-    /// through node.mesh.join, sent until answered (the call's `Send`). Answered, the verdict `verdict` is
-    /// written as its `rdm.node.investigated` event, next `rejoin`, for `reason`; a call that went out
-    /// and was never answered by the end of its attempts is [`SelfHealEnd::Unanswered`], which the
-    /// birth's mesh-primary writes `dead`.
-    pub async fn self_heal_join(&self, node: &Node, incarnation: &IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, reason: crate::node_investigation::Reason) -> SelfHealEnd {
-        let (outcome, answered) = self.command_on(node, incarnation, None).await;
+    /// A self-heal whose inspect answered `running` (node-recovery.md step 3, Q393): `node`'s exact birth
+    /// commanded back through node.mesh.join, sent until answered (the call's `Send`). Answered, the
+    /// investigation ends `rejoined` (Q422, Q423), written as its `rdm.node.investigated` event with
+    /// `inspected`, the inspect's answer that led to it, for `reason`; a call that went out and was never
+    /// answered by the end of its attempts is [`SelfHealEnd::Unanswered`], which the birth's mesh-primary
+    /// writes `dead`.
+    pub async fn self_heal_join(&self, node: &Node, incarnation: &IncarnationId, inspected: crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason) -> SelfHealEnd {
+        let (outcome, answered) = self.command_on(node, incarnation).await;
         match answered {
             Some(true) => {
-                self.write_rejoin(node, incarnation, verdict, reason).await;
+                self.write_rejoined(node, incarnation, inspected, reason).await;
                 SelfHealEnd::Answered(outcome)
             }
             Some(false) => SelfHealEnd::Unanswered(outcome),
@@ -120,13 +119,13 @@ impl HeardAgain {
         }
     }
 
-    /// A self-heal's `os-stopped` (node-recovery.md step 3, Q393): `node`'s exact birth commanded to
-    /// start (node.start, NodeCommand 0x22 `StartNode`), the mesh-primary's own command to its node, sent
-    /// until answered (`StatusService::carry_lifecycle`, under its `Send`). A suspended runtime answers
-    /// nothing, [`SelfHealEnd::Unanswered`]; a start it refuses as already live
+    /// A self-heal whose inspect answered `os-stopped` (node-recovery.md step 3, Q393): `node`'s exact
+    /// birth commanded to start (node.start, NodeCommand 0x22 `StartNode`), the mesh-primary's own command
+    /// to its node, sent until answered (`StatusService::carry_lifecycle`, under its `Send`). A suspended
+    /// runtime answers nothing, [`SelfHealEnd::Unanswered`]; a start it refuses as already live
     /// (`rejected-invalid-node-transition`: its cycle is live) is [`SelfHealEnd::Live`], which is
-    /// `running`; any other answer is answered, its verdict `os-stopped` written as its event, next
-    /// `rejoin`. One `rdm.node_admin.node.update.via-start-commanded` span.
+    /// `running`; any other answer is answered, and the investigation ends `rejoined`, written as its
+    /// event with `inspected` `os-stopped`. One `rdm.node_admin.node.update.via-start-commanded` span.
     pub async fn self_heal_start(&self, node: &Node, incarnation: &IncarnationId, reason: crate::node_investigation::Reason) -> SelfHealEnd {
         use crate::deployment::pipeline::CommandAdmission as A;
         let operation = rdm_core::OperationId::new("node.start", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
@@ -168,21 +167,22 @@ impl HeardAgain {
         span.record("outcome", ended.name());
         span.in_scope(|| tracing::info!(outcome = ended.name(), "an os-stopped birth is commanded to start, sent until answered"));
         if matches!(ended, SelfHealEnd::Answered(_)) {
-            self.write_rejoin(node, incarnation, crate::wiring::NodeInvestigatedVerdict::OsStopped, reason).await;
+            self.write_rejoined(node, incarnation, crate::deployment::provider::Inspected::OsStopped, reason).await;
         }
         ended
     }
 
-    /// The verdict `verdict` of a birth commanded back that answered, written as its event, next
-    /// `rejoin`, by the mesh-primary of its mesh (fabric-node-hooks.md "on_node_investigated").
-    async fn write_rejoin(&self, node: &Node, incarnation: &IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, reason: crate::node_investigation::Reason) {
+    /// The result `rejoined` of a birth the self-heal commanded back or started that answered, with
+    /// `inspected`, the inspect's answer that led to it, written as its event by the mesh-primary of its
+    /// mesh (fabric-node-hooks.md "on_node_investigated").
+    async fn write_rejoined(&self, node: &Node, incarnation: &IncarnationId, inspected: crate::deployment::provider::Inspected, reason: crate::node_investigation::Reason) {
         let Some(status_service) = self.status_service.get() else { return };
         let ids = {
             let view = status_service.topology.read().await;
             view.is_mesh_primary(&node.mesh, &status_service.node_id).then(|| crate::node_investigation::fabric_and_mesh_of(&view, node))
         };
         if let Some(ids) = ids {
-            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, verdict, crate::wiring::NodeInvestigatedNext::Rejoin, reason).await;
+            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedResult::Rejoined, Some(&inspected), reason).await;
         }
     }
 
@@ -233,8 +233,7 @@ impl HeardAgain {
 
 /// Begin `node`'s next cycle (its declared state is measured from Pending again) and command
 /// `node.mesh.join` to its exact birth, naming the primary's current Build; the reply's name, and
-/// whether the call that went out was answered (`None`: no call went out). `notice`: the verdict and
-/// reason this admin, its mesh's primary, writes as its event before the command goes out. One span,
+/// whether the call that went out was answered (`None`: no call went out). One span,
 /// `rdm.node_admin.node.update.via-mesh-join-commanded`, with the outcome.
 async fn command_mesh_join(
     client: &Arc<NodeRpcClient>,
@@ -242,10 +241,8 @@ async fn command_mesh_join(
     builds: &Arc<dyn crate::build_state::BuildStateAdapter>,
     runner: &crate::admin::runner::AdminRunner,
     digest_view: &DigestView,
-    investigated: &crate::node_investigation::NodeInvestigatedWriter,
     node: &Node,
     incarnation: &IncarnationId,
-    notice: Option<(crate::wiring::NodeInvestigatedVerdict, crate::node_investigation::Reason)>,
 ) -> (String, Option<bool>) {
     // The Day-0 fabric-primary, and any fabric primary: no node above it to connect to (Luke,
     // Q87); it is never commanded back.
@@ -327,11 +324,6 @@ async fn command_mesh_join(
         if let Err(why) = commands_join(&view, &status_service.node_id, node) {
             return (format!("not-commander: {why}"), None);
         }
-        // The mesh-primary of the birth's mesh tells the application the verdict it records, reached,
-        // and that the birth is commanded back (fabric-node-hooks.md "on_node_investigated"); the
-        // fabric-primary commanding a mesh-primary back is not a mesh-primary's investigation.
-        let own_mesh = view.is_mesh_primary(&node.mesh, &status_service.node_id);
-        let written = own_mesh.then(|| crate::node_investigation::fabric_and_mesh_of(&view, node));
         drop(view);
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
@@ -348,9 +340,6 @@ async fn command_mesh_join(
         // the command's until then.
         let command = crate::node_commands::CommandKey { operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let call = status_service.commands.track(command);
-        if let (Some(ids), Some((verdict, reason))) = (written, notice) {
-            crate::node_investigation::write_node_investigated(investigated, ids, node, incarnation, verdict, crate::wiring::NodeInvestigatedNext::Rejoin, reason).await;
-        }
         // The command carries this admin's held mesh-primary record of the birth's mesh, so a
         // commanded node-admin runs its election over the same records (D57; Q335).
         let req = StatusRequest::JoinMesh {

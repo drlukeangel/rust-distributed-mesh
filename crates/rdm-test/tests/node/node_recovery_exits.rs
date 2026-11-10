@@ -147,7 +147,7 @@ fn assert_mesh_primary_ran_the_recovery(run: &[Value], mp: &Value, before: &Valu
 
 /// The recovery of the exited birth `before`, as the records hold it (node-recovery.md, Q342): the
 /// exited birth's record written deleted, and the investigation's `rdm.node.investigated` event for that
-/// birth on the fabric's store root (build.md §5), whose `next` is the re-create. The record and the event.
+/// birth on the fabric's store root (build.md §5), whose `result` is `re-created`. The record and the event.
 async fn recovery_recorded(estate: &Estate, before: &Value) -> (Value, Value) {
     let node_id = s(&before["node_id"]);
     wait_for(&format!("{node_id}'s record deleted and its rdm.node.investigated event"), Duration::from_secs(30), || async {
@@ -214,9 +214,9 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // The submit followed the recovery to its end and records it (never "submitted").
     assert_eq!(s(&recovery["attributes"]["outcome"]), "complete", "the recovery's end: {recovery}");
     assert_eq!(estate.build_ids().await, builds, "no Build was minted");
-    // The records hold the recovery: the exited birth's record deleted, and the verdict's event.
+    // The records hold the recovery: the exited birth's record deleted, and the result's event.
     let (record, event) = recovery_recorded(&estate, &before).await;
-    assert_eq!(event["data"]["verdict"], "exited", "the investigation's verdict: {event}");
+    assert_eq!((&event["data"]["result"], &event["data"]["inspected"]), (&json!("re-created"), &json!("exited")), "the investigation's result, and the inspect's answer that led to it: {event}");
     assert_eq!(record["data"]["node_id"], before["node_id"], "{record}");
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
@@ -297,7 +297,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     assert_eq!(s(&recovery["attributes"]["verdict"]), "exited", "on the verdict exited: {recovery}");
     assert_eq!(s(&recovery["attributes"]["outcome"]), "complete", "the recovery's end: {recovery}");
     let (_, event) = recovery_recorded(&estate, &before).await;
-    assert_eq!(event["data"]["verdict"], "exited", "the investigation's verdict on the record: {event}");
+    assert_eq!((&event["data"]["result"], &event["data"]["inspected"]), (&json!("re-created"), &json!("exited")), "the investigation's result on the record, and the inspect's answer that led to it: {event}");
 
     // Each process exports its own spans: the successor's boot span is read once the successor exported it.
     let spans = wait_for("the recovery's create, the exited birth's target and the successor's boot span are exported", Duration::from_secs(60), || async {
@@ -357,7 +357,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_with_a_new_endpoint
     estate.shutdown().await;
 }
 
-/// CONTRACT (node-recovery.md "Detection and the verdict": "A recovery that ends failed is run again by
+/// CONTRACT (node-recovery.md "Detection and the result": "A recovery that ends failed is run again by
 /// the next check that finds the node still lost; its calls retry only under their `Send` (Q344)";
 /// "Failure": keyed on the exited birth, never a second recovery; D48): the directory a
 /// member's new data dir is allocated in is made read-only and the member is killed. Its recovery's

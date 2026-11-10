@@ -28,8 +28,8 @@ workflow node-admin drives, its events and its gossip),
    its primary, commands the step ([elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover));
    as its mesh's last admin it stops being fabric-primary only by node.fabric-primary.update inside mesh.delete.
 4. **Silence is not departure, and a failed connection is not death.** What became of an unheard
-   node is [node investigation](lifecycles/node-investigation.md)'s verdict (Q111): reached, it is commanded
-   back; anything else, it is re-created. A member whose node-admins are lost is never re-created
+   node is [node investigation](lifecycles/node-investigation.md)'s result (Q111, Q423): `ready`, it answered;
+   `rejoined`, it was commanded back or started; `re-created`, it was re-created. A member whose node-admins are lost is never re-created
    because of that loss alone.
 5. **Stored topology is a recovery contact map.** The attached copy is the last ready
    fabric, not the latest state. It locates live nodes; current topology comes from those nodes.
@@ -37,7 +37,7 @@ workflow node-admin drives, its events and its gossip),
 6. **A node-admin acts on its own view.** Silence is receipt age on the node's own clock, so a node held
    or suspended wakes to a view in which every member is silent at once; what it then does is what every
    node-admin does with an unheard member, [node investigation](lifecycles/node-investigation.md), whose
-   verdict decides. A node-admin that was re-created while it was held is refused at admission and
+   result decides. A node-admin that was re-created while it was held is refused at admission and
    terminated when it comes back (Q110).
 
 ## 2. One start, its launch inputs
@@ -75,7 +75,7 @@ The parameters select one of these modes:
 |---|---|---|---|
 | **Day 0** | no mesh and no durable topology | a person | Starts the fabric as its fabric primary ([fabric.create](lifecycles/fabric-create.md)), then waits for the next node or mesh deployment request (a Build). |
 | **Create** | mesh, seed | a node-admin executing a Build | Runs [node.start](lifecycles/node-start.md) with FirstStart, reporting its join to its maker; once ready it takes part in elections. |
-| **Recover** | mesh, seed, the exited node's data dir | a node-admin executing node recovery | node.create at the same path and name over the inherited data dir when the verdict is `exited` and the directory exists: new NodeId, incarnation, `endpoint_id` and port ([node recovery](lifecycles/node-recovery.md)). |
+| **Recover** | mesh, seed, the exited node's data dir | a node-admin executing node recovery | node.create at the same path and name over the inherited data dir when the inspect's answer was `exited` and the directory exists: new NodeId, incarnation, `endpoint_id` and port ([node recovery](lifecycles/node-recovery.md)). |
 | **Create as mesh primary** | mesh, seed, mesh primary | the fabric primary | A live peer mesh lost all its node-admins: [node recovery](lifecycles/node-recovery.md) of its lost mesh-primary re-creates a node-admin into it (Q335), then the entry sequence (§4) and the mesh's missing node-admins (§4.3). |
 | **Fabric recovery** | mesh, seed, mesh primary, fabric primary | a person | Every node-admin is lost (catastrophic): the entry sequence (§4), then every mesh's missing node-admins. The launched node-admin is a new node over its inherited data dir: new node.id, incarnation, `endpoint_id` and port, same path and name. |
 
@@ -113,7 +113,7 @@ The sequence a launched fabric-primary runs from its durable map is
 |---|---|---|
 | a live peer mesh loses every node-admin | fabric-primary, same accepted Build, the mesh's own MeshId | node.create into the live mesh, maker admission/read, local topology read, own-mesh sweep, node recovery, restore own admins |
 | fabric-primary is launched again into its own mesh | a person's launch on its durable data dir; the launched node-admin is a new node over the inherited data dir (new node.id, incarnation, `endpoint_id` and port; same path and name); a launch that finds a living admin before its first mutation is refused NameHeld, never an ordinary admin at the primary's name (Q156, Q199) | no maker; durable-map topology read, own mesh first, same entry flow |
-| the fabric-primary's mesh loses every node-admin while other meshes live | [fabric recovery](lifecycles/fabric-recovery.md), run by the backbone's lowest Ready mesh-primary on node investigation's verdict (Q335), exactly as a node-admin of the mesh would; same accepted Build, the mesh's own MeshId | no node-admin takes a primary role; the node-admin at the fabric-primary's path and name is re-created (inherited data dir when `exited`, else a new one, R-FM2) and is mesh-primary and fabric-primary when Ready |
+| the fabric-primary's mesh loses every node-admin while other meshes live | [fabric recovery](lifecycles/fabric-recovery.md), run by the backbone's lowest Ready mesh-primary on node investigation's result (Q335), exactly as a node-admin of the mesh would; same accepted Build, the mesh's own MeshId | no node-admin takes a primary role; the node-admin at the fabric-primary's path and name is re-created (inherited data dir when `exited`, else a new one, R-FM2) and is mesh-primary and fabric-primary when Ready |
 | every node-admin of every mesh is lost, nothing alive included ([fabric recovery](lifecycles/fabric-recovery.md#nothing-alive)) | person or script: the adoption launch at the lost fabric-primary's path and name, with no launcher and no primary flag, given the fabric id, its mesh and the store root, over the lost fabric-primary's data dir or a new one (Q156; the [runbook](../eng/fabric-recovery-runbook.md)); or a launch on the fabric-primary's data dir with mesh, seed and both primary flags | no Day 0; no maker; the adoption launch is restored as mesh-primary and fabric-primary by step 4 once Ready; durable-map reads while a node is alive, own mesh first, then [node investigation](lifecycles/node-investigation.md) of each other mesh's lost mesh-primary (Q335) |
 
 ## 5. Join admission and topology reads

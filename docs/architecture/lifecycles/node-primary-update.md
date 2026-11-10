@@ -109,11 +109,11 @@ As stored:
   record's. A call that reached a process other than the
   named birth, a refusal or no answer decides nothing about the successor's birth (R-SW1: a failed probe
   never shows anything). The call fails by name, and [node investigation](node-recovery.md) on the
-  successor's exact birth decides (Q111): a `reached` verdict makes the identical call again; any other verdict, the
-  successor is re-created and the ordinary election names the primary by the staleness-floor rule, the
+  successor's exact birth decides (Q111): answered (`ready`), the identical call is made again; otherwise the
+  successor goes through [node recovery](node-recovery.md) (it ends `rejoined` or `re-created`) and the ordinary election names the primary by the staleness-floor rule, the
   old primary included.
-- **The successor is unheard after the update.** When node investigation's verdict is anything but
-  reached, the step fails by name, `the successor is unheard after the update: <verdict>`, and the Build
+- **The successor is unheard after the update.** When node investigation's tickles do not
+  reach the successor, the step fails by name, `the successor is unheard after the update: <running | os-stopped | exited | dead>`, and the Build
   is Failed (R-BI4). The ordinary election then names whoever it names, the old primary included: the
   lowest Ready node of that type in the mesh is primary: its own digest carries it and it records it on
   its own record. The successor's node goes through
@@ -122,7 +122,7 @@ As stored:
 - **The commanded arm.** When a node.primary.update the fabric-primary commanded ends, the old primary
   answers it with the Build carrier's terminal, `Failed { step, reason }` on op `0x21`; `Incomplete` is
   never used for a step that ended. The fabric-primary fails the step on that variant, never on the
-  reason's text. The reason records the step, the successor's node id and incarnation, who the ordinary election named, and the investigation's verdict on the successor.
+  reason's text. The reason records the step, the successor's node id and incarnation, who the ordinary election named, and what the investigation found of the successor (`running`, `os-stopped`, `exited` or `dead`).
 - **Indeterminate after the update:** the election resolves it. An identical retry of the call replays the
   same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.

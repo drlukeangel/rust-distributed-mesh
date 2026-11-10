@@ -266,22 +266,26 @@ impl Event {
         Self::new(source, time_ms, BUILD_ENDED, None, object(Data { build_id, state }))
     }
 
-    /// `rdm.node.investigated` on the node `node_id` {incarnation, path, name, verdict, next, reason,
-    /// trigger}: `reason` the investigation's, `self-heal` or `ordered`, and `trigger` what started it,
+    /// `rdm.node.investigated` on the node `node_id` {incarnation, path, name, result, inspected,
+    /// reason, trigger} (node-investigation.md, Q420–Q423): `result` the investigation's, `ready`,
+    /// `rejoined` or `re-created`; `inspected` node.runtime.inspect's answer that led to it, `running`,
+    /// `os-stopped`, `exited` or `unavailable`, absent on `ready`, which the birth's answer to a tickle
+    /// led to; `reason` the investigation's, `self-heal` or `ordered`, and `trigger` what started it,
     /// `silence` for a self-heal (Q393; [`crate::node_investigation::Reason`]).
     #[allow(clippy::too_many_arguments)]
-    pub fn node_investigated(source: &EventSource, time_ms: u64, node_id: &NodeId, incarnation: &IncarnationId, path: &str, name: &str, verdict: &str, next: &str, reason: crate::node_investigation::Reason) -> Self {
+    pub fn node_investigated(source: &EventSource, time_ms: u64, node_id: &NodeId, incarnation: &IncarnationId, path: &str, name: &str, result: &str, inspected: Option<&str>, reason: crate::node_investigation::Reason) -> Self {
         #[derive(Serialize)]
         struct Data<'a> {
             incarnation: &'a IncarnationId,
             path: &'a str,
             name: &'a str,
-            verdict: &'a str,
-            next: &'a str,
+            result: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            inspected: Option<&'a str>,
             reason: &'a str,
             trigger: &'a str,
         }
-        Self::new(source, time_ms, NODE_INVESTIGATED, Some(node_id.clone()), object(Data { incarnation, path, name, verdict, next, reason: reason.as_str(), trigger: reason.trigger() }))
+        Self::new(source, time_ms, NODE_INVESTIGATED, Some(node_id.clone()), object(Data { incarnation, path, name, result, inspected, reason: reason.as_str(), trigger: reason.trigger() }))
     }
 
     /// `rdm.storage.started` {change_id, topology_storage_provider}: the change's start, appended to the
@@ -606,12 +610,12 @@ mod tests {
             Event::build_started(&fp, 1_001, &b2),
             Event::build_dispatched(&fp, 1_002, &b1, "mesh1"),
             Event::build_step(&mp, 1_003, Some(&n1), &b1, "mesh1", "create", "node.create", &StepState::Complete),
-            Event::node_investigated(&mp, 1_004, &n2, &inc, "mesh1.node", "2", "exited", "recreate", crate::node_investigation::Reason::SelfHeal),
+            Event::node_investigated(&mp, 1_004, &n2, &inc, "mesh1.node", "2", "re-created", Some("exited"), crate::node_investigation::Reason::SelfHeal),
             Event::build_dispatched(&fp, 1_005, &b2, "mesh1"),
             Event::build_step(&mp, 1_006, Some(&n2), &b2, "mesh1", "create", "node.create", &StepState::Failed { reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
             Event::build_step(&mp, 1_007, Some(&n1), &b2, "mesh1", "delete", "node.delete", &StepState::Complete),
             Event::build_ended(&fp, 1_008, &b1, &EndedState::Complete),
-            Event::node_investigated(&mp, 1_009, &n1, &inc, "mesh1.node", "1", "reached", "rejoin", crate::node_investigation::Reason::SelfHeal),
+            Event::node_investigated(&mp, 1_009, &n1, &inc, "mesh1.node", "1", "ready", None, crate::node_investigation::Reason::SelfHeal),
             Event::build_ended(&fp, 1_010, &b2, &EndedState::Failed { reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
         ];
         (events, b1, b2, n1, n2)
@@ -698,11 +702,11 @@ mod tests {
         let store = FileEventsStorage::open(&crate::store_root::StoreRoot::at(&dir).unwrap()).await.unwrap();
         let mp = source("mesh-primary");
         let (n1, inc) = (NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("node-inc")).unwrap());
-        let mut event = Event::node_investigated(&mp, 1_000, &n1, &inc, "mesh1.node", "1", "exited", "recreate", crate::node_investigation::Reason::SelfHeal);
+        let mut event = Event::node_investigated(&mp, 1_000, &n1, &inc, "mesh1.node", "1", "re-created", Some("exited"), crate::node_investigation::Reason::SelfHeal);
         event.id = EventId::parse("0190a8f0-1234-7abc-8def-0123456789ab").unwrap();
         (event.traceparent, event.tracestate) = (Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), None);
         store.append(&event).await.unwrap();
-        let line = format!(r#"{{"len":LEN,"specversion":"1.0","id":"0190a8f0-1234-7abc-8def-0123456789ab","source":"{}","type":"rdm.node.investigated","subject":"{n1}","time":"1970-01-01T00:00:01.000Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","data":{{"incarnation":"{inc}","name":"1","next":"recreate","path":"mesh1.node","reason":"self-heal","trigger":"silence","verdict":"exited"}}"#, mp.uri());
+        let line = format!(r#"{{"len":LEN,"specversion":"1.0","id":"0190a8f0-1234-7abc-8def-0123456789ab","source":"{}","type":"rdm.node.investigated","subject":"{n1}","time":"1970-01-01T00:00:01.000Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","data":{{"incarnation":"{inc}","inspected":"exited","name":"1","path":"mesh1.node","reason":"self-heal","result":"re-created","trigger":"silence"}}"#, mp.uri());
         let written = String::from_utf8(std::fs::read(dir.join(crate::store_root::EVENTS_FILE)).unwrap()).unwrap();
         let object = written.trim_matches('\n');
         let len = object.len();

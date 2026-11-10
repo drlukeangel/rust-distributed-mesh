@@ -192,8 +192,9 @@ pub fn hooks() -> FabricHooks {
         Box::pin(async move { tracing::info!("the application was told the Build ended") }.instrument(span))
     });
     let on_node_investigated: rdm_admin::wiring::NodeInvestigatedNotice = Arc::new(|told: NodeInvestigatedCtx| {
-        let span = tracing::info_span!("rdm.testkit.app.update.via-on-node-investigated", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, incarnation_id = %told.incarnation.as_str(), node_path = %told.path, node_name = %told.name, verdict = told.verdict.as_str(), next = told.next.as_str(), "otel.kind" = "internal");
-        Box::pin(async move { tracing::info!("the application was told a node investigation's verdict") }.instrument(span))
+        let inspected = told.inspected.as_ref().map(rdm_admin::admin::verdict_name).unwrap_or_default();
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-node-investigated", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, incarnation_id = %told.incarnation.as_str(), node_path = %told.path, node_name = %told.name, node_type = %told.r#type, result = told.result.as_str(), inspected, "otel.kind" = "internal");
+        Box::pin(async move { tracing::info!("the application was told a node investigation's result") }.instrument(span))
     });
     FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated) }
 }

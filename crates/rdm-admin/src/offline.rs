@@ -659,6 +659,10 @@ pub(crate) struct OfflineTickReport {
     pub offline: Vec<String>,
     /// Silent nodes heard again: the view holds them live.
     pub returned: Vec<String>,
+    /// Of `returned`, the births heard again by their digest while their investigation's ladder ran,
+    /// before a tick folded it: the investigation ends `ready` (node-recovery.md step 3: "a held birth
+    /// that answered, or that is heard again by its digest"; Q420).
+    pub returned_investigated: Vec<String>,
     /// Silent nodes the view no longer holds (deleted, or recovered under a new node.id at their
     /// path and name): not heard again, gone.
     pub gone: Vec<String>,
@@ -877,6 +881,9 @@ impl OfflineTickle {
         // id), and every birth while this admin does not hold the role: its ladder's probes are
         // dropped (step 2: an answer "cancels the probes still running"; a new primary runs its own).
         let births: HashSet<Birth> = silent.iter().map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
+        // A birth whose ladder ran when it left the silent set: its investigation began and no tick
+        // folded it.
+        let laddered: HashSet<String> = self.running.keys().filter(|(id, _)| !silent_ids.contains(id)).map(|(id, _)| id.clone()).collect();
         self.running.retain(|birth, ladder| {
             let keep = holds_role && births.contains(birth);
             if !keep {
@@ -899,6 +906,9 @@ impl OfflineTickle {
             if in_view(&id) {
                 tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, observer = %self.observer, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
+                if laddered.contains(&id) {
+                    report.returned_investigated.push(id.clone());
+                }
                 report.returned.push(id);
             } else {
                 tracing::info_span!("rdm.node_admin.node.remove.via-offline-gone", node_id = %id, observer = %self.observer, "otel.kind" = "internal")
@@ -1199,6 +1209,7 @@ pub(crate) mod tests {
         report.answered_current.extend(folded.answered_current);
         report.offline.extend(folded.offline);
         report.returned.extend(folded.returned);
+        report.returned_investigated.extend(folded.returned_investigated);
         report.gone.extend(folded.gone);
         report
     }
@@ -1462,6 +1473,7 @@ pub(crate) mod tests {
             assert_eq!(t.ladders(), (1, 0), "one ladder, still running");
             let r = tick(&mut t, PROBE_DELAY + 2_500, vec![]).await;
             assert_eq!((r.returned, t.ladders()), (vec!["a".to_string()], (0, 0)), "heard again: its ladder is dropped");
+            assert_eq!(r.returned_investigated, vec!["a".to_string()], "heard again while its ladder ran: its investigation ends `ready` (node-recovery.md step 3, Q420)");
             sleep(DIAL).await;
             assert_eq!(ended.load(Ordering::SeqCst), 0, "the dropped ladder's probe never ran to its end");
 
@@ -2214,6 +2226,7 @@ pub(crate) mod tests {
         assert!(t.is_offline("a"));
         let r = tick(&mut t, PROBE_DELAY + FLOOR + 1, true, vec![], false, no_path()).await;
         assert_eq!(r.returned, vec!["a".to_string()]);
+        assert!(r.returned_investigated.is_empty(), "its ladder was folded before it was heard again: its investigation ended there, not `ready`");
         assert!(r.gone.is_empty());
         assert!(!t.is_offline("a"));
     }

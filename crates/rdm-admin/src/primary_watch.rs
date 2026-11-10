@@ -167,7 +167,7 @@ impl Looker {
                 // Held off its mesh in this watch's eyes (it was looked at because it was silent): the
                 // view's ready is its last word before the silence, not where it stands now.
                 let held = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
-                heard_again.command_for(&held, incarnation, reason).await;
+                heard_again.command(&held, incarnation).await;
             }
         }
         finding

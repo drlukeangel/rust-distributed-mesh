@@ -1,23 +1,29 @@
-//! Node investigation (rulings INDEX Q107 item 1, Q393; node-investigation.md): the one function every
-//! caller uses on one exact birth, ending in one verdict, reached / running / os-stopped / exited, or
-//! `dead` when the birth is not proven by the end of the investigation's retries.
+//! Node investigation (rulings INDEX Q107 item 1, Q393, Q420–Q423; node-investigation.md): the one
+//! function every caller uses on one exact birth, ending, for its client, in one result: `ready` (the
+//! birth answered a tickle), `rejoined` (the investigation brought it back: commanded back through
+//! node.mesh.join, or started) or `re-created` (written `dead`, and node recovery creates it again at
+//! its path and name with a new node.id) ([`crate::wiring::NodeInvestigatedResult`]).
 //!
 //! Its steps, in order: (a) the leads, one read of the store's by-destination connections index
 //! (connections.md §3.1), naming the nodes in any mesh that hold a connection to the exact birth: the
 //! peers the kick goes through first, never evidence of reachability, since a row nobody marked
 //! dropped survives a cut or a crashed source; (b) the provider about the exact runtime
-//! (node.runtime.inspect, node-runtime-inspect.md), whose `exited` or `os-stopped` is the verdict;
+//! (node.runtime.inspect, node-runtime-inspect.md): on `exited` or `os-stopped` no tickle is sent;
 //! (c) the direct tickle and (d) the same kick through peers, the leads first
-//! ([`crate::offline::tickle`], node-tickle.md). Only an answer from the exact birth is `reached`;
-//! unreached, the verdict is the inspect's, an `unavailable` one asked again under the investigation's
-//! retries ([`ask_again`]) and `dead` at their end.
+//! ([`crate::offline::tickle`], node-tickle.md). Only an answer from the exact birth counts;
+//! unreached, the inspect's answer leads on, an `unavailable` one asked again under the
+//! investigation's retries ([`ask_again`]) and the birth written `dead` at their end. What those steps
+//! found is a [`Finding`], a step inside the investigation and never its result.
 
 use crate::model::{Node, NodeId, NodeStatus};
 use crate::offline::{Tickle, TickleCalls};
 use crate::topology::Topology;
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 
-/// What the investigation of one exact birth found: its one verdict.
+/// What the steps of the investigation of one exact birth found (node-investigation.md steps 2 to 4):
+/// the birth's answer to the tickle, or node.runtime.inspect's answer, or a birth not proven by the end
+/// of the retries. A step inside the investigation, never its result (Q420): [`follows`] says what it
+/// leads to, and the result is written where the investigation ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
     /// `reached`: the exact birth answered the tickle (node-tickle.md "Result"), direct or through a
@@ -49,8 +55,8 @@ pub enum Finding {
 }
 
 impl Finding {
-    /// The verdict as node-investigation.md names it: `reached`, `running`, `os-stopped` or `exited`,
-    /// or `dead` for a birth not proven by the end of the retries.
+    /// The step's answer by name: `reached` (the tickle's, node-tickle.md), `running`, `os-stopped` or
+    /// `exited` (the inspect's), or `dead` for a birth not proven by the end of the retries.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Reached { .. } => "reached",
@@ -61,8 +67,8 @@ impl Finding {
         }
     }
 
-    /// The provider's answer the verdict came from (node.runtime.inspect's), `dead` as its last
-    /// `unavailable`; `None` for `reached`, which asked the provider nothing.
+    /// node.runtime.inspect's answer the finding came from, `dead` as its last `unavailable`; `None` for
+    /// `reached`, which the birth's answer to the tickle decided.
     pub fn inspected(&self) -> Option<crate::deployment::provider::Inspected> {
         use crate::deployment::provider::Inspected;
         match self {
@@ -121,9 +127,10 @@ impl Reason {
 }
 
 /// Whether an ordered investigation's `finding` matches `status`, the birth's status in the topology,
-/// so it does nothing (node-recovery.md step 3, Q393): `running` (and `reached`, the birth's own answer
-/// that it runs) and a live status or a lifecycle state the node reported, in which its runtime runs;
-/// `os-stopped` and `stopped`; `exited` and `dead`. Anything else differs and follows the self-heal.
+/// so it does nothing (node-recovery.md step 3, Q393): the inspect's answer `running` (and `reached`, the
+/// birth's own answer that it runs) and a live status or a lifecycle state the node reported, in which
+/// its runtime runs; `os-stopped` and `stopped`; `exited` and `dead`. Anything else differs and follows
+/// the self-heal. An unreached birth that matches ends with no result (node-investigation.md, Q393).
 pub fn matches_topology(finding: &Finding, status: NodeStatus) -> bool {
     use NodeStatus as S;
     match finding {
@@ -134,16 +141,18 @@ pub fn matches_topology(finding: &Finding, status: NodeStatus) -> bool {
     }
 }
 
-/// What follows an investigation's verdict (node-recovery.md step 3, Q393).
+/// What follows a [`Finding`] (node-recovery.md step 3, Q393), and so the result it leads to
+/// (node-investigation.md step 5, Q420–Q423).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Follows {
-    /// An ordered investigation whose verdict matches the birth's status in the topology: nothing.
+    /// An ordered investigation whose finding matches the birth's status in the topology: nothing.
     Nothing,
-    /// The birth is commanded back through node.mesh.join, sent until answered.
+    /// The birth is commanded back through node.mesh.join, sent until answered: a reached birth for its
+    /// view (Q87), which is `ready`; an unreached `running` one, which answered is `rejoined`.
     MeshJoin,
-    /// The birth is commanded to start (node.start), sent until answered.
+    /// The birth is commanded to start (node.start), sent until answered: answered, `rejoined`.
     Start,
-    /// The birth is written `dead`, and its recovery runs at once.
+    /// The birth is written `dead`, and its recovery runs at once: `re-created`.
     Dead,
 }
 
@@ -160,8 +169,8 @@ impl Follows {
 }
 
 /// What follows `finding` for an investigation run for `reason` of a birth whose status in the
-/// topology is `status` (node-recovery.md step 3, Q393): an ordered investigation whose verdict
-/// matches the status ([`matches_topology`]) does nothing; any other verdict follows the self-heal:
+/// topology is `status` (node-recovery.md step 3, Q393): an ordered investigation whose finding
+/// matches the status ([`matches_topology`]) does nothing; any other finding follows the self-heal:
 /// `reached` and `running` are commanded back through node.mesh.join, `os-stopped` is commanded to
 /// start, and `exited` or `dead` (not proven by the end of the retries) is written `dead`.
 pub fn follows(finding: &Finding, reason: Reason, status: NodeStatus) -> Follows {
@@ -181,7 +190,7 @@ pub fn follows_reached(reason: Reason, status: NodeStatus) -> Follows {
 }
 
 /// node.runtime.inspect's answer ([`crate::deployment::provider::inspect_runtime`]) as the
-/// investigation's verdict: its `unavailable` is `dead` once no retry is left ([`ask_again`]).
+/// investigation's finding: its `unavailable` is `dead` once no retry is left ([`ask_again`]).
 impl From<crate::deployment::provider::Inspected> for Finding {
     fn from(inspected: crate::deployment::provider::Inspected) -> Self {
         use crate::deployment::provider::Inspected;
@@ -197,10 +206,10 @@ impl From<crate::deployment::provider::Inspected> for Finding {
 /// Investigate `node`'s exact birth from `view` over `calls`, the caller's own Node RPC client, call
 /// deadline, carriers and leads read (`docs/architecture/lifecycles/node-investigation.md`; Q273,
 /// Q393): the index read ([`crate::offline::leads_of`]); then `inspect`, the caller's
-/// node.runtime.inspect of the birth's exact runtime, whose `exited` or `os-stopped` is the verdict
+/// node.runtime.inspect of the birth's exact runtime, whose `exited` or `os-stopped` is the finding
 /// with no tickle sent; otherwise the direct tickle and the same kick through peers, the leads first
 /// ([`crate::offline::tickle_with`]). An answer from the exact birth is `reached`; nobody reaching it,
-/// the verdict is the inspect's: `running` stays `running`, and an `unavailable` answer is asked again
+/// the finding is the inspect's: `running` stays `running`, and an `unavailable` answer is asked again
 /// under the investigation's retries ([`ask_again`]), `dead` when still not proven at their end. A
 /// node the view holds no birth of runs no ladder and is `dead` by name, the provider not asked.
 pub async fn investigate<C, I, V>(node: &Node, view: &Topology, calls: &C, inspect: I) -> Finding
@@ -234,7 +243,7 @@ where
 /// The investigation's retries of an inspect that answered `unavailable` (node-investigation.md step
 /// 4, Q393): `inspect` asked again under one `Send` (its attempts, each within its time limit and each
 /// resend after its delay on the one schedule, node-rpc.md §43). The first answer that proves the
-/// runtime running, os-stopped or exited is the verdict; a birth still not proven when the attempts are
+/// runtime running, os-stopped or exited is the finding; a birth still not proven when the attempts are
 /// spent is `dead`, named by the last answer.
 pub async fn ask_again<I, V>(inspect: &I) -> Finding
 where
@@ -323,12 +332,12 @@ pub(crate) fn fabric_and_mesh_of(view: &Topology, node: &Node) -> (rdm_core::Fab
     (view.fabric.id.clone(), view.meshes.iter().find(|m| m.name == node.mesh).and_then(|m| m.id.clone()))
 }
 
-/// What the primary that investigated a node writes its verdict with (node-investigation.md, build.md
+/// What the primary that investigated a node writes its result with (node-investigation.md, build.md
 /// §5): the events store, this admin's exact birth (each event's `source`), its rafka-time, and the
 /// application's `on_node_investigated`, sent from the event's write (fabric-node-hooks.md, Q312).
 #[derive(Clone)]
 pub struct NodeInvestigatedWriter {
-    /// What the verdict is written with: `events.storage`, this admin's exact birth (the event's
+    /// What the result is written with: `events.storage`, this admin's exact birth (the event's
     /// `source`) and its rafka-time (the event's `time`).
     pub events: crate::events_storage::EventsWriter,
     /// The application's `on_node_investigated`; `None` when it registers none.
@@ -337,33 +346,37 @@ pub struct NodeInvestigatedWriter {
 
 impl NodeInvestigatedWriter {
     /// A writer on an events store held in memory, by the birth `node_id` of `fabric_id`, at
-    /// rafka-time `1`, with no hook: what a rig with no topology storage writes its verdicts with.
+    /// rafka-time `1`, with no hook: what a rig with no topology storage writes its results with.
     pub fn in_memory(fabric_id: &rdm_core::FabricId, node_id: &NodeId) -> Self {
         Self { events: crate::events_storage::EventsWriter::in_memory(fabric_id, node_id), on_node_investigated: None }
     }
 }
 
-/// The verdict `verdict` of the investigation of `node`'s birth at `incarnation`, and what RDM does
-/// with it, `next`, for the investigation's `reason` (Q393): written by this primary, the one that investigated, as one `rdm.node.investigated`
-/// event (node-investigation.md, build.md §5), before anything acts on it; from that write the
-/// application's `on_node_investigated` is sent, once, on a task of its own (fabric-node-hooks.md,
-/// Q312). Both under `rdm.node_admin.node.update.via-on-node-investigated`, a child of the span current
-/// here, which names the event; the event and the notice carry the current span's trace context.
-/// `ids` are the fabric's and the birth's mesh's ([`fabric_and_mesh_of`]). The notice gates nothing
-/// and orders nothing; an event not written sends none, named on the span.
+/// The result `result` of the investigation of `node`'s birth at `incarnation`, with `inspected`,
+/// node.runtime.inspect's answer that led to it (`None` for `ready`, which the birth's answer to a
+/// tickle led to), for the investigation's `reason` (Q393, Q420–Q423): written by this primary, the one
+/// that investigated, as one `rdm.node.investigated` event (node-investigation.md, build.md §5), before
+/// anything acts on it; from that write the application's `on_node_investigated` is sent, once, on a
+/// task of its own, naming the birth's node type beside it (fabric-node-hooks.md, Q312). Both under
+/// `rdm.node_admin.node.update.via-on-node-investigated`, a child of the span current here, which names
+/// the event; the event and the notice carry the current span's trace context. `ids` are the fabric's
+/// and the birth's mesh's ([`fabric_and_mesh_of`]). The notice gates nothing and orders nothing; an
+/// event not written sends none, named on the span.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext, reason: Reason) {
+pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, result: crate::wiring::NodeInvestigatedResult, inspected: Option<&crate::deployment::provider::Inspected>, reason: Reason) {
     use tracing::Instrument as _;
     let context = crate::build::current_context();
     let (fabric_id, mesh_id) = ids;
+    let inspected_name = inspected.map(crate::admin::verdict_name);
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-on-node-investigated",
         node_path = %node.path, node_name = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         mesh = %node.mesh,
-        verdict = verdict.as_str(),
-        next = next.as_str(),
+        node_type = %node.r#type,
+        result = result.as_str(),
+        inspected = inspected_name.unwrap_or_default(),
         reason = reason.as_str(),
         trigger = reason.trigger(),
         event_id = tracing::field::Empty,
@@ -372,26 +385,26 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
     );
     let Some(time_ms) = writer.events.time.try_now_ms() else {
         span.record("outcome", "no-rafka-time");
-        span.in_scope(|| tracing::info!("this admin holds no rafka-time: the verdict is not written and the notice is not sent"));
+        span.in_scope(|| tracing::info!("this admin holds no rafka-time: the result is not written and the notice is not sent"));
         return;
     };
-    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.path, &node.name, verdict.as_str(), next.as_str(), reason);
+    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.path, &node.name, result.as_str(), inspected_name, reason);
     span.record("event_id", event.id.as_str());
     if let Err(e) = writer.events.events.append(&event).instrument(span.clone()).await {
         span.record("outcome", "event-not-written");
-        span.in_scope(|| tracing::info!(cause = %e, "the verdict's rdm.node.investigated event was not written: the notice is not sent"));
+        span.in_scope(|| tracing::info!(cause = %e, "the result's rdm.node.investigated event was not written: the notice is not sent"));
         return;
     }
     let (hook, mesh_id) = match (writer.on_node_investigated.clone(), mesh_id) {
         (Some(hook), Some(mesh_id)) => (hook, mesh_id),
         (None, _) => {
             span.record("outcome", "no-hook");
-            span.in_scope(|| tracing::info!("the verdict is written; no on_node_investigated hook is registered"));
+            span.in_scope(|| tracing::info!("the result is written; no on_node_investigated hook is registered"));
             return;
         }
         (Some(_), None) => {
             span.record("outcome", "no-mesh-id");
-            span.in_scope(|| tracing::info!("the verdict is written; this admin's view holds no id for the birth's mesh: the notice is not sent"));
+            span.in_scope(|| tracing::info!("the result is written; this admin's view holds no id for the birth's mesh: the notice is not sent"));
             return;
         }
     };
@@ -403,17 +416,28 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
         incarnation: incarnation.clone(),
         path: node.path.clone(),
         name: node.name.clone(),
-        verdict,
-        next,
+        r#type: node.r#type.clone(),
+        result,
+        inspected: inspected.cloned(),
         context,
     };
     tokio::spawn(
         async move {
             hook(ctx).await;
-            tracing::info!("the application was told the node investigation's verdict");
+            tracing::info!("the application was told the node investigation's result");
         }
         .instrument(span),
     );
+}
+
+/// The result `ready` of the investigation of `node`'s birth at `incarnation`, run for `reason`: the
+/// exact birth answered its tickle, or was heard again by its digest while the investigation's ladder
+/// ran, so it was ready the whole time (node-investigation.md, node-recovery.md step 3, Q420, Q423).
+/// Written once per investigation by the mesh-primary of the birth's mesh, at the ladder's fold for
+/// every reached birth of its mesh or at the tick that hears it again, with no inspect's answer. The
+/// command back a held birth off its mesh is then sent for its view (Q87) writes nothing of its own.
+pub(crate) async fn write_ready(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, reason: Reason) {
+    write_node_investigated(writer, ids, node, incarnation, crate::wiring::NodeInvestigatedResult::Ready, None, reason).await;
 }
 
 /// node.runtime.inspect's span (node-runtime-inspect.md "Observability contract"), the one every
@@ -678,38 +702,36 @@ mod tests {
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
-    /// "A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
-    ///  one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
-    ///  retries is `dead` (Q393)."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:10
-    /// "2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
+    /// "node.runtime.inspect's answers (`running`, `os-stopped`, `exited`, `unavailable`) are steps inside
+    ///  it, never a result."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:11
+    /// "2. [node.runtime.inspect](node-runtime-inspect.md). On `exited` or `os-stopped` no tickle is sent: an
+    ///     `exited` birth is written `dead`; an `os-stopped` one is commanded to start (step 5).
     ///  3. [node.tickle](node-tickle.md), direct.
-    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
-    ///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
-    ///     still not proven at their end is `dead`.
-    ///  Only an answer from the exact birth counts as `reached`."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:20
-    /// "The verdict is the one decision (Q111). Reached: the node is commanded back through
-    ///  [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path and name with a
-    ///  new node.id (Q110)."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:55
+    ///  4. The same tickle via those peers. Unreached, a `running` birth is commanded back through
+    ///     [node.mesh.join](node-mesh-join.md) (step 5); an inspect that answers `unavailable` is asked again
+    ///     under the investigation's retries, and a birth still not proven at their end is written `dead`.
+    ///  Only an answer from the exact birth counts: to a tickle, the investigation ends `ready`; to the
+    ///  command back or the start, `rejoined`."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:58
     /// "Target: One node, by `(node.id, incarnation)`
-    ///  Steps: The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers
-    ///  Result: `reached`, `running`, `os-stopped` or `exited`, or `dead` when not proven by the end of the retries"
+    ///  Steps: The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers"
+    /// What the steps find, the [`Finding`] the result follows from: the exact birth's answer is
+    /// `reached`, and only the provider proves an exit.
     #[tokio::test(start_paused = true)]
     async fn only_the_exact_births_answer_is_reached_and_only_the_provider_proves_an_exit() {
         let (node, view) = world();
         let rig = |direct: Option<StatusReply>, carried: Option<(NodeId, StatusReply)>| Rig { direct, carried, asked: Mutex::default() };
-        // The inspect first (Q273): exited or os-stopped is the verdict, and no tickle is sent.
+        // The inspect first (Q273): on exited or os-stopped no tickle is sent.
         for said in [Finding::Exited { code: Some(137) }, Finding::OsStopped] {
             let asked = AtomicBool::new(false);
             let r = rig(Some(current(&node)), Some((of(&view, rdm_core::PathName::new("mesh1.node", "3").unwrap()).node_id, current(&node))));
-            assert_eq!(investigate(&node, &view, &r, || provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its verdict");
+            assert_eq!(investigate(&node, &view, &r, || provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its answer is the finding");
             assert!(asked.load(Ordering::SeqCst), "the provider is asked first");
             assert!(r.asked.lock().unwrap().is_empty(), "no tickle is sent once the inspect proved it gone: {:?}", r.asked.lock().unwrap());
         }
         // Running or unavailable: the ladder runs, and only the exact birth's answer is reached; nobody
-        // reaching it, the verdict is the inspect's (an `unavailable` one asked again under the
+        // reaching it, the finding is the inspect's (an `unavailable` one asked again under the
         // investigation's retries, `dead` at their end).
         for said in [Finding::Running, Finding::Dead { reason: "Unknown".into() }] {
             let asked = AtomicBool::new(false);
@@ -733,14 +755,14 @@ mod tests {
         assert!(!asked.load(Ordering::SeqCst), "no ladder ran: the provider is not asked");
     }
 
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:12
-    /// "4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
-    ///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
-    ///     still not proven at their end is `dead`."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:13
+    /// "4. The same tickle via those peers. Unreached, a `running` birth is commanded back through
+    ///     [node.mesh.join](node-mesh-join.md) (step 5); an inspect that answers `unavailable` is asked again
+    ///     under the investigation's retries, and a birth still not proven at their end is written `dead`."
     /// (Q393: "ITS DEAD IF IT CAN'T PROVE IT OR IT GETS TO RUN RETRIES TILL THE END AND THEN ITS DEAD"):
     /// unreached, an `unavailable` inspect is asked again under one `Send` of the default attempts; the
-    /// first answer that proves the runtime is the verdict, and one never proven is `dead` once the
-    /// attempts are spent, named by its last answer. Must NOT happen: `unavailable` taken as the verdict
+    /// first answer that proves the runtime is the finding, and one never proven is `dead` once the
+    /// attempts are spent, named by its last answer. Must NOT happen: `unavailable` taken as the finding
     /// at its first answer, more asks than the step's first plus the Send's attempts, or a retry once
     /// an answer proved the runtime.
     // @feature: node-investigation
@@ -776,7 +798,7 @@ mod tests {
     /// CONTRACT (node-recovery.md step 3, Q393; lead note 0001 C2: "`running` matches a live status
     /// (pending, ready) AND a lifecycle state the node reported (connections-deleting,
     /// connections-deleted, stopping, stopped) ... `os-stopped` matches `stopped`. `exited` matches
-    /// `dead`. Anything else differs and follows the self-heal."): an ordered investigation's verdict
+    /// `dead`. Anything else differs and follows the self-heal."): an ordered investigation's finding
     /// matches the birth's status in the topology exactly in those pairs; `reached`, the birth's own
     /// answer that it runs, matches as `running` does; `dead` (not proven) matches nothing. Must NOT
     /// happen: `running` matching `dead`, `os-stopped` matching `ready`, or `exited` matching a live
@@ -800,7 +822,8 @@ mod tests {
         assert_eq!((Reason::Ordered { trigger: "report-call-failed" }.as_str(), Reason::Ordered { trigger: "report-call-failed" }.trigger()), ("ordered", "report-call-failed"));
     }
 
-    /// CONTRACT (node-investigation.md: "Only an answer from the exact birth counts as `reached`"; Q332:
+    /// CONTRACT (node-investigation.md: "Only an answer from the exact birth counts: to a tickle, the
+    /// investigation ends `ready`"; Q332:
     /// a spent call is the one clock; Q338: the primary watch loses Q182's "an answered tickle is not
     /// reached"): the exact birth's answer, direct or through a carrier, reaches a member and a
     /// node-admin primary alike. Must NOT happen: an answer from the exact birth held unreached.
@@ -821,18 +844,16 @@ mod tests {
     }
 
     // @feature: node-investigation
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
-    /// "A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
-    ///  one verdict: `reached`, `running`, `os-stopped` or `exited`; a birth not proven by the end of its
-    ///  retries is `dead` (Q393). Its steps, in order:
-    ///  1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:9
+    /// "1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
     ///     It names the peers to try; it never proves the node is reachable.
-    ///  2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
+    ///  2. [node.runtime.inspect](node-runtime-inspect.md). On `exited` or `os-stopped` no tickle is sent: an
+    ///     `exited` birth is written `dead`; an `os-stopped` one is commanded to start (step 5).
     ///  3. [node.tickle](node-tickle.md), direct.
-    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`; an
-    ///     inspect that answers `unavailable` is asked again under the investigation's retries, and a birth
-    ///     still not proven at their end is `dead`."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:59
+    ///  4. The same tickle via those peers. Unreached, a `running` birth is commanded back through
+    ///     [node.mesh.join](node-mesh-join.md) (step 5); an inspect that answers `unavailable` is asked again
+    ///     under the investigation's retries, and a birth still not proven at their end is written `dead`."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:62
     /// "Spans: [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own"
     #[tokio::test]
     async fn investigate_orders_leads_before_mesh_carriers_and_emits_provider_inspection_span_on_unreached()

@@ -184,7 +184,7 @@ RDM_EVIDENCE_DIR="$ROOT/evidence" RDM_NODE_ADMIN_BIRTH="$(cat "$ROOT/birth.json"
 
 ### Step 1: The 30 s staleness mark
 
-Once `mesh-gg4wtw-1.broker.3` (`8q8k077st3m8`) has not refreshed its `heartbeat_ms` for the 30 s staleness window (`staleness_ms="30000"`), peers in `mesh-gg4wtw-1` and the mesh-primary `mesh-gg4wtw-1.node-admin.1` mark the birth stale in their local topology view (`rdm.mesh.topology.update.via-member-stale`; [Node recovery — Detection and the verdict](../architecture/lifecycles/node-recovery.md#detection-and-the-verdict), [Gossip — 3.2 Cadence](../architecture/gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy)):
+Once `mesh-gg4wtw-1.broker.3` (`8q8k077st3m8`) has not refreshed its `heartbeat_ms` for the 30 s staleness window (`staleness_ms="30000"`), peers in `mesh-gg4wtw-1` and the mesh-primary `mesh-gg4wtw-1.node-admin.1` mark the birth stale in their local topology view (`rdm.mesh.topology.update.via-member-stale`; [Node recovery — Detection and the result](../architecture/lifecycles/node-recovery.md#detection-and-the-result), [Gossip — 3.2 Cadence](../architecture/gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy)):
 
 ```json
 {"service":"rshape-gateway","name":"rdm.mesh.topology.update.via-member-stale","attributes":{"silent_ms":"30107","staleness_ms":"30000"}}
@@ -203,11 +203,11 @@ The mesh-primary (`mesh-gg4wtw-1.node-admin.1`) runs `node.investigation` on the
 
 ### Step 3: The mesh-primary's recovery deletes the exited birth and creates a new birth `Ready`
 
-With `verdict="exited"`, `mesh-gg4wtw-1.node-admin.1`, the mesh-primary, recovers the birth itself, its own workflow and never a Build: no `build.create`, no Build record, nothing claimed. It writes the verdict as its `rdm.node.investigated` event (`rdm.node_admin.node.update.via-on-node-investigated`, `next="recreate"`), then runs the recovery on the node's work turn (`rdm.node_admin.node.update.via-node-recovery`, `route="node-recovery"`). The recovery deletes the exited birth `8q8k077st3m8` (`rdm.node_admin.node.delete.via-node-recovery`) and creates a new birth at the same path and name (`mesh-gg4wtw-1.broker.3`) with a new `node.id` (`4mhfqwgjeqwq`) and `incarnation_id` (`jex6p3y7zdjx`), inheriting the prior birth's `data_dir` (`rdm.node_admin.node.create.via-node-recovery`). Each step is recorded on the node record. The new birth boots, joins `mesh-gg4wtw-1` and enters `Ready` ([`node.recovery` — Sequence](../architecture/lifecycles/node-recovery.md#numbered-end-to-end-sequence), [`node.recovery` — States written](../architecture/lifecycles/node-recovery.md#states-written)):
+With `verdict="exited"`, `mesh-gg4wtw-1.node-admin.1`, the mesh-primary, recovers the birth itself, its own workflow and never a Build: no `build.create`, no Build record, nothing claimed. It writes the result as its `rdm.node.investigated` event (`rdm.node_admin.node.update.via-on-node-investigated`, `result="re-created"`, `inspected="exited"`), then runs the recovery on the node's work turn (`rdm.node_admin.node.update.via-node-recovery`, `route="node-recovery"`). The recovery deletes the exited birth `8q8k077st3m8` (`rdm.node_admin.node.delete.via-node-recovery`) and creates a new birth at the same path and name (`mesh-gg4wtw-1.broker.3`) with a new `node.id` (`4mhfqwgjeqwq`) and `incarnation_id` (`jex6p3y7zdjx`), inheriting the prior birth's `data_dir` (`rdm.node_admin.node.create.via-node-recovery`). Each step is recorded on the node record. The new birth boots, joins `mesh-gg4wtw-1` and enters `Ready` ([`node.recovery` — Sequence](../architecture/lifecycles/node-recovery.md#numbered-end-to-end-sequence), [`node.recovery` — States written](../architecture/lifecycles/node-recovery.md#states-written)):
 
 ```json
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-node-recovery","attributes":{"incarnation_id":"1a3cmcacf4tv","mesh":"mesh-gg4wtw-1","node_path":"mesh-gg4wtw-1.broker","node_name":"3","node_id":"8q8k077st3m8","outcome":"complete","route":"node-recovery","submitter":"h38q5jqafmd8","verdict":"exited"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-on-node-investigated","attributes":{"incarnation_id":"1a3cmcacf4tv","mesh":"mesh-gg4wtw-1","next":"recreate","node_path":"mesh-gg4wtw-1.broker","node_name":"3","node_id":"8q8k077st3m8","verdict":"exited"}}
+{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-on-node-investigated","attributes":{"incarnation_id":"1a3cmcacf4tv","inspected":"exited","mesh":"mesh-gg4wtw-1","node_path":"mesh-gg4wtw-1.broker","node_name":"3","node_id":"8q8k077st3m8","result":"re-created"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.delete.via-node-recovery","attributes":{"incarnation_id":"1a3cmcacf4tv","node_path":"mesh-gg4wtw-1.broker","node_name":"3","node_id":"8q8k077st3m8"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.create.via-node-recovery","attributes":{"incarnation_id":"1a3cmcacf4tv","node_path":"mesh-gg4wtw-1.broker","node_name":"3","node_id":"8q8k077st3m8"}}
 {"service":"rshape-broker","name":"rdm.mesh.node.create.via-boot","attributes":{"incarnation_id":"jex6p3y7zdjx","type":"broker","node_id":"4mhfqwgjeqwq","node_path":"mesh-gg4wtw-1.broker","node_name":"3"}}
@@ -226,7 +226,7 @@ sequenceDiagram
     A1->>A1: rdm.mesh.topology.update.via-member-stale (silent_ms="30053", staleness_ms="30000")
     A1->>A1: rdm.node_admin.node.resolve.via-provider-inspection (verdict="exited")
     A1->>A1: rdm.node_admin.node.update.via-node-recovery (verdict="exited", route="node-recovery")
-    A1->>A1: rdm.node_admin.node.update.via-on-node-investigated (verdict="exited", next="recreate")
+    A1->>A1: rdm.node_admin.node.update.via-on-node-investigated (result="re-created", inspected="exited")
     A1->>B3_old: rdm.node_admin.node.delete.via-node-recovery (node_id="8q8k077st3m8")
     A1->>B3_new: rdm.node_admin.node.create.via-node-recovery (node_path="mesh-gg4wtw-1.broker", node_name="3")
     B3_new->>B3_new: rdm.mesh.node.create.via-boot (node_id="4mhfqwgjeqwq", incarnation_id="jex6p3y7zdjx")

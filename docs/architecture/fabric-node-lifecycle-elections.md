@@ -109,8 +109,8 @@ For a node-admin the questions are, in order: am I a node-admin; am I the lowest
 was the former mesh-primary also the fabric-primary? No: I am mesh-primary now. Yes: I take no primary
 role and run [fabric recovery](lifecycles/fabric-recovery.md) (Q122).
 The mesh-primary then runs [node investigation](lifecycles/node-recovery.md) on the unheard node, whatever
-its type, and that verdict decides what becomes of it (Q111): reached, it is commanded back as a member;
-anything else, it is re-created.
+its type, and its result decides what becomes of it (Q111, Q423): `ready`, it answered; `rejoined`, it was
+commanded back as a member or started; `re-created`, it was re-created.
 
 ### 4.2 Mesh primary
 
@@ -136,7 +136,7 @@ There is no MeshId/name/age scoring and no separate fabric-election algorithm. T
 over by [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate);
 nothing else moves it. Unheard past the staleness floor, nobody takes it: the lowest Ready
 node-admin of its mesh, or when the mesh has none the lowest Ready mesh-primary on the
-backbone on [node investigation](lifecycles/node-investigation.md)'s verdict (Q335), runs
+backbone on [node investigation](lifecycles/node-investigation.md)'s result (Q335), runs
 [fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
 the one mechanism in either case (Q122): the node-admin at the fabric-primary's path and name is re-created
 and is mesh-primary and fabric-primary again when it is Ready.
@@ -176,8 +176,8 @@ mesh-primary and fabric-primary.
 For every primary:
 - a heard primary stays primary; a lower-NodeId candidate that later becomes Ready never displaces it;
 - silence past the staleness floor supersedes it (§4.1, §4.3); nothing is terminated on silence. What
-  became of the unheard node is [node investigation](lifecycles/node-recovery.md)'s verdict (Q111): reached,
-  it is commanded back as a member through node.mesh.join; anything else, it is re-created at its
+  became of the unheard node is [node investigation](lifecycles/node-recovery.md)'s result (Q111, Q423): `ready`,
+  it answered; `rejoined`, it was commanded back as a member through node.mesh.join or started; `re-created`, it was re-created at its
   path and name with a new node.id (Q110), and an old birth that comes back is refused at admission and its
   runtime terminated;
 - a primary that hands over gives the primary to the lowest Ready NodeId of its type in its

@@ -23,7 +23,7 @@ use rdm_admin::model::{IncarnationId, ProviderKind};
 use rdm_admin::storage::OwnRow;
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope};
 use rdm_admin::storage_error::StorageError;
-use rdm_admin::wiring::{BuildEndedCtx, BuildEndedNotice, BuildStartedCtx, BuildStartedNotice, FabricHooks, FabricReadyCtx, FabricReadyNotice, MeshReadyCtx, MeshReadyNotice, NodeInvestigatedCtx, NodeInvestigatedNext, NodeInvestigatedNotice, Wiring};
+use rdm_admin::wiring::{BuildEndedCtx, BuildEndedNotice, BuildStartedCtx, BuildStartedNotice, FabricHooks, FabricReadyCtx, FabricReadyNotice, MeshReadyCtx, MeshReadyNotice, NodeInvestigatedCtx, NodeInvestigatedNotice, NodeInvestigatedResult, Wiring};
 use rshape_consumer::replica::{ask_each_gateway, Asked, Records, RecordsRequest};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -156,7 +156,7 @@ async fn day_zero(own: Own, fabric_id: String, build_id: String) {
     }
 }
 
-/// `on_node_investigated`'s work on `recreate`: one record of the re-creation to the `system` topic,
+/// `on_node_investigated`'s work on `re-created`: one record of the re-creation to the `system` topic,
 /// one round of the ready gateways of this admin's mesh ([`ask_each_gateway`]): each asked once, in
 /// the topology's order, until one produces it. The operation id is the investigated birth's, so a
 /// repeated notice for one birth is the same record.
@@ -165,7 +165,7 @@ async fn record_recreate(started: &Started, told: &NodeInvestigatedCtx) {
     let request = RecordsRequest::Produce {
         operation: operation.clone(),
         topic: "system".into(),
-        record: format!("path {:?}, name {:?}, node {} investigated ({}): re-created as a new node id", told.path, told.name, told.node_id, told.verdict.as_str()),
+        record: format!("path {:?}, name {:?}, node {} investigated ({}, inspected {}): re-created as a new node id", told.path, told.name, told.node_id, told.result.as_str(), told.inspected.as_ref().map(rdm_admin::admin::verdict_name).unwrap_or("none")),
     };
     match ask_each_gateway(&ready_gateways(started), &mut BTreeMap::new(), |gateway| ask_gateway(started, gateway, &request)).await {
         Ok(offset) => tracing::info!(target: "rshape", %operation, offset, "on_node_investigated: the re-creation is recorded in the system topic"),
@@ -175,7 +175,7 @@ async fn record_recreate(started: &Started, told: &NodeInvestigatedCtx) {
 
 /// The Fabric notices this admin registers (fabric-node-hooks.md): each is fire and forget and writes one
 /// log line naming what it was told. `on_mesh_ready` is called by a mesh-primary once its mesh is ready,
-/// `on_node_investigated` by a mesh-primary once it records a node investigation's verdict;
+/// `on_node_investigated` by a mesh-primary once it records a node investigation's result;
 /// `on_fabric_ready`, `on_build_started` and `on_build_ended` by the fabric-primary.
 fn notices(own: Own) -> FabricHooks {
     let own_investigated = own.clone();
@@ -214,8 +214,8 @@ fn notices(own: Own) -> FabricHooks {
     let on_node_investigated: NodeInvestigatedNotice = Arc::new(move |told: NodeInvestigatedCtx| {
         let own = own_investigated.clone();
         Box::pin(async move {
-            tracing::info!(target: "rshape", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, node_path = %told.path, node_name = %told.name, verdict = told.verdict.as_str(), next = told.next.as_str(), "on_node_investigated: a node investigation's verdict is recorded");
-            if told.next != NodeInvestigatedNext::Recreate {
+            tracing::info!(target: "rshape", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, node_path = %told.path, node_name = %told.name, node_type = %told.r#type, result = told.result.as_str(), inspected = told.inspected.as_ref().map(rdm_admin::admin::verdict_name).unwrap_or_default(), "on_node_investigated: a node investigation's result is recorded");
+            if told.result != NodeInvestigatedResult::ReCreated {
                 return;
             }
             // The work runs on its own, under the notice's span: a notice gates nothing.
