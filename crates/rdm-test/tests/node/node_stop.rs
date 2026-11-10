@@ -114,6 +114,15 @@ async fn stop_then_start(test: &str, node: &PathName) {
     let pid = estate.pid_of(node).await;
     assert!(alive(pid));
 
+    // A node lists a stopped birth `stopped` only when it held that birth: an ordinary node holds its
+    // own mesh's nodes from their own Digests and takes its mesh-primary's view of them only by a read
+    // at create, join and start (gossip.md §3.3), and a stopped node a view holds no digest of is not
+    // listed (Q390). The settled view is the entry admin's alone, so the stop is sent once every other
+    // node of the mesh holds the exact birth.
+    for peer in &others {
+        rdm_test::typed::peer_holds(&*peers, peer, "mesh1", "the birth is held before its stop", |v| v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation.as_ref().unwrap())).await;
+    }
+
     // The stop: the reply stream carries its node.connections.deleted and stopped.
     let builds = estate.build_ids().await;
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
