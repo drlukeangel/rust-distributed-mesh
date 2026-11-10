@@ -25,18 +25,18 @@ apply: that is [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-prima
    step its mesh owes that no `rdm.build.step` event ended
    ([build.md §4.1](../build.md#41-build-identity-is-active-reconciliation-state)).
 5. **The lost birth is a member like any other.** The successor investigates it as any member of its
-   mesh ([node investigation](node-investigation.md)), and the verdict decides (Q111). There are three cases:
-   - **The investigation fails** (any verdict but `reached`):
+   mesh ([node investigation](node-investigation.md)), and its result decides (Q111, Q423). There are three cases:
+   - **The investigation ends `re-created`** (written `dead`):
      1. node.delete of the lost birth;
      2. a new birth at its path and name, a new node.id ([node recovery](node-recovery.md)), which
         starts with no primary role; nothing copies the predecessor's `is_primary` onto it;
      3. a previous node-admin that comes back after that is a deleted birth, as for any node
         ([node recovery](node-recovery.md)).
-   - **The investigation succeeds** (`reached`), with no deletion:
+   - **The investigation ends `ready` or `rejoined`** (the birth answered a tickle, the command back or the start), with no deletion:
      1. the lost node-admin removes its primary role: it publishes nothing as primary, and takes the
         mesh's primary from the successor's record;
      2. it rejoins the mesh through [node.mesh.join](node-mesh-join.md), commanded back by the
-        successor, as an ordinary member.
+        successor, or by its start sequence once the successor started it, as an ordinary member.
    - **The successor hears no other node** and reads the lost birth `running`: the birth is
      unreachable from it, not lost. Nothing is written, no delete and no create, and the next
      investigation decides again (Q153).

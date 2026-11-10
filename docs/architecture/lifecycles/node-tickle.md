@@ -27,7 +27,7 @@ the primitive does not.
 | Ladder | Direct first. On failure, the same probe carried by [Forward](../node-rpc-envelope.md#forward-op-0x1a-core) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other |
 | Ends | Any answer from the node, under the probed incarnation, ends the ladder and cancels the probes still running |
 | Result | `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached it within the ladder. Unreached is never death |
-| What follows | The caller's: on `unreached` the investigation's verdict is the inspect's answer, read before the tickle; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md) |
+| What follows | The caller's ([node investigation](node-investigation.md)): on `unreached` the inspect's answer, read before the tickle, leads on (`running`: the command back through node.mesh.join; `unavailable`: asked again); on `reached`, a node answering current ends it `ready` (off its channel, commanded back through [node.mesh.join](node-mesh-join.md) for its view), a node answering stopped that no command stopped is commanded to start and ends it `rejoined` once answered, and a node in its start cycle ends it `ready` |
 | Spans | `rdm.node.tickle.resolve.via-direct` for the direct probe, `via-peer` per carrier, each with the answer or the failure; `rdm.node.tickle.returns-unknown.via-unreached` when the ladder ends with no answer; `rdm.node_admin.node.update.via-mesh-join-commanded` when the caller commands the reached node back through node.mesh.join, with the reply |
 
 ## Numbered end-to-end sequence
