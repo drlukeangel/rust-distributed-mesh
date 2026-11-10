@@ -19,7 +19,7 @@
 //!    and a state before it is refused naming `Stopped`; the other node's held `Ready` is untouched.
 //! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the mesh-primary.
 
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 
 fn actor_is(span: &Value, node: &Value) -> bool { span["attributes"]["node_path"] == node["path"] && span["attributes"]["node_name"] == node["name"] }
@@ -209,8 +209,16 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     // mesh1.node.1 holds its type's primary role (Q406): its stop first hands the role to a Ready node of its
     // type, and the mesh-primary refuses it `no-secondary` until its view holds one (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C1: "until a secondary is available"). The
-    // entered admin, mesh1.node-admin.2, decides it; its view held mesh1.node.2 Pending when it took the roles (#366).
-    estate.until_node(&rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1.node-admin.2 holds mesh1.node.2 ready, the secondary of its type", Duration::from_secs(60), |n| n.filter(|n| n.state == rdm_client::NodeStatus::Ready).map(|_| ())).await;
+    // entered admin, mesh1.node-admin.2, decides it from its own view, which holds mesh1.node.2 Pending from
+    // its start read until mesh1.node.2 declares Ready to it as the role's new primary (#366). `node.get`
+    // answers a node's state from its record (query.md §1), which says Ready before that view does, so the
+    // wait reads what that admin itself holds: its topology read (`node.topology.get`), the projection it
+    // publishes from its view.
+    let n2 = rdm_core::PathName::new("mesh1.node", "2").unwrap();
+    wait_for("mesh1.node-admin.2 holds mesh1.node.2 Ready in its own view, the secondary of its type", Duration::from_secs(60), || async {
+        estate.held_topology_at(&a2).await.filter(|held| held.members.iter().any(|b| b.node.location() == n2 && b.status == rdm_core::model::NodeStatus::Ready)).map(|_| ())
+    })
+    .await;
     let before_rpc = estate.node_view(&rpc1).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
