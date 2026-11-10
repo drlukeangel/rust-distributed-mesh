@@ -289,14 +289,24 @@ pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepte
 /// already exists, with no durable write and no transition). An admin that holds a state for its mesh
 /// keeps it. A new mesh's first admin is answered no state for its mesh: the fabric-primary applies
 /// its Pending (states.md). A status word this build does not read as a Mesh lifecycle state is
-/// refused by name and adopts nothing.
+/// refused by name and adopts nothing. So is a held Dead: the answer holds a MeshStatus by the mesh's
+/// name, and the mesh this admin is created into is alive, so a Dead held under its name is a deleted
+/// mesh's of that name (states.md: a mesh id is never reissued and deleted is final; a mesh created
+/// again under that name is a new mesh with a new id).
 pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &Records, mesh: &str, mesh_id: &MeshId) {
     let held = answer.statuses.iter().find_map(|f| match f.data() {
-        rdm_gossip::frame::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
+        rdm_gossip::frame::Frame::MeshStatus { mesh: m, status, publisher, changed_at_rafka_ms, .. } if m == mesh => Some((status.clone(), publisher.clone(), *changed_at_rafka_ms)),
         _ => None,
     });
-    let Some((status, publisher)) = held else { return };
+    let Some((status, publisher, changed_at_rafka_ms)) = held else { return };
+    // The adopting admin is named by the name its join was admitted under, as every admin span names its node.
+    let (node_path, node_name) = answer.control.name.as_ref().map(|n| (n.path.as_str(), n.name.as_str())).unwrap_or_default();
     let state = match mesh_state_of(&status) {
+        Ok(rdm_core::status::MeshState::Deleted) => {
+            tracing::info_span!("rdm.node_admin.mesh.reject.via-held-state-deleted", node_path, node_name, mesh, mesh_id = %mesh_id, served_by = %answer.served_by, publisher = %publisher, changed_at_rafka_ms)
+                .in_scope(|| tracing::info!("the entry answer's Dead held under this admin's mesh name is a deleted mesh's of that name: nothing is adopted"));
+            return;
+        }
         Ok(state) => state,
         Err(why) => {
             tracing::info_span!("rdm.node_admin.mesh.reject.via-held-state-unread", mesh, mesh_id = %mesh_id, status = %status, served_by = %answer.served_by, reason = %why)
@@ -311,8 +321,6 @@ pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &
         }
         declared.hold_mesh(mesh_id.clone(), state);
     }
-    // The adopting admin is named by the name its join was admitted under, as every admin span names its node.
-    let (node_path, node_name) = answer.control.name.as_ref().map(|n| (n.path.as_str(), n.name.as_str())).unwrap_or_default();
     tracing::info_span!("rdm.node_admin.mesh.update.via-held-state-adopted", node_path, node_name, mesh, mesh_id = %mesh_id, state = ?state, served_by = %answer.served_by, publisher = %publisher)
         .in_scope(|| tracing::info!("the mesh's held lifecycle state is adopted as it exists: no transition, no durable write"));
 }
