@@ -1,5 +1,5 @@
 //! Live context refusals precede opaque data, and cannot alter installed state.
-use rdm_core::{FabricId, MeshId};
+use rdm_core::FabricId;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::location::learn_addresses;
 use std::time::Duration;
@@ -13,7 +13,7 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
         let (recv_ep, recv_gossip, _recv_router) = crate::receive_rules::endpoint().await;
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(send_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
         let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
@@ -21,10 +21,10 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
         let (sender, _rx) = subscription.split();
         let author = crate::gossip_author(&fabric);
-        let status = |scope: &str, revision| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&author, 2, revision);
+        let status = |scope: &str, revision| Frame::MeshStatus { mesh: scope.into(), mesh_id: rdm_core::fixture_mesh_id(scope), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&author, 2, revision);
         sender.broadcast_neighbors(status("held", 1).encode().into()).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("held").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
-        let held = receiver.mesh_status("held");
+        tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status(&rdm_core::fixture_mesh_id("held")).is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
+        let held = receiver.mesh_status(&rdm_core::fixture_mesh_id("held"));
         let roles = receiver.primaries().subscribe(); let births = receiver.digest_view.birth_changes();
         let before = (*roles.borrow(), *births.borrow());
         let mut cases = Vec::new();
@@ -44,9 +44,9 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
             let count = capture.spans().unwrap().iter().filter(|s| s["name"] == outcome).count();
             sender.broadcast_neighbors(bytes.into()).await.unwrap();
             sender.broadcast_neighbors(status("barrier", index as u64 + 10).encode().into()).await.unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < index as u64 + 10) { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status(&rdm_core::fixture_mesh_id("barrier")).is_none_or(|s| s.changed_at_rafka_ms < index as u64 + 10) { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
             assert_eq!(capture.spans().unwrap().iter().filter(|s| s["name"] == outcome).count(), count + 1, "the context has its named refusal");
-            assert_eq!(receiver.mesh_status("held"), held);
+            assert_eq!(receiver.mesh_status(&rdm_core::fixture_mesh_id("held")), held);
             assert_eq!((*roles.borrow(), *births.borrow()), before);
         }
         send_ep.close().await; recv_ep.close().await;

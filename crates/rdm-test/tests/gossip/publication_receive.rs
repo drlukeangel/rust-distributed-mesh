@@ -1,6 +1,6 @@
 //! Aggregate/delta receiver contracts, through the live channels and real `TopologyService`: an
 //! aggregate on the backbone (the one channel it travels on, Q387), a differential on the mesh channel.
-use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshNode, NodeId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -18,9 +18,9 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64) {
     // A following status on the same channel proves receipt has finished.
     sender.broadcast_neighbors(frame.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), mesh_id: rdm_core::fixture_mesh_id("barrier"), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
+        while receiver.mesh_status(&rdm_core::fixture_mesh_id("barrier")).is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame was applied on this channel");
 }
 
@@ -38,7 +38,7 @@ fn story(story: Story) {
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(socket);
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
         let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();

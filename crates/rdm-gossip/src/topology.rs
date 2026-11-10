@@ -63,7 +63,7 @@ impl TopologyView {
         let mut view = View::new(mesh, node);
         view.held_name = name.clone();
         view.digest_view.held_name = name.clone();
-        let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
+        let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh { mesh: mesh.to_string(), mesh_id: mesh_id.clone() })));
         // Its own mesh's births are held under its own mesh's id.
         view.digest_view.hold_mesh_id(mesh, Some(mesh_id));
         let me = Self { digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, name, mesh_status_publisher };
@@ -197,13 +197,13 @@ impl TopologyView {
         self.view.digest_view.statuses.fabric()
     }
 
-    /// The status of `mesh` this node holds: the last one published, until the next change.
-    pub fn mesh_status(&self, mesh: &str) -> Option<MeshStatus> {
-        self.view.digest_view.statuses.mesh(mesh)
+    /// The status of the mesh `mesh_id` this node holds: the last one published, until the next change.
+    pub fn mesh_status(&self, mesh_id: &MeshId) -> Option<MeshStatus> {
+        self.view.digest_view.statuses.mesh(mesh_id)
     }
 
-    /// Every mesh status this node holds, by mesh name: each the last one published for its mesh.
-    pub fn mesh_statuses(&self) -> Vec<(String, MeshStatus)> {
+    /// Every mesh status this node holds, by mesh id: each the last one published for its mesh.
+    pub fn mesh_statuses(&self) -> Vec<(MeshId, MeshStatus)> {
         self.view.digest_view.statuses.meshes()
     }
 
@@ -213,11 +213,13 @@ impl TopologyView {
         self.view.digest_view.statuses.held_frames(&self.fabric, me)
     }
 
-    /// Hold the statuses an entry pull answered.
+    /// Hold the statuses an entry pull answered. The status of this node's own mesh id, and no other
+    /// (a status of another mesh held under its mesh's name is another mesh's, Q432), is also its
+    /// mesh [`StatusPublisher`]'s adopted fact.
     pub fn learn_statuses(&self, frames: &[Frame]) {
         for f in frames {
-            if let Frame::MeshStatus { mesh, status, changed_at_rafka_ms, .. } = f.data() {
-                if *mesh == self.view.mesh {
+            if let Frame::MeshStatus { mesh_id, status, changed_at_rafka_ms, .. } = f.data() {
+                if *mesh_id == self.mesh_id {
                     self.adopt_mesh_status(StatusFact { status: status.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
                 }
             }
@@ -532,7 +534,7 @@ mod tests {
 
     #[test]
     fn status_reinforcements_retain_context_while_new_facts_take_the_current_held_revision() {
-        let mut publisher = super::StatusPublisher::new("mesh1.node-admin.1", super::StatusScope::Mesh("mesh1".into()));
+        let mut publisher = super::StatusPublisher::new("mesh1.node-admin.1", super::StatusScope::Mesh { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1") });
         let author = test_author();
         publisher.set_role(true); publisher.author = Some((author.clone(), 1));
         let now = std::time::Instant::now();
@@ -554,10 +556,10 @@ mod tests {
     fn the_same_mesh_status_under_its_authors_context_replaces_one_held_without() {
         let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
         let view = super::StatusView::default();
-        let plain = super::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 40 };
+        let plain = super::Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 40 };
         assert!(view.take(&plain, &fabric));
         assert!(view.held_frames(&fabric, "mesh1.node-admin.1").is_empty(), "a status held without its author's context is not served");
-        let mut publisher = super::StatusPublisher::new("mesh1.node-admin.1", super::StatusScope::Mesh("mesh1".into()));
+        let mut publisher = super::StatusPublisher::new("mesh1.node-admin.1", super::StatusScope::Mesh { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1") });
         publisher.set_role(true);
         publisher.author = Some((test_author(), 1));
         let heard = super::StatusFact { status: "ready".into(), changed_at_rafka_ms: 40 };
@@ -1061,7 +1063,9 @@ mod tests {
 
     /// `mesh`'s status as its primary published it, held by `digest_view` (the frame a peer receives).
     fn hold_mesh_status(digest_view: &DigestView, mesh: &str, status: &str, changed_at_rafka_ms: u64) {
-        let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.node-admin.1"), forwarded_by: None, changed_at_rafka_ms };
+        // A view that holds a mesh's births holds the mesh's id: its status is read by that id (Q432).
+        digest_view.hold_mesh_id(mesh, Some(&rdm_core::fixture_mesh_id(mesh)));
+        let f = Frame::MeshStatus { mesh: mesh.into(), mesh_id: rdm_core::fixture_mesh_id(mesh), status: status.into(), publisher: format!("{mesh}.node-admin.1"), forwarded_by: None, changed_at_rafka_ms };
         assert!(digest_view.statuses.take(&f, &FabricId::parse("fab000000001").unwrap()), "{f:?}");
     }
 
@@ -1116,9 +1120,10 @@ mod tests {
     #[test]
     fn a_mesh_primary_observing_its_mesh_leaving_sends_it_at_once_and_a_peer_stops_routing_on_receipt() {
         let (now, fabric) = (Instant::now(), FabricId::parse("fab000000001").unwrap());
-        let mut publisher = StatusPublisher::new("mesh1.node-admin.1", StatusScope::Mesh("mesh1".into()));
+        let mut publisher = StatusPublisher::new("mesh1.node-admin.1", StatusScope::Mesh { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1") });
         publisher.set_role(true);
         let peer = DigestView::default();
+        peer.hold_mesh_id("mesh1", Some(&rdm_core::fixture_mesh_id("mesh1")));
         let held = StatusFact { status: "ready".into(), changed_at_rafka_ms: 10 };
         let ready = publisher.observe("ready", Some(held), true, now, 10).expect("the held ready is sent once its checklist completes");
         assert!(peer.statuses.take(&ready, &fabric));
@@ -1152,7 +1157,7 @@ mod tests {
         let mut w = digest_view.routing_watch();
         w.seen();
         assert!(!moved_now(&mut w).await, "nothing moved yet");
-        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "leaving".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "leaving".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&f, &fabric));
         assert!(moved_now(&mut w).await, "a mesh status taken moves the routing watch");
         w.seen();
@@ -2256,7 +2261,7 @@ mod tests {
         // mesh1's primary published mesh1 ready before the leave; the joiner learns it
         // from the replay.
         // As a peer receives it: authored by its publisher.
-        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
+        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: m1.clone(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, NodeStatus::ConnectionsDeleting), said(&leaving, NodeStatus::Leaving)])] {
             let taken = primary.take_topology_frame(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let written = taken.source.expect("a complete full written to the topology view");
@@ -2359,7 +2364,7 @@ mod tests {
         // is served a mesh that left (canonical_ids red at d8fdf110e: the fabric-primary served the removed
         // mesh2 to the recreated mesh2's first admin, which swept its births).
         assert_eq!(primary.copies.lock().unwrap().held_version("mesh1").map(|(_, v)| v), Some(2), "before MeshLeft the copy holds the final full");
-        primary.digest_view.mesh_left("mesh1", "b9", 9);
+        primary.digest_view.mesh_left("mesh1", &m1, "b9", 9);
         assert_eq!(primary.forwarder.lock().unwrap().forwarded_version("mesh1"), None, "at MeshLeft the forwarder forgets what it forwarded of mesh1");
         assert_eq!(primary.copies.lock().unwrap().held_version("mesh1"), None, "at MeshLeft the copy of mesh1 is forgotten");
         assert!(primary.held_sources_of(Some("mesh1")).is_empty(), "a read of the primary is served nothing of mesh1");
@@ -2715,8 +2720,8 @@ mod tests {
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         let departure = op_at(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &x, &x_inc, "node.delete");
         let forwarder_id = NodeId::mint();
-        let status_at = |changed_at_rafka_ms: u64, status: &str| Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: Some(forwarder_id.to_string()), changed_at_rafka_ms };
-        let held = Some(MeshStatus { status: "ready".into(), publisher: "mesh2.node-admin.1".into(), changed_at_rafka_ms: 5 });
+        let status_at = |changed_at_rafka_ms: u64, status: &str| Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2"), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: Some(forwarder_id.to_string()), changed_at_rafka_ms };
+        let held = Some(MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), changed_at_rafka_ms: 5 });
 
         let joiner = test_view("mesh2", "mesh2.node-admin.1");
         let member = test_view("mesh2", "mesh2.node.1");
@@ -2731,9 +2736,9 @@ mod tests {
         for (view, via) in [(&joiner, "entry-answer"), (&member, "mesh-channel"), (&renamed, "mesh-channel"), (&peer, "mesh-channel")] {
             assert!(view.digest_view.depart(departure.clone()));
             view.take(&status_at(5, "ready"), &fabric, via);
-            assert_eq!(view.digest_view.statuses.mesh("mesh2"), held, "{}: the status is taken whatever its publisher's name resolves to", view.node);
+            assert_eq!(view.digest_view.statuses.mesh(&rdm_core::fixture_mesh_id("mesh2")), held, "{}: the status is taken whatever its publisher's name resolves to", view.node);
             view.take(&status_at(3, "pending"), &fabric, via);
-            assert_eq!(view.digest_view.statuses.mesh("mesh2"), held, "{}: an older change is not taken", view.node);
+            assert_eq!(view.digest_view.statuses.mesh(&rdm_core::fixture_mesh_id("mesh2")), held, "{}: an older change is not taken", view.node);
         }
         let refused: Vec<_> = spans.named("rdm.mesh.topology.reject.via-deleted-birth").into_iter().filter(|f| f.get("frame").map(String::as_str) == Some("mesh-status")).collect();
         assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:?}");
@@ -3747,7 +3752,7 @@ mod tests {
         assert_lookups_agree(&view, &gone);
 
         // The mesh's deletion departs every birth left.
-        view.depart_mesh_births("mesh1", "b9", 9);
+        view.depart_mesh_births("mesh1", None, "b9", 9);
         assert!(view.all().is_empty());
         for (name, key) in &gone {
             assert!(view.get_by_endpoint(key).is_none() && view.get_by_path_name(name).is_none(), "nothing is found once the mesh is deleted");

@@ -18,9 +18,9 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip) {
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64, author: &rdm_gossip::envelope::Birth) {
     // A Digest is authored by its own birth (`Frame::digest`); any other frame by `author`.
     sender.broadcast_neighbors(frame.authored(author, 10, 1).encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: author.node.to_string(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), mesh_id: rdm_core::fixture_mesh_id("barrier"), status: "ready".into(), publisher: author.node.to_string(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
+        while receiver.mesh_status(&rdm_core::fixture_mesh_id("barrier")).is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame proves this receipt finished");
 }
 fn birth(fabric: &FabricId, mesh: &MeshId, path: rdm_core::PathName, mesh_name: &str, r#type: &str, ordinal: u16) -> MeshDigest {
@@ -41,7 +41,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
     capture.run(4,async {
         let root = tracing::info_span!("rdm.test.gossip.update.via-read-recovery");
         async {
-        let (fabric,mesh)=(FabricId::mint(),MeshId::mint());
+        let (fabric,mesh)=(FabricId::mint(),rdm_core::fixture_mesh_id("mesh1"));
         let (server_ep,server_gossip)=endpoint().await;
         let server_addr=server_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap();
         let mut own=birth(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 10);
@@ -84,7 +84,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         for d in [&own,&restarted,&started,&deleted,&rpc_primary] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::digest(&old),serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),listed(&started,NodeStatus::Stopped),listed(&deleted,NodeStatus::Deleting),rpc_primary.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
         serial+=1;send(&sender,&receiver,aggregate(10,10,old_full),serial,&author).await;
-        serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),mesh_id:rdm_core::fixture_mesh_id("mesh1"),status:"ready".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{ mesh: own.node.mesh.clone(), r#type: own.node.r#type.clone(),node_id:own.node.node_id.clone(),path:own.node.path.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
         let client=NodeRpcClient::new(receiver_ep.clone(),resolver);
@@ -97,14 +97,14 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         assert_eq!(receiver.primaries().node_type_primary("mesh1","node"),Some(primary_of(&rpc_primary,10)));
         for d in [&restarted,&started,&rpc_primary] {assert_eq!(receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0.digest_seq,100);}
         let before:Vec<_>=full.iter().map(|d|receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0).collect();
-        let statuses=(receiver.mesh_status("mesh1"),receiver.fabric_status());
+        let statuses=(receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")),receiver.fabric_status());
         let (births,changes,overlays,roles)=(receiver.digest_view.birth_changes(),receiver.digest_view.digest_changes(),receiver.digest_view.overlay_changes(),receiver.primaries().subscribe());
         let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*roles.borrow());
         let bad=iroh::SecretKey::generate().public();
         let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());
         let mut frames=vec![
             Frame::digest(&stale.clone()),
-            Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
+            Frame::MeshStatus{mesh:"mesh1".into(),mesh_id:rdm_core::fixture_mesh_id("mesh1"),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:own.node.node_id.to_string(),forwarded_by:None,changed_at_rafka_ms:99},
             aggregate(99,200,vec![stale.clone(),listed(&started,NodeStatus::Stopped),listed(&deleted,NodeStatus::Deleting)]),
             Frame::TopologyDelta{mesh:"mesh1".into(), mesh_id: None,base_version:98,chunk_index:0,chunk_count:1,added:vec![rdm_core::wire::NodeEntry::of(&stale)],changed:vec![],removed:vec![rdm_core::framing::Birth{node_id:rpc_primary.node.node_id.clone(),incarnation:rpc_primary.node.incarnation.clone()}]}.authored_delta(&author,99,200),
@@ -118,7 +118,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
             serial+=1;send(&sender,&receiver,frame,serial,&author).await;
             assert_eq!(receiver.held_source_version("mesh1"),Some((None,100)));
             for held in &before {assert_eq!(receiver.digest_view.get(held.node.node_id.as_str()).unwrap().0,*held,"no category moves back the read-installed birth");}
-            assert_eq!((receiver.mesh_status("mesh1"),receiver.fabric_status()),statuses);
+            assert_eq!((receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")),receiver.fabric_status()),statuses);
             assert_eq!(receiver.primaries().node_type_primary("mesh1","node"),Some(primary_of(&rpc_primary,10)));
             assert_eq!(receiver.primaries().mesh("mesh1"),Some(primary_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(primary_of(&own,10)));
             assert_eq!((*births.borrow(),*changes.borrow(),*overlays.borrow(),*roles.borrow()),counts);

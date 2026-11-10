@@ -152,7 +152,7 @@ impl View {
     /// receipt (states.md "Routing"), and the span names how many of the mesh's held births
     /// application routing selects from now on.
     pub(crate) fn take_status(&self, f: &Frame, fabric: &FabricId, via: &'static str) {
-        let Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } = f.data() else {
+        let Frame::MeshStatus { mesh, mesh_id, status, publisher, forwarded_by, changed_at_rafka_ms } = f.data() else {
             if let Frame::FabricStatus { fabric: subject, status, publisher, forwarded_by, changed_at_rafka_ms } = f.data() {
                 let span = tracing::info_span!(
                     "rdm.mesh.topology.update.via-fabric-status",
@@ -174,6 +174,7 @@ impl View {
             "rdm.mesh.topology.update.via-mesh-status",
             node = %self.current_name(),
             mesh = %mesh,
+            mesh_id = %mesh_id,
             status = %status,
             publisher = %publisher,
             forwarded_by = forwarded_by.as_deref().unwrap_or(""),
@@ -190,8 +191,9 @@ impl View {
             // The receive framework has already named this refusal or duplicate.
             return;
         }
-        // Counted under the digest view's lock, never by copying every digest held (Q268).
-        let births = self.digest_view.node_ids_of_mesh(mesh);
+        // Counted under the digest view's lock, never by copying every digest held (Q268): the births
+        // of the mesh this view holds under that id.
+        let births = if self.digest_view.mesh_id_of(mesh).as_ref() == Some(mesh_id) { self.digest_view.node_ids_of_mesh(mesh) } else { Vec::new() };
         let routable = births.iter().filter(|id| self.digest_view.routable(id)).count();
         span.record("births_held", births.len());
         span.record("births_routable", routable);
@@ -291,7 +293,7 @@ impl View {
                 span.record("applied", self.digest_view.depart(op.clone()));
                 Vec::new()
             }
-            (StatusSubject::Mesh(_) | StatusSubject::Fabric(_), _) => {
+            (StatusSubject::Mesh { .. } | StatusSubject::Fabric(_), _) => {
                 self.take_status(f, fabric, via);
                 Vec::new()
             }
@@ -673,7 +675,9 @@ impl View {
                 for d in full.digests().into_iter().filter(|d| d.status == S::Deleted && &d.fabric_id == fabric) {
                     self.digest_view.depart_listed(&d, at_rafka_ms);
                 }
-                self.digest_view.statuses.forget_mesh(mesh);
+                if let Some(id) = deleted_mesh_id.or_else(|| self.digest_view.mesh_id_of(mesh)) {
+                    self.digest_view.statuses.forget_mesh(&id);
+                }
                 return Vec::new();
             }
         }
@@ -757,7 +761,8 @@ impl View {
             if !self.digest_view.is_deleted(op.node_id.as_str()) {
                 self.digest_view.depart(op);
             }
-            self.digest_view.depart_mesh_births(&mesh, &build_id, at_rafka_ms);
+            let mesh_id = complete.and_then(Full::mesh_id);
+            self.digest_view.depart_mesh_births(&mesh, mesh_id.as_ref(), &build_id, at_rafka_ms);
         }
         carried
     }

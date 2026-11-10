@@ -1531,7 +1531,8 @@ impl DigestView {
         let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::model::NodeStatus::Ready).map(|(d, _)| d.node.mesh) else {
             return false;
         };
-        self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY)
+        // Its mesh's status is the one held for the id this view holds for the mesh's name (Q432).
+        self.mesh_id_of(&mesh).and_then(|id| self.statuses.mesh(&id)).is_some_and(|m| m.status == MESH_READY)
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
@@ -2183,8 +2184,9 @@ impl DigestView {
     /// predecessor birth of the mesh in the active topology and holds it deleted for the retention.
     /// What the forwarder published of the mesh stays: the final mesh topology that departs them
     /// goes into this primary's Mesh as the differential from it, and the forwarder forgets the mesh
-    /// only after that ([`Self::mesh_left`] at the `MeshLeft` receipt).
-    pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, at_rafka_ms: u64) {
+    /// only after that ([`Self::mesh_left`] at the `MeshLeft` receipt). The status held for the mesh's
+    /// id, `mesh_id` or else the id this view holds for the name, is forgotten (Q432).
+    pub fn depart_mesh_births(&self, mesh: &str, mesh_id: Option<&rdm_core::MeshId>, build_id: &str, at_rafka_ms: u64) {
         let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName, String)> = BTreeMap::new();
         for d in self.all().into_iter().filter(|d| d.node.mesh == mesh) {
             roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.location(), d.node.r#type));
@@ -2210,17 +2212,20 @@ impl DigestView {
                 changed = true;
             }
         }
-        self.statuses.forget_mesh(mesh);
+        if let Some(id) = mesh_id.cloned().or_else(|| self.mesh_id_of(mesh)) {
+            self.statuses.forget_mesh(&id);
+        }
         if changed {
             self.births.send_modify(|v| *v += 1);
         }
     }
 
-    /// `mesh` left (its `MeshLeft` receipt): every remaining birth of it departs
-    /// ([`Self::depart_mesh_births`]), then the mesh-left hook runs: the forwarder forgets what it
-    /// forwarded of the mesh, and the one copy of it in the topology view is forgotten (Q409).
-    pub fn mesh_left(&self, mesh: &str, build_id: &str, at_rafka_ms: u64) {
-        self.depart_mesh_births(mesh, build_id, at_rafka_ms);
+    /// `mesh`, the mesh `mesh_id`, left (its `MeshLeft` receipt): every remaining birth of it departs
+    /// and the status held for that id is forgotten ([`Self::depart_mesh_births`]), then the mesh-left
+    /// hook runs: the forwarder forgets what it forwarded of the mesh, and the one copy of it in the
+    /// topology view is forgotten (Q409).
+    pub fn mesh_left(&self, mesh: &str, mesh_id: &rdm_core::MeshId, build_id: &str, at_rafka_ms: u64) {
+        self.depart_mesh_births(mesh, Some(mesh_id), build_id, at_rafka_ms);
         if let Some(cb) = self.on_mesh_deleted.0.lock().unwrap().clone() {
             cb(mesh);
         }

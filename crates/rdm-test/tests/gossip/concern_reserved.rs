@@ -1,5 +1,5 @@
 //! Position 10 has one receive effect: refuse it, with no status, fact or role installation.
-use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PrimaryRole, Primary};
+use rdm_core::{EndpointId, FabricId, IncarnationId, model::NodeStatus, MeshDigest, MeshNode, NodeId, PrimaryRole, Primary};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -27,7 +27,7 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(socket);
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         learn_addresses(&send_ep, &[iroh::EndpointAddr::new(recv_ep.id()).with_ip_addr(recv_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let mut mesh_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
         let mut backbone_channel = gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(&fabric).topic(), vec![]).await.unwrap();
         let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
@@ -47,9 +47,9 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
         let primary = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
         receiver.primaries().take(PrimaryRole::FabricPrimary, &primary);
         receiver.primaries().take(PrimaryRole::MeshPrimary, &primary);
-        receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
+        receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
         let held = receiver.digest_view.get(node_id.as_str()).unwrap().0;
-        let status = receiver.mesh_status("mesh1");
+        let status = receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1"));
         let fabric_status = receiver.fabric_status();
         let roles = receiver.primaries().subscribe();
         let births = receiver.digest_view.birth_changes();
@@ -62,13 +62,13 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
             // A following frame on this same channel proves processing finished, without changing
             // the concerned mesh's status or relying on an arbitrary delay.
             let revision = n as u64 + 10;
-            sender.broadcast(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
+            sender.broadcast(Frame::MeshStatus { mesh: "barrier".into(), mesh_id: rdm_core::fixture_mesh_id("barrier"), status: "ready".into(), publisher: "mesh1.node-admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
-                while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < revision) { tokio::time::sleep(Duration::from_millis(10)).await; }
+                while receiver.mesh_status(&rdm_core::fixture_mesh_id("barrier")).is_none_or(|s| s.changed_at_rafka_ms < revision) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the following frame was applied on this channel");
         }
         assert_eq!(receiver.digest_view.get(node_id.as_str()).unwrap().0, held);
-        assert_eq!(receiver.mesh_status("mesh1"), status);
+        assert_eq!(receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")), status);
         assert_eq!(receiver.fabric_status(), fabric_status);
         assert_eq!(receiver.primaries().fabric(), Some(primary.clone()));
         assert_eq!(receiver.primaries().mesh("mesh1"), Some(primary));

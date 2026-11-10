@@ -8,7 +8,7 @@
 //! the node holding the primary role authors a status frame; a forwarding primary keeps the
 //! original publisher; and no status travels inside `TopologyFull`.
 
-use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_gossip::frame::{forward_of, Frame};
 use rdm_gossip::backbone::Backbone;
 use rdm_gossip::topology::TopologyView;
@@ -66,7 +66,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // nothing however long the clock runs; every send is the same fact at the same instant.
         // The mesh's first state is a heard Pending with no instant (Q272): stamped here, once.
         let first_state = rdm_gossip::status::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
-        let mut mesh = StatusPublisher::new(me, StatusScope::Mesh("mesh1".into()));
+        let mut mesh = StatusPublisher::new(me, StatusScope::Mesh { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1") });
         mesh.set_role(true);
         let first = mesh.observe("pending", Some(first_state.clone()), true, base, 1_000).expect("a change is sent at once");
         let repeats = sweep(&mut mesh, base, ms(0), Duration::from_secs(120), ms(100));
@@ -108,7 +108,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert!(rest.iter().all(|(_, f)| ts(f) == 20 && status_of(f) == "ready"), "no repeat of the replaced change follows");
 
         // Only the primary authors: without the role nothing is sent; losing the role ends the sends still to come.
-        let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));
+        let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2") });
         assert!(not_primary.observe("pending", Some(first_state.clone()), true, base, 1).is_none(), "a node that is not the primary authors nothing");
         not_primary.set_role(true);
         assert!(not_primary.observe("pending", Some(first_state.clone()), true, base, 2).is_some());
@@ -116,7 +116,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert!(sweep(&mut not_primary, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "a primary that lost the role sends no more");
         // A successor that hears the status it observes adopts it: no transition is invented, so nothing
         // is sent until its checklist completes; then the adopted fact is sent, the old instant, five sends.
-        let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
+        let mut successor = StatusPublisher::new(me, StatusScope::Mesh { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2") });
         successor.set_role(true);
         let heard = rdm_gossip::status::StatusFact { status: "ready".into(), changed_at_rafka_ms: 2 };
         assert!(successor.observe("ready", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
@@ -131,7 +131,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert!(rest.iter().all(|(_, f)| ts(f) == 2));
         // A forward change while the checklist is open sends nothing; it goes out, stamped then, when
         // the checklist completes (Q272).
-        let mut moved_on = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
+        let mut moved_on = StatusPublisher::new(me, StatusScope::Mesh { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2") });
         moved_on.set_role(true);
         assert!(moved_on.observe("ready", Some(heard.clone()), false, base, 80).is_none());
         assert!(moved_on.observe("leaving", Some(heard.clone()), false, base, 81).is_none(), "nothing is sent while the checklist is open");
@@ -142,7 +142,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // Forwarding: a peer mesh's primary keeps the original publisher and instant, names itself
         // only in forwarded_by, never forwards its own mesh's status, and forwards only what an author sent.
         let fwd = forward_of(first.clone(), peer, "mesh2").expect("a peer mesh's status is forwarded");
-        assert!(matches!(&fwd, Frame::MeshStatus { mesh, publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, status } if mesh == "mesh1" && publisher == me && by == peer && status == "pending"));
+        assert!(matches!(&fwd, Frame::MeshStatus { mesh, mesh_id, publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, status } if mesh == "mesh1" && *mesh_id == rdm_core::fixture_mesh_id("mesh1") && publisher == me && by == peer && status == "pending"));
         assert!(forward_of(first.clone(), me, "mesh1").is_none(), "a primary does not forward its own mesh's status");
         assert!(forward_of(fwd.clone(), "mesh3.node-admin.1", "mesh3").is_none(), "a forwarded copy is not forwarded again");
         let fab = fabric_pub.observe("connections-deleting", None, true, base + ms(200_000), 30).unwrap();
@@ -158,9 +158,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         let fwd = crate::gossip_wire::authored(&fwd);
         assert!(status_view.take(&fwd, &fabric));
         assert!(!status_view.take(&fwd, &fabric), "the same frame again is not taken twice");
-        let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
+        let older = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
         assert!(!status_view.take(&older, &fabric), "an older status is refused");
-        assert_eq!(status_view.mesh("mesh1").unwrap().status, "pending");
+        assert_eq!(status_view.mesh(&rdm_core::fixture_mesh_id("mesh1")).unwrap().status, "pending");
         let replay = status_view.held_frames(&fabric, peer);
         assert_eq!(replay.len(), 1);
         assert!(matches!(replay[0].data(), Frame::MeshStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
@@ -169,9 +169,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // A republish keeps the old instant: under a NEW publisher it is a different frame from the one
         // held and is taken (the view holds the later publisher's authorship); the very same publisher
         // with the same instant is a repeat and is not.
-        let republish = |publisher: &str| Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms: 1_000 };
+        let republish = |publisher: &str| Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "pending".into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms: 1_000 };
         assert!(status_view.take(&republish(peer), &fabric), "a new publisher with the old changed_at is taken");
-        assert_eq!(status_view.mesh("mesh1").unwrap().publisher, peer);
+        assert_eq!(status_view.mesh(&rdm_core::fixture_mesh_id("mesh1")).unwrap().publisher, peer);
         assert!(!status_view.take(&republish(peer), &fabric), "the same publisher with the same changed_at is a repeat");
 
         // No mesh status rides inside TopologyFull: its fields are the mesh, the chunk and its nodes only.
@@ -190,7 +190,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), Default::default());
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &rdm_core::fixture_mesh_id("mesh1"), me, rdm_transport::clock::os_clock(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
@@ -198,7 +198,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         channels.join(rdm_gossip::channel::ChannelId::backbone(topology_view.fabric_id()), vec![]).await.unwrap();
         let backbone = channels.backbone().expect("the backbone is joined");
         backbone.announce_statuses("pending", "pending", true, true).await;
-        assert!(topology_view.mesh_status("mesh1").is_none() && topology_view.fabric_status().is_none(), "a node holding no role publishes no status");
+        assert!(topology_view.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).is_none() && topology_view.fabric_status().is_none(), "a node holding no role publishes no status");
         let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
         topology_view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &primary);
         topology_view.primaries().take(rdm_core::PrimaryRole::FabricPrimary, &primary);
@@ -206,19 +206,19 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         backbone.set_fabric_primary(true);
         // The mesh's first state, as a hand-off or the Day-0 self-apply holds it (Q272): Pending with no
         // instant, stamped by the publisher; ready is then the projection's forward change.
-        let pending = Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
+        let pending = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
         assert!(topology_view.digest_view.statuses.take(&pending, &fabric));
         backbone.announce_statuses("ready", "ready", true, true).await;
-        assert_eq!(topology_view.mesh_status("mesh1").map(|s| s.status), Some("pending".to_string()), "the first state is sent first");
+        assert_eq!(topology_view.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).map(|s| s.status), Some("pending".to_string()), "the first state is sent first");
         backbone.announce_statuses("ready", "ready", true, true).await;
-        let (m, f) = (topology_view.mesh_status("mesh1").expect("the mesh status is held"), topology_view.fabric_status().expect("the fabric status is held"));
+        let (m, f) = (topology_view.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).expect("the mesh status is held"), topology_view.fabric_status().expect("the fabric status is held"));
         // The publisher is named by the author's node id (Q309: no name rides with it).
         assert_eq!((m.publisher.as_str(), m.status.as_str()), (author.node_id.as_str(), "ready"));
         assert_eq!((f.publisher.as_str(), f.status.as_str()), (author.node_id.as_str(), "ready"));
         // The real status sender runs on the real clock: its five sends are the spans below.
         tokio::time::sleep(Duration::from_millis(5_500)).await;
         backbone.announce_statuses("ready", "ready", true, true).await;
-        assert_eq!(topology_view.mesh_status("mesh1").unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
+        assert_eq!(topology_view.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
         tokio::time::sleep(Duration::from_millis(1_500)).await;
         backbone.set_mesh_primary(false);
         backbone.set_fabric_primary(false);
@@ -296,7 +296,7 @@ fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
     let base = Instant::now();
     let fact = |status: &str, at: u64| rdm_gossip::status::StatusFact { status: status.into(), changed_at_rafka_ms: at };
     let publisher = || {
-        let mut p = StatusPublisher::new("mesh2.node-admin.1", StatusScope::Mesh("mesh2".into()));
+        let mut p = StatusPublisher::new("mesh2.node-admin.1", StatusScope::Mesh { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2") });
         p.set_role(true);
         p
     };
@@ -352,7 +352,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), Default::default());
+        let topology_view = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &rdm_core::fixture_mesh_id("mesh1"), me, rdm_transport::clock::os_clock(), Default::default());
         let channels = rdm_gossip::channel::Channels::new(&gossip, &endpoint, &topology_view).unwrap();
         channels.join(rdm_gossip::channel::ChannelId::mesh(topology_view.fabric_id(), topology_view.mesh_id()), vec![]).await.unwrap();
         let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
@@ -370,10 +370,10 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
 
-        let pending = Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
+        let pending = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
         assert!(topology_view.digest_view.statuses.take(&pending, &fabric));
         let lost_author = rdm_gossip::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
-        let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
+        let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2"), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
             .authored(&lost_author, 3, 1_000);
         assert!(topology_view.digest_view.statuses.take(&mesh2_ready, &fabric));
 

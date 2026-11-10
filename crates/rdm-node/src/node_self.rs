@@ -1235,7 +1235,7 @@ impl NodeSelf {
         // signal's alike. The one exception is R-NS1 item 2: when node.delete reaches a deleted mesh's
         // last admin, still its primary, its final mesh topology carries the mesh deleted and itself
         // deleting, then nothing. It follows the hold, so no gated turn publishes after it.
-        let mesh_deleted = self.topology_view.digest_view.statuses.mesh(self.topology_view.mesh_name()).is_some_and(|h| h.status == "deleted" || h.status == "dead");
+        let mesh_deleted = self.topology_view.digest_view.statuses.mesh(self.topology_view.mesh_id()).is_some_and(|h| h.status == "deleted" || h.status == "dead");
         // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
         let final_delete = op.filter(|_| by_command && mesh_deleted);
         let leaving_recorded = if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {

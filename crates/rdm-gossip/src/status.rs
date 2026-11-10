@@ -2,7 +2,7 @@
 //! status facts, the status publisher and its reinforcement, and the held statuses.
 
 
-use rdm_core::{FabricId, LifecycleOp};
+use rdm_core::{FabricId, LifecycleOp, MeshId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -57,8 +57,13 @@ pub enum StatusType {
 pub enum StatusSubject {
     /// A node's birth, by the operation that changed it.
     Node(LifecycleOp),
-    /// A mesh, by its name.
-    Mesh(String),
+    /// A mesh, by its id; its name rides beside it.
+    Mesh {
+        /// The mesh's name.
+        mesh: String,
+        /// The mesh's id: what the status is held and read by (Q432).
+        mesh_id: MeshId,
+    },
     /// The fabric, by its id.
     Fabric(FabricId),
 }
@@ -112,9 +117,10 @@ impl Status {
         Self { subject: StatusSubject::Node(op), status: "deleted".into(), order: StatusOrder::Once, forwarded_by: None }
     }
 
-    /// `mesh`'s `status` (`MeshStatus`), published by `publisher` at `changed_at_rafka_ms`.
-    pub fn mesh(mesh: &str, status: &str, publisher: &str, changed_at_rafka_ms: u64) -> Self {
-        Self { subject: StatusSubject::Mesh(mesh.to_string()), status: status.to_string(), order: StatusOrder::Changed { publisher: publisher.to_string(), changed_at_rafka_ms }, forwarded_by: None }
+    /// The `status` of the mesh `mesh_id`, named `mesh` (`MeshStatus`), published by `publisher` at
+    /// `changed_at_rafka_ms`.
+    pub fn mesh(mesh: &str, mesh_id: &MeshId, status: &str, publisher: &str, changed_at_rafka_ms: u64) -> Self {
+        Self { subject: StatusSubject::Mesh { mesh: mesh.to_string(), mesh_id: mesh_id.clone() }, status: status.to_string(), order: StatusOrder::Changed { publisher: publisher.to_string(), changed_at_rafka_ms }, forwarded_by: None }
     }
 
     /// The fabric's `status` (`FabricStatus`), published by `publisher` at `changed_at_rafka_ms`.
@@ -132,7 +138,7 @@ impl Status {
     pub fn r#type(&self) -> StatusType {
         match self.subject {
             StatusSubject::Node(_) => StatusType::Node,
-            StatusSubject::Mesh(_) => StatusType::Mesh,
+            StatusSubject::Mesh { .. } => StatusType::Mesh,
             StatusSubject::Fabric(_) => StatusType::Fabric,
         }
     }
@@ -164,9 +170,9 @@ impl Status {
             (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) if self.status == "stopped" => Frame::NodeStopped { op: op.clone(), forwarded_by, topology_version: *topology_version },
             (StatusSubject::Node(op), StatusOrder::TopologyVersion { topology_version }) => Frame::NodeDeleting { op: op.clone(), forwarded_by, topology_version: *topology_version },
             (StatusSubject::Node(op), _) => Frame::NodeDeleted { op: op.clone(), forwarded_by },
-            (StatusSubject::Mesh(mesh), StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::MeshStatus { mesh: mesh.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
+            (StatusSubject::Mesh { mesh, mesh_id }, StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::MeshStatus { mesh: mesh.clone(), mesh_id: mesh_id.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
             (StatusSubject::Fabric(fabric), StatusOrder::Changed { publisher, changed_at_rafka_ms }) => Frame::FabricStatus { fabric: fabric.clone(), status: self.status.clone(), publisher: publisher.clone(), forwarded_by, changed_at_rafka_ms: *changed_at_rafka_ms },
-            (StatusSubject::Mesh(_) | StatusSubject::Fabric(_), _) => unreachable!("a mesh's and the fabric's status are built ordered by their change (Status::mesh, Status::fabric)"),
+            (StatusSubject::Mesh { .. } | StatusSubject::Fabric(_), _) => unreachable!("a mesh's and the fabric's status are built ordered by their change (Status::mesh, Status::fabric)"),
         }
     }
 
@@ -176,7 +182,7 @@ impl Status {
             Frame::NodeStopped { op, forwarded_by, topology_version } => Some(Self::node_stopped(op.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
             Frame::NodeDeleting { op, forwarded_by, topology_version } => Some(Self::node_deleting(op.clone(), *topology_version).forwarded_by(forwarded_by.clone())),
             Frame::NodeDeleted { op, forwarded_by } => Some(Self::node_deleted(op.clone()).forwarded_by(forwarded_by.clone())),
-            Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::mesh(mesh, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),
+            Frame::MeshStatus { mesh, mesh_id, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::mesh(mesh, mesh_id, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),
             Frame::FabricStatus { fabric, status, publisher, forwarded_by, changed_at_rafka_ms } => Some(Self::fabric(fabric, status, publisher, *changed_at_rafka_ms).forwarded_by(forwarded_by.clone())),
             _ => None,
         }
@@ -194,9 +200,12 @@ pub struct FabricStatus {
     pub changed_at_rafka_ms: u64,
 }
 
-/// A mesh's status a node holds, with its publisher and the instant of the change.
+/// A mesh's status a node holds, by the mesh's id, with the mesh's name, its publisher and the
+/// instant of the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshStatus {
+    /// The mesh's name, as the frame named it.
+    pub mesh: String,
     /// The status.
     pub status: String,
     /// The node that authored it.
@@ -307,8 +316,13 @@ impl StatusReinforcement {
 /// Which status a [`StatusPublisher`] authors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusScope {
-    /// A mesh's status, by mesh name.
-    Mesh(String),
+    /// A mesh's status: the mesh's name and its id, which every frame it authors carries.
+    Mesh {
+        /// The mesh's name.
+        mesh: String,
+        /// The mesh's id.
+        mesh_id: MeshId,
+    },
     /// The fabric's status.
     Fabric(FabricId),
 }
@@ -340,6 +354,15 @@ impl StatusPublisher {
             self.context = None;
         }
         self.role = primary;
+    }
+
+    /// The id of the mesh whose status this publisher authors; `None` for the fabric's: the one id
+    /// whose held status it reads as heard (Q432).
+    pub fn mesh_id(&self) -> Option<&MeshId> {
+        match &self.scope {
+            StatusScope::Mesh { mesh_id, .. } => Some(mesh_id),
+            StatusScope::Fabric(_) => None,
+        }
     }
 
     /// Whether the node holds the publisher role.
@@ -380,7 +403,7 @@ impl StatusPublisher {
 
     pub(crate) fn frame(&mut self, fact: &StatusFact) -> Frame {
         let frame = match &self.scope {
-            StatusScope::Mesh(mesh) => Status::mesh(mesh, &fact.status, &self.node, fact.changed_at_rafka_ms),
+            StatusScope::Mesh { mesh, mesh_id } => Status::mesh(mesh, mesh_id, &fact.status, &self.node, fact.changed_at_rafka_ms),
             StatusScope::Fabric(fabric) => Status::fabric(fabric, &fact.status, &self.node, fact.changed_at_rafka_ms),
         }
         .frame();
@@ -413,7 +436,7 @@ impl StatusPublisher {
         if !self.role {
             return None;
         }
-        if matches!(self.scope, StatusScope::Mesh(_)) {
+        if matches!(self.scope, StatusScope::Mesh { .. }) {
             return self.observe_mesh(status, heard, checklist_complete, now, now_ms).map(|f| self.frame(&f));
         }
         if self.schedule.held().is_none() {
@@ -483,11 +506,13 @@ pub(crate) fn mesh_state_rank(status: &str) -> Option<u8> {
 /// `pending` -> `ready` -> `leaving` -> `dead`).
 pub const MESH_READY: &str = "ready";
 
-/// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
-/// frame older than the one held is refused by name, the same one again is taken once.
+/// The statuses a node holds, each until the next change: a mesh's by its id, the fabric's. A
+/// frame older than the one held is refused by name, the same one again is taken once. A status of
+/// one mesh id is never held or read as another's: a mesh created again under the same name is a new
+/// mesh with a new id, and starts with no status held (states.md; Q432).
 #[derive(Debug, Clone)]
 pub struct StatusView {
-    pub(crate) meshes: Arc<Mutex<HashMap<String, HeldStatus<MeshStatus>>>>,
+    pub(crate) meshes: Arc<Mutex<HashMap<MeshId, HeldStatus<MeshStatus>>>>,
     pub(crate) fabric: Arc<Mutex<Option<HeldStatus<FabricStatus>>>>,
     /// Ticks each time a mesh status is taken or dropped: a routing fact (states.md "Routing"). A
     /// local observation; nothing is sent.
@@ -514,16 +539,16 @@ impl StatusView {
         let StatusOrder::Changed { publisher, changed_at_rafka_ms } = taken.order() else { return false };
         let status = &taken.status;
         match taken.subject() {
-            StatusSubject::Mesh(mesh) => {
+            StatusSubject::Mesh { mesh, mesh_id } => {
                 let mut held = self.meshes.lock().unwrap();
                 // The same fact under its author's context replaces one held without any (a hand-off's
                 // state or a self-applied one, held before its publisher sent it; Q272): what this node
                 // holds and serves from then on is the authored frame.
-                let authors_held = context.is_some() && held.get(mesh).is_some_and(|h| h.context.is_none() && h.status == *status && h.changed_at_rafka_ms == *changed_at_rafka_ms);
-                if !authors_held && !crate::receive_order::admit_status_context("mesh-status", mesh, held.get(mesh).and_then(|h| h.context.as_ref()), f.context(), held.get(mesh).map(|h| h.status.as_str()).unwrap_or(""), status).unwrap_or_else(|| crate::receive_order::admit_status("mesh-status", mesh, held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms)) {
+                let authors_held = context.is_some() && held.get(mesh_id).is_some_and(|h| h.context.is_none() && h.status == *status && h.changed_at_rafka_ms == *changed_at_rafka_ms);
+                if !authors_held && !crate::receive_order::admit_status_context("mesh-status", mesh, held.get(mesh_id).and_then(|h| h.context.as_ref()), f.context(), held.get(mesh_id).map(|h| h.status.as_str()).unwrap_or(""), status).unwrap_or_else(|| crate::receive_order::admit_status("mesh-status", mesh, held.get(mesh_id).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms)) {
                     return false;
                 }
-                held.insert(mesh.clone(), HeldStatus { value: MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms }, context: context.cloned() });
+                held.insert(mesh_id.clone(), HeldStatus { value: MeshStatus { mesh: mesh.clone(), status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms }, context: context.cloned() });
                 drop(held);
                 self.mesh_changes.send_modify(|v| *v += 1);
                 true
@@ -545,33 +570,34 @@ impl StatusView {
         self.mesh_changes.subscribe()
     }
 
-    /// The status held for `mesh`.
-    pub fn mesh(&self, mesh: &str) -> Option<MeshStatus> {
-        self.meshes.lock().unwrap().get(mesh).map(|h| h.value.clone())
+    /// The status held for the mesh `mesh_id`.
+    pub fn mesh(&self, mesh_id: &MeshId) -> Option<MeshStatus> {
+        self.meshes.lock().unwrap().get(mesh_id).map(|h| h.value.clone())
     }
 
-    /// The committed primary revision of the status frame held for `mesh`, if authored.
-    pub fn mesh_revision(&self, mesh: &str) -> Option<u64> {
-        self.meshes.lock().unwrap().get(mesh).and_then(|h| h.context.as_ref()?.primary_revision())
+    /// The committed primary revision of the status frame held for the mesh `mesh_id`, if authored.
+    pub fn mesh_revision(&self, mesh_id: &MeshId) -> Option<u64> {
+        self.meshes.lock().unwrap().get(mesh_id).and_then(|h| h.context.as_ref()?.primary_revision())
     }
 
     /// Every mesh status entry held, copied out under one short lock.
-    pub(crate) fn held_meshes_copy(&self) -> HashMap<String, HeldStatus<MeshStatus>> {
+    pub(crate) fn held_meshes_copy(&self) -> HashMap<MeshId, HeldStatus<MeshStatus>> {
         self.meshes.lock().unwrap().iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
-    /// Forget the status held for `mesh`: the mesh left, and nothing of it is kept or replayed.
-    /// Answers the status that was held. A status dropped is a routing fact as one taken is.
-    pub fn forget_mesh(&self, mesh: &str) -> Option<String> {
-        let dropped = self.meshes.lock().unwrap().remove(mesh).map(|h| h.value.status);
+    /// Forget the status held for the mesh `mesh_id`: the mesh left, and nothing of it is kept or
+    /// replayed. A frame of that id heard later is held under that id again, which no mesh alive
+    /// reads. Answers the status that was held. A status dropped is a routing fact as one taken is.
+    pub fn forget_mesh(&self, mesh_id: &MeshId) -> Option<String> {
+        let dropped = self.meshes.lock().unwrap().remove(mesh_id).map(|h| h.value.status);
         if dropped.is_some() {
             self.mesh_changes.send_modify(|v| *v += 1);
         }
         dropped
     }
 
-    /// Every mesh status held, by mesh name.
-    pub fn meshes(&self) -> Vec<(String, MeshStatus)> {
+    /// Every mesh status held, by mesh id.
+    pub fn meshes(&self) -> Vec<(MeshId, MeshStatus)> {
         self.meshes.lock().unwrap().iter().map(|(m, h)| (m.clone(), h.value.clone())).collect()
     }
 
@@ -592,9 +618,9 @@ impl StatusView {
         let mut out: Vec<Frame> = held_meshes
             .into_iter()
             .filter(|(_, h)| h.context.is_some())
-            .map(|(mesh, h)| Status::mesh(&mesh, &h.status, &h.publisher, h.changed_at_rafka_ms).forwarded_by(by(&h.publisher)).frame().with_context(h.context))
+            .map(|(mesh_id, h)| Status::mesh(&h.mesh, &mesh_id, &h.status, &h.publisher, h.changed_at_rafka_ms).forwarded_by(by(&h.publisher)).frame().with_context(h.context))
             .collect();
-        out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
+        out.sort_by_key(|f| if let Frame::MeshStatus { mesh, mesh_id, .. } = f.data() { (mesh.clone(), mesh_id.to_string()) } else { (String::new(), String::new()) });
         if let Some(h) = held_fabric {
             out.push(Status::fabric(fabric, &h.status, &h.publisher, h.changed_at_rafka_ms).forwarded_by(by(&h.publisher)).frame().with_context(h.context));
         }

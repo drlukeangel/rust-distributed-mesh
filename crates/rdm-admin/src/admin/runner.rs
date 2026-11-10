@@ -22,30 +22,30 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
     }
 }
 
-/// The state the hand-off at `mesh`'s first admin gives ([`AdminRunner::mesh_state_hook`]): the
-/// furthest state this admin holds for the mesh, from the mesh primary's declaration it applied by
-/// the mesh's MeshId (`declared`; the fabric-primary sets a mesh ready on that report, states.md)
-/// and from the MeshStatus its gossip view holds, a state moving only forward. A declaration applied
-/// here is held whether or not the mesh's MeshStatus frame arrived before its node-admin was lost.
-/// `Pending` for a mesh it holds no state for (a new mesh, e4.s11). A held word that is no Mesh
-/// lifecycle state is no state held.
-/// The Rafka-time this admin holds for `mesh` entering `state`: the held MeshStatus's changed_at when it
-/// names `state`, else the declaration's applied here by the mesh's MeshId; 0 when it holds neither
-/// (node-create.md "A node-admin created into a live mesh" step 4: the successor republishes the held MeshStatus, preserving changed_at).
-pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh: &str, state: rdm_core::status::MeshState) -> u64 {
-    let heard = digest_view.statuses.mesh(mesh).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
+/// The Rafka-time this admin holds for the mesh `mesh_id` entering `state`: the changed_at of the
+/// MeshStatus held for that id when it names `state`, else the declaration's applied here for that
+/// id; 0 when it holds neither (node-create.md "A node-admin created into a live mesh" step 4: the
+/// successor republishes the held MeshStatus, preserving changed_at).
+pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh_id: &MeshId, state: rdm_core::status::MeshState) -> u64 {
+    let heard = digest_view.statuses.mesh(mesh_id).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
     let declared = || {
-        let mesh_id = digest_view.mesh_id_of(mesh)?;
         let declared = records.declared.lock().unwrap();
-        (declared.meshes.get(&mesh_id) == Some(&state)).then(|| declared.mesh_changed_at.get(&mesh_id).copied()).flatten()
+        (declared.meshes.get(mesh_id) == Some(&state)).then(|| declared.mesh_changed_at.get(mesh_id).copied()).flatten()
     };
     heard.or_else(declared).unwrap_or(0)
 }
 
-pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
-    let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
-    let mesh_id = digest_view.mesh_id_of(mesh);
-    let declared = mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
+/// The state the hand-off at a mesh's first admin gives ([`AdminRunner::mesh_state_hook`]), for the
+/// mesh `mesh_id`: the furthest state this admin holds for that id, from the mesh primary's
+/// declaration it applied (`declared`; the fabric-primary sets a mesh ready on that report,
+/// states.md) and from the MeshStatus its gossip view holds for that id, a state moving only forward.
+/// A declaration applied here is held whether or not the mesh's MeshStatus frame arrived before its
+/// node-admin was lost. `Pending` for a mesh id it holds no state for: a new mesh (e4.s11), whatever
+/// another mesh id held under the same name holds (states.md: a mesh created again under that name is
+/// a new mesh with a new id; Q432). A held word that is no Mesh lifecycle state is no state held.
+pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh_id: &MeshId) -> rdm_core::status::MeshState {
+    let heard = digest_view.statuses.mesh(mesh_id).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
+    let declared = records.declared.lock().unwrap().meshes.get(mesh_id).copied();
     heard.max(declared).unwrap_or(rdm_core::status::MeshState::Pending)
 }
 
@@ -724,11 +724,11 @@ impl AdminRunner {
         exists.then_some(dir)
     }
 
-    /// The state this admin's hand-off gives a mesh's first admin (the hook below): the mesh's current
-    /// held state for an existing mesh, as this admin holds it, and `Pending` for a mesh it holds no
-    /// state for (a new mesh, e4.s11); [`held_mesh_state`].
-    fn held_mesh_state(&self, mesh: &str) -> rdm_core::status::MeshState {
-        held_mesh_state(&self.digest_view, &self.records, mesh)
+    /// The state this admin's hand-off gives the first admin of the mesh `mesh_id` (the hook below):
+    /// that id's current held state for an existing mesh, as this admin holds it, and `Pending` for a
+    /// mesh id it holds no state for (a new mesh, e4.s11; Q432); [`held_mesh_state`].
+    fn held_mesh_state(&self, mesh_id: &MeshId) -> rdm_core::status::MeshState {
+        held_mesh_state(&self.digest_view, &self.records, mesh_id)
     }
 
     /// The fabric-primary -> mesh state hand-off at a mesh's first admin, as the create pipeline's
@@ -752,7 +752,8 @@ impl AdminRunner {
                     Ok(None) => return Err(format!("{}: neither this admin's records, its view nor mesh.storage hold a mesh id for {mesh}, so no {state:?} can be applied", target.node_id)),
                     Err(e) => return Err(format!("{}: {e}, so no {state:?} can be applied", target.node_id)),
                 };
-                let changed_at = held_mesh_changed_at(&digest_view, &records, &mesh, state);
+                let id = MeshId::parse(&mesh_id).map_err(|e| format!("{}: the mesh id {mesh_id} held for {mesh} does not parse ({e}), so no {state:?} can be applied", target.node_id))?;
+                let changed_at = held_mesh_changed_at(&digest_view, &records, &id, state);
                 apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, changed_at, &target).await.map(|()| state)
             })
         }))
@@ -1580,7 +1581,15 @@ impl AdminRunner {
             let owner = held.topology.node_spec(node).map(|spec| (spec.mesh.as_str(), spec.r#type.clone()));
             let (mesh, kind) = owner.ok_or_else(|| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} names no entry or create step with explicit ownership", node_path = &node.path, node_name = &node.name))?;
             let first_admin = self.topology.read().await.first_admin_of(node, mesh, &kind);
-            let pre_node_ready = if first_admin { Some(self.mesh_state_hook(mesh, self.held_mesh_state(mesh))?) } else { None };
+            let pre_node_ready = if first_admin {
+                // The state of the mesh id this Build names, never of another id held under its name: a
+                // mesh this Build created under a new id starts Pending, an existing id keeps its own
+                // state (states.md; Q432).
+                let mesh_id = held.topology.mesh(mesh).map(|m| m.mesh_id.clone()).ok_or_else(|| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} names no mesh {mesh}, so its first admin can be handed no state", node_path = &node.path, node_name = &node.name))?;
+                Some(self.mesh_state_hook(mesh, self.held_mesh_state(&mesh_id))?)
+            } else {
+                None
+            };
             // A node's executable replacement (build-deployment.md §3): the create at a path this Build
             // pinned a birth at runs only once that birth's node.delete holds its `Complete`.
             let replacing = held.topology.replaced(node).filter(|_| held.topology.created_id(node) == Some(node_id));

@@ -204,7 +204,8 @@ impl RecoverySubmitter {
         if let Some(op) = self.digest_view.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_stop() && op.build_id != rdm_core::LifecycleOp::NO_BUILD) {
             return Some(of("node-deleting", op));
         }
-        let announced = match self.digest_view.statuses.mesh(&n.mesh)?.status.as_str() {
+        // The status held for the id this view holds for the member's mesh (Q432).
+        let announced = match self.digest_view.mesh_id_of(&n.mesh).and_then(|id| self.digest_view.statuses.mesh(&id))?.status.as_str() {
             "leaving" => "mesh-deleting",
             "dead" => "mesh-deleted",
             _ => return None,

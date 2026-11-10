@@ -24,13 +24,14 @@ fn primary(revision: u64) -> Primary {
 
 /// CONTRACT: `Concern` is the reserved type after `FabricStatus` (7) (its literal data golden keeps its
 /// historical enum byte 09); a role is its own enum (`MeshPrimary` 0, `FabricPrimary` 1); a primary is
-/// its mesh, NodeId, incarnation and revision, in that order. What must NOT happen: a field moved, a
+/// its mesh, NodeId, incarnation and revision, in that order. A `MeshStatus` is its mesh's name, then
+/// its mesh id (Q432), then status, publisher, forwarder and change instant. What must NOT happen: a field moved, a
 /// variant inserted before the end, or a self-describing encoding.
 #[test]
 fn primary_frames_match_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let fixtures = [
-        (Frame::MeshStatus { mesh: "m".into(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }, "06 016d 0173 0170 00 01".to_string()),
+        (Frame::MeshStatus { mesh: "m".into(), mesh_id: rdm_core::MeshId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }, format!("06 016d {node_hex} 0173 0170 00 01")),
         (Frame::FabricStatus { fabric: rdm_core::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }, "07 0c303472616a303970337a7037 0173 0170 00 01".to_string()),
         (Frame::Concern { role: PrimaryRole::FabricPrimary, node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), observer: "o".into() }, format!("09 01 {node_hex} 0c79727a34396a333033796834 016f")),
     ];

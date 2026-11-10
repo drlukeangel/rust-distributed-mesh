@@ -73,7 +73,9 @@ fn stop_op(d: &MeshDigest) -> LifecycleOp {
 }
 
 fn hold_mesh_ready(digest_view: &DigestView) {
-    let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 };
+    // A view that holds mesh1's births holds mesh1's id: its status is read by that id (Q432).
+    digest_view.hold_mesh_id("mesh1", Some(&rdm_core::fixture_mesh_id("mesh1")));
+    let f = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 };
     assert!(digest_view.statuses.take(&f, &fabric()));
 }
 

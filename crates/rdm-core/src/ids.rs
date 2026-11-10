@@ -52,6 +52,12 @@ pub fn fixture_node_id(at: &crate::PathName) -> crate::NodeId {
     crate::NodeId::parse(&fixture_crockford60(&format!("{}\u{1f}{}", at.path, at.name))).expect("a fixture id is canonical")
 }
 
+/// A fixture's fixed mesh id for the mesh named `mesh`: the same name gives the same id, so a fixture's
+/// frames and views of one mesh agree. Never used outside fixtures.
+pub fn fixture_mesh_id(mesh: &str) -> crate::MeshId {
+    crate::MeshId::parse(&fixture_crockford60(&format!("mesh\u{1f}{mesh}"))).expect("a fixture id is canonical")
+}
+
 /// Mint a canonical id: 60 bits from the OS CSPRNG, nothing else feeds it.
 pub(crate) fn mint_crockford60() -> String {
     encode_crockford60(rand::random::<u64>())

@@ -81,7 +81,7 @@ fn the_answers_member_cert_name_and_cert_policy_are_the_control_frames_last_fiel
 fn joined_statuses_keep_the_authored_context_and_committed_revision() {
     let mut answer = answer();
     let author = crate::gossip_wire::author();
-    let frame = rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: Some("mesh2.node-admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
+    let frame = rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: Some("mesh2.node-admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
     answer.statuses.push(frame.clone());
     let restored = answer_from_wire(&answer_to_wire(&answer).unwrap()).unwrap();
     assert_eq!(restored.statuses[0].encode(), frame.encode());

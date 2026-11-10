@@ -118,7 +118,7 @@ fn is_status(f: &Frame) -> bool {
 /// (kind, scope, status, publisher, forwarded_by, instant)
 fn parts(f: &Frame) -> (&'static str, String, String, String, Option<String>, u64) {
     match f.data() {
-        Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } => ("mesh-status", mesh.clone(), status.clone(), publisher.clone(), forwarded_by.clone(), *changed_at_rafka_ms),
+        Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms, .. } => ("mesh-status", mesh.clone(), status.clone(), publisher.clone(), forwarded_by.clone(), *changed_at_rafka_ms),
         Frame::FabricStatus { fabric, status, publisher, forwarded_by, changed_at_rafka_ms } => ("fabric-status", fabric.to_string(), status.clone(), publisher.clone(), forwarded_by.clone(), *changed_at_rafka_ms),
         _ => ("other", String::new(), String::new(), String::new(), None, 0),
     }

@@ -286,13 +286,15 @@ pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepte
 /// This admin's own mesh's held lifecycle state, as its maker's entry answer holds it, adopted exactly
 /// into its applied state (node-create.md "A node-admin created into a live mesh" step 2: it
 /// "obtains its control/status context"; fabric-authority.md §7: the successor adopts the state that
-/// already exists, with no durable write and no transition). An admin that holds a state for its mesh
-/// keeps it. A new mesh's first admin is answered no state for its mesh: the fabric-primary applies
-/// its Pending (states.md). A status word this build does not read as a Mesh lifecycle state is
+/// already exists, with no durable write and no transition). Only the status of its own mesh id is
+/// its mesh's: a status the answer holds for another mesh id under its mesh's name is another mesh's
+/// (states.md: a mesh created again under that name is a new mesh with a new id; Q432), so a new
+/// mesh's first admin adopts none, and the fabric-primary applies its Pending. An admin that holds a
+/// state for its mesh keeps it. A status word this build does not read as a Mesh lifecycle state is
 /// refused by name and adopts nothing.
 pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &Records, mesh: &str, mesh_id: &MeshId) {
     let held = answer.statuses.iter().find_map(|f| match f.data() {
-        rdm_gossip::frame::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
+        rdm_gossip::frame::Frame::MeshStatus { mesh_id: id, status, publisher, .. } if id == mesh_id => Some((status.clone(), publisher.clone())),
         _ => None,
     });
     let Some((status, publisher)) = held else { return };
@@ -493,6 +495,7 @@ mod tests {
             },
             statuses: vec![rdm_gossip::frame::Frame::MeshStatus {
                 mesh: "mesh1".to_string(),
+                mesh_id: mesh_id.clone(),
                 status: "ready".to_string(),
                 publisher: "mesh1.node-admin.2".to_string(),
                 forwarded_by: None,

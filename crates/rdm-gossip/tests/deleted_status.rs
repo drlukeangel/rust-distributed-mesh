@@ -118,10 +118,10 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         y_channels.wait_for_neighbour().await;
 
         // mesh2's status as X published it, held by mesh2.node-admin.2.
-        let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&rdm_gossip::envelope::Birth { fabric: fabric(), node: x.clone(), incarnation: x_inc.clone() }, 1, 5);
+        let fact = Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: mesh_id.clone(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&rdm_gossip::envelope::Birth { fabric: fabric(), node: x.clone(), incarnation: x_inc.clone() }, 1, 5);
         p.learn_statuses(&[fact]);
-        let held = Some(MeshStatus { status: "ready".into(), publisher: "mesh2.node-admin.1".into(), changed_at_rafka_ms: 5 });
-        assert_eq!(p.mesh_status("mesh2"), held, "mesh2.node-admin.2 holds X's status");
+        let held = Some(MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.node-admin.1".into(), changed_at_rafka_ms: 5 });
+        assert_eq!(p.mesh_status(&mesh_id), held, "mesh2.node-admin.2 holds X's status");
 
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
         let departure = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), node_id: x.clone(), incarnation: x_inc.clone(), path: "mesh2.node-admin".into(), name: "1".into(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
@@ -133,16 +133,16 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         let answer = p.status_frames("mesh2.node-admin.2");
         assert!(matches!(answer.as_slice(), [frame] if matches!(frame.data(), Frame::MeshStatus { publisher, forwarded_by: Some(by), .. } if publisher == "mesh2.node-admin.1" && by == "mesh2.node-admin.2")), "{answer:?}");
         y.learn_statuses(&answer);
-        assert_eq!(y.mesh_status("mesh2"), held, "Y takes its mesh's status before its first heartbeat: X's departure never refuses the name Y holds");
+        assert_eq!(y.mesh_status(&mesh_id), held, "Y takes its mesh's status before its first heartbeat: X's departure never refuses the name Y holds");
         m.learn_statuses(&answer);
-        assert_eq!(m.mesh_status("mesh2"), held, "the member takes it too, though no live birth holds the name there");
+        assert_eq!(m.mesh_status(&mesh_id), held, "the member takes it too, though no live birth holds the name there");
 
         // Y's first heartbeat reaches the member: the name resolves to Y's live birth.
         let (y_id, y_inc) = (NodeId::mint(), IncarnationId::mint());
         y_channels.publish(&digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", &y_id, &y_inc, 41_021)).await.unwrap();
         until("the member to hold Y's birth", || m.digest_view.get(y_id.as_str()).is_some()).await;
         m.learn_statuses(&answer);
-        assert_eq!(m.mesh_status("mesh2"), held, "the repeat leaves the held status as it is");
+        assert_eq!(m.mesh_status(&mesh_id), held, "the repeat leaves the held status as it is");
 
         for n in [&p_node, &m_node, &y_node] {
             n.ep.close().await;

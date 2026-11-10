@@ -718,7 +718,7 @@ mod tests {
         let mut order = ReceiveOrder::default();
         let d = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
         let deleted = Frame::NodeDeleted { op: op(&d, "node.delete"), forwarded_by: None };
-        let status = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
+        let status = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
         for _ in 0..2 {
             assert_eq!(order.admit(&deleted), Ok(()));
             assert_eq!(order.admit(&status), Ok(()));

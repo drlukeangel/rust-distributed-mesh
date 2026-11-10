@@ -119,7 +119,7 @@ fn frames() -> Vec<Frame> {
         Frame::NodeLeaving { op: op("node.stop", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: Some(executor().node_id.to_string()) },
         Frame::NodeLeft { op: op("node.stop", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: Some(NodeId::parse("200000000001").unwrap().to_string()) },
         Frame::NodeConnectionsDeleted { op: op("node.connection.delete", PathName::new("mesh2.node", "2").unwrap(), "mesh2", "node"), forwarded_by: None },
-        Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: NodeId::parse("200000000001").unwrap().to_string(), forwarded_by: None, changed_at_rafka_ms: 77 },
+        Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: rdm_core::fixture_mesh_id("mesh2"), status: "ready".into(), publisher: NodeId::parse("200000000001").unwrap().to_string(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready".into(), publisher: executor().node_id.to_string(), forwarded_by: Some(NodeId::parse("200000000001").unwrap().to_string()), changed_at_rafka_ms: 78 },
         Frame::Concern { role: rdm_core::PrimaryRole::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: NodeId::parse("200000000001").unwrap().to_string() },
         Frame::NewFabricPrimary { primary: rdm_core::Primary { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap() },

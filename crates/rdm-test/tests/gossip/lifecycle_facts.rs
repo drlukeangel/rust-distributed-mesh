@@ -1,5 +1,5 @@
 //! Live cells for lifecycle operation identity alongside the carried projection revision.
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, model::NodeStatus, MeshDigest, MeshNode, NodeId, PublisherId};
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -25,7 +25,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let socket = send_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(socket);
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let sender_id = NodeId::mint();
         let receiver_id = NodeId::mint();
         let successor_id = NodeId::mint();
@@ -48,8 +48,8 @@ fn story(kind: StatusEvent, scenario: Story) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
-        crate::forward_gossip_probe(&sender_channels, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
+        crate::forward_gossip_probe(&sender_channels, &Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         assert!(receiver.digest_view.routable(op.node_id.as_str()));
         if matches!(scenario, Story::Completed) {
             match kind {

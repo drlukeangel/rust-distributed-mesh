@@ -1501,7 +1501,7 @@ mod tests {
             }
             // mesh2's id, as its mesh-primary's view holds its own mesh's.
             digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
-            digest_view.statuses.take(&rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
+            digest_view.statuses.take(&rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: mesh_id("mesh2"), status: status.into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
             crate::storage::NodesStorage::put_node(&*nodes, &crate::storage::NodeRecord { runtime: fact.clone(), ..record_of(&member) }).await.unwrap();
@@ -3140,7 +3140,9 @@ mod tests {
         use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let held = |mesh: &str, status: &str| {
-            let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.node-admin.1"), forwarded_by: None, changed_at_rafka_ms: 10 };
+            // A view that holds a mesh's births holds the mesh's id: its status is read by that id (Q432).
+            digest_view.hold_mesh_id(mesh, Some(&mesh_id(mesh)));
+            let f = Frame::MeshStatus { mesh: mesh.into(), mesh_id: mesh_id(mesh), status: status.into(), publisher: format!("{mesh}.node-admin.1"), forwarded_by: None, changed_at_rafka_ms: 10 };
             assert!(digest_view.statuses.take(&f, &fabric1()), "{f:?}");
         };
         held("mesh1", "ready");
@@ -3220,7 +3222,8 @@ mod tests {
     /// primary §7; states.md: a mesh's state only moves forward): the state the fabric-primary hands a
     /// mesh's first admin is the state it holds for that mesh, and the mesh primary's declaration this
     /// admin applied (by the mesh's MeshId) is held, whatever its gossip view has heard yet. Pending
-    /// only for a mesh it holds no state for (a new mesh). Must NOT happen: a mesh whose Ready this
+    /// only for a mesh id it holds no state for (a new mesh, whatever another id under its name holds;
+    /// Q432). Must NOT happen: a mesh whose Ready this
     /// fabric-primary applied, its node-admin lost before its Ready MeshStatus frame arrived here,
     /// handed Pending at its recovery (rejected by the recovered birth as a backward move).
     #[test]
@@ -3229,17 +3232,20 @@ mod tests {
         use rdm_gossip::frame::Frame;
         let digest_view = DigestView::default();
         let records = Records::default();
-        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Pending, "a mesh this admin holds no state for is new: Pending");
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, &mesh_id("mesh2")), MeshState::Pending, "a mesh id this admin holds no state for is new: Pending");
         digest_view.hold_mesh_id("mesh2", Some(&mesh_id("mesh2")));
-        let pending = Frame::MeshStatus { mesh: "mesh2".into(), status: "pending".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        let pending = Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: mesh_id("mesh2"), status: "pending".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&pending, &fabric1()));
         records.declared.lock().unwrap().meshes.insert(mesh_id("mesh2"), MeshState::Ready);
-        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Ready, "the declaration applied here holds Ready while the gossip view still holds pending");
-        let leaving = Frame::MeshStatus { mesh: "mesh2".into(), status: "leaving".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 20 };
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, &mesh_id("mesh2")), MeshState::Ready, "the declaration applied here holds Ready while the gossip view still holds pending");
+        let leaving = Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: mesh_id("mesh2"), status: "leaving".into(), publisher: "mesh2.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 20 };
         assert!(digest_view.statuses.take(&leaving, &fabric1()));
-        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Deleting, "the furthest state held, from either: a state only moves forward");
-        records.declared.lock().unwrap().meshes.insert(mesh_id("mesh3"), MeshState::Deleted);
-        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh3"), MeshState::Pending, "a declaration is read by this mesh's own MeshId only");
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, &mesh_id("mesh2")), MeshState::Deleting, "the furthest state held, from either: a state only moves forward");
+        // mesh2 created again under its name is a new mesh with a new id (states.md; Q432): nothing
+        // held for the old id, heard or declared, is its state.
+        let again = MeshId::mint();
+        digest_view.hold_mesh_id("mesh2", Some(&again));
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, &again), MeshState::Pending, "a new mesh id under an old name holds none of the old id's state: Pending");
     }
 
     /// CONTRACT (states.md "Routing": a stop is applied by a peer on receipt of the fact): the view
@@ -3258,7 +3264,7 @@ mod tests {
         let gate = crate::stop_gate::StopGate::new();
 
         wake.seen();
-        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: mesh_id("mesh1"), status: "ready".into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&f, &fabric1()));
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some_and(|(_, woken)| woken == "meshes"), "a mesh status taken makes the rebuild due at once");
 
@@ -3355,7 +3361,7 @@ mod tests {
         let gate = crate::stop_gate::StopGate::new();
         wake.seen();
         gate.stop();
-        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: mesh_id("mesh1"), status: "ready".into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(digest_view.statuses.take(&f, &fabric1()));
         let due = view_rebuild_due(&mut wake, &gate);
         tokio::pin!(due);
@@ -3824,7 +3830,7 @@ mod tests {
     }
 
     fn mesh_status(mesh: &str, status: &str) -> rdm_gossip::frame::Frame {
-        rdm_gossip::frame::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
+        rdm_gossip::frame::Frame::MeshStatus { mesh: mesh.into(), mesh_id: mesh_id(mesh), status: status.into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
     }
 
     /// CONTRACT (i144 Q56; node-create.md "A node-admin created into a live mesh" step 2: the joining
@@ -3847,10 +3853,13 @@ mod tests {
         adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh2", "pending")]), &records, "mesh2", &id);
         assert_eq!(records.declared.lock().unwrap().meshes.get(&id), Some(&MeshState::Ready), "an applied state is kept");
 
-        // A new mesh's first admin is answered no state for its mesh: it adopts nothing and waits for its Pending.
+        // A new mesh's first admin is answered no state for its mesh id: it adopts nothing and waits for
+        // its Pending. A status held under its mesh's name for another id (the mesh deleted before it
+        // under that name) is another mesh's (states.md; Q432).
         let fresh = Records::default();
-        adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh1", "ready")]), &fresh, "mesh2", &id);
-        assert!(fresh.declared.lock().unwrap().meshes.is_empty(), "no held state for its mesh: nothing adopted");
+        let predecessor = rdm_gossip::frame::Frame::MeshStatus { mesh: "mesh2".into(), mesh_id: MeshId::mint(), status: "dead".into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh1", "ready"), predecessor]), &fresh, "mesh2", &id);
+        assert!(fresh.declared.lock().unwrap().meshes.is_empty(), "no held state for its mesh id: nothing adopted");
 
         // A word that is no Mesh lifecycle state is refused by name and adopts nothing.
         let unread = Records::default();

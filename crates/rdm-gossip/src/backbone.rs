@@ -87,8 +87,10 @@ pub fn status_announcements(
     now: Instant,
     now_ms: u64,
 ) -> (Vec<Frame>, Announced) {
+    // Its own mesh's status as heard is the one held for its own mesh's id, never another id's held
+    // under its mesh's name (Q432).
     let held_meshes = digest_view.statuses.held_meshes_copy();
-    let heard_mesh = held_meshes.get(own_mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
+    let heard_mesh = mesh_pub.mesh_id().and_then(|id| held_meshes.get(id)).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
     let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
     let author = crate::envelope::Birth::publisher(fabric, me);
     let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
@@ -268,12 +270,12 @@ impl Backbone {
 
     /// One status send: the backbone, the author's own mesh channel, and its own view.
     pub(crate) async fn send_status(&self, f: &Frame) {
-        let (scope, status, changed_at) = match f.data() {
-            Frame::MeshStatus { mesh, status, changed_at_rafka_ms, .. } => (format!("mesh:{mesh}"), status.as_str(), *changed_at_rafka_ms),
-            Frame::FabricStatus { fabric, status, changed_at_rafka_ms, .. } => (format!("fabric:{fabric}"), status.as_str(), *changed_at_rafka_ms),
+        let (scope, mesh_id, status, changed_at) = match f.data() {
+            Frame::MeshStatus { mesh, mesh_id, status, changed_at_rafka_ms, .. } => (format!("mesh:{mesh}"), mesh_id.to_string(), status.as_str(), *changed_at_rafka_ms),
+            Frame::FabricStatus { fabric, status, changed_at_rafka_ms, .. } => (format!("fabric:{fabric}"), String::new(), status.as_str(), *changed_at_rafka_ms),
             _ => return,
         };
-        tracing::info_span!("rdm.mesh.fabric.update.via-status-send", node = %self.current_name(), scope = %scope, status, changed_at_rafka_ms = changed_at, committed_revision = f.context().and_then(|c| c.primary_revision()).unwrap_or(0), sequence = f.context().and_then(|c| c.sequence.as_deref()).unwrap_or(""))
+        tracing::info_span!("rdm.mesh.fabric.update.via-status-send", node = %self.current_name(), scope = %scope, mesh_id = %mesh_id, status, changed_at_rafka_ms = changed_at, committed_revision = f.context().and_then(|c| c.primary_revision()).unwrap_or(0), sequence = f.context().and_then(|c| c.sequence.as_deref()).unwrap_or(""))
             .in_scope(|| tracing::info!("status sent"));
         let _ = self.channel.broadcast(f).await;
         let _ = self.channels.forward(f).await;
@@ -290,8 +292,9 @@ impl Backbone {
         let (now, now_ms) = (Instant::now(), self.channels.topology_view.clock.now_rafka_ms());
         let me = self.current_publisher();
         let digest_view = &self.channels.topology_view.view.digest_view;
+        // Its own mesh's status as heard is the one held for its own mesh's id (Q432).
         let held_meshes = digest_view.statuses.held_meshes_copy();
-        let heard_mesh = held_meshes.get(&self.mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
+        let heard_mesh = held_meshes.get(self.channels.topology_view.mesh_id()).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
         let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
         let author = crate::envelope::Birth::publisher(&self.fabric, &me);
         let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));

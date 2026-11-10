@@ -1,5 +1,5 @@
 //! CloudEvents tracing is authored context, never a receive decision.
-use rdm_core::{FabricId, MeshId};
+use rdm_core::FabricId;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
 use rdm_gossip::location::learn_addresses;
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 async fn held(receiver: &TopologyView, mesh: &str, stamp: u64) {
     tokio::time::timeout(Duration::from_secs(5), async {
-        while receiver.mesh_status(mesh).is_none_or(|s| s.changed_at_rafka_ms < stamp) {
+        while receiver.mesh_status(&rdm_core::fixture_mesh_id(mesh)).is_none_or(|s| s.changed_at_rafka_ms < stamp) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await.expect("the following status proves receipt finished");
@@ -22,7 +22,7 @@ fn run(malformed: bool) {
         let (recv_ep, recv_gossip, _recv_router) = crate::receive_rules::endpoint().await;
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(send_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let mut subscription = gossip.subscribe(rdm_gossip::channel::ChannelId::mesh(&fabric, &mesh).topic(), vec![]).await.unwrap();
         let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&recv_gossip, &recv_ep, &receiver).unwrap();
@@ -30,7 +30,7 @@ fn run(malformed: bool) {
         tokio::time::timeout(Duration::from_secs(5), subscription.joined()).await.unwrap().unwrap();
         let (sender, _rx) = subscription.split();
         let author = crate::gossip_author(&fabric);
-        let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
+        let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), mesh_id: rdm_core::fixture_mesh_id(scope), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
         let (event, parent) = {
             let upstream = tracing::info_span!("rdm.test.gossip.update.via-upstream");
             let span = tracing::info_span!("rdm.test.gossip.update.via-author");
@@ -53,7 +53,7 @@ fn run(malformed: bool) {
         sender.broadcast_neighbors(bytes.clone().into()).await.unwrap();
         sender.broadcast_neighbors(status("barrier", 1).authored(&author, 2, 1).encode().into()).await.unwrap();
         held(&receiver, "barrier", 1).await;
-        assert_eq!(receiver.mesh_status("traced").map(|s| s.status), Some("ready".into()), "tracing never refuses the event");
+        assert_eq!(receiver.mesh_status(&rdm_core::fixture_mesh_id("traced")).map(|s| s.status), Some("ready".into()), "tracing never refuses the event");
         if !malformed {
             // The repeated fact's classifier is on the author's trace too; no second apply.
             sender.broadcast_neighbors(bytes.into()).await.unwrap();
@@ -66,7 +66,7 @@ fn run(malformed: bool) {
                 context.traceparent = parent_context.traceparent.clone(); context.tracestate = parent_context.tracestate.clone(); f.encode()
             };
             let older = traced(status("traced", 0));
-            let inconsistent = traced(Frame::MeshStatus { mesh: "traced".into(), status: "leaving".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 });
+            let inconsistent = traced(Frame::MeshStatus { mesh: "traced".into(), mesh_id: rdm_core::fixture_mesh_id("traced"), status: "leaving".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 });
             let gap = traced(Frame::TopologyDelta { mesh: "mesh2".into(), mesh_id: None, base_version: 10, chunk_index: 0, chunk_count: 1, added: vec![], changed: vec![], removed: vec![] }.authored_delta(&author, 11, 1));
             let (mut attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&event.encode()).unwrap();
             attrs.retain(|(n, _)| n != "sequence"); attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.mesh.concern".into();
@@ -79,7 +79,7 @@ fn run(malformed: bool) {
                 sender.broadcast_neighbors(status("barrier", stamp).authored(&author, 2, stamp).encode().into()).await.unwrap();
                 held(&receiver, "barrier", stamp).await;
             }
-            assert_eq!(receiver.mesh_status("traced").unwrap().status, "ready");
+            assert_eq!(receiver.mesh_status(&rdm_core::fixture_mesh_id("traced")).unwrap().status, "ready");
         }
         send_ep.close().await; recv_ep.close().await;
         author_trace

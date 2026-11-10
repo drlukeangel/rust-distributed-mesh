@@ -2500,14 +2500,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 let mesh_ids: BTreeMap<String, String> = digest_view.mesh_ids().into_iter().map(|(k, v)| (k, v.to_string())).collect();
                                                 let own_mesh_id = digest_view.mesh_id_of(&mesh);
-                                                let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
+                                                let own_mesh_held = own_mesh_id.as_ref().and_then(|id| records.declared.lock().unwrap().meshes.get(id).copied());
                                                 // The instant this admin's own MeshStatus holds for each state: what its publisher sent.
                                                 let own_mesh_changed_at = |state| {
                                                     topology_view
                                                         .adopted_mesh_status()
                                                         .filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state) && h.changed_at_rafka_ms > 0)
                                                         .map(|h| h.changed_at_rafka_ms)
-                                                        .unwrap_or_else(|| super::runner::held_mesh_changed_at(&digest_view, &records, &mesh, state))
+                                                        .unwrap_or_else(|| own_mesh_id.as_ref().map_or(0, |id| super::runner::held_mesh_changed_at(&digest_view, &records, id, state)))
                                                 };
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, own_mesh_changed_at, &view, &mesh_ids);
                                                 rdm_node::node_rpc::feed_once(&digest_view, &resolver, &me_id.to_string());
@@ -3122,16 +3122,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .chain(named.iter())
                                                         .chain(std::iter::once(&mesh))
                                                         .filter(|m| {
-                                                            topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_gossip::status::MESH_READY)
+                                                            // The status held for the id this view holds for the mesh's name (Q432).
+                                                            topology_view.digest_view.mesh_id_of(m).and_then(|id| topology_view.mesh_status(&id)).is_some_and(|h| h.status == rdm_gossip::status::MESH_READY)
                                                                 || (**m == mesh && adopted_ready)
                                                         })
                                                         .cloned()
                                                         .collect(),
                                                 );
-                                                // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
-                                                records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
-                                                    topology_view.digest_view.all().into_iter().find(|d| d.node.mesh == mesh && d.node.node_id.as_str() == publisher).and_then(|d| topology_view.digest_view.mesh_id_of(&d.node.mesh))
-                                                });
+                                                // A MeshStatus Dead is the mesh id's its frame carries (Q432).
+                                                records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(id, _)| id).collect());
                                                 // Decide on the view as it is now: a cached view can predate the primary record this admin holds
                                                 // (a hand-over just taken), and a role is announced from the decision, never from a stale one.
                                                 // The primary records are read once per decision: the projection elects from them and

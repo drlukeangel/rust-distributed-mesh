@@ -1,6 +1,6 @@
 //! A live mesh-channel probe of the replacement-state receive contract.
 
-use rdm_core::{FabricId, MeshId};
+use rdm_core::FabricId;
 use rdm_gossip::location::learn_addresses;
 use rdm_gossip::frame::Frame;
 use rdm_gossip::topology::TopologyView;
@@ -28,7 +28,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
         let socket = sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
@@ -36,7 +36,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
         let receiver = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), Default::default());
         let receiver_channels = rdm_gossip::channel::Channels::new(&receiver_gossip, &receiver_ep, &receiver).unwrap();
         receiver_channels.join(rdm_gossip::channel::ChannelId::mesh(receiver.fabric_id(), receiver.mesh_id()), vec![address]).await.unwrap();
-        let frame = |status: &str| Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
+        let frame = |status: &str| Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: status.into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
         // Wait for the actual neighbour event, without sending or retrying the subject frame.
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -46,7 +46,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
         }).await.expect("the receiver joins the live mesh");
         crate::forward_gossip_probe(&sender_channels, &frame("ready")).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
+            while receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.expect("the receiver holds the initial status");
         crate::forward_gossip_probe(&sender_channels, &frame("deleting")).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -56,7 +56,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the conflicting frame reaches the receiver");
-        assert_eq!(receiver.mesh_status("mesh1").unwrap().status, "ready");
+        assert_eq!(receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).unwrap().status, "ready");
         sender_ep.close().await;
         receiver_ep.close().await;
     });
@@ -79,7 +79,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         let socket = sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
@@ -92,7 +92,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        let initial = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
+        let initial = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: "ready".into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
         crate::forward_gossip_probe(&sender_channels, &initial).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -101,7 +101,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         let changes_before = *changes.borrow();
         // A forwarded copy has different wire bytes, so iroh-gossip's content dedup does not hide
         // the receipt from RDM. Its declared identity and status content remain unchanged.
-        let offered = Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: Some("mesh2.node-admin.1".into()), changed_at_rafka_ms: revision };
+        let offered = Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: status.into(), publisher: "mesh1.node-admin.1".into(), forwarded_by: Some("mesh2.node-admin.1".into()), changed_at_rafka_ms: revision };
         crate::forward_gossip_probe(&sender_channels, &offered).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status").count() < 2 {
@@ -109,7 +109,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
             }
         }).await.expect("RDM receives the offered status exactly once");
         assert_eq!(*changes.borrow(), changes_before, "a refused or duplicate status emits no projection-change notification");
-        let held = receiver.mesh_status("mesh1").unwrap();
+        let held = receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).unwrap();
         assert_eq!((held.status.as_str(), held.publisher.as_str(), held.changed_at_rafka_ms), ("ready", "mesh1.node-admin.1", 100), "the held projection does not move");
         sender_ep.close().await;
         receiver_ep.close().await;
@@ -153,7 +153,7 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
         let socket = sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::parse("fab000000001").unwrap(), rdm_core::fixture_mesh_id("mesh1"));
         let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&sender_gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
@@ -234,7 +234,7 @@ fn delayed_status_predecessors_lose_by_committed_revision() {
         let (receiver_ep, receiver_gossip, _receiver_router) = endpoint().await;
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let (fabric, mesh) = (FabricId::mint(), rdm_core::fixture_mesh_id("mesh1"));
         let sender = rdm_gossip::topology::TopologyView::new(&fabric, "mesh1", &mesh, "mesh1.node-admin.2", rdm_transport::clock::os_clock(), Default::default());
         let sender_channels = rdm_gossip::channel::Channels::new(&gossip, &sender_ep, &sender).unwrap();
         sender_channels.join(rdm_gossip::channel::ChannelId::mesh(sender.fabric_id(), sender.mesh_id()), vec![]).await.unwrap();
@@ -250,18 +250,18 @@ fn delayed_status_predecessors_lose_by_committed_revision() {
             let frame = |status: &str, publisher: &str, changed_at_rafka_ms| if fabric_scope {
                 Frame::FabricStatus { fabric: fabric.clone(), status: status.into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms }
             } else {
-                Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms }
+                Frame::MeshStatus { mesh: "mesh1".into(), mesh_id: rdm_core::fixture_mesh_id("mesh1"), status: status.into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms }
             };
             crate::forward_gossip_probe(&sender_channels, &frame("ready", "mesh1.node-admin.2", 1000).authored(&successor, 2, 1000)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
-                while if fabric_scope { receiver.fabric_status().is_none() } else { receiver.mesh_status("mesh1").is_none() } { tokio::time::sleep(Duration::from_millis(10)).await; }
+                while if fabric_scope { receiver.fabric_status().is_none() } else { receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).is_none() } { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();
             crate::forward_gossip_probe(&sender_channels, &frame("deleting", "mesh1.node-admin.1", 9000).authored(&predecessor, 1, 9000)).await.unwrap();
             let kind = if fabric_scope { "fabric-status" } else { "mesh-status" };
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();
-            let held = if fabric_scope { receiver.fabric_status().map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) } else { receiver.mesh_status("mesh1").map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) };
+            let held = if fabric_scope { receiver.fabric_status().map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) } else { receiver.mesh_status(&rdm_core::fixture_mesh_id("mesh1")).map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) };
             assert_eq!(held, Some(("ready".into(), "mesh1.node-admin.2".into(), 1000)));
             assert!(capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind && s["attributes"]["held_key"] == "00000000000000000002.00000000000000001000" && s["attributes"]["frame_key"] == "00000000000000000001.00000000000000009000"));
         }

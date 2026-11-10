@@ -643,7 +643,7 @@ impl AdminRunner {
             .map_err(|e| format!("{outer:?}: the MeshLeft receipt could not be recorded: {e}"))?;
         tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id.log(), operation = %outer.action, operation_subject = ?outer.subject, operation_step = ?outer.step, receipts = all.receipts.len(), roster = all.roster.len(), manifest = ?reference)
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
-        self.digest_view.mesh_left(mesh, build_id.as_str(), self.lifecycle_events.now_rafka_ms());
+        self.digest_view.mesh_left(mesh, mesh_id, build_id.as_str(), self.lifecycle_events.now_rafka_ms());
         self.forget_mesh_id(mesh, mesh_id);
         self.refresh_view().await;
         Ok(())

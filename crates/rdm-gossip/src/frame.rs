@@ -145,12 +145,16 @@ pub enum Frame {
     /// A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the
     /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
     /// restates it as its own. `changed_at_rafka_ms` is the instant of the CHANGE: all five sends
-    /// of one change carry the same value (gossip.md §3.1, §3.2).
+    /// of one change carry the same value (gossip.md §3.1, §3.2). The status is its `mesh_id`'s: a
+    /// mesh created again under the same name is a new mesh with a new id (states.md), and a status
+    /// of one id is never held or read as another's (Q432).
     ///
     /// Schema index 6, never a wire kind.
     MeshStatus {
-        /// The mesh the status belongs to.
+        /// The mesh the status belongs to, by its name.
         mesh: String,
+        /// The id of the mesh the status belongs to.
+        mesh_id: MeshId,
         /// The status.
         status: String,
         /// The mesh primary that authored the status.
@@ -404,8 +408,8 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleting { op, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), topology_version }),
         Frame::NodeDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeStopped { op, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), topology_version }),
-        Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
-            Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
+        Frame::MeshStatus { mesh, mesh_id, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
+            Some(Frame::MeshStatus { mesh, mesh_id, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
         Frame::FabricStatus { fabric, status, publisher, forwarded_by: None, changed_at_rafka_ms } if publisher != me => {
             Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })

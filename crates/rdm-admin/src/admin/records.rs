@@ -363,11 +363,10 @@ pub struct Records {
     /// again, so its projection holds ready while it has a primary, and the primary that takes over
     /// adopts that state and runs its checklist (R-S3).
     pub(crate) heard_ready: Mutex<BTreeSet<String>>,
-    /// Each MeshStatus Dead held, by its fact (mesh name, publisher, changed_at), bound to the mesh id
-    /// it is about: the id the publisher's own digest names when the fact is first held. Dead is a
-    /// mesh id's, never a name's (states.md: an id is never reissued; a name is, R-MN1). After
+    /// The mesh ids whose MeshStatus held is Dead, by the id the frame carries (Q432). Dead is a mesh
+    /// id's, never a name's (states.md: an id is never reissued; a name is, R-MN1). After
     /// mesh.deleted the last admin, still its primary, publishes MeshStatus Dead (R-NS1 item 1).
-    pub(crate) heard_dead: Mutex<BTreeMap<(String, String, u64), Option<MeshId>>>,
+    pub(crate) heard_dead: Mutex<std::collections::HashSet<MeshId>>,
     /// The meshes this admin, as fabric-primary, accepted mesh.deleted for: a validated `MeshDeleted`,
     /// which the mesh-primary calls only after it committed the mesh row deleted (node-rpc-envelope.md,
     /// mesh delete command pair). Dead in this admin's projection from that acceptance on, without
@@ -524,24 +523,10 @@ impl Records {
         }
     }
 
-    /// Hold the MeshStatus Dead facts heard now, each `(mesh, publisher, changed_at)`. A fact held for
-    /// the first time is bound to the mesh id `id_of(mesh, publisher)` answers (the publisher's live
-    /// digest); a fact bound before keeps its id; a fact no longer held is dropped (a newer status of
-    /// the mesh, or its MeshLeft).
-    pub fn set_heard_dead(&self, facts: Vec<(String, String, u64)>, id_of: impl Fn(&str, &str) -> Option<MeshId>) {
-        let moved = {
-            let mut held = self.heard_dead.lock().unwrap();
-            let before = held.clone();
-            held.retain(|k, _| facts.contains(k));
-            for f in facts {
-                let bound = held.entry(f.clone()).or_insert(None);
-                if bound.is_none() {
-                    *bound = id_of(&f.0, &f.1);
-                }
-            }
-            *held != before
-        };
-        if moved {
+    /// Hold the mesh ids whose MeshStatus heard now is Dead, each by the id its frame carries; an id no
+    /// longer held Dead is dropped (a newer status of the mesh, or its MeshLeft).
+    pub fn set_heard_dead(&self, ids: std::collections::HashSet<MeshId>) {
+        if std::mem::replace(&mut *self.heard_dead.lock().unwrap(), ids.clone()) != ids {
             self.inputs_moved();
         }
     }
@@ -571,7 +556,7 @@ impl Records {
     /// restates no heard status as its own). The mesh row's own Dead is read by the projection.
     pub fn heard_dead(&self, id: Option<&MeshId>, authored_here: bool) -> bool {
         let Some(id) = id else { return false };
-        !authored_here && self.heard_dead.lock().unwrap().values().any(|bound| bound.as_ref() == Some(id))
+        !authored_here && self.heard_dead.lock().unwrap().contains(id)
     }
 
     /// The planned births per mesh of the accepted Build held (empty: none held).
