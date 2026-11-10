@@ -70,19 +70,19 @@ As stored:
 `running`:
 
 ```json
-{"len":479,"specversion":"1.0","id":"01a1ae8d-f7ff-78e6-ae7a-39a947f345d3","source":"rdm://1x5fjsz93tvg/qn3q564n8162/e17kbs6jpr37","type":"rdm.node.investigated","subject":"2f24nqm969pk","time":"2026-11-06T01:51:42.078Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-f6d90ec5f0388ba0a08e7bd700fdcfbc-2af7920987bef87b-01","data":{"incarnation":"sj4z3ysdhycf","name":"2","next":"recreate","path":"mesh2.node","verdict":"running","reason":"self-heal","trigger":"silence"},"crc32":"92311d5d"}
+{"len":526,"specversion":"1.0","id":"01a1c3e9-675b-7f68-81b2-4bf565c508e0","source":"rdm://kzjdxwa0vbjs/jgs4k71hwvd4/yp0v648xykfd","type":"rdm.node.investigated","subject":"q68kytkd7a7f","time":"2026-11-10T05:23:35.898Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-df52d4ddf1396483eb70fcd0f3fbb22d-9ed27f4424127abf-01","data":{"incarnation":"z7mwtv40gzcq","inspected":"running","name":"2","path":"mesh1.node","reason":"self-heal","result":"re-created","trigger":"silence"},"crc32":"4115a3cb"}
 ```
 
 `exited`:
 
 ```json
-{"len":478,"specversion":"1.0","id":"01a1ae8e-8303-7b68-a51e-7c18a3cda9d3","source":"rdm://r15rc3tfkg4r/hreemf4h5nvz/81sve0k0m8tj","type":"rdm.node.investigated","subject":"sxq64k0v26ft","time":"2026-11-06T01:52:17.663Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c8bb95b7d2b4fe23b91c4599eb7e3aef-2966089bcad66d63-01","data":{"incarnation":"tejwha92fdsb","name":"3","next":"recreate","path":"mesh1.node","verdict":"exited","reason":"self-heal","trigger":"silence"},"crc32":"8be0c776"}
+{"len":525,"specversion":"1.0","id":"01a1c3e8-1242-7d80-885b-f796beca20ef","source":"rdm://0p6sym3kkarb/0bdgxxw4pkmc/2qn20r32106k","type":"rdm.node.investigated","subject":"v7ckgsc6jq6f","time":"2026-11-10T05:22:08.578Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-d53a79d0750b874258309319dd62eec8-8df032936be6d722-01","data":{"incarnation":"54jsaesdk413","inspected":"exited","name":"3","path":"mesh1.node","reason":"self-heal","result":"re-created","trigger":"silence"},"crc32":"224ef4db"}
 ```
 
 `os-stopped`:
 
 ```json
-{"len":482,"specversion":"1.0","id":"01a1ae8d-e0cc-7129-9be0-4c3bdb204341","source":"rdm://3fe2gyr0vby2/3mfm6ref1hfp/2237s0fb95jf","type":"rdm.node.investigated","subject":"9mn1y1x703ft","time":"2026-11-06T01:51:36.138Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-c493098f704d67cd64d1d14876e49e4a-abb790c9e3f739f1-01","data":{"incarnation":"psc6we56fj63","name":"1","next":"recreate","path":"mesh2.node","verdict":"os-stopped","reason":"self-heal","trigger":"silence"},"crc32":"b88c01db"}
+{"len":529,"specversion":"1.0","id":"01a1c3e8-5cef-77b8-af09-027597610b4a","source":"rdm://c9bz9hqzxqne/570f9zbf00fq/qxq5e2qy1kmv","type":"rdm.node.investigated","subject":"wbs3hteya5vt","time":"2026-11-10T05:22:27.694Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-012ddc20349404568f7b41a446a7a0c6-e0b7ffb6d44cfd32-01","data":{"incarnation":"w5dfgy987p3k","inspected":"os-stopped","name":"2","path":"mesh1.node","reason":"self-heal","result":"re-created","trigger":"silence"},"crc32":"32c7032f"}
 ```
 
 `reason` is `self-heal` or `ordered`; `trigger` is `silence` for a self-heal, else what started the ordered investigation: `connect-refused`, `connect-timed-out`, `connect-failed`, `endpoint-unresolved`, `attempts-spent` or `report-call-failed` (Q393). `inspected` is node.runtime.inspect's answer that led to the result: `running`, `os-stopped`, `exited` or `unavailable`; a `ready` event carries none, the tickle's answer having led to it.

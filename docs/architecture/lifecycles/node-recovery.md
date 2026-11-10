@@ -126,7 +126,7 @@ As stored:
 `exited`:
 
 ```json
-{"len":478,"specversion":"1.0","id":"01a1ae8d-f449-75a0-8b01-f4d18d8ccc70","source":"rdm://whpdxrcdyfvh/fdceh6x7d3y6/d3fbkvnm7w63","type":"rdm.node.investigated","subject":"5edf9fd8kmzc","time":"2026-11-06T01:51:41.126Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-07b2cd84abccf6fa5a1c1b873da2e267-3e5747e696e2eea8-01","data":{"incarnation":"vzrw2nsrfnv9","name":"1","next":"recreate","path":"mesh2.node","verdict":"exited","reason":"self-heal","trigger":"silence"},"crc32":"38f4e36f"}
+{"len":525,"specversion":"1.0","id":"01a1c3e8-149a-7029-9db6-0302f829041c","source":"rdm://09f972aq2cgt/53rczcp6ekq9/b3md7ke2q3y9","type":"rdm.node.investigated","subject":"1a26kw99wm1g","time":"2026-11-10T05:22:09.176Z","datacontenttype":"application/json","dataschema":"event/1","traceparent":"00-cf33dbef7aadb5a87e703e7700c2698e-5b95fd00e4712871-01","data":{"incarnation":"e365f7g2wn7d","inspected":"exited","name":"1","path":"mesh2.node","reason":"self-heal","result":"re-created","trigger":"silence"},"crc32":"371162e9"}
 ```
 
 `reason` is `self-heal` or `ordered`; `trigger` is `silence` for a self-heal, else what started the ordered investigation: `connect-refused`, `connect-timed-out`, `connect-failed`, `endpoint-unresolved`, `attempts-spent` or `report-call-failed` (Q393).
