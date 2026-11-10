@@ -665,6 +665,11 @@ impl AdminRunner {
                 }
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
+                    // The create's own birth, lost before it wrote its record (Q356): its runtime is the
+                    // launch this create made, and its delete terminates what the provider finds of it.
+                    if let Some(launched) = executable.filter(|_| prev.node_id == *node_id) {
+                        self.hold_unrecorded_launch(&req, &from, &launched.executable).await?;
+                    }
                     let terminal = self.delete_unreached(&*self.builds, Some(build_id), node, &from).await?;
                     // The create's own birth, lost before Ready: a deleted node never returns (every view
                     // refuses its digest), so the path takes a new node.id, minted here as node recovery
@@ -807,6 +812,56 @@ impl AdminRunner {
             record.data_dir = data_dir;
         }
         Some((record, DeploymentHandle { deployment_id, provider, pid: None, start: None, container: None, domain: Some(fact.control_domain.clone()) }))
+    }
+
+    /// The create `req`'s own birth `from`, lost before it wrote its own record (Q356): the view holds
+    /// it, but no runtime fact and no node record name its runtime, so its delete takes the runtime from
+    /// what the Build holds of the create that launched it (rdm#334 A: "the record is in the build and
+    /// the atlas"). The launch's deployment id is the create operation's
+    /// ([`crate::deployment::pipeline::launch_of`]), and the provider finds that launch at the birth's
+    /// data dir, running `executable`, the one the create's step names. What it finds is held as the
+    /// birth's runtime ([`Self::handle_for`]), so the delete terminates a runtime that runs
+    /// ([`Self::delete_unreached`]): a launch found exited hands its exact runtime, which the delete
+    /// reads exited, and one never launched a handle that locates nothing, whose delete terminates
+    /// nothing. `false`, and nothing is held, for a birth that wrote its record (its record names its
+    /// runtime) or that is not this create's launch. One `rdm.node_admin.node.resolve.via-unrecorded-launch`
+    /// span names what the provider found.
+    pub(crate) async fn hold_unrecorded_launch(&self, req: &CreateRequest, from: &crate::build::ExitedBirth, executable: &std::path::Path) -> Result<bool, crate::executor::RunEnd> {
+        use crate::deployment::provider::Found;
+        use tracing::Instrument;
+        let (incarnation, deployment_id) = crate::deployment::pipeline::launch_of(&req.operation.to_string(), &req.node_id);
+        if from.node_id != req.node_id || from.incarnation != incarnation {
+            return Ok(false);
+        }
+        let node = req.location();
+        match self.nodes_storage.node(&from.node_id).await {
+            Ok(None) => {}
+            Ok(Some(_)) => return Ok(false),
+            Err(e) => return Err(crate::executor::RunEnd::from(format!("node.delete:path {node_path:?}, name {node_name:?}: the record of {} could not be read: {e}", from.node_id, node_path = &node.path, node_name = &node.name))),
+        }
+        let data_dir = req.data_dir.clone().unwrap_or_else(|| crate::deployment::node_data_dir(&self.template.data_root, &req.node_id));
+        let launch = crate::deployment::provider::ResolvedNodeLaunch::for_find(&req.mesh, &req.r#type, &node, &deployment_id, executable.to_path_buf(), data_dir.clone());
+        let span = tracing::info_span!("rdm.node_admin.node.resolve.via-unrecorded-launch", build_id = %crate::deployment::pipeline::build_span(req.build_id.as_ref()), node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), deployment_id = %deployment_id, data_dir = %data_dir.display(), found = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let found = self.provider.find(&launch, crate::deployment::deadline::Deadline::step()).instrument(span.clone()).await.map_err(|e| {
+            span.record("found", "failed").record("detail", e.to_string().as_str());
+            crate::executor::RunEnd::from(format!("node.delete:path {node_path:?}, name {node_name:?}: the launch {deployment_id} of {}, which wrote no record, could not be found: {e}", from.node_id, node_path = &node.path, node_name = &node.name))
+        })?;
+        let locates_nothing = || DeploymentHandle { deployment_id: deployment_id.clone(), provider: self.provider.kind(), pid: None, start: None, container: None, domain: Some(self.provider.control_domain()) };
+        let (handle, what) = match found {
+            Found::Running(h) => (h, "running"),
+            Found::Exited(Some(h)) => (h, "exited"),
+            Found::Exited(None) => (locates_nothing(), "exited"),
+            Found::NeverLaunched => (locates_nothing(), "never-launched"),
+        };
+        span.record("found", what);
+        span.in_scope(|| tracing::info!("the create's own birth wrote no record: its delete takes its runtime from the launch the create made"));
+        let mut birth = Node::allocated(node, &req.mesh, &req.r#type);
+        birth.node_id = from.node_id.clone();
+        birth.incarnation_id = Some(from.incarnation.clone());
+        birth.deployment_id = Some(deployment_id);
+        birth.data_dir = Some(data_dir.display().to_string());
+        self.handles.lock().unwrap().insert(from.node_id.clone(), (birth, handle));
+        Ok(true)
     }
 
     /// Node recovery's node.delete (node-recovery.md sequence step 3): the exact unreached birth `from`

@@ -127,6 +127,19 @@ pub struct ResolvedNodeLaunch {
 impl ResolvedNodeLaunch {
     /// The `(path, name)` lookup index key of path and name.
     pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
+
+    /// The launch `deployment_id` of the node at `node` (`mesh`, `type`), made over `data_dir` running
+    /// `executable`, as [`DeploymentProvider::find`] looks it up: a launch whose birth wrote no record
+    /// (Q356) is found by what the create that made it names, never by its environment or its sockets.
+    pub fn for_find(mesh: &str, r#type: &str, node: &rdm_core::PathName, deployment_id: &DeploymentId, executable: PathBuf, data_dir: PathBuf) -> Self {
+        Self {
+            mesh: mesh.to_string(), r#type: r#type.to_string(), path: node.path.clone(), name: node.name.clone(),
+            deployment_id: deployment_id.clone(), executable, args: Vec::new(), env: Default::default(),
+            secrets: Default::default(), withhold: Vec::new(),
+            data_dir,
+            transport: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), listeners: Vec::new(),
+        }
+    }
 }
 
 /// What a provider knows of one exact launch ([`DeploymentProvider::find`]): three distinct facts,

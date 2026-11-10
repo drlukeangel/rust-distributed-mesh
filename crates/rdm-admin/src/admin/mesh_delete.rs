@@ -1007,13 +1007,8 @@ impl AdminRunner {
 /// successor"). The process provider's find reads a launch running only while its pid runs that file;
 /// an entry that names no executable (a Build accepted before the field) finds none running.
 fn in_flight_launch(mesh: &str, spec: &rdm_core::meta::NodeSpec, deployment_id: &crate::model::DeploymentId, data_dir: std::path::PathBuf) -> crate::deployment::provider::ResolvedNodeLaunch {
-    crate::deployment::provider::ResolvedNodeLaunch {
-        mesh: mesh.to_string(), r#type: spec.r#type.clone(), path: spec.path.clone(), name: spec.name.clone(),
-        deployment_id: deployment_id.clone(), executable: spec.executable.as_ref().map(|b| b.executable.clone()).unwrap_or_default(), args: Vec::new(), env: Default::default(),
-        secrets: Default::default(), withhold: Vec::new(),
-        data_dir,
-        transport: std::net::SocketAddr::from(([0, 0, 0, 0], 0)), listeners: Vec::new(),
-    }
+    let node = rdm_core::PathName { path: spec.path.clone(), name: spec.name.clone() };
+    crate::deployment::provider::ResolvedNodeLaunch::for_find(mesh, &spec.r#type, &node, deployment_id, spec.executable.as_ref().map(|b| b.executable.clone()).unwrap_or_default(), data_dir)
 }
 
 #[cfg(test)]
@@ -1444,6 +1439,57 @@ mod tests {
         assert!(matches!(p.find(&in_flight_launch("mesh1", &unnamed, &deployment_id, dir.clone()), crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(_)), "an entry naming no executable finds no launch running");
         p.terminate(&h, crate::deployment::provider::TerminationMode::Immediate, crate::deployment::deadline::Deadline::step()).await.unwrap();
         assert!(matches!(p.find(&launch, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(Some(_))), "its process is gone: exited");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (rdm#334 A, "the record is in the build and the atlas"; Q356: a node writes its own record;
+    /// node-recovery.md "Delete blocks the old instance before the new join"): a Build's create whose own
+    /// birth joined and was lost before it wrote its record holds no runtime fact and no record of it, so
+    /// its node.delete takes the runtime from the launch the create made, found at the provider by the
+    /// launch's deployment id, and terminates the runtime that still runs. Must NOT happen: the delete
+    /// ending "lifecycle record absent", or the old runtime left running beside the birth the path takes next.
+    #[tokio::test]
+    async fn a_creates_own_birth_that_wrote_no_record_is_deleted_through_the_runtime_its_launch_left() {
+        use crate::deployment::provider::{DeploymentProvider as _, DeploymentStatus, ResolvedNodeLaunch};
+        let Rig { runner, steps, ep, dir, mesh1_id, .. } = rig("unrecorded-launch-delete").await;
+        let build_id = crate::build::BuildId::mint();
+        steps
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fab", "mesh1", mesh1_id), change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1000 })
+            .await
+            .unwrap();
+        let node = rdm_core::PathName::new("mesh1.node", "4").unwrap();
+        let node_id = NodeId::mint();
+        let operation = rdm_core::OperationId::node("node.create", &node_id);
+        let (incarnation, deployment_id) = crate::deployment::pipeline::launch_of(&operation.to_string(), &node_id);
+        // The launch the create made, still running: its record in the birth's data dir names the launch's
+        // deployment id, as the create's DeployRuntime wrote it.
+        let launch = ResolvedNodeLaunch::for_find("mesh1", "node", &node, &deployment_id, "/bin/sleep".into(), crate::deployment::node_data_dir(&dir, &node_id));
+        let left = runner.provider.spawn(&ResolvedNodeLaunch { args: vec!["30".into()], ..launch.clone() }, crate::deployment::deadline::Deadline::step()).await.unwrap();
+        // This admin is mesh1's primary, the delete's writer; the view holds the birth, dead: it wrote no
+        // record and published no runtime fact.
+        let mut me = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        me.node_id = runner.node_id.clone();
+        me.incarnation_id = Some(runner.primary_update.incarnation.clone());
+        me.status = NodeStatus::Ready;
+        me.is_primary = true;
+        runner.topology.write().await.nodes.push(me);
+        let mut birth = Node::allocated(node.clone(), "mesh1", "node");
+        birth.node_id = node_id.clone();
+        birth.incarnation_id = Some(incarnation.clone());
+        birth.status = NodeStatus::Dead;
+        runner.topology.write().await.nodes.push(birth);
+        let from = crate::build::ExitedBirth { node_id: node_id.clone(), incarnation };
+        let req = crate::deployment::pipeline::CreateRequest {
+            predecessor: None, operation, node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()),
+            path: node.path.clone(), name: node.name.clone(), spec: runner.listeners.spec_for("node"), data_dir: None, held_runtimes: Vec::new(), entry: None,
+        };
+
+        assert!(runner.hold_unrecorded_launch(&req, &from, std::path::Path::new("/bin/sleep")).await.unwrap(), "the create's own unrecorded birth: its launch is held as its runtime");
+        let terminal = runner.delete_unreached(&*steps, Some(&build_id), &node, &from).await.unwrap_or_else(|e| panic!("the delete of the birth that wrote no record: {e:?}"));
+        assert!(matches!(runner.provider.inspect(&left, crate::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the runtime the launch left is terminated: {terminal:?}");
+        assert!(runner.nodes_storage.node(&node_id).await.unwrap().is_none(), "nothing is written for a birth that wrote no record");
+
+        ep.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
