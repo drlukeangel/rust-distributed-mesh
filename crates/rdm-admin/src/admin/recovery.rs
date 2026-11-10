@@ -313,8 +313,8 @@ impl RecoverySubmitter {
         let _turn = runner.node_work(&node.node_id).await;
         // The application is asked after the birth's node.delete and before node.create of its successor
         // (fabric-node-hooks.md "pre_node_recreate", Q437 B): `runner.recover` awaits it between the two.
-        // Short of `Ok` the recovery ends failed as a failed step does: the birth stays held recovering,
-        // and the caller keeps it owed.
+        // Short of `Ok` the recovery ends failed as a failed step does: the birth is deleted, nothing is
+        // created, and the caller keeps it owed.
         let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
         let ask = crate::node_investigation::ask_pre_node_recreate(self.pre_node_recreate.as_ref(), ids, node, incarnation, inspected);
         let from = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
