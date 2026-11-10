@@ -709,12 +709,32 @@ async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &PathNa
     created_at(&b, path).map(Some).ok_or_else(|| format!("Build {build_id} ended complete and no AllocateIdentity of a create at {path:?} ended complete: {}", b["steps"]))
 }
 
-/// The node.id the Build view `b` created at `path`: the id its record's `created` names there (D58),
-/// when that create's `AllocateIdentity` step event (`node.create:<node.id>`) ended `complete`.
+/// The node.id the Build view `b` created at `path`: the birth its create made last
+/// ([`created_birth`]) of the id its record's `created` names there (D58), when that birth's create's
+/// `AllocateIdentity` step event (`node.create:<node.id>`) ended `complete`.
 fn created_at(b: &Value, path: &PathName) -> Option<String> {
     let id: rdm_core::NodeId = b["topology"]["created"].as_array()?.iter().find(|e| e[0]["path"] == path.path.as_str() && e[0]["name"] == path.name.as_str()).and_then(|e| serde_json::from_value(e[1].clone()).ok())?;
-    let op = rdm_core::OperationId::node("node.create", &id).to_string();
-    b["steps"].as_array()?.iter().any(|st| st["operation"] == op.as_str() && st["step"] == "AllocateIdentity" && st["outcome"] == "complete").then(|| id.to_string())
+    let born = created_birth(b, id.as_str());
+    let op = format!("node.create:{born}");
+    b["steps"].as_array()?.iter().any(|st| st["operation"] == op.as_str() && st["step"] == "AllocateIdentity" && st["outcome"] == "complete").then_some(born)
+}
+
+/// The birth the create `node.create:<node_id>` of the Build view `b` made last: `node_id`, else, while
+/// its create's newest complete `AllocateIdentity` step event names another node as its `subject` (the
+/// node.id minted for a birth lost before Ready, deployment-provider.md §3), that node's.
+pub fn created_birth(b: &Value, node_id: &str) -> String {
+    let steps = b["steps"].as_array().cloned().unwrap_or_default();
+    let mut chain = vec![node_id.to_string()];
+    while let Some(next) = chain.last().and_then(|at| {
+        let op = format!("node.create:{at}");
+        steps.iter().rev().find(|st| st["operation"] == op.as_str() && st["step"] == "AllocateIdentity" && st["outcome"] == "complete").and_then(|st| st["subject"].as_str().map(str::to_string)).filter(|s| s != at)
+    }) {
+        if chain.contains(&next) {
+            break;
+        }
+        chain.push(next);
+    }
+    chain.pop().unwrap_or_else(|| node_id.to_string())
 }
 
 /// The `rdm.node.investigated` events of the exact birth `(node.id, incarnation)` on the estate's

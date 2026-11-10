@@ -890,11 +890,11 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         // `NodeDeleted`; the run after it reuses both steps without calling `provider.terminate` or sending
         // `StopNode`, and completes `NodeDeleted`, `RemoveTopologyMembership`, and `Complete`.
         builds
-            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: rdm_core::OperationId::node("node.delete", &target_id), step: DeleteStep::NodeDeleting.name().into(), outcome: StepOutcome::Complete })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, subject: None, operation: rdm_core::OperationId::node("node.delete", &target_id), step: DeleteStep::NodeDeleting.name().into(), outcome: StepOutcome::Complete })
             .await
             .unwrap();
         builds
-            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: rdm_core::OperationId::node("node.delete", &target_id), step: DeleteStep::TerminateRuntime.name().into(), outcome: StepOutcome::Complete })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, subject: None, operation: rdm_core::OperationId::node("node.delete", &target_id), step: DeleteStep::TerminateRuntime.name().into(), outcome: StepOutcome::Complete })
             .await
             .unwrap();
 

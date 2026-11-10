@@ -942,6 +942,11 @@ pub(crate) type PreNodeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<
 /// before the new join"): the target is done before the new runtime exists and never once it does.
 pub(crate) type BeforeLaunch<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
+/// The work turn of a node, by its node.id, as the primary that runs a create serializes work per node
+/// (node-recovery.md "Execution"): [`DeploymentPipeline::create_new_birth`] holds the new birth's while
+/// its create runs.
+pub(crate) type NewTurn<'a> = &'a (dyn Fn(NodeId) -> futures_util::future::BoxFuture<'static, tokio::sync::OwnedMutexGuard<()>> + Send + Sync);
+
 /// A request to delete one node.
 #[derive(Debug, Clone)]
 pub struct DeleteRequest {
@@ -1456,7 +1461,7 @@ impl DeploymentPipeline<'_> {
         };
         let appended = self
             .builds
-            .write_step(&crate::build_state::StepWrite { build_id: run_build.clone(), mesh: None, operation: run.operation.clone(), step: step.into(), outcome })
+            .write_step(&crate::build_state::StepWrite { build_id: run_build.clone(), mesh: None, subject: None, operation: run.operation.clone(), step: step.into(), outcome })
             .await;
         if let Err(e) = appended {
             let unwritten = format!("{}: the {step} event of operation {} (Build {}) was not written: {e}", self.template.executor(), run.operation, run_build);
@@ -1675,19 +1680,42 @@ impl DeploymentPipeline<'_> {
     /// The create of a birth lost before Ready, `why`: the one rule for every such birth. This
     /// operation's completed steps stand (build.md §1: never run again) and a deleted node never returns,
     /// so the lost birth is deleted, which releases its name (R-MN1), and the new birth is a new operation
-    /// under a new node.id, minted here (node-recovery.md, Q110), naming the lost birth its predecessor.
-    /// The caller's operation ends complete on that birth's Ready ([`Self::create_steps`]). `runtime`:
-    /// the lost birth's runtime where it is known; a launch nothing locates has none to terminate.
-    async fn create_new_birth(&self, req: &CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, why: &'static str, runtime: Option<DeploymentHandle>) -> Result<Created, PipelineError> {
+    /// under a new node.id, minted here (node-recovery.md, Q110), naming the lost birth its predecessor;
+    /// its data dir is the one the request names (an executable replacement's inherited dir,
+    /// build-deployment.md §3), else a new one. The one mint of a Build's create: the minted id is the
+    /// subject of this operation's `AllocateIdentity` step event, written before anything is launched
+    /// for it, and a resubmitted create resumes the newest one its Build holds, never minting while
+    /// that launch is unresolved (deployment-provider.md §3): its DeployRuntime's find adopts or stops
+    /// the launch a lost executor left. The caller's operation ends complete on that birth's Ready
+    /// ([`Self::create_steps`]). `runtime`: the lost birth's runtime where it is known; a launch nothing
+    /// locates has none to terminate. `new_turn`: the work turn of the new birth, held until its create
+    /// ends (node-recovery.md "Execution"), when the caller serializes work per node.
+    pub(crate) async fn create_new_birth(&self, req: &CreateRequest, of: LaunchOf, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>, why: &'static str, runtime: Option<DeploymentHandle>, new_turn: Option<NewTurn<'_>>) -> Result<Created, PipelineError> {
         let lost = identity_of(req);
         let handle = runtime.unwrap_or_else(|| DeploymentHandle { deployment_id: lost.deployment_id.clone(), provider: self.provider.kind(), pid: None, start: None, container: None, domain: Some(self.provider.control_domain()) });
         let mut node = Node::allocated(req.location(), &req.mesh, &req.r#type);
         node.node_id = req.node_id.clone();
         node.incarnation_id = Some(lost.incarnation.clone());
         self.delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &req.node_id), build_id: req.build_id.clone(), node, handle, unreached: true }).await?;
-        let new_node_id = NodeId::mint();
-        tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_span(req.build_id.as_ref()), node_path = %req.path, node_name = %req.name, node_id = %req.node_id, new_node_id = %new_node_id, why)
-            .in_scope(|| tracing::info!("the lost birth is deleted: the path takes a new node.id"));
+        let allocate = CreateStep::AllocateIdentity.name();
+        let held = match &req.build_id {
+            Some(build_id) => self.builds.read_build(build_id).await.map(|p| p.minted_after(&req.node_id)).map_err(|e| PipelineError { step: allocate, reason: format!("path {:?}, name {:?}: Build {build_id} could not be read for the node.id {} minted for its birth lost before Ready, so none is minted: {e}", req.path, req.name, req.operation), code: rdm_core::outcome::Code::Unavailable })?,
+            None => None,
+        };
+        let (new_node_id, minted) = match held {
+            Some(id) => (id, "resumed"),
+            None => (NodeId::mint(), "minted"),
+        };
+        if let (Some(build_id), "minted") = (&req.build_id, minted) {
+            let record = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, subject: Some(new_node_id.clone()), operation: req.operation.clone(), step: allocate.into(), outcome: StepOutcome::Complete };
+            self.builds.write_step(&record).await.map_err(|e| PipelineError { step: allocate, reason: format!("path {:?}, name {:?}: the node.id {new_node_id} minted for {}'s birth lost before Ready was not recorded in Build {build_id}, so nothing is launched for it: {e}", req.path, req.name, req.operation), code: rdm_core::outcome::Code::Unavailable })?;
+        }
+        tracing::info_span!("rdm.node_admin.node.create.via-birth-lost-before-ready", build_id = %build_span(req.build_id.as_ref()), node_path = %req.path, node_name = %req.name, node_id = %req.node_id, new_node_id = %new_node_id, minted, why)
+            .in_scope(|| tracing::info!("the lost birth is deleted: the path takes a new node.id, which the Build holds"));
+        let _new_turn = match new_turn {
+            Some(turn) => Some(turn(new_node_id.clone()).await),
+            None => None,
+        };
         let new_req = CreateRequest { predecessor: Some(crate::storage::BirthRef { node_id: req.node_id.clone(), incarnation_id: lost.incarnation }), operation: rdm_core::OperationId::node("node.create", &new_node_id), node_id: new_node_id, ..req.clone() };
         self.create_with_launch_of(&new_req, of, pre_node_ready, before_launch).await
     }
@@ -1726,7 +1754,7 @@ impl DeploymentPipeline<'_> {
                 None => false,
             };
             if !alive {
-                return self.create_new_birth(req, of, pre_node_ready, before_launch, "the earlier run's runtime is gone", earlier).await;
+                return self.create_new_birth(req, of, pre_node_ready, before_launch, "the earlier run's runtime is gone", earlier, None).await;
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
                 // Launched by an executor that is not this one and never joined: its only seed is
                 // that executor's endpoint, which this birth can no longer rely on (the lost admin's
@@ -1735,7 +1763,7 @@ impl DeploymentPipeline<'_> {
                 let stranded = earlier.expect("alive implies a decoded handle");
                 let recorded = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.as_ref());
                 self.stop_lost_launch(req, &stranded, recorded).await?;
-                return self.create_new_birth(req, of, pre_node_ready, before_launch, "the lost executor's launch never finished its join", Some(stranded)).await;
+                return self.create_new_birth(req, of, pre_node_ready, before_launch, "the lost executor's launch never finished its join", Some(stranded), None).await;
             }
         }
         let rows = self.sink.node_rows();
@@ -1862,7 +1890,7 @@ impl DeploymentPipeline<'_> {
             if let Some(h) = &stranded {
                 self.stop_lost_launch(req, h, lost_owner.as_ref()).await?;
             }
-            return self.create_new_birth(req, of, pre_node_ready, before_launch, "the lost executor's launch never joined", stranded).await;
+            return self.create_new_birth(req, of, pre_node_ready, before_launch, "the lost executor's launch never joined", stranded, None).await;
         }
         let handle: DeploymentHandle = self
             .step_with(run, CreateStep::DeployRuntime.name(), async {

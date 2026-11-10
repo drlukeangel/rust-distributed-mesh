@@ -723,7 +723,9 @@ async fn fault_case(run: &Run, family: Family, id: &str, spec: Value, faults: &F
 async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
     // The create is keyed by the node.id its record minted (D58), the subject of its step events.
     let allocated = done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).cloned().unwrap_or_else(|| panic!("the create has an AllocateIdentity step: {done}"));
-    let node_id = s(&allocated["subject"]);
+    // The birth the create made last: its own node.id, else the one its AllocateIdentity minted for a
+    // birth lost before Ready (deployment-provider.md §3).
+    let node_id = rdm_test::soak::created_birth(done, &s(&allocated["subject"]));
     let node = run.estate.node_views().await.into_iter().find(|n| n.node_id.to_string() == node_id).map(|n| n.location()).unwrap_or_else(|| panic!("the created node {node_id} is in the view"));
     let order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     let op = Op(s(&allocated["operation"]));

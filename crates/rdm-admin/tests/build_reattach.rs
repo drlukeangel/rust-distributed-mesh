@@ -96,6 +96,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                 operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                 step: step.into(),
                 outcome: StepOutcome::Complete,
+                subject: None,
             })
             .await
             .unwrap();

@@ -315,7 +315,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let left_m2 = left_manifest(&*builds, &[&build_id], &key_m2, &manifest_m2.roster, &me_m2).await;
     mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
     builds
-        .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: op_m2.clone(), step: STEP_MESH_LEFT.into(), outcome: StepOutcome::Complete })
+        .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, subject: None, operation: op_m2.clone(), step: STEP_MESH_LEFT.into(), outcome: StepOutcome::Complete })
         .await
         .unwrap();
 

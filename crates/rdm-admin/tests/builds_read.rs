@@ -41,7 +41,7 @@ async fn build(log: &rdm_admin::build_run::FramedBuilds, id: &BuildId, at: u64, 
     log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: at }).await.unwrap();
     crate::start_build(log, id, &fp).await;
     for (operation, outcome) in steps {
-        log.write_step(&rdm_admin::build_state::StepWrite { build_id: id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone() }).await.unwrap();
+        log.write_step(&rdm_admin::build_state::StepWrite { build_id: id.clone(), mesh: None, subject: None, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone() }).await.unwrap();
     }
     let source = rdm_admin::events_storage::EventSource { fabric_id: crate::cell_fabric(), node_id: fp.node_id.clone(), incarnation: fp.incarnation.clone() };
     log.events().append(&rdm_admin::events_storage::Event::build_ended(&source, at, id, &ended)).await.unwrap();

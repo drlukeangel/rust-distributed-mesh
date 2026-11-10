@@ -468,7 +468,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             },
         };
         builds
-            .write_step(&rdm_admin::build_state::StepWrite { build_id: resumed_build.clone(), mesh: None, operation: rdm_core::OperationId::node("node.stop", &node.node_id), step: DeleteStep::StopNode.name().into(), outcome: rdm_admin::build_state::StepOutcome::Complete })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: resumed_build.clone(), mesh: None, subject: None, operation: rdm_core::OperationId::node("node.stop", &node.node_id), step: DeleteStep::StopNode.name().into(), outcome: rdm_admin::build_state::StepOutcome::Complete })
             .await
             .unwrap();
 

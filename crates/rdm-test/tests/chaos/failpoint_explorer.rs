@@ -350,7 +350,9 @@ impl Run {
         let counts = step_counts(&b, &key);
         assert!(counts.values().all(|n| *n == 1) && counts.len() == order.len(), "no step event is written twice: {counts:?}");
         let view = self.node_ready(node).await;
-        let ident = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == key.as_str() && r["step"] == "AllocateIdentity").map(|r| r["subject"].clone()).unwrap();
+        // The birth the create made last: its own node.id, else the one its AllocateIdentity minted.
+        let own = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == key.as_str() && r["step"] == "AllocateIdentity").and_then(|r| r["subject"].as_str().map(str::to_string)).unwrap();
+        let ident = serde_json::Value::from(rdm_test::soak::created_birth(&b, &own));
         assert_eq!(ident, view["node_id"], "the node the Build decided is the node that serves: one birth");
         assert_eq!(self.runtimes(node).await, 1, "exactly one runtime serves {node:?}: release made no second birth");
         assert_eq!(self.fabric_build_id().await, build_id, "the current build_id names the accepted Build");

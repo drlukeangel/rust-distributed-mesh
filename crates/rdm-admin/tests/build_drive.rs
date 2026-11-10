@@ -663,7 +663,7 @@ impl OperationRunner for LostLeaver {
                 // The leave's step log, as its pipeline writes it: the step's `rdm.build.step` event.
                 let builds = self.ran.get().expect("the rig set the recorder").1.clone();
                 let log = rdm_admin::build_run::FramedBuilds::stepping(builds, &crate::cell_fabric(), &NodeId::parse("100000000001").unwrap(), "mesh2");
-                let step = rdm_admin::build_state::StepWrite { build_id: build.clone(), mesh: None, operation: op.key(), step: "RosterAmended".into(), outcome: rdm_admin::build_state::StepOutcome::Complete };
+                let step = rdm_admin::build_state::StepWrite { build_id: build.clone(), mesh: None, subject: None, operation: op.key(), step: "RosterAmended".into(), outcome: rdm_admin::build_state::StepOutcome::Complete };
                 log.write_step(&step).await.map_err(|e| e.to_string())?;
             }
             return Err(end);

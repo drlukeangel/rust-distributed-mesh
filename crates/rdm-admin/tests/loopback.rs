@@ -50,7 +50,7 @@ impl Steps {
 #[async_trait::async_trait]
 impl OperationRunner for Steps {
     async fn run(&self, build: &BuildId, op: &BuildOperation) -> Result<(), RunEnd> {
-        let write = |step: &str, outcome| StepWrite { build_id: build.clone(), mesh: None, operation: op.key(), step: step.into(), outcome };
+        let write = |step: &str, outcome| StepWrite { build_id: build.clone(), mesh: None, subject: None, operation: op.key(), step: step.into(), outcome };
         if let Err(end) = self.inner.run(build, op).await {
             if let RunEnd::Failed { reason, code } = &end {
                 if let Some((step, why)) = reason.split_once(" failed: ") {

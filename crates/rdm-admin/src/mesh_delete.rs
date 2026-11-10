@@ -159,7 +159,7 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey
     let written = view.completed(&operation.to_string(), step);
     if !written {
         builds
-            .write_step(&StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: step.to_string(), outcome: StepOutcome::Complete })
+            .write_step(&StepWrite { build_id: build_id.clone(), mesh: None, subject: None, operation: operation.clone(), step: step.to_string(), outcome: StepOutcome::Complete })
             .await
             .map_err(|e| format!("{executor}: the {step} event of {operation} could not be written: {e}"))?;
     }
@@ -233,7 +233,7 @@ pub fn owner_resume(steps: &[BuildStep], operation: &str) -> OwnerResume {
 /// `rdm.node_admin.mesh.update.via-mesh-deleted-receipt` span.
 pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
     builds
-        .write_step(&StepWrite { build_id: key.build_id.clone(), mesh: None, operation: key.operation.clone(), step: STEP_MESH_DELETED.into(), outcome: StepOutcome::Complete })
+        .write_step(&StepWrite { build_id: key.build_id.clone(), mesh: None, subject: None, operation: key.operation.clone(), step: STEP_MESH_DELETED.into(), outcome: StepOutcome::Complete })
         .await
         .map_err(|e| format!("{}: the {STEP_MESH_DELETED} event could not be written: {e}", key.operation))?;
     tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-deleted-receipt", executor = %executor, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len(), final_primary_node_id = %manifest.final_primary.node_id)
@@ -421,7 +421,7 @@ where
     }
     let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: me.clone(), final_runtime: Some(final_runtime), receipts };
     builds
-        .write_step(&crate::build_state::StepWrite { build_id: key.build_id.clone(), mesh: None, operation: key.operation.clone(), step: STEP_OTHER_MEMBERS_EXITED.into(), outcome: StepOutcome::Complete })
+        .write_step(&crate::build_state::StepWrite { build_id: key.build_id.clone(), mesh: None, subject: None, operation: key.operation.clone(), step: STEP_OTHER_MEMBERS_EXITED.into(), outcome: StepOutcome::Complete })
         .await
         .map_err(|e| format!("the exit manifest could not be recorded: {e}"))?;
     tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), operation = %key.operation.action, operation_subject = ?key.operation.subject, receipts = manifest.receipts.len(), roster = manifest.roster.len())
@@ -1139,7 +1139,7 @@ pub async fn complete_fabric_delete(
 ) -> Result<(), String> {
     let operation = rdm_core::OperationId::new("fabric.delete", rdm_core::OperationSubject::Fabric(fabric_id.clone()));
     builds
-        .write_step(&crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: StepOutcome::Complete })
+        .write_step(&crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, subject: None, operation: operation.clone(), step: "Complete".into(), outcome: StepOutcome::Complete })
         .await
         .map_err(|e| format!("{operation:?}: the Complete receipt could not be recorded: {e}"))?;
     tracing::info_span!("rdm.node_admin.fabric.delete.via-build", node = %executor, fabric_id = %fabric_id, build_id = %build_id.log(), operation = %operation.action, operation_subject = ?operation.subject, outcome = "fabric-deleted")
