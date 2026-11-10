@@ -2889,8 +2889,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
                                                         // A birth whose recovery failed here is that recovery's, run again below
-                                                        // with no inspection: the inspect's answer that led to it stands, and its own NodeDeleting is no
-                                                        // other workflow's removal (Q342, Q344).
+                                                        // with no inspection: the inspect's answer that led to it stands, and its
+                                                        // own NodeDeleting is no other workflow's removal (Q342, Q344).
                                                         if failed_births.contains(&birth) {
                                                             continue;
                                                         }

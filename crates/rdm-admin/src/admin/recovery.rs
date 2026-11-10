@@ -250,8 +250,8 @@ impl RecoverySubmitter {
 
     /// The recovery of a birth whose last recovery failed ([`Self::failed_recoveries`]), run again on the
     /// tick on `inspected`, node.runtime.inspect's answer that led to it: the same workflow, keyed on the
-    /// birth; nothing is inspected again. A birth already recovered
-    /// is not recovered again (node-recovery.md sequence step 1: never a second recovery): once the node
+    /// birth; nothing is inspected again. A birth already recovered is not recovered again
+    /// (node-recovery.md sequence step 1: never a second recovery): once the node
     /// its recovery created stands at its path and name, that recovery is owed no more, however its step
     /// ended. A start that ended `Failed` at its hook leaves that node `Pending`, and nothing retries until
     /// someone acts (fabric-node-hooks.md "Outcomes and the gate", Q350).
@@ -279,10 +279,9 @@ impl RecoverySubmitter {
     /// node runs before or after it, never beside it; a Build in flight elsewhere neither holds it nor is
     /// held by it. Every recovery path runs through here, so each run, a run again included, asks the
     /// application's `pre_node_recreate` once, on `inspected`, node.runtime.inspect's answer that led to
-    /// the recovery: after the refusals, the
-    /// birth held recovering and the node's work turn taken, the last step before node.delete
-    /// (fabric-node-hooks.md "pre_node_recreate", node-recovery.md sequence step 1, Q416). A refused run
-    /// asks nothing.
+    /// the recovery: after the refusals, the birth held recovering and the node's work turn taken, the
+    /// last step before node.delete (fabric-node-hooks.md "pre_node_recreate", node-recovery.md sequence
+    /// step 1, Q416). A refused run asks nothing.
     pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, inspected: &Inspected, route: &'static str) -> Result<RecoveryEnd, String> {
         let runner = self.runner.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its runner is not built yet", self.me_id))?;
         span.record("route", route);
