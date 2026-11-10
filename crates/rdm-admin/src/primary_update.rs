@@ -750,15 +750,17 @@ impl PrimaryUpdate {
             return Ok(None);
         }
         // The answer of this admin's own node.primary.update of the type, while it stands: the role moved
-        // to the node it names (Q355). Gossip of the move is never the reason to command over it (Q433).
+        // to the node it names (Q355). Gossip of the move is never the reason to command over it (Q433);
+        // the record this admin holds, which its gossip may not have changed yet, is named beside it.
+        let held = primary_view.node_type_primary(&node.mesh, &node.r#type);
         if let Some(answered) = self.atlas.answered_primary(&node.mesh, &node.r#type) {
-            tracing::Span::current().record("outcome", "answered").record("detail", format!("node_id={answered}").as_str());
+            let record = held.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
+            tracing::Span::current().record("outcome", "answered").record("detail", format!("node_id={answered}, record {record}").as_str());
             return Ok(None);
         }
         // A record whose birth is gone holds no primary: the node created after it is commanded. The type's
         // own nodes elect at the same revision when they held that record (Q406); the supersede rule
         // settles the two on one birth, and a type whose nodes never held it is healed here.
-        let held = primary_view.node_type_primary(&node.mesh, &node.r#type);
         if let Some(h) = held.as_ref().filter(|h| !self.incumbency().lost.contains(&h.incarnation)) {
             tracing::Span::current().record("outcome", "held").record("detail", h.to_string().as_str());
             return Ok(None);

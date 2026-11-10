@@ -1118,7 +1118,7 @@ fn a_create_after_a_move_this_mesh_primary_was_answered_for_commands_no_primary_
         assert!(!commanded, "the create commands nothing: {first:?}");
         assert_eq!(first.len(), 1, "{first:?}");
         assert_eq!(first[0].get("outcome").map(String::as_str), Some("answered"), "the create read P's recorded answer: {first:?}");
-        assert!(first[0].get("detail").is_some_and(|d| d.contains(f.b2().resolved.node_id.as_str())), "naming B2: {first:?}");
+        assert!(first[0].get("detail").is_some_and(|d| d.contains(f.b2().resolved.node_id.as_str()) && d.contains(f.b1.resolved.node_id.as_str())), "naming B2, beside the record P still holds, B1's: {first:?}");
         let mut atlas_view = f.p.primary_update.topology.read().await.clone();
         f.p.primary_update.atlas.primaries(&mut atlas_view);
         assert_eq!(atlas_view.node_type_primary("mesh1", RPC).map(|n| n.node_id.clone()), Some(f.b2().resolved.node_id.clone()), "P's atlas still names B2");
