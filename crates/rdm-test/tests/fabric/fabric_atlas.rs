@@ -18,7 +18,7 @@ async fn atlas(estate: &Estate, why: &str) -> AtlasView {
 
 /// A row's status as the node view's JSON names it.
 fn status_of(row: &AtlasNodeView) -> String {
-    serde_json::to_value(row.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    serde_json::to_value(row.node.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }
 
 fn owner(test: &str) -> Owner {
@@ -180,8 +180,10 @@ fn atlas_row<'a>(read: &'a Value, node_id: &Value) -> Option<&'a Value> {
 /// node view holds of it in `(path, name)` order, the same birth, type and status. While the
 /// fabric-primary holds a node.stop of a mesh1 node it commands (its stopped frame held), that node's row
 /// carries the stop as accepted and is not stopped; once the stop completes it is stopped with nothing
-/// accepted. Must NOT happen: a flat node list, a mesh or a node missing or out of order, a field spelled
-/// other than its own read spells it, or the stop absent from its node's row while it runs.
+/// accepted. `mesh.atlas.get [name: mesh2]` answers the same fabric with mesh2 alone, and a mesh the
+/// fabric-primary does not hold as the fabric with no mesh. Must NOT happen: a flat node list, a mesh or
+/// a node missing or out of order, a field spelled other than its own read spells it, the stop absent
+/// from its node's row while it runs, or a `mesh.atlas.get` answering a mesh it did not name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_atlas_answers_the_fabric_then_its_meshes_and_nodes_with_a_stop_in_flight() {
     use rdm_test::faults::{binding_set, candidate_sha, FaultClient};
@@ -223,6 +225,16 @@ async fn the_atlas_answers_the_fabric_then_its_meshes_and_nodes_with_a_stop_in_f
         want.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
         assert_eq!(rows, want, "Q439: {name}'s nodes are every node the node view holds of it, in (path, name) order, each the same birth, type and status: {read}");
     }
+    // mesh.atlas.get (Q439 scope): the same fabric with only the meshes the filter names; a mesh the
+    // fabric-primary does not hold, the fabric with no mesh.
+    let ids = |m: &Value| m["nodes"].as_array().into_iter().flatten().map(|n| n["node"]["node_id"].clone()).collect::<Vec<_>>();
+    let named = serde_json::to_value(estate.meshes_obj().await.atlas_get(&rdm_client::Filter::new().eq("name", ["mesh2"])).await.expect("mesh.atlas.get [name: mesh2] at the fabric-primary")).expect("the atlas serializes");
+    let named_meshes = named["fabrics"][0]["meshes"].as_array().cloned().unwrap_or_default();
+    assert_eq!(named["fabrics"].as_array().map(Vec::len), Some(1), "mesh.atlas.get answers one fabric: {named}");
+    assert_eq!(without(&named["fabrics"][0], &["meshes"]), without(f, &["meshes"]), "mesh.atlas.get answers the same fabric as fabric.atlas.get: {named}");
+    assert_eq!(named_meshes.iter().map(|m| (m["name"].clone(), ids(m))).collect::<Vec<_>>(), vec![(json!("mesh2"), ids(&meshes[1]))], "Q439: mesh.atlas.get [name: mesh2] answers mesh2 alone, with its nodes: {named}");
+    let unknown = serde_json::to_value(estate.meshes_obj().await.atlas_get(&rdm_client::Filter::new().eq("name", ["mesh9"])).await.expect("mesh.atlas.get [name: mesh9] at the fabric-primary")).expect("the atlas serializes");
+    assert_eq!(unknown["fabrics"][0]["meshes"], json!([]), "a mesh the fabric-primary does not hold is answered as its fabric with no mesh: {unknown}");
     // A stop in flight at the fabric-primary: the node's row carries it, accepted and not complete.
     let (at, node_id) = (path_of(&node), node["node_id"].clone());
     let faults = FaultClient::at(&estate, &fp).await;
@@ -316,7 +328,7 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
             if row.stopped || status_of(row) != "ready" {
                 return Err(format!("{node:?} is not live in the atlas"));
             }
-            if (row.node_id.to_string(), row.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()) != birth {
+            if (row.node.node_id.to_string(), row.node.incarnation.as_str().to_string()) != birth {
                 return Err(format!("{node:?} is not the birth it was before its stop and start"));
             }
             Ok(())

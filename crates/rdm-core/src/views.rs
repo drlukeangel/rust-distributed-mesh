@@ -283,41 +283,127 @@ pub struct CaView {
     pub expires_at: u64,
 }
 
-/// The fabric-primary's atlas (`fabric.atlas.get`; docs/plans/proposal/fabric-atlas.md):
-/// one row for every node the current Build's topology names, in `(path, name)` order. Each row's birth
-/// is the one its node row names current, and its lifecycle is what the ops left it: the
-/// fabric-primary's own (what it accepted and the step events its runs returned) and the effects the
-/// node row records of any admin's op. Gossip is context only (`observed`) and decides nothing.
+/// The atlas (`fabric.atlas.get`, `mesh.atlas.get`; query.md §1, Q439): the topology plus what is in
+/// flight, laid out as `fabric.get` answers: a list of fabrics, each with its fields as `fabric.get`
+/// answers them and the current Build and its phase, and inside it its meshes in name order, each as
+/// `mesh.get` answers it, with its nodes in `(path, name)` order. The answering node-admin answers over
+/// the meshes its atlas holds: every mesh at the fabric-primary, its own at a mesh-primary
+/// (node-investigation.md). Each node is the topology's node row read from the node's record, its
+/// lifecycle what the ops left it, beside what is in flight on it. Gossip is context only (`observed`)
+/// and decides nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtlasView {
-    /// The rows, one per node, in `(path, name)` order.
-    pub nodes: Vec<AtlasNodeView>,
+    /// The fabrics, as `fabric.get` lists them: one answer is one fabric.
+    pub fabrics: Vec<AtlasFabricView>,
 }
 
 impl AtlasView {
-    /// The row of the node at `name`, when the atlas holds one.
+    /// Every node row of the atlas, fabric by fabric and mesh by mesh.
+    pub fn nodes(&self) -> impl Iterator<Item = &AtlasNodeView> {
+        self.fabrics.iter().flat_map(|f| f.meshes.iter()).flat_map(|m| m.nodes.iter())
+    }
+
+    /// The row of the node `node_id`, when the atlas holds one.
     pub fn node(&self, node_id: &NodeId) -> Option<&AtlasNodeView> {
-        self.nodes.iter().find(|n| n.node_id == *node_id)
+        self.nodes().find(|n| n.node.node_id == *node_id)
     }
 }
 
-/// One node of the [`AtlasView`].
+/// One fabric of the [`AtlasView`]: `fabric.get`'s fields, under its names, with the current Build and
+/// its phase, and its meshes with their nodes in place of `fabric.get`'s meshes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasFabricView {
+    /// The fabric's minted id.
+    pub id: FabricId,
+    /// The fabric's name.
+    pub name: String,
+    /// The fabric's lifecycle state.
+    pub status: ScopeStatus,
+    /// The provider that runs the fabric's nodes.
+    pub provider: ProviderKind,
+    /// The node-admin that is the fabric primary, when one is elected.
+    pub fabric_primary: Option<NodeId>,
+    /// `Fabric.build_id`, as `fabric.get` answers it ([`FabricView::build_id`]).
+    pub build_id: Option<String>,
+    /// The next member cert expiry across the fabric's cert rows, as `fabric.get` answers it.
+    #[serde(default)]
+    pub next_expiry: Option<u64>,
+    /// The fabric's `topology_storage_provider`, as `fabric.get` answers it.
+    #[serde(default)]
+    pub topology_storage_provider: Option<String>,
+    /// Each provider the fabric left, in order, as `fabric.get` answers them.
+    #[serde(default)]
+    pub previous_topology_storage_providers: Vec<String>,
+    /// The root rotation, as `fabric.get` answers it.
+    #[serde(default)]
+    pub roots: Option<RootsView>,
+    /// The fabric CA, as `fabric.get` answers it.
+    #[serde(default)]
+    pub ca: Option<CaView>,
+    /// What is in flight at the fabric: the current Build and its phase; `None` while the answering
+    /// admin holds no Build.
+    pub build: Option<AtlasBuildView>,
+    /// The meshes the answer names, in name order, each with its nodes.
+    pub meshes: Vec<AtlasMeshView>,
+}
+
+impl AtlasFabricView {
+    /// `fabric` as `fabric.get` answered it, with `build` and `meshes` in place of its meshes. Every
+    /// field of `fabric.get`'s answer is named here: a field it gains is a field the atlas answers.
+    pub fn of(fabric: FabricView, build: Option<AtlasBuildView>, meshes: Vec<AtlasMeshView>) -> Self {
+        let FabricView { id, name, status, provider, fabric_primary, meshes: _, build_id, next_expiry, topology_storage_provider, previous_topology_storage_providers, roots, ca } = fabric;
+        Self { id, name, status, provider, fabric_primary, build_id, next_expiry, topology_storage_provider, previous_topology_storage_providers, roots, ca, build, meshes }
+    }
+}
+
+/// The current Build and its phase, as `build.get` names them: what is in flight at the fabric.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasBuildView {
+    /// The Build.
+    pub build_id: String,
+    /// Where the Build is in its life.
+    pub phase: crate::build::BuildPhase,
+}
+
+/// One mesh of an [`AtlasFabricView`]: `mesh.get`'s fields, under its names, with its nodes' rows in
+/// place of `mesh.get`'s node ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasMeshView {
+    /// The mesh's minted id, once a member of the mesh has said which id it carries.
+    pub id: Option<MeshId>,
+    /// The mesh's name.
+    pub name: String,
+    /// The mesh's lifecycle state.
+    pub status: ScopeStatus,
+    /// The node-admin that is the mesh's primary, when one is elected.
+    pub primary_admin: Option<NodeId>,
+    /// The mesh's member renewals, when they stall, as `mesh.get` answers them.
+    #[serde(default)]
+    pub renewals: Option<Renewals>,
+    /// Its nodes, in `(path, name)` order.
+    pub nodes: Vec<AtlasNodeView>,
+}
+
+impl AtlasMeshView {
+    /// `mesh` as `mesh.get` answered it, with `nodes` in place of its node ids. Every field of
+    /// `mesh.get`'s answer is named here: a field it gains is a field the atlas answers.
+    pub fn of(mesh: MeshView, nodes: Vec<AtlasNodeView>) -> Self {
+        let MeshView { id, name, status, primary_admin, nodes: _, renewals } = mesh;
+        Self { id, name, status, primary_admin, renewals, nodes }
+    }
+}
+
+/// One node of an [`AtlasMeshView`]: the topology's node row as `node.topology.get` serves it, read
+/// from the node's record, its `status` the lifecycle as the ops left it; beside it, what is in flight
+/// on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtlasNodeView {
-    /// The node's path.
-    pub path: String,
-    /// The name, beside its path.
-    pub name: String,
-    /// The minted id of the birth the node row names current.
-    pub node_id: NodeId,
-    /// The incarnation of that birth, once the row records one.
-    pub incarnation_id: Option<IncarnationId>,
-    /// The birth's lifecycle state as the ops left it.
-    pub status: NodeStatus,
+    /// The node's row.
+    pub node: crate::wire::ReadNode,
     /// A stopped birth with a live process (a completed node.stop), waiting for a start or a delete.
     pub stopped: bool,
-    /// The operation key (`node.stop:mesh2.node.1`) of the command accepted on the node that has not
-    /// completed; `None` once it completes.
+    /// The operation of the command accepted on the node that has not completed (a `node.stop` the
+    /// answering admin runs); `None` once it completes.
     pub accepted: Option<crate::OperationId>,
     /// Context only: the status the answering admin's gossip view holds for the same birth, when it
     /// holds it. Never read by acceptance.
@@ -326,7 +412,7 @@ pub struct AtlasNodeView {
 
 impl AtlasNodeView {
     /// The `(path, name)` lookup index key of path and name.
-    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
+    pub fn location(&self) -> crate::PathName { crate::PathName { path: self.node.path.clone(), name: self.node.name.clone() } }
 }
 
 /// One connection fact a node holds (`node.connection.get`).

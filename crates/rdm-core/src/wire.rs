@@ -284,11 +284,18 @@ pub struct ReadNode {
 impl ReadNode {
     /// `d` as a read serves it, with the runtime and data dir `r` the answerer holds of it.
     pub fn of(d: &MeshDigest, r: Option<&crate::NodeRuntime>) -> Self {
-        let n = &d.node;
+        Self::of_node(&d.node, d.status, d.primary.clone(), d.digest_seq, r)
+    }
+
+    /// The birth `n` as a read serves it, with its `status`, the `primary` roles it holds, the
+    /// `digest_seq` the answerer holds and the runtime and data dir `r` the answerer holds of it: the one
+    /// row, whether the answerer holds the node as a digest ([`Self::of`]) or reads it from its record
+    /// (the atlas, query.md §1).
+    pub fn of_node(n: &MeshNode, status: NodeStatus, primary: Vec<RoleRevision>, digest_seq: u64, r: Option<&crate::NodeRuntime>) -> Self {
         Self {
             node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), r#type: n.r#type.clone(),
             path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone(), transport_addr: n.transport_addr,
-            supersedes: n.supersedes.clone(), status: d.status, primary: d.primary.clone(), digest_seq: d.digest_seq,
+            supersedes: n.supersedes.clone(), status, primary, digest_seq,
             runtime: r.and_then(|r| r.runtime.as_ref()).map(WireRuntime::from),
             data_dir: r.and_then(|r| r.data_dir.clone()),
         }

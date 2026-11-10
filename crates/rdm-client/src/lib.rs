@@ -57,7 +57,7 @@ pub use workflow::{fold, fold_step_events, fold_steps, Folded, Frame, Resume, Wo
 /// A read's filter (Q167): `(property, values)` pairs, AND across pairs, any-of within.
 pub use rdm_core::filter::{Entity, Filter};
 /// The fabric, mesh, node, connection and atlas views that the query ops return.
-pub use rdm_core::views::{AtlasNodeView, AtlasView, ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+pub use rdm_core::views::{AtlasBuildView, AtlasFabricView, AtlasMeshView, AtlasNodeView, AtlasView, ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 /// Executable bindings: what each created path's config names (build-deployment.md), and a
 /// consumer's per-type set a caller expands into per-path entries before the typed call.
 pub use rdm_core::binding;

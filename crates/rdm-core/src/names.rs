@@ -99,6 +99,8 @@ impl NodeOp {
 pub enum MeshOp {
     /// `mesh.get`: the meshes matching a filter (Q167).
     Get,
+    /// `mesh.atlas.get`: a node-admin's atlas with only the meshes a filter names (Q439).
+    AtlasGet,
 }
 
 impl MeshOp {
@@ -106,6 +108,7 @@ impl MeshOp {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Get => "mesh.get",
+            Self::AtlasGet => "mesh.atlas.get",
         }
     }
 
@@ -113,6 +116,7 @@ impl MeshOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.mesh.resolve.via-call", op = "mesh.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
+            Self::AtlasGet => tracing::info_span!("rdm.node_admin.mesh.resolve.via-atlas-call", op = "mesh.atlas.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
         }
     }
 }
@@ -122,7 +126,7 @@ impl MeshOp {
 pub enum FabricOp {
     /// `fabric.get`: the fabric the answering admin holds, when it matches a filter (Q167).
     Get,
-    /// `fabric.atlas.get`: the fabric-primary's atlas (fabric-atlas.md R-FA4).
+    /// `fabric.atlas.get`: a node-admin's atlas over every mesh it is primary for (Q439).
     AtlasGet,
     /// `fabric.root.update`: a new root's secret to the fabric-primary (fabric-ca-renew.md).
     RootUpdate,

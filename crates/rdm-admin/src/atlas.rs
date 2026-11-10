@@ -65,6 +65,10 @@ struct Held {
     created: std::collections::HashSet<Birth>,
     /// The completed lifecycle effect of each exact node birth.
     effects: HashMap<Birth, Effect>,
+    /// The operation of each node command this admin admitted and has not yet ended, by its exact
+    /// birth (node-investigation.md: "its in-flight commands"): held from admission until the command
+    /// returns ([`Atlas::command_in_flight`]).
+    accepted: HashMap<Birth, rdm_core::OperationId>,
     /// The meshes this admin is primary for (Q207): its own mesh as a mesh-primary, every mesh as the
     /// fabric-primary; empty for an admin that holds no primary.
     meshes: std::collections::BTreeSet<String>,
@@ -176,13 +180,13 @@ impl CallerDecision {
             return self;
         }
         let (node_id, incarnation) = caller;
-        match root.node(node_id).or_else(|| root.nodes.iter().find(|r| r.location() == path)) {
+        match root.node(node_id).or_else(|| root.nodes().find(|r| r.location() == path)) {
             // A caller whose record this admin holds deleted is deleted, never re-admitted (Q217:
             // "Re-admission is for a caller whose record is live"): a root that still names it at its
             // path has not heard the delete its mesh-primary wrote, and cannot undo it.
-            Some(r) if r.node_id == *node_id && matches!(self, CallerDecision::DeleteDeletedBirth { .. }) => self,
-            Some(r) if r.node_id == *node_id && r.incarnation_id.as_ref().is_none_or(|i| i == incarnation) => CallerDecision::ReAdmit { path: path.path.clone(), name: path.name.clone()},
-            Some(r) => CallerDecision::DeleteHeld { path: path.path.clone(), name: path.name.clone(), by: format!("{}@{}", r.node_id, r.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("")) },
+            Some(r) if r.node.node_id == *node_id && matches!(self, CallerDecision::DeleteDeletedBirth { .. }) => self,
+            Some(r) if r.node.node_id == *node_id && r.node.incarnation == *incarnation => CallerDecision::ReAdmit { path: path.path.clone(), name: path.name.clone()},
+            Some(r) => CallerDecision::DeleteHeld { path: path.path.clone(), name: path.name.clone(), by: format!("{}@{}", r.node.node_id, r.node.incarnation.as_str()) },
             None if needed => CallerDecision::DeleteDeletedBirth { path: path.path.clone(), name: path.name.clone(), needed },
             None => CallerDecision::DeleteUnneeded { path: path.path.clone(), name: path.name.clone()},
         }
@@ -734,8 +738,8 @@ impl Atlas {
     async fn project_row(&self, row: Option<NodeRecord>, observed: &Topology) -> Result<Option<AtlasRow>, String> {
         let Some(row) = row else { return Ok(None) };
         let birth = Some(row.incarnation.clone());
-        // No operation is accepted on a node outside a Build's steps (Q342).
-        let accepted = None;
+        // The node command this admin admitted on the birth and that has not ended (Q439).
+        let accepted = self.held.lock().unwrap().accepted.get(&Birth { node_id: row.node_id.clone(), incarnation: row.incarnation.clone() }).cloned();
         let observed_status = observed.births().find(|n| n.node_id == row.node_id && n.incarnation_id == birth).map(|n| n.status);
         let held = birth.as_ref().and_then(|i| self.held.lock().unwrap().effects.get(&Birth { node_id: row.node_id.clone(), incarnation: i.clone() }).cloned());
         let from_row = match &birth {
@@ -767,31 +771,76 @@ impl Atlas {
         Ok(Some(AtlasRow { mesh: row.mesh(), r#type: row.r#type.clone(), path: row.path.clone(), name: row.name.clone(), node_id: row.node_id.clone(), incarnation: birth, status, stopped, live, accepted, observed: observed_status, birth_source: "node-row" }))
     }
 
-    /// `fabric.atlas.get`: one row for every node `paths` names (the current Build's topology), in
-    /// `(path, name)` order.
-    pub(crate) async fn view(&self, paths: impl IntoIterator<Item = PathName>, records: &crate::current_record::CurrentRecords<'_>, observed: &Topology) -> Result<rdm_core::views::AtlasView, String> {
+    /// The node rows of a mesh for `fabric.atlas.get` and `mesh.atlas.get` (query.md §1, Q439): one for
+    /// every node `paths` names (the mesh's nodes in the current Build's topology), in `(path, name)`
+    /// order, each the topology's node row read from its record ([`read_node`]), its status as the ops
+    /// left it, beside what is in flight on it; a deleted node is not listed. `held` is the answering
+    /// admin's held digest of a node, for its lineage and digest sequence.
+    pub(crate) async fn node_rows(&self, paths: impl IntoIterator<Item = PathName>, records: &crate::current_record::CurrentRecords<'_>, observed: &Topology, held: &(dyn Fn(&NodeId) -> Option<rdm_core::MeshDigest> + Sync)) -> Result<Vec<rdm_core::views::AtlasNodeView>, String> {
         let mut paths: Vec<PathName> = paths.into_iter().collect();
         paths.sort();
         paths.dedup();
         let mut nodes = Vec::new();
         for path in paths {
-            if let Some(r) = self.row(&path, records, observed).await? {
-                if r.status == NodeStatus::Deleted {
-                    continue;
-                }
-                nodes.push(rdm_core::views::AtlasNodeView {
-                    path: r.path.clone(), name: r.name.clone(),
-                    node_id: r.node_id,
-                    incarnation_id: r.incarnation,
-                    status: crate::views::node_status(r.status),
-                    stopped: r.stopped,
-                    accepted: r.accepted,
-                    observed: r.observed.map(crate::views::node_status),
-                });
+            let Some(record) = records.row_at(&path).await? else { continue };
+            let Some(r) = self.project_row(Some(record.clone()), observed).await? else { continue };
+            if r.status == NodeStatus::Deleted {
+                continue;
             }
+            nodes.push(rdm_core::views::AtlasNodeView {
+                node: read_node(&record, r.status, held(&record.node_id).as_ref()),
+                stopped: r.stopped,
+                accepted: r.accepted,
+                observed: r.observed.map(crate::views::node_status),
+            });
         }
-        Ok(rdm_core::views::AtlasView { nodes })
+        Ok(nodes)
     }
+
+    /// Hold `operation`, a node command this admin admitted on the exact birth `(node_id, incarnation)`,
+    /// as the operation accepted on it (node-investigation.md: "A node-admin's atlas is its topology and
+    /// its in-flight commands"; Q439), until the returned [`CommandInFlight`] drops: the command's run
+    /// holds it until it returns, so it is cleared before the command's terminal reaches its caller.
+    pub fn command_in_flight(self: &Arc<Self>, node_id: &NodeId, incarnation: &IncarnationId, operation: &rdm_core::OperationId) -> CommandInFlight {
+        let birth = Birth { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        self.held.lock().unwrap().accepted.insert(birth.clone(), operation.clone());
+        CommandInFlight { atlas: self.clone(), birth, operation: operation.clone() }
+    }
+}
+
+/// A node command in flight in an [`Atlas`] ([`Atlas::command_in_flight`]): dropping it ends it there.
+#[derive(Debug)]
+pub struct CommandInFlight {
+    atlas: Arc<Atlas>,
+    birth: Birth,
+    operation: rdm_core::OperationId,
+}
+
+impl Drop for CommandInFlight {
+    fn drop(&mut self) {
+        let mut held = self.atlas.held.lock().unwrap();
+        if held.accepted.get(&self.birth) == Some(&self.operation) {
+            held.accepted.remove(&self.birth);
+        }
+    }
+}
+
+/// The topology's node row of `record` (query.md §1, Q439), as `node.topology.get` serves a node
+/// ([`rdm_core::wire::ReadNode::of_node`]): its identity, endpoint, primary roles, runtime and data dir
+/// from its record, its `status` as the ops left it, and its lineage (`supersedes`) and digest sequence
+/// as `held`, the answering admin's held digest of the same birth, carries them; with none held, no
+/// lineage and sequence 0.
+pub(crate) fn read_node(record: &NodeRecord, status: NodeStatus, held: Option<&rdm_core::MeshDigest>) -> rdm_core::wire::ReadNode {
+    let held = held.filter(|d| d.node.node_id == record.node_id && d.node.incarnation == record.incarnation);
+    let node = rdm_core::MeshNode {
+        mesh: record.mesh(), r#type: record.r#type.clone(), node_id: record.node_id.clone(),
+        path: record.path.clone(), name: record.name.clone(),
+        endpoint_id: record.endpoint_id.clone(), transport_addr: record.transport_addr,
+        incarnation: record.incarnation.clone(), supersedes: held.and_then(|d| d.node.supersedes.clone()),
+    };
+    let primary = rdm_core::RoleRevision::of_type(&record.r#type, record.is_primary, record.is_fabric_primary);
+    let runtime = rdm_core::NodeRuntime { runtime: Some(record.runtime.clone()), data_dir: record.storage.data_dir.clone() };
+    rdm_core::wire::ReadNode::of_node(&node, status, primary, held.map_or(0, |d| d.digest_seq), Some(&runtime))
 }
 
 impl crate::control_plane::ControlPlane {
@@ -906,6 +955,13 @@ mod tests {
 
     fn path(path: &str, name: &str) -> PathName {
         PathName::new(path, name).unwrap()
+    }
+
+    /// The root's atlas (`fabric.atlas.get` at the fabric-primary) of one fabric whose mesh2 holds `rows`.
+    fn root_of(rows: Vec<rdm_core::views::AtlasNodeView>) -> rdm_core::views::AtlasView {
+        let t = Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
+        let mesh = rdm_core::views::MeshView { id: None, name: "mesh2".into(), status: rdm_core::views::ScopeStatus::Ready, primary_admin: None, nodes: Vec::new(), renewals: None };
+        rdm_core::views::AtlasView { fabrics: vec![rdm_core::views::AtlasFabricView::of(crate::views::fabric(&t, None), None, vec![rdm_core::views::AtlasMeshView::of(mesh, rows)])] }
     }
 
     /// A record of a birth at `at`, in `status`.
@@ -1058,15 +1114,13 @@ mod tests {
     fn the_root_answer_wins() {
         let (caller, inc) = (NodeId::mint(), IncarnationId::mint());
         let at = path("mesh2.compute", "2");
-        let row = |node_id: &NodeId, i: &IncarnationId| rdm_core::views::AtlasView {
-            nodes: vec![rdm_core::views::AtlasNodeView { path: at.path.clone(), name: at.name.clone(), node_id: node_id.clone(), incarnation_id: Some(i.clone()), status: rdm_core::views::NodeStatus::Ready, stopped: false, accepted: None, observed: None }],
-        };
+        let row = |node_id: &NodeId, i: &IncarnationId| root_of(vec![rdm_core::views::AtlasNodeView { node: read_node(&rdm_node::nodes_storage::fixture_record(&at, "compute", node_id.clone(), i.clone(), NodeStatus::Ready), NodeStatus::Ready, None), stopped: false, accepted: None, observed: None }]);
         let (other, other_inc) = (NodeId::mint(), IncarnationId::mint());
         let mine = CallerDecision::ReAdmit { path: at.path.clone(), name: at.name.clone()};
         assert_eq!(mine.clone().verified((&caller, &inc), &row(&other, &other_inc), true), CallerDecision::DeleteHeld { path: at.path.clone(), name: at.name.clone(), by: format!("{other}@{}", other_inc.as_str()) });
         let held = CallerDecision::DeleteHeld { path: at.path.clone(), name: at.name.clone(), by: "x".into() };
         assert_eq!(held.clone().verified((&caller, &inc), &row(&caller, &inc), true), CallerDecision::ReAdmit { path: at.path.clone(), name: at.name.clone()});
-        let empty = rdm_core::views::AtlasView { nodes: vec![] };
+        let empty = root_of(Vec::new());
         assert_eq!(mine.verified((&caller, &inc), &empty, true), CallerDecision::DeleteDeletedBirth { path: at.path.clone(), name: at.name.clone(), needed: true }, "a caller this admin holds live is deleted when the root holds no live record of it");
         assert_eq!(held.clone().verified((&caller, &inc), &empty, true), CallerDecision::DeleteDeletedBirth { path: at.path.clone(), name: at.name.clone(), needed: true });
         assert_eq!(held.verified((&caller, &inc), &empty, false), CallerDecision::DeleteUnneeded { path: at.path.clone(), name: at.name.clone()});

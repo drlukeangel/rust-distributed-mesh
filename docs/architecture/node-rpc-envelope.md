@@ -818,13 +818,15 @@ pub enum StatusRequest {
     Reserved29 { node_id: NodeId, incarnation: IncarnationId, build_id: String, operation: String }, // position 29, refused by name: node.mesh.leave is a step of node.stop only
     RenewCert { node_id: NodeId, incarnation: IncarnationId, cert: Vec<u8> },
     UpdateIssuer { node_id: NodeId, incarnation: IncarnationId, key: IssuingKeyHex, cert: String },
-    GetAtlas,
+    GetAtlas, // position 32: fabric.atlas.get (Q439): the answering node-admin's atlas over every mesh it is primary for; answered Atlas { atlas }
     Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: reserved: every entity is read on 0x23 (Q285), refused here by name
     Reserved34 {}, // removed upward property-copy route; never sent
     UpdateRoots { node_id: NodeId, incarnation: IncarnationId, roots: Vec<String>, phase: RootsPhase, secret: Option<RootSecretHex> }, // position 35
     UpdateRoot { secret: RootSecretHex }, // position 36
     ApplyNodeProperties { node_id: NodeId, incarnation: IncarnationId, entry: EntryProperties }, // position 37
     ReportCallFailed { sender: ReportedBirth, receiver: ReportedBirth, reason: String }, // position 38: a caller's report that its call to the exact birth `receiver` ended with its attempts spent and no answer (node-rpc.md §43); answered `Applied`, or `RejectedNotPrimary { why: SubjectUnknown }` by a receiver that is not the primary above that birth; a report is itself never reported
+    UpdateStorage { topology_storage_provider: String }, // position 39: fabric.storage.update
+    GetMeshAtlas { filter: Filter }, // position 40: mesh.atlas.get (Q439): the answering node-admin's atlas with only the meshes the filter names (the mesh schema's pairs, [name: …]); answered Atlas { atlas }, a mesh it does not hold answered as its fabric with no mesh; a pair the mesh schema refuses is RejectedFilter
 }
 
 // The reads (one read per entity): fabric.get, mesh.get, node.get and node.connection.get { node }.

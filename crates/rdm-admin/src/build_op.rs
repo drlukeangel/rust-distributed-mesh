@@ -332,7 +332,7 @@ impl BuildService {
 }
 
 /// A Build's phase as the wire names it.
-fn phase_of(state: BuildState) -> BuildPhase {
+pub(crate) fn phase_of(state: BuildState) -> BuildPhase {
     match state {
         BuildState::Pending => BuildPhase::Pending,
         BuildState::Running => BuildPhase::Running,

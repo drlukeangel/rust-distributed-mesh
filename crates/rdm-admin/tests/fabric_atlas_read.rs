@@ -66,6 +66,14 @@ impl Capture {
     }
 }
 
+/// One Status call's answer.
+async fn answer(client: &NodeRpcClient, to: &NodeId, req: &StatusRequest) -> StatusReply {
+    match client.call::<Status>(&NodeTarget::ExactNode(to.clone()), req, &CallOptions::default()).await.0 {
+        RpcOutcome::Reply(r) => r.into_value(),
+        other => panic!("expected a reply to {}, got {other:?}", req.op()),
+    }
+}
+
 // @feature: fabric-atlas-read
 /// CONTRACT: docs/architecture/query.md §1 (Q439)
 /// "The atlas, `fabric.atlas.get` and `mesh.atlas.get`: the topology plus what is in flight (Q439),
@@ -326,6 +334,29 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_the_fa
         let want = |at: &PathName, id: &NodeId, inc: &IncarnationId, r#type: &str| (serde_json::json!(at.path), serde_json::json!(at.name), serde_json::json!(id), serde_json::json!(inc), serde_json::json!(r#type), serde_json::json!("ready"), serde_json::json!(false), serde_json::Value::Null);
         assert_eq!(nodes.iter().map(row).collect::<Vec<_>>(), vec![want(&rpc_name, &rpc_id, &rpc_inc, "node"), want(&admin_name, &admin_id, &admin_inc, "node-admin")], "mesh1's live nodes in (path, name) order, each the topology's node row, the deleted one not listed: {atlas}");
 
+        // 3. A node command this admin admitted is in flight on its node until it ends
+        // (node-investigation.md: "its in-flight commands"): the node's row carries it accepted.
+        let atlas_of = |reply: StatusReply| match reply {
+            StatusReply::Atlas { atlas } => serde_json::to_value(&atlas).unwrap(),
+            other => panic!("expected StatusReply::Atlas, got {other:?}"),
+        };
+        let stop = rdm_core::OperationId::node("node.stop", &rpc_id);
+        let in_flight = atlas_slot.get().expect("the atlas is installed").command_in_flight(&rpc_id, &rpc_inc, &stop);
+        let during = atlas_of(answer(&client, &admin_id, &StatusRequest::GetAtlas).await);
+        assert_eq!(during["fabrics"][0]["meshes"][0]["nodes"][0]["accepted"], serde_json::json!(stop), "the stop in flight on {rpc_name:?} is its row's accepted operation: {during}");
+        drop(in_flight);
+        let ended = atlas_of(answer(&client, &admin_id, &StatusRequest::GetAtlas).await);
+        assert_eq!(ended["fabrics"][0]["meshes"][0]["nodes"][0]["accepted"], serde_json::Value::Null, "once the command ends, nothing is accepted on {rpc_name:?}: {ended}");
+
+        // 4. mesh.atlas.get: the same fabric with only the meshes the filter names; a mesh the admin
+        // does not hold leaves the fabric with no mesh; a pair the mesh schema refuses is refused by name.
+        let named = atlas_of(answer(&client, &admin_id, &StatusRequest::GetMeshAtlas { filter: rdm_core::filter::Filter::new().eq("name", ["mesh1"]) }).await);
+        assert_eq!((without(&named["fabrics"][0], &["meshes"]), named["fabrics"][0]["meshes"].as_array().map(|m| m.iter().map(|m| m["name"].clone()).collect::<Vec<_>>())), (without(fabric, &["meshes"]), Some(vec![serde_json::json!("mesh1")])), "mesh.atlas.get [name: mesh1] answers the fabric and mesh1: {named}");
+        let unknown = atlas_of(answer(&client, &admin_id, &StatusRequest::GetMeshAtlas { filter: rdm_core::filter::Filter::new().eq("name", ["mesh9"]) }).await);
+        assert_eq!((without(&unknown["fabrics"][0], &["meshes"]), unknown["fabrics"][0]["meshes"].clone()), (without(fabric, &["meshes"]), serde_json::json!([])), "a mesh the admin does not hold is answered as its fabric with no mesh: {unknown}");
+        let refused = answer(&client, &admin_id, &StatusRequest::GetMeshAtlas { filter: rdm_core::filter::Filter::new().eq("color", ["red"]) }).await;
+        assert!(matches!(&refused, StatusReply::RejectedFilter { reason } if reason.contains("color")), "a pair the mesh schema refuses is refused naming it: {refused:?}");
+
         let _ = router.shutdown().await;
         caller_ep.close().await;
         admin_ep.close().await;
@@ -352,4 +383,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_the_fa
         }),
         "expected rdm.node_rpc.request.serve.via-direct span with detail=atlas when atlas is served"
     );
+    let served = |op: &str| spans.iter().filter(|s| s.name == "rdm.node_admin.fabric.serve.via-atlas" && s.attributes.get("op").map(String::as_str) == Some(op)).map(|s| (s.attributes.get("meshes").cloned().unwrap_or_default(), s.attributes.get("nodes").cloned().unwrap_or_default(), s.attributes.get("accepted").cloned().unwrap_or_default())).collect::<Vec<_>>();
+    assert_eq!(served("fabric.atlas.get"), vec![("mesh1".to_string(), "2".to_string(), String::new()), ("mesh1".to_string(), "2".to_string(), "mesh1.node/1 node.stop".to_string()), ("mesh1".to_string(), "2".to_string(), String::new())], "each fabric.atlas.get answered names its meshes, its nodes and the command in flight");
+    assert_eq!(served("mesh.atlas.get"), vec![("mesh1".to_string(), "2".to_string(), String::new()), (String::new(), "0".to_string(), String::new())], "each mesh.atlas.get answered names only the meshes it names; the refused one answers none");
 }

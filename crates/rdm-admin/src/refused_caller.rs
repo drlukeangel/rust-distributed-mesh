@@ -673,7 +673,9 @@ mod tests {
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let root = AtlasView { nodes: vec![AtlasNodeView { path: caller.path.clone(), name: caller.name.clone(), node_id: caller.node_id.clone(), incarnation_id: Some(caller_inc.clone()), status: rdm_core::views::NodeStatus::Pending, stopped: false, accepted: None, observed: None }] };
+        let caller_row = rdm_node::nodes_storage::fixture_record(&caller.location(), &caller.r#type, caller.node_id.clone(), caller_inc.clone(), NodeStatus::Pending);
+        let mesh2 = crate::views::meshes(&planned).into_iter().find(|m| m.name == "mesh2").expect("the planned topology holds mesh2");
+        let root = AtlasView { fabrics: vec![rdm_core::views::AtlasFabricView::of(crate::views::fabric(&planned, None), None, vec![rdm_core::views::AtlasMeshView::of(mesh2, vec![AtlasNodeView { node: crate::atlas::read_node(&caller_row, NodeStatus::Pending, None), stopped: false, accepted: None, observed: None }])])] };
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = asked.clone();
         let server = rdm_transport::ServerBuilder::new()

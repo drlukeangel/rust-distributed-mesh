@@ -435,6 +435,26 @@ impl Meshes {
         })
         .await
     }
+
+    /// `mesh.atlas.get` (query.md §1, Q439): the atlas of the node-admin the carrier starts at, as
+    /// `fabric.atlas.get` answers it, with only the meshes that match every pair of `filter` (the mesh
+    /// schema's pairs, `[name: …]`): its fabric, then each of those meshes it is primary for with its
+    /// nodes. A mesh it does not hold is answered as its fabric with no mesh; a pair the mesh schema
+    /// refuses ends `Rejected` (`rejected-filter`, naming the pair).
+    pub async fn atlas_get(&self, filter: &Filter) -> Result<AtlasView, CallEnd> {
+        let span = MeshOp::AtlasGet.span();
+        span.record("properties", filter.properties().as_str());
+        let target = self.carrier.target().clone();
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::GetMeshAtlas { filter: filter.clone() }).await? {
+                StatusReply::Atlas { atlas } => Ok(atlas),
+                other => Err(refused(&target, MeshOp::AtlasGet.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, MeshOp::AtlasGet.name(), &r);
+        r
+    }
 }
 
 /// The `fabric` objects: reads on op `0x23` to the fabric-primary the carrier starts at.
@@ -466,10 +486,13 @@ impl Fabrics {
         self.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::NotFound { read: FabricOp::Get.name(), detail: format!("{target:?} answered fabric.get with no fabric") })
     }
 
-    /// `fabric.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): the fabric-primary's
-    /// atlas, one row per node of the current Build's topology: the birth its node row names
-    /// current, its lifecycle as the ops left it, and the operation accepted on it that has not
-    /// completed. `fabric.get` is unchanged by it.
+    /// `fabric.atlas.get` (query.md §1, Q439): the atlas of the node-admin the carrier starts at, over
+    /// every mesh it is primary for (every mesh at the fabric-primary), laid out as `fabric.get` answers:
+    /// its fabric with `fabric.get`'s fields and the current Build and its phase, then its meshes in name
+    /// order, each with `mesh.get`'s fields and its nodes in `(path, name)` order. Each node is the
+    /// topology's node row read from its record, its lifecycle as the ops left it, beside what is in
+    /// flight on it: whether it is stopped and the operation accepted on it that has not completed.
+    /// `fabric.get` is unchanged by it.
     pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {
         let span = FabricOp::AtlasGet.span();
         let target = self.carrier.target().clone();
@@ -649,11 +672,12 @@ mod tests {
             (NodeEvent::Deleted.span(), "rdm.node_admin.node.delete.via-deleted-frame"),
             (NodeEvent::Updated.span(), "rdm.node_admin.node.update.via-updated-frame"),
         ];
-        let reads: [(tracing::Span, &str); 6] = [
+        let reads: [(tracing::Span, &str); 7] = [
             (BuildOp::Create.span(), "rdm.node_admin.build.create.via-call"),
             (BuildOp::Get.span(), "rdm.node_admin.build.resolve.via-call"),
             (BuildOp::Delete.span(), "rdm.node_admin.build.delete.via-call"),
             (MeshOp::Get.span(), "rdm.node_admin.mesh.resolve.via-call"),
+            (MeshOp::AtlasGet.span(), "rdm.node_admin.mesh.resolve.via-atlas-call"),
             (FabricOp::Get.span(), "rdm.node_admin.fabric.resolve.via-call"),
             (FabricOp::AtlasGet.span(), "rdm.node_admin.fabric.resolve.via-atlas-call"),
         ];

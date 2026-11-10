@@ -1,15 +1,16 @@
 //! The fabric-wide reads: `fabric.get` (the fabric, its meshes and their primaries) and
-//! `fabric.atlas.get` (one row per node of the current Build's topology, as the fabric-primary holds
-//! it).
+//! `fabric.atlas.get` (the topology plus what is in flight, Q439).
 //!
 //! `fabric.get` answers from the admin it is sent to: the fabric's status, provider, fabric-primary
-//! and current Build, and each mesh's status and mesh-primary. The atlas is the fabric-primary's own
-//! record: for every node the current Build names, the birth its node row names current, the status the
-//! operations left it in, whether it is a stopped birth waiting for a start or a delete, and the
-//! operation accepted on it that has not completed (`accepted`). `observed` is the status the
-//! fabric-primary's gossip view holds for the same birth: context only, never what an acceptance reads.
-//! An application reads the atlas for a fabric-wide picture of its nodes, for example to show which
-//! node an operation is still running on.
+//! and current Build, and each mesh's status and mesh-primary. The atlas is laid out the same way: the
+//! fabric with `fabric.get`'s fields and the current Build and its phase, then each mesh with
+//! `mesh.get`'s fields and its nodes. Each node is its topology row read from its record (birth, type,
+//! endpoint, the status the operations left it in), beside what is in flight on it: whether it is a
+//! stopped birth waiting for a start or a delete, and the operation accepted on it that has not
+//! completed (`accepted`). `observed` is the status the answering admin's gossip view holds for the
+//! same birth: context only, never what an acceptance reads. An application reads the atlas for a
+//! fabric-wide picture of its nodes, for example to show which node an operation is still running on;
+//! `mesh.atlas.get` (`Meshes::atlas_get`) answers the same shape for the meshes it names.
 //!
 //! The atlas is answered by the fabric-primary, so the read is sent there: the carrier starts at the
 //! fabric-primary `fabric.get` names.
@@ -44,9 +45,16 @@ async fn main() -> Result<()> {
     let fabric_primary = fabric.fabric_primary.clone().ok_or_else(|| anyhow!("fabric.get names no fabric-primary"))?;
     peers.learn(&Nodes::new(carrier).get(&Filter::new()).await?);
     let atlas = Fabrics::new(peers.carrier_for(fabric_primary)).atlas_get().await?;
-    for n in &atlas.nodes {
-        let pending = n.accepted.as_ref().map(|op| format!(", {op:?} running")).unwrap_or_default();
-        println!("  path {:?}, name {:?} {:?}{}{pending} (gossip view: {:?})", n.path, n.name, n.status, if n.stopped { " stopped" } else { "" }, n.observed);
+    for f in &atlas.fabrics {
+        let build = f.build.as_ref().map(|b| format!("Build {} {:?}", b.build_id, b.phase)).unwrap_or_else(|| "no Build".into());
+        println!("atlas: fabric {} ({}), {build}", f.name, f.id);
+        for m in &f.meshes {
+            println!("  mesh {}: {:?}, mesh-primary {:?}", m.name, m.status, m.primary_admin.as_ref().map(|p| p.to_string()));
+            for n in &m.nodes {
+                let pending = n.accepted.as_ref().map(|op| format!(", {} running", op.action)).unwrap_or_default();
+                println!("    {} path {:?}, name {:?} {:?}{}{pending} (gossip view: {:?})", n.node.r#type, n.node.path, n.node.name, n.node.status, if n.stopped { " stopped" } else { "" }, n.observed);
+            }
+        }
     }
     Ok(())
 }

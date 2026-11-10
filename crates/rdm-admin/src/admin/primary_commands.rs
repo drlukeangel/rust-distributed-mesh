@@ -145,6 +145,10 @@ impl NodeCommandService {
             Err(r) => return rdm_core::reply::node_command::rejected(r.reason, r.detail),
         };
         tracing::Span::current().record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
+        // Admitted: the command is in flight on the node until this run returns (node-investigation.md:
+        // "A node-admin's atlas is its topology and its in-flight commands"; Q439). The atlas's row of the
+        // node carries it as accepted, cleared before the terminal reaches the caller.
+        let _in_flight = self.control.atlas.command_in_flight(node_id, incarnation, operation);
         // A primary's roles move first by node.primary.update (R-MT1; node-primary-update.md §1,
         // node-connections-delete.md step 0). A node-admin's command is then answered `PrimaryUpdated`,
         // naming its mesh-primary as it stands after the update, the new primary the update's

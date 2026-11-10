@@ -581,9 +581,9 @@ pub enum StatusRequest {
         /// it (`RDM_ISSUING_KEY` beside `RDM_FABRIC_CA_KEY`; fabric.ca.renew step 2, Q275).
         ca_key: CaKeyHex,
     },
-    /// `fabric.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
-    /// fabric-primary for its atlas, answered [`StatusReply::Atlas`]. A read. Appended last: no
-    /// variant before it moves.
+    /// `fabric.atlas.get` (query.md §1, Q439): a caller asks a node-admin for its atlas over every mesh
+    /// it is primary for, answered [`StatusReply::Atlas`]. A read. Appended last: no variant before it
+    /// moves.
     ///
     /// Position 32 on the wire.
     GetAtlas,
@@ -689,6 +689,16 @@ pub enum StatusRequest {
     UpdateStorage {
         /// The registered name of the provider RDM's records go to.
         topology_storage_provider: String,
+    },
+    /// `mesh.atlas.get` (query.md §1, Q439): a caller asks a node-admin for its atlas with only the
+    /// meshes `filter` names (the mesh schema's pairs, `[name: …]`), answered [`StatusReply::Atlas`]: a
+    /// mesh it does not hold is answered as its fabric with no mesh, and a pair the mesh schema refuses
+    /// is [`StatusReply::RejectedFilter`] naming it. A read. Appended last: no variant before it moves.
+    ///
+    /// Position 40 on the wire.
+    GetMeshAtlas {
+        /// The meshes asked for.
+        filter: crate::filter::Filter,
     },
 }
 
@@ -1193,6 +1203,7 @@ impl StatusRequest {
             Self::UpdateRoot { .. } => "fabric.root.update",
             Self::ReportCallFailed { .. } => "report-call-failed",
             Self::UpdateStorage { .. } => "fabric.storage.update",
+            Self::GetMeshAtlas { .. } => "mesh.atlas.get",
         }
     }
 }
@@ -1820,8 +1831,8 @@ pub enum StatusReply {
         /// Why, by name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// The answer to a `GetAtlas`: the fabric-primary's atlas. Appended last: no variant
-    /// before it moves.
+    /// The answer to a `GetAtlas` or a `GetMeshAtlas`: the answering node-admin's atlas (Q439).
+    /// Appended last: no variant before it moves.
     ///
     /// Position 55 on the wire.
     Atlas {
@@ -2175,7 +2186,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 40;
+    const REQUEST_VARIANTS: u32 = 41;
     const REPLY_VARIANTS: u32 = 66;
 
     type Request = StatusRequest;
@@ -2528,6 +2539,7 @@ mod tests {
                 "not-sent: Connection(\"connect refused\")",
             ),
             StatusRequest::UpdateStorage { topology_storage_provider: "test-target".into() },
+            StatusRequest::GetMeshAtlas { filter: crate::filter::Filter::new().eq("name", ["mesh2"]) },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
