@@ -470,8 +470,9 @@ pub(crate) fn investigated_ctx(ids: (rdm_core::FabricId, Option<rdm_core::MeshId
 
 /// The application's `pre_node_recreate` (`hook`, `None` when it registers none), asked by the primary
 /// running the recovery of `node`'s birth at `incarnation` on `inspected`, node.runtime.inspect's
-/// answer that led to it, the last step before node.delete of the birth and node.create at its path
-/// and name (fabric-node-hooks.md "pre_node_recreate", node-recovery.md sequence step 1, Q416). It is
+/// answer that led to it, after node.delete of the birth and before node.create of its successor at its
+/// path and name (fabric-node-hooks.md "pre_node_recreate", node-recovery.md sequence step 1, Q416,
+/// Q437 B). It is
 /// told the [`investigated_ctx`]
 /// `on_node_investigated` is told, its `context` taken inside
 /// `rdm.node_admin.node.update.via-pre-node-recreate`, a child of the span current here, so the
@@ -517,15 +518,15 @@ pub(crate) async fn ask_pre_node_recreate(hook: Option<&crate::wiring::PreNodeRe
             let call = std::panic::AssertUnwindSafe(async move { hook(ctx).await }).catch_unwind();
             match tokio::time::timeout(limit, call).instrument(span.clone()).await {
                 Ok(Ok(Ok(()))) => Ok(()),
-                Ok(Ok(Err(reason))) => Err((reason.clone(), format!("pre_node_recreate answered Failed: {reason}"), "pre_node_recreate answered Failed: the recovery ends failed, still owed, and nothing is deleted or created")),
+                Ok(Ok(Err(reason))) => Err((reason.clone(), format!("pre_node_recreate answered Failed: {reason}"), "pre_node_recreate answered Failed: the recovery ends failed, still owed, and nothing is created")),
                 Ok(Err(panic)) => {
                     let what = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
                     let reason = format!("pre_node_recreate panicked: {what}");
-                    Err((reason.clone(), reason, "pre_node_recreate panicked: the recovery ends failed, still owed, and nothing is deleted or created"))
+                    Err((reason.clone(), reason, "pre_node_recreate panicked: the recovery ends failed, still owed, and nothing is created"))
                 }
                 Err(_) => {
                     let reason = format!("time limit: the application's call was cancelled after {} ms", limit.as_millis());
-                    Err((reason.clone(), format!("pre_node_recreate: {reason}"), "pre_node_recreate did not answer within its time limit: the call is cancelled, the recovery ends failed, still owed, and nothing is deleted or created"))
+                    Err((reason.clone(), format!("pre_node_recreate: {reason}"), "pre_node_recreate did not answer within its time limit: the call is cancelled, the recovery ends failed, still owed, and nothing is created"))
                 }
             }
         }

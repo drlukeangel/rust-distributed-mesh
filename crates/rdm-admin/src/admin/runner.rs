@@ -920,12 +920,17 @@ impl AdminRunner {
 
     /// Node recovery of the unreached birth `from` at `node` (node-recovery.md "Execution", "Steps"): the
     /// primary's own workflow, never a Build or part of one (Q342). node.delete of the unheard instance,
-    /// then node.create with its path and name and a new node.id, over the predecessor's data dir when the
-    /// delete read the old runtime exited and its storage is persistent ([`Self::create_over`]). Each step is recorded on the node record: no Build is
-    /// read and no receipt written. The caller holds the node's work turn ([`Self::node_work`]).
-    /// `backbone`: fabric recovery's backbone arm, whose delete terminates nothing in the mesh
-    /// (fabric-recovery.md step 3, Q148).
-    pub(crate) async fn recover(&self, node: &PathName, from: &crate::build::ExitedBirth, backbone: bool) -> Result<(), crate::executor::RunEnd> {
+    /// then `pre_node_recreate` (`before_create`, the application's answer), then node.create with its
+    /// path and name and a new node.id, over the predecessor's data dir when the delete read the old
+    /// runtime exited and its storage is persistent ([`Self::create_over`]). The application is asked
+    /// once the birth is deleted, so its NodeDeleting and NodeDeleted are the routing stop every peer
+    /// holds (states.md "Routing"), and before anything is created or minted (fabric-node-hooks.md
+    /// "pre_node_recreate", Q437 B); short of `Ok` the recovery ends failed with the hook's reason, and
+    /// the next tick's run finds the row Deleted, deletes nothing again and asks again. Each step is
+    /// recorded on the node record: no Build is read and no receipt written. The caller holds the node's
+    /// work turn ([`Self::node_work`]). `backbone`: fabric recovery's backbone arm, whose delete
+    /// terminates nothing in the mesh (fabric-recovery.md step 3, Q148).
+    pub(crate) async fn recover(&self, node: &PathName, from: &crate::build::ExitedBirth, backbone: bool, before_create: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let delete = tracing::info_span!("rdm.node_admin.node.delete.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
         let operation = rdm_core::OperationId::node("node.delete", &from.node_id);
@@ -951,6 +956,9 @@ impl AdminRunner {
                 .in_scope(|| tracing::info!("a live node stands at the path and name: the lost birth is deleted and nothing is created over it"));
             return Ok(());
         }
+        // Nothing is created or minted at the birth's path and name until the application answers `Ok`
+        // (fabric-node-hooks.md "pre_node_recreate", Q437 B).
+        before_create.await.map_err(crate::executor::RunEnd::failed)?;
         // The re-created node is a new node.id at the same path and name (node-recovery.md), minted
         // when the primary decides the re-create.
         let born = crate::model::NodeId::mint();

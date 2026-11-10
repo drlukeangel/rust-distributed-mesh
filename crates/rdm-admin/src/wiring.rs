@@ -286,8 +286,9 @@ pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Outp
 pub type NodeInvestigatedNotice = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// `pre_node_recreate`: the hook the mesh-primary running a node recovery asks once it writes a
-/// verdict whose `next` is `recreate`, before node.delete of the target birth and node.create at its
-/// path and name (`docs/architecture/fabric-node-hooks.md` "pre_node_recreate", Q416). Told the
+/// verdict whose `next` is `recreate`, after node.delete of the target birth and before node.create of
+/// its successor at its path and name (`docs/architecture/fabric-node-hooks.md` "pre_node_recreate",
+/// Q416, Q437 B). Told the
 /// `NodeInvestigatedCtx` of `on_node_investigated`, the application releases what the lost birth held
 /// there and answers `Ok(())`, and the recovery runs on, or `Err(reason)`, its `Failed { reason }`: the
 /// recovery ends failed, still owed, and the next recovery tick asks again. One call under the hook's
