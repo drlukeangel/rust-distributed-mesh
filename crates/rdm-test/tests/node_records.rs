@@ -561,9 +561,14 @@ async fn every_admin_answers_a_nodes_data_dir_from_its_record_after_its_launcher
             views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != a.node_id).cloned()
         })
         .await;
-    estate.settles_to(&shape, crate::node_recovery_due()).await;
-    let admins: Vec<NodeView> = estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin" && n.state == NodeStatus::Ready).collect();
-    assert!(admins.iter().all(|n| n.node_id != a.node_id), "the launcher is gone from the view: {admins:?}");
+    // A's status is its record's (Q197, Q233) until node recovery writes it: the view lists A Ready until
+    // then, so the wait is for A's pair held again by a new node, and A gone.
+    let admins = estate
+        .until_view("node recovery creates A's pair again under a new node id, and A leaves the view", crate::node_recovery_due(), |views| {
+            let admins: Vec<NodeView> = views.iter().filter(|n| n.r#type == "node-admin" && n.state == NodeStatus::Ready).cloned().collect();
+            (views.iter().all(|n| n.node_id != a.node_id) && admins.iter().any(|n| n.location() == a.location())).then_some(admins)
+        })
+        .await;
     let mut answers = BTreeMap::new();
     for admin in &admins {
         let listed = rdm_client::Nodes::new(estate.carrier_at(&admin.location()).await)
