@@ -82,6 +82,9 @@ SHA=$(git rev-parse HEAD)
 DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
 JOBS_DIR=target/i143-acceptance/jobs
 export RDM_CANDIDATE_SHA="${RDM_CANDIDATE_SHA:-$SHA}"
+# Every cell's estate exports its spans to the collector the gate's estates use (rdm-gate-at.sh), unless the
+# caller names another: a refused cell is read from its flame, never run again to be read (rdm#388).
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://192.168.68.99:5318}"
 jq -e --arg j "$JOB" '.jobs[$j]' "$REG" > /dev/null 2>&1 || JOBS_DIR=target/i143-rshape/jobs
 mkdir -p "$JOBS_DIR"
 RECEIPT="$JOBS_DIR/$JOB.json"

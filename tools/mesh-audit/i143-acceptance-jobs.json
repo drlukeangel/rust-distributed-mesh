@@ -235,8 +235,8 @@
       "cells": [
         {
           "name": "refeed_scheduler_bounds_stale_held_peer_attempts",
-          "source": "crates/rdm-transport/tests/refeed_scheduler.rs",
-          "command": "cargo test -p rdm-transport --test main refeed_scheduler::refeed_scheduler_bounds_stale_held_peer_attempts -- --exact",
+          "source": "crates/rdm-gossip/tests/refeed_scheduler.rs",
+          "command": "cargo test -p rdm-gossip --test main refeed_scheduler::refeed_scheduler_bounds_stale_held_peer_attempts -- --exact",
           "dir": "target/i143-acceptance/2902/unit/refeed_scheduler_bounds_stale_held_peer_attempts"
         }
       ]
@@ -521,8 +521,8 @@
       "cells": [
         {
           "name": "status_publisher_reinforces_changed_state_five_times_then_stops",
-          "source": "crates/rdm-transport/tests/status_reinforcement.rs",
-          "command": "cargo test -p rdm-transport --test main status_reinforcement::status_publisher_reinforces_changed_state_five_times_then_stops -- --exact",
+          "source": "crates/rdm-gossip/tests/status_reinforcement.rs",
+          "command": "cargo test -p rdm-gossip --test main status_reinforcement::status_publisher_reinforces_changed_state_five_times_then_stops -- --exact",
           "dir": "target/i143-acceptance/2901/unit/status_publisher_reinforces_changed_state_five_times_then_stops"
         }
       ]
