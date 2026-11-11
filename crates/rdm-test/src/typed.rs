@@ -702,25 +702,19 @@ impl Estate {
         serde_json::to_value(self.node_view(name).await).expect("a view serializes")
     }
 
-    /// The data dir of `node`. Only the admin that launched a node advertises it, and that is whichever
-    /// admin executed its creation, so the entry admin's view is read first and then every other
-    /// ready node-admin's, each as that admin's own `mesh.nodes.get`.
+    /// The data dir of `node`: the `storage.data_dir` its own record holds, which `node.get` of its path
+    /// and name answers at any node-admin, the one that launched it or another (PRD §14; deployment-provider.md:
+    /// the node's management metadata rides its record; query.md §1: a read answers each node from its
+    /// record). One read of the node at the entry admin, read again while its record names no data dir
+    /// yet (a node that has not written its record) or the read ends, until 60 s pass; never a read of
+    /// every mesh at every admin. Past the bound the panic names the last read.
     pub async fn data_dir(&self, node: &PathName) -> String {
-        self.advertised_data_dir(node).await.unwrap_or_else(|| panic!("no live admin advertises {node:?}'s data dir"))
+        self.until_node(node, "its record names its data dir", std::time::Duration::from_secs(60), |n| n.and_then(|n| n.storage.data_dir.clone())).await
     }
 
-    /// [`Self::data_dir`], or `None` when no live admin advertises it.
-    pub async fn advertised_data_dir(&self, node: &PathName) -> Option<String> {
-        let entry = self.entry().await;
-        let mut admins = vec![entry.clone()];
-        admins.extend(self.node_views().await.into_iter().filter(|n| rdm_core::is_node_admin(&n.r#type) && n.state == NodeStatus::Ready && n.location() != entry).map(|n| n.location()));
-        for admin in admins {
-            let Some(views) = self.node_views_at(&admin).await else { continue };
-            if let Some(dir) = views.into_iter().find(|n| &n.location() == node).and_then(|n| n.storage.data_dir) {
-                return Some(dir);
-            }
-        }
-        None
+    /// [`Self::data_dir`] read once: `None` while no node stands at `node` or its record names no data dir.
+    pub async fn data_dir_opt(&self, node: &PathName) -> Option<String> {
+        self.node_view_opt(node).await.and_then(|n| n.storage.data_dir)
     }
 
 
