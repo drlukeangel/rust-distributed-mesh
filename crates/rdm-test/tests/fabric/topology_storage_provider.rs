@@ -1028,6 +1028,72 @@ async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
     estate.record_trace_url(&s(&blocked["trace_id"]));
 }
 
+/// A node's acknowledgement of its freeze: its property admission closed, `outcome = blocked`.
+const FREEZE: &str = "rdm.node.record.update.via-storage-block";
+/// A mesh-primary's node recovery of one birth, `outcome` how it ended.
+const RECOVERY: &str = "rdm.node_admin.node.update.via-node-recovery";
+/// mesh2's mesh-primary, which runs node recovery for mesh2's nodes.
+fn mesh2_primary() -> PathName { PathName::new("mesh2.node-admin", "1").unwrap() }
+
+fn end_ns(sp: &Value) -> u64 {
+    sp["end_unix_nano"].as_u64().unwrap_or(0)
+}
+
+// @feature: topology-storage-provider
+/// CONTRACT (storage.md §2 "Changing it" step 1: "An unanswered freeze is resolved through its spent
+/// call ... and node investigation/recovery before `blocked`"; node-recovery.md sequence step 1: the
+/// recovery asks `pre_node_recreate` after node.delete and before node.create): mesh2.node.1 is frozen
+/// (SIGSTOP) and a storage change to `test-target` starts, the fabric-primary's switch held so nothing
+/// is copied. mesh2's mesh-primary leaves the frozen birth's freeze unanswered, writes it dead and runs
+/// its node recovery, which deletes the birth and is held at its `pre_node_recreate` (the testkit's cut
+/// at mesh2's mesh-primary): the birth has left the view and no successor stands at its path. The
+/// `mesh.block` the fabric-primary sends again meanwhile is answered `not-blocked`, its reason naming the
+/// frozen birth's node recovery. Released, the recovery creates the successor at mesh2.node.1, the
+/// successor acknowledges its freeze, and only then does mesh2's mesh-primary reply `blocked`. Must NOT
+/// happen: `blocked` while the recovery runs with no node at mesh2.node.1, or before the successor's freeze.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_replies_blocked_only_after_its_node_recovery_ends() {
+    let test = "a_mesh_primary_replies_blocked_only_after_its_node_recovery_ends";
+    let (mut estate, _) = two_mesh_estate(test, &[]).await;
+    let old_id = node_id_of(&estate, &role()).await;
+    let primary = rdm_test::faults::FaultClient::at(&estate, &mesh2_primary()).await;
+    primary.arm("recreate", json!({"kind": "pre-node-recreate", "node": role()})).await;
+    let hold = hold_switch(&estate).await;
+    let paused = freeze(&estate, &role()).await;
+    let (run, change_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    // The frozen birth's recovery has deleted it and waits on the application: no node at mesh2.node.1.
+    let held = primary.wait_held("recreate").await;
+    estate.artifact("recreate-held.json", &held);
+    let held_at = now_ns();
+    // The first mesh.block mesh2's mesh-primary serves from here on, once it has answered.
+    let during = wait_for(&format!("{BLOCK} for storage change {change_id} in mesh2, served while the recovery is held"), STEP, || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == BLOCK && attr(sp, "change_id") == change_id && attr(sp, "mesh") == "mesh2" && start_ns(sp) >= held_at && !sp["attributes"]["outcome"].is_null())
+    })
+    .await;
+    estate.artifact("block-during-recovery.json", &during);
+    let released_at = now_ns();
+    primary.release("recreate").await;
+    assert_eq!(during["attributes"]["outcome"], "not-blocked", "mesh2's mesh-primary does not reply blocked while its node recovery of {old_id} runs, the birth deleted and no node at mesh2.node.1: {during}");
+    let reason = attr(&during, "reason");
+    assert!(reason.contains(&old_id) && reason.contains("node recovery"), "the not-blocked reply names the frozen birth and its node recovery: {reason}");
+    hold.wait_held("switch").await;
+    blocked_at(&estate, &change_id, "mesh2").await;
+    let successor = node_id_of(&estate, &role()).await;
+    assert_ne!(successor, old_id, "mesh2.node.1 is re-created before mesh2's mesh-primary replies blocked");
+    hold.release("switch").await;
+    ended(&estate, &run).await;
+    thaw(&paused);
+    estate.stop().await;
+    let spans = estate.spans();
+    let first = of_change(&spans, BLOCK, &change_id, Some("mesh2")).into_iter().filter(|sp| sp["attributes"]["outcome"] == "blocked").min_by_key(|sp| start_ns(sp)).expect("mesh2's mesh-primary replied blocked");
+    assert!(start_ns(first) > released_at, "no blocked from mesh2's mesh-primary while its node recovery was held: {first}");
+    let recovered = named(&spans, RECOVERY).into_iter().find(|sp| attr(sp, "node_id") == old_id && sp["attributes"]["outcome"] == "complete").unwrap_or_else(|| panic!("the node recovery of {old_id} completed"));
+    assert!(end_ns(first) >= end_ns(recovered), "mesh2's mesh-primary replied blocked after its node recovery ended: {first} {recovered}");
+    let frozen = named(&spans, FREEZE).into_iter().find(|sp| attr(sp, "node_id") == successor && attr(sp, "change_id") == change_id && sp["attributes"]["outcome"] == "blocked").unwrap_or_else(|| panic!("the successor {successor} acknowledged its freeze"));
+    assert!(end_ns(frozen) <= end_ns(first), "the successor acknowledged its freeze before mesh2's mesh-primary replied blocked: {frozen} {first}");
+    estate.record_trace_url(&s(&first["trace_id"]));
+}
+
 /// CONTRACT (storage.md §2 "Changing it" step 4: "Each mesh-primary moves its nodes to the new provider,
 /// then replies `unblocked`"; "A node that refuses its move is re-created on the new provider by its
 /// mesh-primary's node recovery, never part of the change, before its mesh-primary replies

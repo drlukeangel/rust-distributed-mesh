@@ -44,6 +44,8 @@ async fn main() {
         let service = faults.clone();
         wiring.serve_app = Some(Box::new(move |b| rdm_test::fault::serve(b, service)));
         wiring.fabric_hooks = test_app::hooks();
+        // A recovery's ask of the application, held by an armed `pre-node-recreate` cut until its release.
+        wiring.fabric_hooks.pre_node_recreate = Some(admin_faults::pre_node_recreate(faults.clone(), wiring.fabric_hooks.pre_node_recreate.take()));
         // The testkit application's channel, joined before Ready when the estate's root asks for it.
         if test_app::app_channel_knob(&root) {
             wiring.node_hooks = rdm_admin::node_hooks::NodeHooks::new(test_app::JoinsAppChannel::over(None));

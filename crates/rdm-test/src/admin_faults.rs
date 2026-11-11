@@ -160,6 +160,15 @@ pub enum CutSpec {
         /// The path's separate path and name; every path when absent.
         #[serde(default)] node: Option<rdm_core::PathName>,
     },
+    /// A node recovery this admin runs has deleted the lost birth at `node` and asks the application's
+    /// `pre_node_recreate` (fabric-node-hooks.md "pre_node_recreate"; node-recovery.md sequence step 1):
+    /// held there until the release, so the birth has left the view and nothing is created at its path
+    /// and name meanwhile. `node` narrows the cut to one path. A hold past the hook's time limit ends the
+    /// recovery failed, still owed, and the next tick's run is held again.
+    PreNodeRecreate {
+        /// The path's separate path and name; every path when absent.
+        #[serde(default)] node: Option<rdm_core::PathName>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -266,6 +275,16 @@ pub enum Probe {
         /// The unreached birth's node id.
         node_id: rdm_core::NodeId,
     },
+    /// A node recovery's `pre_node_recreate`, about to be asked: the lost birth is deleted and its
+    /// successor not created.
+    PreNodeRecreate {
+        /// The path's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
+        /// The lost birth's node id.
+        node_id: rdm_core::NodeId,
+    },
 }
 
 impl CutSpec {
@@ -291,6 +310,7 @@ impl CutSpec {
             (CutSpec::StorageStep { node }, Probe::StorageStep { path, name, .. }) => node.as_ref().is_none_or(|wanted| wanted.path == *path && wanted.name == *name),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
             (CutSpec::PathTarget { node }, Probe::PathTarget { path, name, .. }) => node.as_ref().is_none_or(|wanted| wanted.path == *path && wanted.name == *name),
+            (CutSpec::PreNodeRecreate { node }, Probe::PreNodeRecreate { path, name, .. }) => node.as_ref().is_none_or(|wanted| wanted.path == *path && wanted.name == *name),
             _ => false,
         }
     }
@@ -314,6 +334,7 @@ impl Probe {
             Probe::StorageStep { path, name, change_id } => Hit::StorageStep { path: path.clone(), name: name.clone(), change_id: change_id.clone() },
             Probe::StorageSwitch { change_id } => Hit::StorageSwitch { change_id: change_id.clone() },
             Probe::PathTarget { path, name, node_id } => Hit::PathTarget { path: path.clone(), name: name.clone(), node_id: node_id.clone() },
+            Probe::PreNodeRecreate { path, name, node_id } => Hit::PreNodeRecreate { path: path.clone(), name: name.clone(), node_id: node_id.clone() },
         }
     }
 }
@@ -701,6 +722,22 @@ impl rdm_admin::wiring::TargetSeam for FaultedTarget {
     async fn before_target_act(&self, path: &rdm_core::PathName, node_id: &rdm_core::NodeId) {
         self.0.hold(Probe::PathTarget { path: path.path.clone(), name: path.name.clone(), node_id: node_id.clone() }).await;
     }
+}
+
+/// The application's `pre_node_recreate` (`inner`; none asks nothing more), behind the
+/// [`CutSpec::PreNodeRecreate`] cut: an armed cut holds a recovery's ask after its node.delete, until the
+/// release, then the application is asked.
+pub fn pre_node_recreate(faults: Arc<AdminFaults>, inner: Option<rdm_admin::wiring::PreNodeRecreate>) -> rdm_admin::wiring::PreNodeRecreate {
+    Arc::new(move |asked: rdm_admin::wiring::NodeInvestigatedCtx| {
+        let (faults, inner) = (faults.clone(), inner.clone());
+        Box::pin(async move {
+            faults.hold(Probe::PreNodeRecreate { path: asked.path.clone(), name: asked.name.clone(), node_id: asked.node_id.clone() }).await;
+            match inner {
+                Some(inner) => inner(asked).await,
+                None => Ok(()),
+            }
+        })
+    })
 }
 
 struct FaultedCommandFrame(Arc<AdminFaults>);

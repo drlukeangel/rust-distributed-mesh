@@ -45,6 +45,7 @@ enum CutWire {
     StorageSwitch,
     StoreAppend { file: String, key: String, after: bool },
     PathTarget { node: Option<PathName> },
+    PreNodeRecreate { node: Option<PathName> },
 }
 
 /// A fault service call.
@@ -237,6 +238,17 @@ pub enum Hit {
         /// The unreached birth's node id.
         node_id: rdm_core::NodeId,
     },
+    /// A node recovery held before it asks the application's `pre_node_recreate`, its lost birth deleted.
+    ///
+    /// Position 16 on the wire.
+    PreNodeRecreate {
+        /// The path's separate path.
+        path: String,
+        /// The name, beside its path.
+        name: String,
+        /// The lost birth's node id.
+        node_id: rdm_core::NodeId,
+    },
 }
 
 impl Hit {
@@ -260,6 +272,7 @@ impl Hit {
             Hit::StorageSwitch { change_id } => json!({"change_id": change_id}),
             Hit::StoreAppend { file, key, after } => json!({"file": file, "key": key, "after": after}),
             Hit::PathTarget { path, name, node_id } => json!({"path": path, "name": name, "node_id": node_id}),
+            Hit::PreNodeRecreate { path, name, node_id } => json!({"path": path, "name": name, "node_id": node_id}),
         }
     }
 }
@@ -489,6 +502,7 @@ mod tests {
             CutSpec::ProviderTerminate { pid: Some(4242) },
             CutSpec::StorageStep { node: Some(PathName::new("mesh2.node", "1").unwrap()) },
             CutSpec::StorageSwitch,
+            CutSpec::PreNodeRecreate { node: Some(PathName::new("mesh2.node", "1").unwrap()) },
         ]
     }
 
