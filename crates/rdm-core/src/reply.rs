@@ -3,8 +3,7 @@
 /// Constructors for the StatusReply family.
 pub mod status {
 use crate::status::*;
-use crate::outcome::{MalformedKind, ReplyKind};
-use crate::protocol::NodeProtocol;
+use crate::outcome::MalformedKind;
 use crate::views::{ConnectionsView, FabricView, MeshView, NodeStatus, NodeView};
 use crate::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN};
 use std::collections::{BTreeMap, BTreeSet};
