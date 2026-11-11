@@ -534,6 +534,68 @@ async fn takeover_survives_mesh_primary_restart() {
 }
 
 // @feature: node-records
+/// CONTRACT (PRD §14: a node's `data_dir` "converges to non-launcher" admins; deployment-provider.md:
+/// management metadata rides the node's record; query.md §1: a read answers each node from its record,
+/// Q366): mesh2's node is launched by mesh2's primary A, and its own record holds its data dir. A is
+/// killed: B takes mesh2's primary role and node recovery creates A's pair again under a new node id.
+/// Every live node-admin's `node.get [mesh: mesh2]`, none of them the launcher, names the node's data
+/// dir, the one its record holds. The estate's read of the node's data dir is one `node.get` of the
+/// node's pair, answered from its record, and no `node.get` of a whole mesh. Must NOT happen: a live
+/// node's data dir named only by the admin that launched it; the estate reading every mesh at every
+/// admin to find it (at 200 nodes each of those reads missed its 2 s bound, and the estate named the
+/// data dir of a live node, its launcher alive, advertised by no admin).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_admin_answers_a_nodes_data_dir_from_its_record_after_its_launcher_dies() {
+    let test = "every_admin_answers_a_nodes_data_dir_from_its_record_after_its_launcher_dies";
+    let shape = [("mesh1", 1, 0), ("mesh2", 2, 1)];
+    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "data-dir"), "fabric1", "mesh1").await, &shape).await;
+    let views = estate.node_views().await;
+    // The launcher: mesh2's primary executes the creates of mesh2's nodes (commands go down).
+    let a = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2's primary");
+    let member = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node").cloned().expect("mesh2's node");
+    let recorded = latest(&estate, &member.node_id).await.and_then(|r| r.storage.data_dir).unwrap_or_else(|| panic!("{:?}'s own record holds its data dir", member.location()));
+    assert_eq!(member.storage.data_dir.as_deref(), Some(recorded.as_str()), "node.get names the data dir the node's record holds while its launcher lives: {member:?}");
+    estate.kill_node(&a.location()).await;
+    let b = estate
+        .until_view("another admin of mesh2 takes its primary role", Duration::from_secs(120), |views| {
+            views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != a.node_id).cloned()
+        })
+        .await;
+    estate.settles_to(&shape, crate::node_recovery_due()).await;
+    let admins: Vec<NodeView> = estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin" && n.state == NodeStatus::Ready).collect();
+    assert!(admins.iter().all(|n| n.node_id != a.node_id), "the launcher is gone from the view: {admins:?}");
+    let mut answers = BTreeMap::new();
+    for admin in &admins {
+        let listed = rdm_client::Nodes::new(estate.carrier_at(&admin.location()).await)
+            .get(&rdm_client::Filter::new().eq("mesh", ["mesh2"]))
+            .await
+            .unwrap_or_else(|e| panic!("node.get [mesh: mesh2] at {:?}: {e:?}", admin.location()));
+        let dir = listed.into_iter().find(|n| n.node_id == member.node_id).and_then(|n| n.storage.data_dir);
+        assert_eq!(dir.as_deref(), Some(recorded.as_str()), "{:?}, which did not launch the node, names its data dir, the one its record holds", admin.location());
+        answers.insert(admin.node_id.to_string(), json!({"admin": admin.location(), "data_dir": dir}));
+    }
+    // The estate's read of the data dir, its handover made first so that the window holds that read alone.
+    estate.node_views().await;
+    let from = now_ns();
+    let dir = estate.data_dir(&member.location()).await;
+    let to = now_ns();
+    assert_eq!(dir, recorded, "the estate reads the node's data dir its record holds");
+    estate.artifact("data-dir.json", &json!({"launcher": a, "mesh2_primary_after": b, "member": member, "recorded": recorded, "answers": answers, "estate_read": dir}));
+    estate.stop().await;
+    let spans = estate.spans();
+    let during: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(|sp| (from..=to).contains(&start_ns(sp))).collect();
+    let whole_mesh: Vec<String> = during.iter().filter(|sp| attr(sp, "pairs").contains("(mesh, ")).map(|sp| format!("{}.{} {}", attr(sp, "node_path"), attr(sp, "node_name"), attr(sp, "pairs"))).collect();
+    assert!(whole_mesh.is_empty(), "the estate's data dir read reads no whole mesh: {whole_mesh:?}");
+    let pair = format!("(path, [{}]) (name, [{}])", member.path, member.name);
+    let read = during.iter().find(|sp| attr(sp, "pairs") == pair).copied().unwrap_or_else(|| panic!("the estate's data dir read is node.get of the pair {pair}: {during:?}"));
+    assert!(
+        reads_of(&spans, &member.node_id, from).iter().any(|sp| sp["trace_id"] == read["trace_id"]),
+        "the pair's read reads the node's record in its trace (rdm.node_admin.node.resolve.via-lifecycle-record, outcome read): {read}"
+    );
+    estate.record_trace_url(read["trace_id"].as_str().unwrap());
+}
+
+// @feature: node-records
 /// CONTRACT (i150 R9, e4; node-config-update.md "Deferred application and startup": "A stopped process
 /// remains alive with its Node RPC endpoint bound and applies an update as a running node does ...
 /// Existing durable properties and application recognition survive startup; an older environment must
