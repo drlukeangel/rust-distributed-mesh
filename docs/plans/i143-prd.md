@@ -1413,10 +1413,10 @@ i141 pins RDM once: the exact 40-hex merged `main` commit on which the complete 
 - a Build is durable before any reader can read it as current;
 - every admin reads the Fabric record + the current Build before authority-bearing Ready;
 - older Build history is not replayed to reconstruct topology;
-- every change to the shape (node.create, node.delete, the replace recipe, mesh.delete, fabric.delete) is its own Build compiled from the current topology plus its change;
+- every change to the shape (node.create, node.delete, the replace steps, mesh.delete, fabric.delete) is its own Build compiled from the current topology plus its change;
 - a second topology-changing request while the current Build is in progress is refused `BuildInProgress { current_build_id }`;
-- authority movement, restart, node recovery and proven drift use another attempt of the current Build; an attempt lost with its executor leaves the Build in progress; only a named terminal failure fails it, and a failed Build is skipped;
-- nothing that moves a seat or writes caller state runs before the initial fabric is ready (`fabric-not-ready`);
+- a primary or executor change during a Build keeps its build_id; a section that ends short, its mesh-primary lost among the causes, ends the Build `incomplete` naming it (Q346); an incomplete or failed Build is skipped, never current, and its resubmission by build_id runs only the steps not ended `complete`;
+- nothing that moves a primary role or writes caller state runs before the initial fabric is ready (`fabric-not-ready`);
 - `build.delete` refuses the current Build by name;
 - `fabric.get` answers the current Build, not a second stored desired-topology object;
 - all-admin restart restores the current Fabric record and the current Build from RDM storage interfaces.
@@ -1448,7 +1448,7 @@ i141 pins RDM once: the exact 40-hex merged `main` commit on which the complete 
 - provider control domain/locality/runtime metadata is not an election key;
 - node-admin cohort winner == mesh primary;
 - only mesh primaries own fabric election;
-- a living seat holder keeps its seat (a lower NodeId never displaces it); a seat moves only by yield, committed transfer or proven loss;
+- a living primary keeps its role (a lower NodeId never displaces it); a primary changes by `node.primary.update` or, unheard past the staleness floor, by the leadership election;
 - Day 0 + three-mesh + replacement + late-admin takeover proofs are green;
 - no stale amendment/parallel election canon exists.
 
@@ -1459,7 +1459,7 @@ i141 pins RDM once: the exact 40-hex merged `main` commit on which the complete 
 - failed rejoin is bounded and never marks Dead;
 - a mesh is never re-born (R-ML2); a lost mesh-primary is mesh recovery (Q335, Q371): the successor investigates it as any member, and with no node-admin left the fabric-primary re-creates a node-admin into the live mesh on any verdict but `reached`; no `degraded` status (Q335);
 - nobody publishes a mesh on its behalf; the new mesh-primary re-gossips once established;
-- a node recovery proves the exact exit, then deletes and creates at the same path.name with a new node.id over the inherited data dir;
+- a node recovery runs `TerminateRuntime` on the exact runtime first (except `os-stopped`, which it leaves as it is), then deletes and creates at the same path and name with a new node.id, over the predecessor's data dir only when its runtime exited and its storage is persistent (Q358);
 - exact-runtime work in another provider domain uses valid remote/domain-local execution, never local PID/container guessing;
 - fabric authority and the local executor are distinct;
 - nothing inside the mesh checks who sent a frame or call; an out-of-order gossip frame is ignored once, in the receive path;
