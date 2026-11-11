@@ -1255,6 +1255,19 @@ impl StatusService {
             }
         }
         let receiver_is_primary = view.own(&self.node_id).is_some_and(|n| n.is_primary);
+        // The declaration's span opens before its decision and its commit: the commit wakes the
+        // fabric-primary's watcher, whose spans would otherwise start before the declaration that caused
+        // them (rdm#387). Its outcome is recorded once decided.
+        let decision = tracing::info_span!(
+            "rdm.node_admin.status.update.via-declaration",
+            node_path = %me_name.path, node_name = %me_name.name,
+            op = req.op(),
+            state = %declared_state(req),
+            sender = %sender.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(),
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            receiver_is_primary,
+        );
         let (reply, effect) = {
             let declared = self.declared.lock().unwrap();
             decide(self, &view, &declared, req)
@@ -1281,17 +1294,8 @@ impl StatusService {
                 self.wake.report_notify.notify_waiters();
             }
         }
-        tracing::info_span!(
-            "rdm.node_admin.status.update.via-declaration",
-            node_path = %me_name.path, node_name = %me_name.name,
-            op = req.op(),
-            state = %declared_state(req),
-            sender = %sender.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(),
-            outcome = reply.name(),
-            detail = %detail(&reply),
-            receiver_is_primary,
-        )
-        .in_scope(|| tracing::info!("declaration decided by the authority"));
+        decision.record("outcome", reply.name()).record("detail", tracing::field::display(detail(&reply)));
+        decision.in_scope(|| tracing::info!("declaration decided by the authority"));
         reply
     }
 }
@@ -1916,6 +1920,9 @@ impl StatusService {
                 Err(f) => return A::Indeterminate { code: f.code(), reason: format!("{} stream: {f:?}", request_name(start)) },
             };
             let position = frames.position();
+            // The frame's span opens before the commits its handling makes (a NodeStarted's Ready),
+            // as a declaration's (rdm#387); its outcome is recorded after.
+            let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder_node_id = %self.node_id, node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame), outcome = tracing::field::Empty);
             let result = match &frame {
                 R::CommandAccepted { .. } => {
                     // Admission and completion share this operation's serialization: a declaration
@@ -1943,7 +1950,7 @@ impl StatusService {
                 R::StopMeshLeft { .. } if !start => None,
                 R::NodeJoined if start => {
                     let applied = self.node_joined(&op, node, &incarnation).await;
-                    if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
+                    if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { span.record("outcome", applied.name()).in_scope(|| tracing::info!("the mesh-primary could not record the node's command frame")); return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
                     joined_outcome = Some(applied.name());
                     joined = true;
                     None
@@ -1951,7 +1958,7 @@ impl StatusService {
                 R::NodeStopped if !start => {
                     if let Some(seam) = &self.command_frame_seam { seam.before_stopped(&op).await; }
                     let applied = self.stop_received(&op).await;
-                    if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeStopped not recorded: {applied:?}") }; }
+                    if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { span.record("outcome", applied.name()).in_scope(|| tracing::info!("the mesh-primary could not record the node's command frame")); return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeStopped not recorded: {applied:?}") }; }
                     Some(match closure.clone() { Some(receipt) => A::Stopped { receipt }, None => A::Indeterminate { code: Code::Internal, reason: "NodeStopped without StopConnectionsDeleted".into() } })
                 }
                 R::NodeStarted if start => {
@@ -1977,7 +1984,6 @@ impl StatusService {
                 R::Failed { step, reason, code } => Some(A::StartFailed { step: step.clone(), reason: reason.clone(), code: *code }),
                 _ => Some(if accepted { A::Indeterminate { code: Code::Internal, reason: format!("unexpected {} after acceptance", frame.name()) } } else { A::Refused { code: NodeCommand::classify_reply(&frame).code(), reply: format!("{}: {frame:?}", frame.name()) } }),
             };
-            let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", recorder_node_id = %self.node_id, node_path = %node.path, node_name = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame), outcome = tracing::field::Empty);
             if let Some((invocation, seq)) = position { span.record("invocation_id", invocation.to_string()).record("seq", seq); }
             if let Some(outcome) = joined_outcome { span.record("outcome", outcome); }
             span.in_scope(|| tracing::info!("the mesh-primary recorded the node's command frame before acknowledging its recovery"));
@@ -2328,9 +2334,11 @@ impl StatusService {
     pub async fn stop_received(&self, op: &rdm_core::LifecycleOp) -> StatusReply {
         let row = crate::status_rpc::Declaration { r#type: op.r#type.clone(), mesh: op.mesh.clone(), node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.location(), state: NodeState::Stopped };
         let operation = DeclaredOperation { operation: op.operation.clone() };
+        // Opened before the commit it reports, as the declaration's (rdm#387).
+        let received = tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, outcome = tracing::field::Empty, "otel.kind" = "internal");
         let reply = self.persist_then_commit(Effect::Node(row, NodeState::Stopped, Some(operation))).await;
-        tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, outcome = reply.name(), "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the stop stream's stopped is recorded in the birth's declared-state row"));
+        received.record("outcome", reply.name());
+        received.in_scope(|| tracing::info!("the stop stream's stopped is recorded in the birth's declared-state row"));
         reply
     }
 
@@ -2342,12 +2350,25 @@ impl StatusService {
     pub(crate) async fn self_apply_mesh(&self, mesh_id: &MeshId, state: MeshState, at: u64) -> StatusReply {
         let me_name = self.held_name().await;
         let receiver_is_primary = self.topology.read().await.own(&self.node_id).is_some_and(|n| n.is_primary);
+        let day0 = state == MeshState::Pending && at == 0;
+        // Opened before the commit it reports, as a declaration's (rdm#387).
+        let decision = tracing::info_span!(
+            "rdm.node_admin.status.update.via-declaration",
+            node_path = %me_name.path, node_name = %me_name.name,
+            op = "apply-mesh-state",
+            state = ?state,
+            changed_at_rafka_ms = at,
+            taken = tracing::field::Empty,
+            sender_node_id = %self.node_id,
+            outcome = tracing::field::Empty,
+            detail = if day0 { "self-applied: initial fabric bootstrap, no upstream authority" } else { "self-applied: the adoption launch, its Mesh record's state" },
+            receiver_is_primary,
+        );
         let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, state, at);
         let reply = match effect {
             Some(effect) => self.persist_then_commit(effect).await,
             None => decided,
         };
-        let day0 = state == MeshState::Pending && at == 0;
         let mut taken = false;
         if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
             if let Some(view) = &self.topology_view {
@@ -2355,19 +2376,8 @@ impl StatusService {
                 self.wake.report_notify.notify_waiters();
             }
         }
-        tracing::info_span!(
-            "rdm.node_admin.status.update.via-declaration",
-            node_path = %me_name.path, node_name = %me_name.name,
-            op = "apply-mesh-state",
-            state = ?state,
-            changed_at_rafka_ms = at,
-            taken,
-            sender_node_id = %self.node_id,
-            outcome = reply.name(),
-            detail = if day0 { "self-applied: initial fabric bootstrap, no upstream authority" } else { "self-applied: the adoption launch, its Mesh record's state" },
-            receiver_is_primary,
-        )
-        .in_scope(|| tracing::info!("the admin with no upstream fabric-primary applies its own mesh's state"));
+        decision.record("taken", taken).record("outcome", reply.name());
+        decision.in_scope(|| tracing::info!("the admin with no upstream fabric-primary applies its own mesh's state"));
         reply
     }
 }
