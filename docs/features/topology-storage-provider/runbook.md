@@ -53,7 +53,7 @@ Read which step's span is the last one recorded for the `change_id`.
 | last recorded | waiting on | what to do |
 |---|---|---|
 | some meshes' `via-block`, not every mesh's | a mesh-primary whose in-flight commands have not completed, a node whose freeze is unanswered, or a mesh-primary that does not reply (`via-mesh-command` `outcome = no-answer`) | read that mesh's in-flight commands. A node or mesh-primary that does not answer is a lost node: [node investigation](../../architecture/lifecycles/node-investigation.md), and node recovery re-creates it, the primary's own workflow, never part of the change. Nothing to do but read |
-| `via-block` ending `not-blocked` (`reason`) | a mesh-primary that refused the block by name | read the `reason`; the change fails before its switch (below) |
+| `via-block` ending `not-blocked` (`reason`) | a node of the mesh whose freeze is unanswered, or that mesh-primary's node recovery of a node of its mesh not finished | nothing to do: the fabric-primary sends `mesh.block` again; read the `reason`, then that node's `via-node-recovery` span |
 | every `via-block`, no `via-copy` | the copy cannot open a provider | see [An unavailable provider](#an-unavailable-provider) |
 | `via-copy` ending `indeterminate` (`cause` names the store's error), repeated | a provider that does not answer during the copy | see [An unavailable provider](#an-unavailable-provider) |
 | `via-copy` ending `failed` or `refused` (`cause` names the provider and its error), once | a provider that answered the copy with a named error, or holds lines the old one does not | the change fails before its switch: see [An unavailable provider](#an-unavailable-provider) and [Refused history](#refused-history) |
