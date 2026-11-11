@@ -293,6 +293,7 @@ mod tests {
             client,
             builds: builds.clone(),
             failed: Arc::default(),
+            in_flight: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &admin.node_id),
             reasons: Arc::default(),
             pre_node_recreate: None,

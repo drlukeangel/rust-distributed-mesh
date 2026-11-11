@@ -2404,6 +2404,7 @@ mod tests {
             client: None,
             builds,
             failed: Arc::default(),
+            in_flight: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&runner.fabric_id, &runner.node_id),
             reasons: Arc::default(),
             pre_node_recreate: hook,

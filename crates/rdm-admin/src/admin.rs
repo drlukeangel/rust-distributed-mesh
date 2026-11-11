@@ -1152,6 +1152,7 @@ mod tests {
             client: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             failed: Arc::default(),
+            in_flight: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&view.fabric.id, &view.node(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()).unwrap().node_id),
             reasons: Arc::default(),
             pre_node_recreate: None,
@@ -1273,18 +1274,18 @@ mod tests {
         let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), nodes);
         let birth = (node.node_id.clone(), node.incarnation_id.clone().expect("the member's birth"));
         let replacement = (NodeId::mint(), IncarnationId::mint());
-        let in_flight: Mutex<HashSet<(NodeId, IncarnationId)>> = Mutex::default();
         let capture = crate::span_capture::Capture::new("rdm330-recovery-run-again");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
 
         // In flight: taken once, never again beside it while its follower runs.
-        assert!(recovery.take(&birth, &in_flight), "a birth with nothing in flight is taken");
+        assert!(recovery.take(&birth), "a birth with nothing in flight is taken");
+        assert!(recovery.unfinished_recovery("mesh2").is_some_and(|r| r.contains(node.node_id.as_str()) && r.contains("runs")), "a mesh.block reads the recovery in flight: {:?}", recovery.unfinished_recovery("mesh2"));
         for tick in 1..40u32 {
-            assert!(!recovery.take(&birth, &in_flight), "tick {tick}: a recovery in flight is followed, never run again beside it");
+            assert!(!recovery.take(&birth), "tick {tick}: a recovery in flight is followed, never run again beside it");
         }
         // The tick's recovery: this rig builds no runner, so it ends failed by name, and its follower ends.
         recovery.recover(&node).await;
-        in_flight.lock().unwrap().remove(&birth);
+        recovery.in_flight.lock().unwrap().remove(&birth);
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "the tick inspected the birth once");
         let runs = capture.named("rdm.node_admin.node.update.via-node-recovery");
         assert_eq!(runs.len(), 1, "one recovery span: {runs:?}");
@@ -1292,14 +1293,16 @@ mod tests {
         assert!(outcome.contains("runner is not built yet"), "the recovery ends failed by name: {:?}", runs[0].attributes);
         let running = Inspected::Running;
         assert_eq!(recovery.failed_recoveries(true, "mesh2"), vec![(node.clone(), running.clone())], "the failed recovery stays owed to its birth, with the inspect's answer that led to it");
+        assert!(recovery.unfinished_recovery("mesh2").is_some_and(|r| r.contains(node.node_id.as_str()) && r.contains("ended failed")), "a mesh.block reads the failed recovery the next tick runs again: {:?}", recovery.unfinished_recovery("mesh2"));
+        assert_eq!(recovery.unfinished_recovery("mesh1"), None, "another mesh's block reads none of it");
         eprintln!("span {} trace_id={} {:?}", runs[0].name, runs[0].trace_id, runs[0].attributes);
 
         // The next tick takes it at once, and each tick after while it keeps failing: no wait of its own.
-        assert!(recovery.take(&replacement, &in_flight), "another birth, the next at its (path, name), does not wait on it");
+        assert!(recovery.take(&replacement), "another birth, the next at its (path, name), does not wait on it");
         for tick in 1..=4u32 {
-            assert!(recovery.take(&birth, &in_flight), "tick {tick}: the next tick takes the failed recovery at once");
+            assert!(recovery.take(&birth), "tick {tick}: the next tick takes the failed recovery at once");
             assert!(recovery.recover_again(&node, running.clone()).await.is_err(), "tick {tick}: run again, it fails again by name");
-            in_flight.lock().unwrap().remove(&birth);
+            recovery.in_flight.lock().unwrap().remove(&birth);
         }
         let runs = capture.named("rdm.node_admin.node.update.via-node-recovery");
         assert_eq!(runs.len(), 5, "the first recovery and one run again on each of four ticks: {runs:?}");
@@ -1336,6 +1339,7 @@ mod tests {
             client: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             failed: Arc::default(),
+            in_flight: Arc::default(),
             investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &rdm_core::NodeId::mint()),
             reasons: Arc::default(),
             pre_node_recreate: None,

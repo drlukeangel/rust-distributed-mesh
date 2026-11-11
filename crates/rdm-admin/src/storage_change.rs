@@ -6,9 +6,10 @@
 //! one it decided at its end; whoever resumes it learns where it stands only from them.
 //!
 //! 1. **Block.** The fabric-primary sends `mesh.block` (node command op 0x22 `BlockMesh`) to every
-//!    mesh-primary, its own mesh first. Each waits until its in-flight commands complete and every node
-//!    of its mesh froze its writes, replies `blocked` and gossips a current mesh topology of its mesh;
-//!    from there it issues no new command until it is unblocked.
+//!    mesh-primary, its own mesh first. Each waits until its in-flight commands complete, its node
+//!    recovery of any node of its mesh has finished and every node of its mesh froze its writes, replies
+//!    `blocked` and gossips a current mesh topology of its mesh; from there it issues no new command
+//!    until it is unblocked.
 //! 2. **Copy** and 3. **Switch**, the fabric-primary's own, once every mesh-primary replied `blocked`:
 //!    the copy ([`rdm_node::storage_copy::copy`]), then the change's `rdm.storage.committed` event
 //!    appended to the new provider's events store, then the Fabric row's line.
@@ -265,9 +266,6 @@ pub struct Wiring {
     pub fabric_row: Arc<dyn Fn(StorageChange) -> BoxFuture<'static, Result<(), String>> + Send + Sync>,
 }
 
-/// Re-create, by this mesh-primary's node recovery, a node of its mesh that will not move.
-pub type Recreate = Arc<dyn Fn(Node) -> BoxFuture<'static, ()> + Send + Sync>;
-
 /// A node-admin's storage changes: the one it runs as fabric-primary, and the `mesh.block` and
 /// `mesh.unblock` it serves as a mesh-primary.
 pub struct StorageChanges {
@@ -283,8 +281,9 @@ pub struct StorageChanges {
     pub aggregate: OnceLock<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
     /// What the change needs of this admin, set at its boot.
     pub wiring: OnceLock<Wiring>,
-    /// This mesh-primary's node recovery, set once it holds it.
-    pub recreate: OnceLock<Recreate>,
+    /// This mesh-primary's node recovery, set once it holds it: it re-creates a node of its mesh that
+    /// will not move, and a recovery of it not finished keeps `mesh.block` from `blocked`.
+    pub(crate) recovery: OnceLock<crate::admin::RecoverySubmitter>,
     running: std::sync::Mutex<Option<Running>>,
 }
 
@@ -316,7 +315,7 @@ impl MeshCommand {
 impl StorageChanges {
     /// The storage changes of the admin `node_id` writing through `handle`.
     pub fn new(handle: Arc<crate::storage_backend::TopologyStorageHandle>, providers: crate::storage_backend::TopologyStorageProviders, fabric_id: crate::model::FabricId, node_id: NodeId) -> Self {
-        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recreate: OnceLock::new(), running: std::sync::Mutex::new(None) }
+        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recovery: OnceLock::new(), running: std::sync::Mutex::new(None) }
     }
 
     /// The change this fabric-primary runs now, when one is in progress.
@@ -753,7 +752,8 @@ impl StorageChanges {
     /// `mesh.block` at this mesh-primary (step 1): every birth of its mesh, a stopped one and a retained
     /// predecessor included, freezes its writes; then its in-flight commands complete, it gossips a
     /// current mesh topology of its mesh, replies `blocked` and issues no new command until it is
-    /// unblocked. A freeze not answered yet is no block: the fabric-primary sends it again.
+    /// unblocked. A freeze not answered yet is no block, nor is a node recovery of a node of its mesh
+    /// this mesh-primary has not finished: the fabric-primary sends it again.
     pub async fn serve_block(&self, change: &StorageChange) -> NodeCommandReply {
         let status_service = match self.status_service() {
             Ok(status_service) => status_service,
@@ -764,6 +764,14 @@ impl StorageChanges {
             return rdm_core::reply::node_command::not_ready(format!("{}: this admin is no mesh-primary in its view; mesh.block is a mesh-primary's", self.node_id));
         };
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-block", change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, in_flight = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        // An unanswered freeze is resolved through node investigation/recovery before `blocked` (storage.md
+        // §2 step 1): while this mesh-primary's recovery of a birth of its mesh has not finished, the
+        // birth's successor has not acknowledged its freeze, whether or not the view holds it yet.
+        if let Some(recovery) = self.recovery.get().and_then(|r| r.unfinished_recovery(&mesh)) {
+            span.record("outcome", "not-blocked").record("reason", recovery.as_str());
+            span.in_scope(|| tracing::info!("mesh.block: this mesh-primary's node recovery of a node of its mesh has not finished; nothing is copied"));
+            return rdm_core::reply::node_command::not_ready(format!("mesh.block:{mesh}: {recovery}; the provider is not copied"));
+        }
         // Nodes own their property writes: the primary's command block alone cannot make their old
         // provider quiescent. Stopped births are included.
         let subjects: Vec<Node> = view.births().filter(|node| node.mesh == mesh && node.status != crate::model::NodeStatus::Deleted).cloned().collect();
@@ -861,10 +869,10 @@ impl StorageChanges {
             if let Some((birth, reason)) = lost {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-storage-move-lost", change_id = %change_id, mesh = %mesh, node_path = %path.path, node_name = %path.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""), provider = %provider, reason = %reason, outcome = tracing::field::Empty);
                 span.in_scope(|| tracing::info!("the node will not move: this mesh-primary's node recovery re-creates it on the provider this mesh-primary writes"));
-                match self.recreate.get().cloned() {
-                    Some(recreate) => {
+                match self.recovery.get().cloned() {
+                    Some(recovery) => {
                         use tracing::Instrument as _;
-                        recreate(birth.clone()).instrument(span.clone()).await;
+                        recovery.recreate(&birth).instrument(span.clone()).await;
                         span.record("outcome", "recovery-submitted");
                         recreated.push(birth.node_id);
                         continue;

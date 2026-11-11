@@ -67,7 +67,8 @@ storage change, is refused `build-in-progress` by name.
 
 Cells: `every_serving_node_keeps_its_birth_and_ready_through_a_change`,
 `a_build_other_than_fabric_delete_is_refused_during_a_change`,
-`an_unanswered_storage_block_uses_normal_investigation_before_copy`.
+`an_unanswered_storage_block_uses_normal_investigation_before_copy`,
+`a_mesh_primary_replies_blocked_only_after_its_node_recovery_ends`.
 
 ## An unavailable provider
 

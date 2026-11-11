@@ -32,6 +32,11 @@ pub(crate) struct RecoverySubmitter {
     /// own: the recovery's calls retry only under their `Send` (Q344; node-recovery.md "Detection and the
     /// result", "Failure"). Removed once a recovery of it completed.
     pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), (Node, Inspected)>>>,
+    /// The births of this admin's own mesh whose recovery the tick runs now, the inspection that opens it
+    /// included: each marked as the tick takes it ([`Self::take`]) and cleared by its follower at its end
+    /// (`offline::spawn_recovery_follower`). The tick never waits on it; a mesh-primary's `mesh.block`
+    /// reads it ([`Self::unfinished_recovery`]).
+    pub in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>>,
     /// Where an investigation that ends `re-created` is written as its `rdm.node.investigated` event,
     /// and the application's `on_node_investigated`, sent from that write (Q312, Q423); and where the
     /// tick writes `ready` for a birth that answered its tickle.
@@ -171,13 +176,29 @@ impl RecoverySubmitter {
         ended
     }
 
-    /// The tick's one gate for a recovery of `birth`: none of it in flight, which it then marks in
-    /// flight, for the follower to clear at its end (`offline::spawn_recovery_follower`). One recovery per
-    /// birth in flight (node-recovery.md "Execution"): a recovery that still runs is followed, never run
-    /// again beside it; one that ended, however it ended, is taken by the next tick that finds the node
-    /// still lost, with no wait of its own (Q344).
-    pub(crate) fn take(&self, birth: &(NodeId, IncarnationId), in_flight: &Mutex<HashSet<(NodeId, IncarnationId)>>) -> bool {
-        in_flight.lock().unwrap().insert(birth.clone())
+    /// The tick's one gate for a recovery of `birth`: none of it in flight ([`Self::in_flight`]), which
+    /// it then marks in flight, for the follower to clear at its end (`offline::spawn_recovery_follower`).
+    /// One recovery per birth in flight (node-recovery.md "Execution"): a recovery that still runs is
+    /// followed, never run again beside it; one that ended, however it ended, is taken by the next tick
+    /// that finds the node still lost, with no wait of its own (Q344).
+    pub(crate) fn take(&self, birth: &(NodeId, IncarnationId)) -> bool {
+        self.in_flight.lock().unwrap().insert(birth.clone())
+    }
+
+    /// A node recovery of a birth of `mesh` this mesh-primary has not finished, named: one its tick runs
+    /// now ([`Self::in_flight`]), else one that ended failed and that the next tick runs again
+    /// ([`Self::failed`]); `None` when there is none. The tick takes births of this admin's own mesh
+    /// only, so every birth in flight is of that mesh. A mesh-primary replies `blocked` to `mesh.block`
+    /// only once there is none (storage.md §2 step 1: an unanswered freeze is resolved through node
+    /// investigation/recovery before `blocked`): until then the lost birth's successor has not
+    /// acknowledged its freeze, whether or not the view holds the successor yet.
+    pub(crate) fn unfinished_recovery(&self, mesh: &str) -> Option<String> {
+        if let Some((node_id, incarnation)) = self.in_flight.lock().unwrap().iter().next() {
+            return Some(format!("node {node_id}, incarnation {}: its node recovery runs at this mesh-primary", incarnation.as_str()));
+        }
+        self.failed.lock().unwrap().iter().find(|(_, (n, _))| n.mesh == mesh).map(|((node_id, incarnation), (n, _))| {
+            format!("node {node_id}, incarnation {} at path {:?}, name {:?}: its node recovery ended failed, and the next tick runs it again", incarnation.as_str(), n.path, n.name)
+        })
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's view holds it

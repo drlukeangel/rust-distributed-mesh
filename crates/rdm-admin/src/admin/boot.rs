@@ -2539,21 +2539,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     client: Some(node_rpc.client.clone()),
                                                     builds: control.builds.clone(),
                                                     failed: Arc::default(),
+                                                    in_flight: Arc::default(),
                                                     investigated: investigated.clone(),
                                                     reasons: Arc::default(),
                                                     pre_node_recreate: pre_node_recreate.clone(),
                                                 };
                                                 // A node that will not move in a storage change's mesh.unblock is re-created by this
-                                                // mesh-primary's node recovery, never part of the change (storage.md §2 step 4).
-                                                {
-                                                    let recovery = recovery.clone();
-                                                    let _ = storage_changes.recreate.set(Arc::new(move |node: crate::model::Node| {
-                                                        let recovery = recovery.clone();
-                                                        Box::pin(async move {
-                                                            recovery.recreate(&node).await;
-                                                        })
-                                                    }));
-                                                }
+                                                // mesh-primary's node recovery, never part of the change (storage.md §2 step 4), and
+                                                // its mesh.block replies `blocked` only once no recovery of a node of its mesh is
+                                                // unfinished (step 1).
+                                                let _ = storage_changes.recovery.set(recovery.clone());
                                                 // A refused caller (Q207) is decided by its path and name and this admin's atlas, and acts
                                                 // through this recovery submitter's terminate report and the `HeardAgain`.
                                                 // Its verification at the root is owed to the fabric-primary the view names, sent again
@@ -2628,9 +2623,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // its mesh's aggregate on the backbone naming it mesh-primary (elections §4.1).
                                                     let tick_backbone = backbone.clone();
                                                     tasks.push(tokio::spawn(async move {
-                                            // The births whose inspection or submitted recovery is in flight. The tick never waits
-                                            // on it.
-                                            let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
                                             // The births a self-heal's task found unanswered whose dead state was not written
                                             // on their record ([`write_dead`]): investigated again from the next pass.
                                             let unwritten_dead: Arc<Mutex<HashSet<String>>> = Arc::default();
@@ -2894,12 +2886,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         if failed_births.contains(&birth) {
                                                             continue;
                                                         }
-                                                        if !recovery.take(&birth, &in_flight) {
+                                                        if !recovery.take(&birth) {
                                                             continue;
                                                         }
-                                                        let (recovery, n) = (recovery.clone(), n.clone());
-                                                        crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
-                                                            recovery.recover(&n).await;
+                                                        let (follower, n) = (recovery.clone(), n.clone());
+                                                        crate::offline::spawn_recovery_follower(&stop, recovery.in_flight.clone(), birth, async move {
+                                                            follower.recover(&n).await;
                                                         });
                                                     }
                                                     // node-recovery.md "Failure": a birth whose recovery failed is run again by this
@@ -2908,12 +2900,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     for (n, inspected) in failed_now {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
-                                                        if !recovery.take(&birth, &in_flight) {
+                                                        if !recovery.take(&birth) {
                                                             continue;
                                                         }
-                                                        let recovery = recovery.clone();
-                                                        crate::offline::spawn_recovery_follower(&stop, in_flight.clone(), birth, async move {
-                                                            let _ = recovery.recover_again(&n, inspected).await;
+                                                        let follower = recovery.clone();
+                                                        crate::offline::spawn_recovery_follower(&stop, recovery.in_flight.clone(), birth, async move {
+                                                            let _ = follower.recover_again(&n, inspected).await;
                                                         });
                                                     }
                                                     // A second birth another executor made at a path and name of this mesh across a cut:
