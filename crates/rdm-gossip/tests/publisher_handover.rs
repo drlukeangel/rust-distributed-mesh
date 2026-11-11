@@ -148,7 +148,13 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let bb2 = m2_channels.backbone().expect("the backbone is joined");
         m2_channels.wait_for_neighbour().await;
         m_channels.wait_for_neighbour().await;
-        let (pub1, pub2) = (PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
+        // The predecessor publishes once below, and the successor must hold that publication: its
+        // backbone link to the predecessor is up first, as this file's forwarder cell waits for its own.
+        // `wait_for_neighbour` is the mesh channel's alone (rdm#390: gate 68da21540 published at +26 ms,
+        // the backbone neighbour up at +44 ms, and the one frame reached no one).
+        let mut linked = n2.gossip.subscribe(rdm_gossip::channel::ChannelId::backbone(m2.fabric_id()).topic(), vec![n1.ep.id()]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(20), linked.joined()).await.expect("the successor's backbone link to the predecessor is up").unwrap();
+        let (pub1, pub2) =(PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
         let held_at_member = || m.held_source_version("mesh1");
         let seq_at_member = |d: &MeshDigest| m.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
         for digest_view in [&m1.digest_view, &m2.digest_view] {
