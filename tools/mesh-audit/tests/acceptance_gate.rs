@@ -207,6 +207,16 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
                 assert!(command.contains(" --test main "), "{job}/{name}: the command names its crate's one test executable");
                 let stem = std::path::Path::new(c["source"].as_str().unwrap()).file_stem().unwrap().to_str().unwrap();
                 assert!(command.ends_with(&format!(" {stem}::{test} -- --exact")), "{job}/{name}: the command names the module of its source file {stem}: {command}");
+                // The source holds the test, and the command builds the crate that owns the source: a test
+                // that moved crates leaves a command that matches no test (rdm#388: 2901 and 2902 after the
+                // gossip crate's split).
+                let source = c["source"].as_str().unwrap();
+                let text = std::fs::read_to_string(root().join(source)).unwrap_or_else(|e| panic!("{job}/{name}: the source {source} is read: {e}"));
+                assert!(text.contains(&format!("fn {test}(")), "{job}/{name}: the source {source} declares fn {test}");
+                let owner = source.split("/tests/").next().unwrap();
+                let manifest = std::fs::read_to_string(root().join(owner).join("Cargo.toml")).unwrap_or_else(|e| panic!("{job}/{name}: the source's crate {owner} has a Cargo.toml: {e}"));
+                let package = manifest.lines().find_map(|l| l.trim().strip_prefix("name").map(|v| v.trim().trim_start_matches('=').trim().trim_matches('"').to_string())).unwrap_or_else(|| panic!("{job}/{name}: {owner}/Cargo.toml names its package"));
+                assert!(command.contains(&format!("-p {package} ")), "{job}/{name}: the command builds {package}, the crate of its source {source}: {command}");
             }
             assert!(root().join(c["source"].as_str().unwrap()).parent().unwrap().is_dir(), "{job}/{name}: the source's crate exists");
             match c.get("evidence").and_then(Value::as_str) {
