@@ -16,6 +16,7 @@ the linked page before asking: every answer here was already on one.
 | bind my listeners (REST, Kafka, …) | `RDM_LISTENERS` in [Configuration](../reference/rdm/config.md): one per listener my wiring declares on the kind, port 0, the bound port reported at the join and published on the node row. Each listener is a named port binding, whatever my application serves on it (a gateway's Kafka port, a REST API); a peer reads them with `node.get` (`listeners`). RDM carries no other contact field. |
 | join an application channel, subscribe to it and publish on it | [Getting started with application channels](application-channels.md); the contract is [gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth) |
 | run on processes or containers | `MESH_SPAWN_TYPE`; [deployment-provider.md §2.6–2.7](../architecture/deployment-provider.md#26-the-process-provider) |
+| keep Node RPC fast in a debug build of my nodes | `[profile.dev.package."*"] opt-level = 2` in my workspace's `Cargo.toml`. Cargo reads profiles from the root of the workspace it builds, so RDM's own setting (its `Cargo.toml`, with the measure) never reaches my build. At opt-level 0, iroh, noq, rustls, ring and tokio make one Node RPC call (two QUIC handshakes and the endpoint actors) cost about 45 ms of CPU. My own crates stay at opt-level 0. |
 
 ## Changing the topology
 
