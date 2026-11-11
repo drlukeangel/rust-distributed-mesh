@@ -957,9 +957,10 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
 /// Its mesh-primary's node recovery, admitted once the mesh-primary has moved onto `test-target`,
 /// re-creates it at mesh2.node.1 under a new node id launched on `test-target`; the mesh-primary replies
 /// `unblocked` and the change ends: the new birth writes `test-target`, is ready, its records are on
-/// `test-target` and none on `file`; the old birth never moves; the Fabric row names `test-target` with
-/// `file` previous. Must NOT happen: the change waiting on the frozen birth forever (its recovery held
-/// by the block while the unblock waits on it), the old birth moving, or the new birth launched on `file`.
+/// `test-target` and none on `file`; the old birth never moves while it is held; the Fabric row names `test-target` with
+/// `file` previous. Continued after the change, it is a deleted birth, refused at its first call (Q110, Q188).
+/// Must NOT happen: the change waiting on the frozen birth forever (its recovery held
+/// by the block while the unblock waits on it), the old birth moving while held, or the new birth launched on `file`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     let test = "a_node_that_never_unblocks_is_recreated_on_the_new_provider";
@@ -977,10 +978,14 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     let new_id = renewed.node_id.to_string();
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
+    // Continued, the old runtime is a deleted birth (Q188): refused at its first call and then
+    // terminated (Q110). What it runs before that call, such as the move it received before it was
+    // frozen, is Q110's open window, so the frozen birth is judged while it is held.
+    let held_until = now_ns();
     thaw(&silent);
     estate.stop().await;
     let spans = estate.spans();
-    assert!(named(&spans, MOVE).iter().filter(|sp| attr(sp, "node_id") == old_id).all(|sp| sp["attributes"]["outcome"] != "moved"), "the frozen birth never moves");
+    assert!(named(&spans, MOVE).iter().filter(|sp| attr(sp, "node_id") == old_id && start_ns(sp) < held_until).all(|sp| sp["attributes"]["outcome"] != "moved"), "the frozen birth never moves while it is held");
     let switched = of_change(&spans, SWITCH, &change_id, None).into_iter().find(|sp| sp["attributes"]["outcome"] == "inserted").expect("the change switched");
     assert!(start_ns(switched) >= start_ns(&blocked), "the switch follows the mesh-primary's blocked");
     estate.record_trace_url(&s(&switched["trace_id"]));

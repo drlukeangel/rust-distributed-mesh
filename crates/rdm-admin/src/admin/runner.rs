@@ -1103,16 +1103,18 @@ impl AdminRunner {
         };
         req.data_dir = data_dir;
         req.predecessor = Some(crate::storage::BirthRef { node_id: from.node_id.clone(), incarnation_id: from.incarnation.clone() });
-        let created = pipeline.create_with_launch_of(&req, launch_of, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?;
+        let created = pipeline.create_with_launch_of(&req, launch_of, pre_node_ready, Some(Box::pin(self.remove_superseded_paths(&targeted, read_exited)))).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(created.node.node_id.clone(), (created.node, created.handle));
         Ok(())
     }
 
-    /// node-recovery.md "Delete blocks the old instance before the new join": the exited birth's
+    /// node-recovery.md "Delete blocks the old instance before the new join": the superseded birth's
     /// resolver entry is deleted and its direct paths dropped, awaited, right before the new birth is
-    /// launched ([`Self::create_over`]). The new birth's endpoint is new (Q358): the paths deleted are
-    /// the exited birth's own, which nothing dials again.
+    /// launched ([`Self::create_over`]), whatever the delete read of its runtime: exited, or os-stopped and
+    /// left as it is (node-recovery.md step 2). The span's reason says which (`exited-verdict` or
+    /// `superseded`, rdm#391). The new birth's endpoint is new (Q358): the paths deleted are the superseded
+    /// birth's own, which nothing dials again.
     ///
     /// The await is bounded, and it is awaited (not spawned as `after_exit` does), so the paths are
     /// gone before the new birth runs. Bounded, in the pinned iroh (rev 921afe53): `Socket::replace_direct_addrs`
@@ -1125,14 +1127,15 @@ impl AdminRunner {
     /// its inbox (and the queued message's oneshot, :372), so the send or the reply resolves with an
     /// error and this returns. The wait is at most the actor's turns over the messages queued ahead
     /// of this one, none of which awaits the exited peer.
-    pub(crate) async fn revise_exited(&self, record: &Node) {
+    pub(crate) async fn remove_superseded_paths(&self, record: &Node, read_exited: bool) {
         if let Some(incarnation) = record.incarnation_id.as_ref() {
             self.node_rpc.resolver.mark_exited(&record.node_id, incarnation);
         }
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             ep.replace_direct_addrs(key, []).await;
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node_path = %record.path, node_name = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason = "exited-verdict")
-                .in_scope(|| tracing::info!("the exited birth's direct paths are deleted before the new birth is launched"));
+            let reason = if read_exited { "exited-verdict" } else { "superseded" };
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-removed", node_path = %record.path, node_name = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "recovery", reason)
+                .in_scope(|| tracing::info!("the superseded birth's direct paths are deleted before the new birth is launched"));
         }
     }
 
