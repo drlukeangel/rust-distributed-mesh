@@ -72,6 +72,8 @@ name = "rshape-example"
 path = "src/bin/rshape_example.rs"
 
 [dev-dependencies]
+# Each test binary's process environment, set once before any thread exists (RDM_OTEL_DEBUG, Q441).
+ctor = "0.2"
 postcard = { version = "1", features = ["alloc"] }
 # The state-sync cell's desired shape (FabricDesired, MeshDesired) on the testkit's process estate.
 rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "fea9ce11e26bf28ea8ab8fb052dd0e18773ac6d7" }

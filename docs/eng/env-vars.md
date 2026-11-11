@@ -55,7 +55,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_LAUNCHER` | _(written by the launching admin)_ | The node-admin that deployed the birth, as a structured Launcher JSON object. A node started with none is refused at its start by name. |
 | `RDM_MESH_PRIMARY` | _(unset)_ | A person-started `rdm-node-admin` must recover its mesh ([fabric-recovery.md](../architecture/lifecycles/fabric-recovery.md)). |
 | `RDM_FABRIC_PRIMARY` | _(unset)_ | A person-started `rdm-node-admin` must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`. |
-| `RDM_OTEL_DEBUG` | _(unset)_ | `1` exports RDM's own spans from DEBUG instead of INFO. Third-party crates stay off whatever `RUST_LOG` says. |
+| `RDM_OTEL_DEBUG` | _(unset)_ | `1` exports RDM's own spans from DEBUG instead of INFO, the per-call Node RPC spans among them (Q441). A node-admin passes it on to every node it launches. Third-party crates stay off whatever `RUST_LOG` says. |
 | `RDM_OTLP_LOG_LEVEL` | `WARN` | The level the OTLP log bridge exports from; independent of `RUST_LOG` (stdout) and of span export. |
 | `RDM_STALL_PERF` | _(unset)_ | Diagnosis only. When set with `RDM_EVIDENCE_DIR`, a runtime stall the watchdog sees records one `perf` profile of the process into that directory. |
 | `RDM_TASKDUMP_AFTER_MS` | _(unset)_ | Diagnosis only. When a watched future runs longer than this many milliseconds, its await chain and the runtime's tasks are dumped to stderr. |

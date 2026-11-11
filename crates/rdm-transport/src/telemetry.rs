@@ -353,14 +353,29 @@ pub fn current_traceparent() -> Option<String> {
 }
 
 /// W3C `traceparent` of `span`, when an OpenTelemetry layer is installed and its context is valid:
-/// what ties a line written outside span export (the transport diagnostic file) to its trace.
+/// what ties a line written outside span export (the transport diagnostic file) to its trace. A span
+/// span export does not carry (a DEBUG span with `RDM_OTEL_DEBUG` unset, Q441) gives the current
+/// OpenTelemetry context's: the nearest exported span this task runs under.
 pub fn traceparent_of(span: &tracing::Span) -> Option<String> {
     use opentelemetry::trace::TraceContextExt;
-    use tracing_opentelemetry::OpenTelemetrySpanExt;
-    let cx = span.context();
+    let cx = exported_context(span);
     let span = cx.span();
     let sc = span.span_context();
     sc.is_valid().then(|| format!("00-{}-{}-{:02x}", sc.trace_id(), sc.span_id(), sc.trace_flags().to_u8()))
+}
+
+/// The OpenTelemetry context of `span`, or, when span export does not carry it, the current one: with
+/// context activation (tracing-opentelemetry's default) that is the nearest exported span entered on
+/// this thread, or the context its future is polled under.
+fn exported_context(span: &tracing::Span) -> opentelemetry::Context {
+    use opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    let cx = span.context();
+    if cx.span().span_context().is_valid() {
+        cx
+    } else {
+        opentelemetry::Context::current()
+    }
 }
 
 /// Make `span` a child of the remote span named by `traceparent`.
@@ -369,22 +384,32 @@ pub fn set_parent(span: &tracing::Span, traceparent: &str) {
     set_remote_parent(span, traceparent, None);
 }
 
-/// [`set_parent`] carrying the remote `tracestate` too; a `tracestate` that does not parse
-/// is left out and the parent still applies.
-pub fn set_remote_parent(span: &tracing::Span, traceparent: &str, tracestate: Option<&str>) {
+/// The OpenTelemetry context of the remote span `traceparent` names, carrying `tracestate` when it
+/// parses: `None` for a malformed or invalid `traceparent`.
+pub fn remote_context(traceparent: &str, tracestate: Option<&str>) -> Option<opentelemetry::Context> {
     use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
-    use tracing_opentelemetry::OpenTelemetrySpanExt;
     let parts: Vec<&str> = traceparent.split('-').collect();
-    let [_, trace, span_id, flags] = parts[..] else { return };
+    let [_, trace, span_id, flags] = parts[..] else { return None };
     let (Ok(t), Ok(s), Ok(f)) = (TraceId::from_hex(trace), SpanId::from_hex(span_id), u8::from_str_radix(flags, 16)) else {
-        return;
+        return None;
     };
     let state = tracestate
         .and_then(|ts| TraceState::from_key_value(ts.split(',').filter_map(|m| m.trim().split_once('=')).map(|(k, v)| (k.trim(), v.trim()))).ok())
         .unwrap_or_default();
     let sc = SpanContext::new(t, s, TraceFlags::new(f), true, state);
-    if sc.is_valid() {
-        if let Err(e) = span.set_parent(opentelemetry::Context::new().with_remote_span_context(sc)) {
+    sc.is_valid().then(|| opentelemetry::Context::new().with_remote_span_context(sc))
+}
+
+/// [`set_parent`] carrying the remote `tracestate` too; a `tracestate` that does not parse
+/// is left out and the parent still applies. A disabled span (a DEBUG span no subscriber takes, Q441)
+/// has no parent to set.
+pub fn set_remote_parent(span: &tracing::Span, traceparent: &str, tracestate: Option<&str>) {
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    if span.is_disabled() {
+        return;
+    }
+    if let Some(remote) = remote_context(traceparent, tracestate) {
+        if let Err(e) = span.set_parent(remote) {
             // The span keeps a trace of its own: the remote parent is lost, which joins nothing
             // across the call. Named once per process on stderr, never in the pipeline it concerns.
             static NAMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -400,11 +425,11 @@ pub fn current_tracestate() -> Option<String> {
     tracestate_of(&tracing::Span::current())
 }
 
-/// The W3C `tracestate` of `span`, when one rides its context.
+/// The W3C `tracestate` of `span`, when one rides its context; for a span span export does not carry,
+/// the current OpenTelemetry context's, as [`traceparent_of`].
 pub fn tracestate_of(span: &tracing::Span) -> Option<String> {
     use opentelemetry::trace::TraceContextExt;
-    use tracing_opentelemetry::OpenTelemetrySpanExt;
-    let cx = span.context();
+    let cx = exported_context(span);
     let span = cx.span();
     let sc = span.span_context();
     let header = sc.trace_state().header();

@@ -97,7 +97,7 @@ impl NodeRpcClient {
         req: &P::Request,
         opts: &CallOptions,
     ) -> (RpcOutcome<P::Reply>, Option<CallEvidence>, RouteLeg) {
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "rdm.node_rpc.route.resolve.via-connections",
             protocol = P::NAME,
             target = %target,
@@ -122,7 +122,7 @@ impl NodeRpcClient {
         span.record("outcome", out.name());
         span.record("code", out.code().name());
         span.record("detail", out.detail_name());
-        span.in_scope(|| tracing::info!(leg = leg.token(), "one exact target, one route, executed as chosen"));
+        span.in_scope(|| tracing::debug!(leg = leg.token(), "one exact target, one route, executed as chosen"));
         (out, evidence, leg)
     }
 }
@@ -176,7 +176,7 @@ impl NodeRpcClient {
         req: &P::Request,
         opts: &CallOptions,
     ) -> ConnectedCall<P::Reply> {
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "rdm.node_rpc.route.resolve.via-held-projection",
             protocol = P::NAME,
             own_node_id = %own,

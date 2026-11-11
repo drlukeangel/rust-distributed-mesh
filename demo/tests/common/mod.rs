@@ -12,6 +12,16 @@ use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// The binary's process environment, set once before any thread exists, as every RDM test binary
+/// sets it: span export carries DEBUG (`RDM_OTEL_DEBUG=1`), passed on to every node the estate's
+/// node-admin launches, the per-call Node RPC spans the cells read among them (Q441).
+#[ctor::ctor]
+fn process_env() {
+    if std::env::var_os("RDM_OTEL_DEBUG").is_none() {
+        std::env::set_var("RDM_OTEL_DEBUG", "1");
+    }
+}
+
 /// How long a node is waited for.
 pub const SETTLE: Duration = Duration::from_secs(120);
 

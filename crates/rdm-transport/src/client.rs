@@ -425,6 +425,68 @@ pub(crate) enum AttemptEnd {
     Reset,
 }
 
+/// What a call's one span records of its delivery (Q441): the identity, the attempts spent, how its
+/// owed request ended and the path its attempt task ended on. A call that ends with no reply names
+/// them again on its INFO end, so it is seen with its DEBUG span not exported.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Delivered {
+    pub(crate) delivery_id: Option<String>,
+    pub(crate) attempts: Option<u32>,
+    pub(crate) delivery: Option<&'static str>,
+    pub(crate) path: Option<&'static str>,
+}
+
+/// Why a call ended as it did, as its span's `reason` carries it: empty for a reply.
+pub(crate) fn reason_of<R>(out: &RpcOutcome<R>) -> String {
+    match out {
+        RpcOutcome::NotSent(n) => format!("{:?}", n.reason()),
+        RpcOutcome::Indeterminate(i) => format!("{:?}", i.reason()),
+        RpcOutcome::RejectedStale(r) => format!("stale target {}", r.target_node_id()),
+        RpcOutcome::Unserved(u) => format!("op {} unserved", u.op()),
+        RpcOutcome::Reply(_) => String::new(),
+    }
+}
+
+/// How one call ended, as its span records it: what a call that ends with no reply names again at
+/// INFO (Q441).
+pub(crate) struct CallEnded<'a> {
+    /// The end's message: `node rpc call finished`, or a stream call's.
+    pub(crate) finished: &'static str,
+    pub(crate) target: &'a NodeTarget,
+    pub(crate) op: u8,
+    pub(crate) outcome: &'a str,
+    pub(crate) code: &'a str,
+    pub(crate) detail: &'a str,
+    pub(crate) reason: &'a str,
+    pub(crate) elapsed_ms: u64,
+}
+
+impl CallEnded<'_> {
+    /// A call that ends with no reply records its end at INFO on its span, every value the span holds
+    /// with it (Q441): with the DEBUG span not exported, the end lands on the caller's nearest
+    /// exported span.
+    pub(crate) fn unanswered(&self, span: &tracing::Span, reused: Option<bool>, delivered: &Delivered) {
+        let finished = self.finished;
+        span.in_scope(|| {
+            tracing::info!(
+                target = ?self.target,
+                op = self.op,
+                outcome = self.outcome,
+                code = self.code,
+                detail = self.detail,
+                reason = self.reason,
+                reused,
+                elapsed_ms = self.elapsed_ms,
+                delivery_id = delivered.delivery_id.as_deref(),
+                attempts = delivered.attempts,
+                delivery = delivered.delivery,
+                path = delivered.path,
+                "{finished}"
+            )
+        });
+    }
+}
+
 impl AttemptEnd {
     /// The path's name, as spans and reasons carry it.
     pub(crate) fn name(self) -> &'static str {
@@ -715,7 +777,7 @@ impl NodeRpcClient {
             // The process at an endpoint the caller holds no record of: dialled as named, its target
             // naming no node.
             NodeTarget::Endpoint { endpoint_id, addr } => {
-                tracing::info!(step = "endpoint", peer = %endpoint_id.fmt_short(), addr = %addr, "the target is the process at an endpoint, dialled as named");
+                tracing::debug!(step = "endpoint", peer = %endpoint_id.fmt_short(), addr = %addr, "the target is the process at an endpoint, dialled as named");
                 let observed = self.resolver.by_endpoint(endpoint_id).filter(|n| n.transport_addr == *addr);
                 if let Some(n) = &observed {
                     self.pool.purge_stale(n);
@@ -724,7 +786,7 @@ impl NodeRpcClient {
             }
             _ => match self.resolver.resolve(target) {
                 Ok(n) => {
-                    tracing::info!(step = "resolved", node_path = %n.path, node_name = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
+                    tracing::debug!(step = "resolved", node_path = %n.path, node_name = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
                     // Whatever this node's record no longer names leaves the pool now.
                     self.pool.purge_stale(&n);
                     Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }
@@ -778,7 +840,7 @@ impl NodeRpcClient {
         let dial_started = Instant::now();
         let conn = match self.pool.get_or_dial(&key, spec, send_deadline).await {
             Ok((c, reused)) => {
-                tracing::info!(step = if reused { "pooled" } else { "dialed" }, waited_ms = dial_started.elapsed().as_millis() as u64, "a connection to the target is held");
+                tracing::debug!(step = if reused { "pooled" } else { "dialed" }, waited_ms = dial_started.elapsed().as_millis() as u64, "a connection to the target is held");
                 let mut ev = evidence.lock().unwrap();
                 ev.connection = Some(c.stable_id());
                 ev.reused = reused;
@@ -843,7 +905,7 @@ impl NodeRpcClient {
         let opening = OpeningStream::enter();
         let (mut send, recv) = match timeout_at(send_deadline, conn.open_bi()).await {
             Ok(Ok(s)) => {
-                tracing::info!(step = "stream-opened", waited_ms = opened_at.elapsed().as_millis() as u64, waiting_with = opening.with, "a request stream is open");
+                tracing::debug!(step = "stream-opened", waited_ms = opened_at.elapsed().as_millis() as u64, waiting_with = opening.with, "a request stream is open");
                 drop(opening);
                 s
             }
@@ -865,7 +927,7 @@ impl NodeRpcClient {
             // stream open, immediately before the request is first written; a resend carries the
             // same bytes.
             let remaining = limit_at.saturating_duration_since(Instant::now());
-            tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "what remains of the attempt's time limit at the request write");
+            tracing::debug!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "what remains of the attempt's time limit at the request write");
             match build(remaining) {
                 Ok(bytes) => *payload = Payload::Ready(bytes),
                 Err(e) => {
@@ -964,11 +1026,12 @@ impl NodeRpcClient {
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
         use tracing::Instrument;
-        // The caller's side of one call: its outcome, why, and how long it took; the steps it
-        // reached are the log lines inside it (resolved, connection pooled or dialed, stream
-        // opened, request written, reply read), and its delivery: the identity, how many attempts
-        // it took and how its owed request ended.
-        let span = tracing::info_span!(
+        // The caller's side of one call, its one span (Q441, DEBUG as every per-call span): its
+        // outcome, why, and how long it took; the steps it reached are the log lines inside it
+        // (resolved, connection pooled or dialed, stream opened, request written, reply read), and
+        // its delivery: the identity, how many attempts it took, how its owed request ended and the
+        // path its attempts ended on.
+        let span = tracing::debug_span!(
             "rdm.node_rpc.request.update.via-call",
             target = ?target,
             op,
@@ -981,27 +1044,29 @@ impl NodeRpcClient {
             delivery_id = tracing::field::Empty,
             attempts = tracing::field::Empty,
             delivery = tracing::field::Empty,
+            path = tracing::field::Empty,
         );
         let started = Instant::now();
         let mut guard = CallSpanGuard::new(&span);
-        let (out, evidence) = self.owe_steps(target, final_target, op, payload, max_reply, opts, decode, &span).instrument(span.clone()).await;
+        let (out, evidence, delivered) = self.owe_steps(target, final_target, op, payload, max_reply, opts, decode, &span).instrument(span.clone()).await;
         guard.complete();
         span.record("outcome", out.name());
         span.record("code", out.code().name());
         span.record("detail", out.detail_name());
-        let reason = match &out {
-            RpcOutcome::NotSent(n) => format!("{:?}", n.reason()),
-            RpcOutcome::Indeterminate(i) => format!("{:?}", i.reason()),
-            RpcOutcome::RejectedStale(r) => format!("stale target {}", r.target_node_id()),
-            RpcOutcome::Unserved(u) => format!("op {} unserved", u.op()),
-            RpcOutcome::Reply(_) => String::new(),
-        };
+        let reason = reason_of(&out);
         span.record("reason", reason.as_str());
         if let Some(e) = &evidence {
             span.record("reused", e.reused);
         }
-        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-        span.in_scope(|| tracing::info!("node rpc call finished"));
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        span.record("elapsed_ms", elapsed_ms);
+        match &out {
+            RpcOutcome::Reply(_) => span.in_scope(|| tracing::debug!("node rpc call finished")),
+            _ => {
+                let ended = CallEnded { finished: "node rpc call finished", target, op, outcome: out.name(), code: out.code().name(), detail: out.detail_name(), reason: &reason, elapsed_ms };
+                ended.unanswered(&span, evidence.as_ref().map(|e| e.reused), &delivered);
+            }
+        }
         (out, evidence)
     }
 
@@ -1021,7 +1086,7 @@ impl NodeRpcClient {
         opts: &CallOptions,
         shape: ReplyShape,
         span: &tracing::Span,
-    ) -> Result<SendCall, (RpcOutcome<()>, Option<CallEvidence>)> {
+    ) -> Result<SendCall, (RpcOutcome<()>, Option<CallEvidence>, Delivered)> {
         let unary = shape == ReplyShape::Unary;
         let allowed = u32::from(opts.send.attempts.max(1));
         let pacing = self.delivery.pacing();
@@ -1036,7 +1101,7 @@ impl NodeRpcClient {
                     let why = role_has_no_birth(mesh.as_deref(), &f);
                     span.in_scope(|| tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", attempts = spent, reason = %why).in_scope(|| tracing::info!("the primary role names no birth: the request is not sent")));
                     span.record("delivery", "receiver-gone");
-                    return Err((PreCommit::begin(op).not_sent(NotSentReason::Resolve(ResolveFailure::Gone)), None));
+                    return Err((PreCommit::begin(op).not_sent(NotSentReason::Resolve(ResolveFailure::Gone)), None, Delivered { delivery: Some("receiver-gone"), ..Delivered::default() }));
                 }
                 Err(r @ NotSentReason::Resolve(ResolveFailure::Unknown)) => {
                     spent += 1;
@@ -1045,7 +1110,7 @@ impl NodeRpcClient {
                         span.record("attempts", spent);
                         let out = PreCommit::begin(op).not_sent(r);
                         span.in_scope(|| self.tell_call_end(opts, None, &out));
-                        return Err((out, None));
+                        return Err((out, None, Delivered { attempts: Some(spent), ..Delivered::default() }));
                     }
                     // The next attempt at its delay (node-rpc.md §43), or sooner when a change names
                     // the receiver: a change that does not spends no attempt.
@@ -1072,7 +1137,7 @@ impl NodeRpcClient {
                         }
                     }
                 }
-                Err(r) => return Err((PreCommit::begin(op).not_sent(r), None)),
+                Err(r) => return Err((PreCommit::begin(op).not_sent(r), None, Delivered::default())),
             }
         };
         let mut receivers = vec![node.peer];
@@ -1118,15 +1183,18 @@ impl NodeRpcClient {
             tx,
             state: state.clone(),
             attempts: attempts.clone(),
+            span: span.clone(),
         };
         // The attempts run on the dispatcher of the call's span, as the pool's dial does: a worker that
-        // holds no dispatcher still delivers their events to the call's subscriber.
-        let run = tracing::Instrument::instrument(task.run(), span.clone());
+        // holds no dispatcher still delivers their events to the call's subscriber. They run under the
+        // caller's OpenTelemetry context too (Q441): with the call's span not exported, the request's
+        // traceparent and every span the attempts open are the caller's nearest exported span's.
+        let run = opentelemetry::context::FutureExt::with_context(tracing::Instrument::instrument(task.run(), span.clone()), opentelemetry::Context::current());
         let handle = match tracing::Span::with_subscriber(span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone()) {
             Some(d) => tokio::spawn(UnderDispatch { fut: Some(Box::pin(run)), dispatch: d }),
             None => tokio::spawn(run),
         };
-        Ok(SendCall { guard, frames, attempted, state, evidence, attempts, receiver: node.node.clone(), _task: AbortOnDrop(Some(handle)) })
+        Ok(SendCall { guard, frames, attempted, state, evidence, attempts, id, receiver: node.node.clone(), _task: AbortOnDrop(Some(handle)) })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1140,14 +1208,14 @@ impl NodeRpcClient {
         opts: &CallOptions,
         decode: D,
         span: &tracing::Span,
-    ) -> (RpcOutcome<R>, Option<CallEvidence>)
+    ) -> (RpcOutcome<R>, Option<CallEvidence>, Delivered)
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
         let limit = opts.send.time_limit.0;
         let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, ReplyShape::Unary, span).await {
             Ok(o) => o,
-            Err((out, ev)) => return (out.retyped().expect("no reply before anything is sent"), ev),
+            Err((out, ev, delivered)) => return (out.retyped().expect("no reply before anything is sent"), ev, delivered),
         };
         let mut pre = Some(PreCommit::begin(op));
         let mut committed: Option<rdm_core::outcome::Committed> = None;
@@ -1163,6 +1231,8 @@ impl NodeRpcClient {
         let mut slot_closed = false;
         // The call ended because its attempts are spent: its node is told once it has ended.
         let mut spent = false;
+        // How the owed request ended, as the call's span records it.
+        let mut delivery: Option<&'static str> = None;
         let out = loop {
             let wait = async {
                 match deadline {
@@ -1176,6 +1246,7 @@ impl NodeRpcClient {
                 f = owed.frames.recv(), if !slot_closed => match f {
                     Some(SlotEvent::Frame(bytes, _)) => {
                         span.record("delivery", "acked");
+                        delivery = Some("acked");
                         break match (committed.take(), stopped.take(), pre.take()) {
                             (Some(c), _, _) => decode(Decode::Committed(c, &bytes)),
                             (None, Some(e), _) => decode(Decode::Early(e, Some(&bytes))),
@@ -1220,6 +1291,7 @@ impl NodeRpcClient {
                     }
                     Some(Attempted::Spent(lost)) => {
                         span.record("delivery", "attempts-spent");
+                        delivery = Some("attempts-spent");
                         spent = true;
                         break match (committed.take(), stopped.take(), pre.take()) {
                             // Its last attempt's stream was lost, or it waited out its time limit.
@@ -1251,6 +1323,7 @@ impl NodeRpcClient {
                     }
                     Some(Attempted::ReceiverGone(why)) => {
                         span.record("delivery", "receiver-gone");
+                        delivery = Some("receiver-gone");
                         break match (committed.take(), pre.take()) {
                             (Some(c), _) => c.indeterminate(IndeterminateReason::ReceiverGone(why)),
                             (None, Some(p)) => p.not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
@@ -1277,6 +1350,7 @@ impl NodeRpcClient {
                     // Acked and no reply within the time limit from the ack: the call ends, and its
                     // request is resent no longer.
                     span.record("delivery", "cancelled");
+                    delivery = Some("cancelled");
                     break match (committed.take(), stopped.take(), pre.take()) {
                         (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
                         (None, Some(e), _) => decode(Decode::Early(e, None)),
@@ -1286,13 +1360,24 @@ impl NodeRpcClient {
                 }
             }
         };
-        span.record("attempts", owed.attempts.load(std::sync::atomic::Ordering::SeqCst));
         let evidence = owed.evidence.lock().unwrap().clone();
-        owed.close(out.reply().is_none()).await;
+        let ran_to_its_end = owed.close(out.reply().is_none()).await;
+        let attempts = owed.attempts.load(std::sync::atomic::Ordering::SeqCst);
+        // An attempt task that ran to its end recorded its attempts and path on the call's span; for
+        // one ended before that, its attempts are recorded here: each field once.
+        if !ran_to_its_end {
+            span.record("attempts", attempts);
+        }
+        while let Ok(ev) = owed.attempted.try_recv() {
+            if let Attempted::Ended(path) = ev {
+                attempt_end = Some(path);
+            }
+        }
         if spent || out.reply().is_some() {
             self.tell_call_end(opts, owed.receiver.as_ref(), &out);
         }
-        (out, Some(evidence))
+        let delivered = Delivered { delivery_id: Some(owed.id.to_string()), attempts: Some(attempts), delivery, path: attempt_end.map(AttemptEnd::name) };
+        (out, Some(evidence), delivered)
     }
 }
 
@@ -1329,6 +1414,8 @@ pub(crate) struct SendCall {
     pub(crate) state: watch::Receiver<SlotState>,
     pub(crate) evidence: Arc<Mutex<CallEvidence>>,
     pub(crate) attempts: Arc<std::sync::atomic::AtomicU32>,
+    /// The request's delivery identity.
+    pub(crate) id: DeliveryId,
     /// The birth the call is addressed to, as its resolver named it at the open; `None` for a call
     /// to an endpoint no record names.
     pub(crate) receiver: Option<ResolvedNode>,
@@ -1420,16 +1507,20 @@ impl Drop for AbortOnDrop {
 impl SendCall {
     /// End the owner's hold and wait for the attempt task to end, so nothing of the call (its span
     /// above all) outlives it: aborted when the owner ends it early, else it ends on its own once
-    /// the invocation is complete (its last ack written, its request direction finished).
-    pub(crate) async fn close(&mut self, abort: bool) {
+    /// the invocation is complete (its last ack written, its request direction finished). `true` when
+    /// the task ran to its end, its attempts and path recorded on the call's span.
+    pub(crate) async fn close(&mut self, abort: bool) -> bool {
         if abort {
             self.guard.complete();
         }
-        if let Some(h) = self._task.0.take() {
-            if abort {
-                h.abort();
+        match self._task.0.take() {
+            Some(h) => {
+                if abort {
+                    h.abort();
+                }
+                h.await.is_ok()
             }
-            let _ = h.await;
+            None => false,
         }
     }
 }
@@ -1489,6 +1580,8 @@ struct Attempts {
     tx: mpsc::UnboundedSender<Attempted>,
     state: watch::Receiver<SlotState>,
     attempts: Arc<std::sync::atomic::AtomicU32>,
+    /// The call's one span: the task's end records its attempts and path there (Q441).
+    span: tracing::Span,
 }
 
 /// A carrier's response frame `h` as the answer to `invocation`, the request it carried (i146 Q52):
@@ -1617,13 +1710,13 @@ impl Attempts {
         }
     }
 
-    /// The request's attempts, then the path they ended on: every return is spanned and told to the
-    /// call, after any outcome of its own (i146 Q38).
+    /// The request's attempts, then the path they ended on: every return is recorded on the call's
+    /// span (its `attempts` and `path`; Q441, one span per call) and told to the call, after any
+    /// outcome of its own (i146 Q38).
     async fn run(mut self) {
         let end = self.until_end().await;
         let attempts = self.attempts.load(std::sync::atomic::Ordering::SeqCst);
-        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempt-ended", delivery_id = %self.id, attempts, path = end.name())
-            .in_scope(|| tracing::info!("the request's attempt task ended"));
+        self.span.record("attempts", attempts).record("path", end.name());
         let _ = self.tx.send(Attempted::Ended(end));
     }
 

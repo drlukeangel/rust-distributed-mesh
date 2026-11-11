@@ -9,7 +9,8 @@ mod own_process;
 /// process, so no test sets a variable. Evidence goes to the gate's `I143_ACCEPTANCE_DIR` when it
 /// exports one, else to this crate's own directory under `target/evidence`.
 /// Child processes spawned via `own_process` or `collector_outage` keep the exact environment their
-/// parent gave them.
+/// parent gave them. Span export carries DEBUG (`RDM_OTEL_DEBUG=1`, where the binary was started with
+/// no value), the per-call Node RPC spans the cells read among them (Q441).
 #[ctor::ctor]
 fn process_env() {
     if std::env::var_os("RDM_TEST_OWN_PROCESS").is_some() || std::env::var_os("RDM_OUTAGE_CHILD").is_some() {
@@ -20,6 +21,9 @@ fn process_env() {
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/evidence/rdm-transport"));
     std::fs::create_dir_all(&dir).expect("the evidence directory can be created");
     std::env::set_var("RDM_EVIDENCE_DIR", dir);
+    if std::env::var_os("RDM_OTEL_DEBUG").is_none() {
+        std::env::set_var("RDM_OTEL_DEBUG", "1");
+    }
 }
 
 /// The evidence directory the binary's start-up chose: every cell's `EvidenceCapture` writes its spans

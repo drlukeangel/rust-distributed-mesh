@@ -153,7 +153,7 @@ impl StreamOut {
                     tracing::Span::current().record("detail", detail);
                     let _ = Self::put(&mut g, payload, true).await;
                     g.out.finish().await;
-                    tracing::info_span!(
+                    tracing::debug_span!(
                         "rdm.node_rpc.stream.serve.via-terminal",
                         code = code.name(),
                         detail,
@@ -162,7 +162,7 @@ impl StreamOut {
                         caller_cancelled = gone.is_some(),
                         cancellation_reason = gone.as_deref().unwrap_or("")
                     )
-                    .in_scope(|| tracing::info!("stream ended"));
+                    .in_scope(|| tracing::debug!("stream ended"));
                 }
                 Err(reason) => {
                     stats.violations.fetch_add(1, Ordering::SeqCst);
@@ -236,7 +236,7 @@ async fn write_frame<P: StreamingProtocol>(out: &StreamOut, frame: &P::Reply) ->
     let payload = P::encode_reply(frame).map_err(|e| SinkError::Order(format!("frame does not encode: {}", e.0)))?;
     let code = P::classify_reply(frame).code();
     let detail = P::reply_detail(frame);
-    tracing::info_span!("rdm.node_rpc.stream.update.via-frame", protocol = P::NAME, code = code.name(), detail)
+    tracing::debug_span!("rdm.node_rpc.stream.update.via-frame", protocol = P::NAME, code = code.name(), detail)
         .in_scope(|| tracing::debug!("the typed frame was classified"));
     out.write(P::frame_kind(frame), payload).await
 }
@@ -291,7 +291,7 @@ where
                 return Some((tracing::Span::none(), Box::pin(async move { end })));
             }
         };
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "rdm.node_rpc.stream.serve.via-direct",
             code = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -393,7 +393,10 @@ pub enum StreamItem<R> {
 /// Until then the responder owes the frame: it holds the producer (at most 64 frames unacked), and a
 /// reconnect has it resent, never handed to the owner twice.
 pub struct ReplyStream<P: StreamingProtocol> {
+    /// The call's one span (DEBUG, Q441).
     span: tracing::Span,
+    /// The call's target, as its span names it.
+    target: NodeTarget,
     started: Instant,
     owed: SendCall,
     order: FrameOrder,
@@ -412,6 +415,8 @@ pub struct ReplyStream<P: StreamingProtocol> {
     /// The path the attempt task ended on, once it said (i146 Q38): named if the stream's attempts end
     /// before its terminal.
     attempt_end: Option<AttemptEnd>,
+    /// How the owed request ended, once the call's span records it (`attempts-spent`).
+    delivery: Option<&'static str>,
     /// The request's commit, taken by the reset that ends the stream, which it classifies.
     committed: Option<Committed>,
     /// Who to tell when the call's attempts are spent after its commit, and the call's options.
@@ -458,7 +463,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                         let kind = P::frame_kind(&frame);
                         let code = P::classify_reply(&frame).code();
                         let detail = P::reply_detail(&frame);
-                        self.span.in_scope(|| tracing::info_span!("rdm.node_rpc.stream.update.via-received-frame", protocol = P::NAME, invocation_id, seq, code = code.name(), detail).in_scope(|| {}));
+                        self.span.in_scope(|| tracing::debug_span!("rdm.node_rpc.stream.update.via-received-frame", protocol = P::NAME, invocation_id, seq, code = code.name(), detail).in_scope(|| {}));
                         if let Err(reason) = self.order.admit(kind) {
                             return Some(self.fail(StreamFailure::Violation(reason)));
                         }
@@ -493,10 +498,9 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     // owner, and on_call_failed is told (node-rpc.md §43).
                     Some(Attempted::Spent(lost)) => {
                         let reason = lost.map_or(IndeterminateReason::ReplyDeadline, IndeterminateReason::ReplyLost);
-                        self.span
-                            .record("delivery", "attempts-spent")
-                            .record("attempts", self.owed.attempts.load(Ordering::SeqCst))
-                            .record("outcome", "Indeterminate");
+                        // Its attempts are recorded by the attempt task's end, which follows at once.
+                        self.span.record("delivery", "attempts-spent").record("outcome", "Indeterminate");
+                        self.delivery = Some("attempts-spent");
                         if self.opts.carried.is_none() {
                             let end = crate::client::CallEnd::Spent(crate::client::CallFailedReason::Indeterminate(reason.clone()));
                             self.span.in_scope(|| self.client.tell_end(self.owed.receiver.as_ref(), end));
@@ -538,7 +542,18 @@ impl<P: StreamingProtocol> ReplyStream<P> {
 
     fn fail(&mut self, f: StreamFailure) -> StreamItem<P::Reply> {
         self.done = true;
-        self.span.record("code", f.code().name()).record("detail", f.detail_name()).record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        let elapsed_ms = self.started.elapsed().as_millis() as u64;
+        self.span.record("code", f.code().name()).record("detail", f.detail_name()).record("elapsed_ms", elapsed_ms);
+        // A stream that ends before its terminal ends with no reply: its end at INFO (Q441).
+        let outcome = match &f {
+            StreamFailure::Indeterminate(_) => "Indeterminate",
+            StreamFailure::Unserved(_) => "Unserved",
+            StreamFailure::Violation(_) => "Violation",
+        };
+        let reason = format!("{f:?}");
+        let delivered = crate::client::Delivered { delivery_id: Some(self.owed.id.to_string()), attempts: Some(self.owed.attempts.load(Ordering::SeqCst)), delivery: self.delivery, path: self.attempt_end.map(AttemptEnd::name) };
+        let ended = crate::client::CallEnded { finished: "node rpc stream call finished", target: &self.target, op: P::OP, outcome, code: f.code().name(), detail: f.detail_name(), reason: &reason, elapsed_ms };
+        ended.unanswered(&self.span, None, &delivered);
         // The owner has its end: the invocation is owed no longer.
         self.owed.guard.complete();
         if let Some(h) = &self.owed._task.0 {
@@ -563,8 +578,10 @@ impl NodeRpcClient {
             Ok(p) => p,
             Err(e) => return Err((PreCommit::begin(P::OP).not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None)),
         };
-        // The caller's side of the call that opens the stream: its outcome and how long the open took.
-        let span = tracing::info_span!(
+        // The caller's side of the call that opens the stream, its one span (Q441, DEBUG as every
+        // per-call span): its outcome, how long the open took, and its delivery: the identity, the
+        // attempts and the path they ended on.
+        let span = tracing::debug_span!(
             "rdm.node_rpc.request.update.via-call",
             target = ?target,
             op = P::OP,
@@ -575,6 +592,7 @@ impl NodeRpcClient {
             delivery_id = tracing::field::Empty,
             attempts = tracing::field::Empty,
             delivery = tracing::field::Empty,
+            path = tracing::field::Empty,
             reused = tracing::field::Empty,
         );
         let started = Instant::now();
@@ -586,17 +604,22 @@ impl NodeRpcClient {
         };
         let mut owed = match opened {
             Ok(o) => o,
-            Err((out, ev)) => {
+            Err((out, ev, delivered)) => {
                 opening.complete();
                 finish(out.name());
                 span.record("code", out.code().name());
                 span.record("detail", out.detail_name());
-                span.in_scope(|| tracing::info!("node rpc stream call finished"));
+                let reason = crate::client::reason_of(&out);
+                let ended = crate::client::CallEnded { finished: "node rpc stream call finished", target, op: P::OP, outcome: out.name(), code: out.code().name(), detail: out.detail_name(), reason: &reason, elapsed_ms: started.elapsed().as_millis() as u64 };
+                ended.unanswered(&span, ev.as_ref().map(|e| e.reused), &delivered);
                 return Err((out.retyped().expect("no reply before anything is sent"), ev));
             }
         };
         let mut last = NotSentReason::Deadline;
         let mut pre = Some(PreCommit::begin(P::OP));
+        // How the owed request ended, and the path the attempts ended on, as the call's span records them.
+        let mut delivery: Option<&'static str> = None;
+        let mut attempt_end: Option<AttemptEnd> = None;
         let ended: RpcOutcome<P::Reply> = loop {
             tokio::select! {
                 ev = owed.attempted.recv() => match ev {
@@ -604,16 +627,18 @@ impl NodeRpcClient {
                         let committed = pre.take().expect("pre-commit").commit(RequestFinished::after_complete_write(frame_len, frame_len).expect("a complete write"));
                         opening.complete();
                         finish("stream-open");
-                        span.in_scope(|| tracing::info!("node rpc stream call opened"));
+                        span.in_scope(|| tracing::debug!("node rpc stream call opened"));
                         // Once committed, no time limit bounds the stream's frames (node-rpc.md §34).
                         let deadline = None;
                         let evidence = owed.evidence.lock().unwrap().clone();
                         span.record("reused", evidence.reused);
-                        return Ok((ReplyStream { client: self.clone(), opts: opts.clone(), span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { client: self.clone(), opts: opts.clone(), target: target.clone(), span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, delivery: None, committed: Some(committed), _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::Spent(_)) => {
-                        span.record("delivery", "attempts-spent").record("attempts", owed.attempts.load(Ordering::SeqCst));
+                        // Its attempts are recorded by the attempt task's end, which follows at once.
+                        span.record("delivery", "attempts-spent");
+                        delivery = Some("attempts-spent");
                         let out = pre.take().expect("pre-commit").not_sent(last.clone());
                         span.in_scope(|| self.tell_call_end(opts, owed.receiver.as_ref(), &out));
                         break out;
@@ -638,7 +663,7 @@ impl NodeRpcClient {
                     Some(Attempted::ReceiverGone(_)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
                     Some(Attempted::TransportLost(why)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Connection(why)),
                     // The attempt task's last word: what ended it was said above, or its end follows.
-                    Some(Attempted::Ended(_)) => {}
+                    Some(Attempted::Ended(path)) => attempt_end = Some(path),
                     None => break pre.take().expect("pre-commit").not_sent(last.clone()),
                 },
             }
@@ -647,9 +672,28 @@ impl NodeRpcClient {
         finish(ended.name());
         span.record("code", ended.code().name());
         span.record("detail", ended.detail_name());
-        span.in_scope(|| tracing::info!("node rpc stream call finished"));
         let evidence = owed.evidence.lock().unwrap().clone();
-        owed.close(true).await;
+        let ran_to_its_end = owed.close(true).await;
+        let attempts = owed.attempts.load(Ordering::SeqCst);
+        // An attempt task that ran to its end recorded its attempts and path on the call's span; for
+        // one ended before that, its attempts are recorded here: each field once.
+        if !ran_to_its_end {
+            span.record("attempts", attempts);
+        }
+        while let Ok(ev) = owed.attempted.try_recv() {
+            if let Attempted::Ended(path) = ev {
+                attempt_end = Some(path);
+            }
+        }
+        match &ended {
+            RpcOutcome::Reply(_) => span.in_scope(|| tracing::debug!("node rpc stream call finished")),
+            _ => {
+                let reason = crate::client::reason_of(&ended);
+                let delivered = crate::client::Delivered { delivery_id: Some(owed.id.to_string()), attempts: Some(attempts), delivery, path: attempt_end.map(AttemptEnd::name) };
+                let done = crate::client::CallEnded { finished: "node rpc stream call finished", target, op: P::OP, outcome: ended.name(), code: ended.code().name(), detail: ended.detail_name(), reason: &reason, elapsed_ms: started.elapsed().as_millis() as u64 };
+                done.unanswered(&span, Some(evidence.reused), &delivered);
+            }
+        }
         Err((ended, Some(evidence)))
     }
 }
@@ -673,7 +717,7 @@ mod tests {
         let birth = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let delivery = crate::Delivery::new(birth.clone());
         let id = delivery.mint(&[]);
-        let (guard, _, _) = delivery.open_call(id, NodeCommand::MAX_REPLY_FRAME_BYTES, false);
+        let (guard, _, _) = delivery.open_call(id.clone(), NodeCommand::MAX_REPLY_FRAME_BYTES, false);
         let (tx, frames) = tokio::sync::mpsc::unbounded_channel();
         let (_attempts_tx, attempted) = tokio::sync::mpsc::unbounded_channel();
         let (_state_tx, state) = tokio::sync::watch::channel(crate::delivery::SlotState::default());
@@ -681,6 +725,7 @@ mod tests {
             guard, frames, attempted, state,
             evidence: Arc::new(std::sync::Mutex::new(CallEvidence { node_id: None, addr: "127.0.0.1:0".parse().unwrap(), committed: true, connection: None, reused: false, dial_failure: None })),
             attempts: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            id,
             receiver: None,
             _task: crate::client::AbortOnDrop(None),
         };
@@ -688,7 +733,7 @@ mod tests {
             crate::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(),
             Arc::new(crate::resolve::StaticResolver::new()),
         );
-        let mut stream = ReplyStream::<NodeCommand> { client, opts: CallOptions::default(), span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: None, _p: PhantomData };
+        let mut stream = ReplyStream::<NodeCommand> { client, opts: CallOptions::default(), target: NodeTarget::ExactNode(birth.node_id.clone()), span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, delivery: None, committed: None, _p: PhantomData };
         let frame = NodeCommandReply::CommandAccepted { node_id: birth.node_id, incarnation: birth.incarnation };
         tx.send(SlotEvent::Frame(NodeCommand::encode_reply(&frame).unwrap(), None)).unwrap();
         assert!(matches!(stream.next().await, Some(StreamItem::Failed(StreamFailure::Violation(reason))) if reason == "a response frame carries no transport position"));

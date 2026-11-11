@@ -403,6 +403,11 @@ impl Prepared {
         if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
             cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
         }
+        // The binary's span export level (main.rs: DEBUG), as an estate passes it: the boot's calls
+        // (`rdm.node_rpc.request.update.via-call`) are DEBUG spans (Q441).
+        if let Ok(level) = std::env::var("RDM_OTEL_DEBUG") {
+            cmd.env("RDM_OTEL_DEBUG", level);
+        }
         let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
         let pid = child.id();
         Running { child, pid }

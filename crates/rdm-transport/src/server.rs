@@ -116,7 +116,7 @@ where
                 return (tracing::Span::none(), refused);
             }
         };
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "rdm.node_rpc.request.serve.via-direct",
             code = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -677,9 +677,9 @@ impl NodeRpcServer {
         let id = header.delivery_id();
         match settled {
             Settled::Accepted => {
-                let span = tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %id, acceptance = "duplicate", peer = %peer);
+                let span = tracing::debug_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %id, acceptance = "duplicate", peer = %peer);
                 crate::delivery::parent_on(&span, parent.as_ref());
-                span.in_scope(|| tracing::info!("a repeated request is acked without dispatch"));
+                span.in_scope(|| tracing::debug!("a repeated request is acked without dispatch"));
                 d.write_ack(&out, header, AckOf::Request).await;
                 out.finish().await;
                 // The caller is reachable from here: what of the original's response is resent goes
@@ -919,35 +919,40 @@ impl NodeRpcServer {
                     let parent = parent.clone();
                     tokio::spawn(async move {
                         if accepted.wait_for(|a| *a).await.is_ok() && gate.explicit() {
-                            let span = tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded");
+                            let span = tracing::debug_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded");
                             crate::delivery::parent_on(&span, parent.as_ref());
-                            span.in_scope(|| tracing::info!("the handler recorded the accepted work: the request is acked"));
+                            span.in_scope(|| tracing::debug!("the handler recorded the accepted work: the request is acked"));
                             gate.d.write_ack(&out, &header, AckOf::Request).await;
                         }
                     });
                 }
                 let ctx = PeerContext { endpoint_id: peer, context, delivery: Some(CarriedIdentity { id: id.clone(), forget_below }), acceptance };
                 let acks = tokio::spawn(Self::read_acks(d.clone(), id.clone(), acks));
+                // The serve runs under the caller's propagated context (Q441): with its DEBUG span not
+                // exported, the handler's first exported span is a child of the caller's nearest
+                // exported span; with it exported, a child of the serve span, as the span is entered
+                // inside this context.
+                let caller = crate::delivery::context_on(parent.as_ref());
                 if h.is_stream() {
                     let stream_out = crate::stream::StreamOut::new(out.clone(), h.max_reply(), gate.clone());
                     let Some((serve, streaming)) = h.stream(ctx, payload, stream_out.clone()) else { return };
                     let counted = InFlight::enter(&stats);
-                    let joined = tokio::spawn(async move {
+                    let streaming = async move {
                         let _counted = counted;
                         streaming.await
-                    })
-                    .await;
+                    };
+                    let joined = tokio::spawn(opentelemetry::context::FutureExt::with_context(streaming, caller.clone())).await;
                     drop(permit);
                     // The stream's end is a step of its serve: its terminal (or refusal) is written and
                     // named under the serve span, which ends once it is written.
-                    stream_out.finish(joined, &stats).instrument(serve).await;
+                    opentelemetry::context::FutureExt::with_context(stream_out.finish(joined, &stats).instrument(serve), caller).await;
                     // The stream held past its terminal until the caller's acks end the request direction.
-                    let leg = tracing::info_span!("rdm.node_rpc.delivery.update.via-reply-held", delivery_id = %id, peer = %peer, held_ms = tracing::field::Empty, ended = tracing::field::Empty);
+                    let leg = tracing::debug_span!("rdm.node_rpc.delivery.update.via-reply-held", delivery_id = %id, peer = %peer, held_ms = tracing::field::Empty, ended = tracing::field::Empty);
                     crate::delivery::parent_on(&leg, parent.as_ref());
                     let held_from = std::time::Instant::now();
                     let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
                     leg.record("held_ms", held_from.elapsed().as_millis() as u64).record("ended", ended.as_str());
-                    leg.in_scope(|| tracing::info!("the stream's terminal is written and the request direction ended: the stream is released"));
+                    leg.in_scope(|| tracing::debug!("the stream's terminal is written and the request direction ended: the stream is released"));
                     drop(leg);
                     if !d.response_settled(&id) {
                         d.push(&id, None, &format!("the stream ended with frames unacked; its request direction {ended}"));
@@ -957,24 +962,27 @@ impl NodeRpcServer {
                 // Supervised: a panic is caught at this boundary.
                 let (serve, handler) = h.call(ctx, payload);
                 let counted = InFlight::enter(&stats);
-                let joined = tokio::spawn(async move {
+                let handler = async move {
                     let _counted = counted;
                     handler.await
-                })
-                .await;
+                };
+                let joined = tokio::spawn(opentelemetry::context::FutureExt::with_context(handler, caller.clone())).await;
                 drop(permit);
                 // A fault or a panic is the end of the serve: named under the serve span, which ends here.
                 if matches!(&joined, Ok(Err(_)) | Err(_)) {
                     serve.record("code", "INTERNAL");
                     serve.record("detail", "handler-fault");
                 }
-                serve.in_scope(|| match &joined {
-                    Ok(Err(fault)) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = fault.reason())
-                        .in_scope(|| tracing::info!("handler fault: 423")),
-                    Err(_panic) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = "panic")
-                        .in_scope(|| tracing::info!("handler panicked: 423")),
-                    Ok(Ok(_)) => {}
-                });
+                {
+                    let _caller = caller.attach();
+                    serve.in_scope(|| match &joined {
+                        Ok(Err(fault)) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = fault.reason())
+                            .in_scope(|| tracing::info!("handler fault: 423")),
+                        Err(_panic) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = "panic")
+                            .in_scope(|| tracing::info!("handler panicked: 423")),
+                        Ok(Ok(_)) => {}
+                    });
+                }
                 drop(serve);
                 match joined {
                     Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
@@ -1014,7 +1022,7 @@ impl NodeRpcServer {
                         // The reply leg, past the serve span's end: the reply's write and the stream held
                         // until the caller's ack of it ends the request direction (its credit to the
                         // caller's next stream open is only then returned).
-                        let leg = tracing::info_span!("rdm.node_rpc.delivery.update.via-reply-held", delivery_id = %id, peer = %peer, write_ms = tracing::field::Empty, written = tracing::field::Empty, held_ms = tracing::field::Empty, ended = tracing::field::Empty);
+                        let leg = tracing::debug_span!("rdm.node_rpc.delivery.update.via-reply-held", delivery_id = %id, peer = %peer, write_ms = tracing::field::Empty, written = tracing::field::Empty, held_ms = tracing::field::Empty, ended = tracing::field::Empty);
                         crate::delivery::parent_on(&leg, parent.as_ref());
                         let reply_from = std::time::Instant::now();
                         gate.implicit();
@@ -1036,7 +1044,7 @@ impl NodeRpcServer {
                         }
                         let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
                         leg.record("held_ms", held_from.elapsed().as_millis() as u64).record("ended", ended.as_str());
-                        leg.in_scope(|| tracing::info!("the reply is written and the request direction ended: the stream is released"));
+                        leg.in_scope(|| tracing::debug!("the reply is written and the request direction ended: the stream is released"));
                         drop(leg);
                         if !d.response_settled(&id) {
                             d.push(&id, None, &format!("the reply's write {written:?}; the request direction {ended}"));

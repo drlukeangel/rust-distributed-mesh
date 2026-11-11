@@ -508,7 +508,7 @@ process, while `caller_system` identifies invocation origin and is observability
 names below.
 
 Every canonical call emits `rdm.node_rpc.request.update.via-call` on the caller and
-`rdm.node_rpc.request.serve.via-direct` on the server. The caller records `target`, `op`,
+`rdm.node_rpc.request.serve.via-direct` on the server. The caller records `target`, `op`, `delivery_id`, `attempts`, `path`,
 `outcome`, `reason`, `reused`, `elapsed_ms`, `code`, `detail`; the server records `protocol`,
 `op`, `peer`, `caller_system`, `context_dropped`, `test_case`, `scenario`, `operation`,
 `code`, `detail`. `code` is the standard gRPC name from §25. `detail` names the typed result
@@ -518,7 +518,7 @@ selects a code. Both attributes come from the typed outcome. An owner's bound la
 receiver-gone is `UNAVAILABLE`; a lost connection after commit is `UNKNOWN`, while HandlerFault
 and a real PROTOCOL_VIOLATION are `INTERNAL`.
 With propagated context, the server shares the caller's TraceId and its ParentSpanId is the
-call span's SpanId. Handler spans belong to the serving process. The invocation's own end — a stream's
+call span's SpanId. Both spans are DEBUG, as is every Node RPC span opened once per call or per frame (Q441). With DEBUG off, the server runs the handler under the caller's propagated context, so the handler's first exported span is a child of the caller's nearest exported span. A call that ends with no reply records its end at INFO on that span. Handler spans belong to the serving process. The invocation's own end — a stream's
 `rdm.node_rpc.stream.serve.via-terminal` or refusal, a unary fault or panic — is a child of its serve span.
 Stream result frames and the invocation's end record their own `code` and `detail`; workflow step
 spans retain the step's code and named detail, and a failed step's `rdm.build.step` event carries that code beside

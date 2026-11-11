@@ -303,6 +303,12 @@ pub(crate) fn parent_on(span: &tracing::Span, parent: Option<&(String, Option<St
     }
 }
 
+/// The OpenTelemetry context a request's serve runs under (Q441): the remote span its context names,
+/// or an empty context for a request that carried none, so the serve never runs under another's.
+pub(crate) fn context_on(parent: Option<&(String, Option<String>)>) -> opentelemetry::Context {
+    parent.and_then(|(tp, ts)| crate::remote_context(tp, ts.as_deref())).unwrap_or_default()
+}
+
 /// The remote context a request carried, as [`parent_on`] takes it.
 pub(crate) fn parent_of(context: &rdm_core::context::CallContext) -> Option<(String, Option<String>)> {
     context.traceparent.clone().map(|tp| (tp, context.tracestate.clone()))

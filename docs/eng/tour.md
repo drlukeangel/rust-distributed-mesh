@@ -241,7 +241,7 @@ sequenceDiagram
 Running `demo/examples/node_topology_get` calls `NodeRpc::topology_get` (`GetTopology`, op `0x1E` / `30`, protocol `"topology"`) on `mesh-gg4wtw-1.broker.1` (`node_id="8pfnyyygas63"`, `incarnation_id="svkjd0ddvwgz"`; [`node.topology.get`](../architecture/lifecycles/node-topology-get.md), [Node RPC envelope — The op ledger](../architecture/node-rpc-envelope.md#the-op-ledger)):
 
 ```bash
-RDM_EVIDENCE_DIR="$ROOT/evidence" RDM_NODE_ADMIN_BIRTH="$(cat "$ROOT/birth.json")" \
+RDM_OTEL_DEBUG=1 RDM_EVIDENCE_DIR="$ROOT/evidence" RDM_NODE_ADMIN_BIRTH="$(cat "$ROOT/birth.json")" \
   demo/target/debug/examples/node_topology_get "$M1.broker" 1
 ```
 
@@ -275,7 +275,7 @@ On `mesh-gg4wtw-1.broker.1`, the `GetTopology` handler reads its held topology f
 
 ### Step 3: Receiving frames (`seq` 0..7) and acknowledging completion
 
-As each frame arrives on `invocation_id="2rex9y06dwpr/0ayq2qdh6men#2"`, the caller classifies and records it (`rdm.node_rpc.stream.update.via-received-frame`, `seq="0"` through `seq="7"`). The initial `started` frame (`seq="0"`) acknowledges acceptance of the invocation on the stream, and when the terminal `end` frame (`seq="7"`) is received, the caller closes the delivery attempt (`rdm.node_rpc.delivery.update.via-attempt-ended`, `path="stream-complete"`; [Node RPC envelope — Transport frames](../architecture/node-rpc-envelope.md#transport-frames-delivery-below-the-protocol), [Node RPC runtime — 43. Send](../architecture/node-rpc.md#43-send-delivery-is-the-runtimes)):
+As each frame arrives on `invocation_id="2rex9y06dwpr/0ayq2qdh6men#2"`, the caller classifies and records it (`rdm.node_rpc.stream.update.via-received-frame`, `seq="0"` through `seq="7"`). The initial `started` frame (`seq="0"`) acknowledges acceptance of the invocation on the stream, and when the terminal `end` frame (`seq="7"`) is received, the caller's call span records how the delivery ended (`rdm.node_rpc.request.update.via-call`, `path="stream-complete"`; [Node RPC envelope — Transport frames](../architecture/node-rpc-envelope.md#transport-frames-delivery-below-the-protocol), [Node RPC runtime — 43. Send](../architecture/node-rpc.md#43-send-delivery-is-the-runtimes)):
 
 ```json
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"started","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"0"}}
@@ -286,7 +286,7 @@ As each frame arrives on `invocation_id="2rex9y06dwpr/0ayq2qdh6men#2"`, the call
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"primaries","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"5"}}
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"rafka-time","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"6"}}
 {"service":"example-node-topology-get","name":"rdm.node_rpc.stream.update.via-received-frame","attributes":{"code":"OK","detail":"end","invocation_id":"2rex9y06dwpr/0ayq2qdh6men#2","protocol":"topology","seq":"7"}}
-{"service":"example-node-topology-get","name":"rdm.node_rpc.delivery.update.via-attempt-ended","attributes":{"attempts":"1","delivery_id":"2rex9y06dwpr/0ayq2qdh6men#2","path":"stream-complete"}}
+{"service":"example-node-topology-get","name":"rdm.node_rpc.request.update.via-call","attributes":{"attempts":"1","delivery_id":"nh142rrn2ws7/cb6wdrkenjac#2","path":"stream-complete"}}
 ```
 
 ```mermaid
@@ -316,5 +316,5 @@ sequenceDiagram
     C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="6", detail="rafka-time")
     B1->>C: rdm.node_rpc.stream.serve.via-terminal (detail="end", frames="8", bytes="7135")
     C->>C: rdm.node_rpc.stream.update.via-received-frame (seq="7", detail="end")
-    C->>C: rdm.node_rpc.delivery.update.via-attempt-ended (path="stream-complete")
+    C->>C: rdm.node_rpc.request.update.via-call ends (path="stream-complete")
 ```

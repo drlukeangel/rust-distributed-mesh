@@ -5,10 +5,12 @@
 
 #![allow(non_snake_case)]
 
-/// The binary's process environment, set once, here, before `main` and before any thread exists.
+/// The binary's process environment, set once, here, before `main` and before any thread exists. Span
+/// export carries DEBUG (`RDM_OTEL_DEBUG=1`) in the binary and, passed through, on every node its
+/// estates launch: the per-call Node RPC spans the cells read among them (Q441).
 #[ctor::ctor]
 fn process_env() {
-    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")] {
+    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500"), ("RDM_OTEL_DEBUG", "1")] {
         if std::env::var_os(k).is_none() {
             std::env::set_var(k, v);
         }

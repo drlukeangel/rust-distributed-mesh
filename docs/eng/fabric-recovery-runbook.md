@@ -47,7 +47,7 @@ Start the consumer's node-admin executable (the one the Day-0 admin ran), with n
 | the declared values (Q150) | read back from an inherited data dir (`declared-secrets`); with a new data dir, each declared name in this process's environment, as the Day-0 admin had them |
 | `MESH_SPAWN_TYPE` | unset, or the fabric's own provider: the provider is the Fabric record's, and a differing value is refused by name |
 | `RDM_EXECUTABLE_DIRS` | as the Day-0 admin had it (required under the container provider) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `RDM_EVIDENCE_DIR`, `RUST_LOG`, `RUST_BACKTRACE` | as for the Day-0 admin; each is passed on to every node it launches |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `RDM_EVIDENCE_DIR`, `RDM_OTEL_DEBUG`, `RUST_LOG`, `RUST_BACKTRACE` | as for the Day-0 admin; each is passed on to every node it launches |
 
 Do not set:
 - `RDM_NODE_ID`, `RDM_INCARNATION_ID` or `RDM_LAUNCHER`: an adoption launch has no launcher.

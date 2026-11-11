@@ -19,10 +19,11 @@ mod in_process_provider;
 /// (`tools/test-runner/src/lib.rs` CADENCE), each value only where the environment the binary was
 /// started with names none: the gate's own export, or the environment a delegating parent hands the
 /// child it starts for one cell (`own_process::delegated_with_env`, a cell whose process needs other
-/// values: a stretched checklist, its own evidence directory, a runtime socket), stays as given.
+/// values: a stretched checklist, its own evidence directory, a runtime socket), stays as given. Span
+/// export carries DEBUG (`RDM_OTEL_DEBUG=1`), the per-call Node RPC spans the cells read among them (Q441).
 #[ctor::ctor]
 fn process_env() {
-    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")] {
+    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500"), ("RDM_OTEL_DEBUG", "1")] {
         if std::env::var_os(k).is_none() {
             std::env::set_var(k, v);
         }

@@ -42,6 +42,16 @@
 //! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
+/// The unit cells' process environment, set once before any thread exists, as every RDM test binary
+/// sets it: span export carries DEBUG (`RDM_OTEL_DEBUG=1`), the per-call Node RPC spans the cells read
+/// among them (Q441).
+#[cfg(test)]
+#[ctor::ctor]
+fn process_env() {
+    if std::env::var_os("RDM_OTEL_DEBUG").is_none() {
+        std::env::set_var("RDM_OTEL_DEBUG", "1");
+    }
+}
 
 pub mod entry;
 pub mod join;

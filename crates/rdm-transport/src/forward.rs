@@ -150,7 +150,7 @@ async fn carry_once(
     let node_id = target.clone();
     // The hop is a child span of the origin's trace; the inner call carries the origin's
     // context unchanged, so the target sees the origin's caller_system and causal parent.
-    let span = tracing::info_span!(
+    let span = tracing::debug_span!(
         "rdm.node_rpc.request.serve.via-carried-inner",
         inner_op,
         target = %target,
@@ -186,7 +186,7 @@ async fn carry_once(
     span.record("outcome", out.name());
     span.record("code", out.code().name());
     span.record("detail", out.detail_name());
-    span.in_scope(|| tracing::info!("one direct inner call"));
+    span.in_scope(|| tracing::debug!("one direct inner call"));
     match out {
         RpcOutcome::Reply(r) => r.into_value(),
         RpcOutcome::NotSent(n) => {

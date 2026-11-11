@@ -1250,17 +1250,17 @@ async fn a_frame_its_consumer_has_not_recovered_is_not_acked_and_is_resent_after
     eventually("the terminal is recovered and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
 }
 
-/// Cell 23. CONTRACT (i146 Q38): every return of a request's attempt task names its path, spanned
-/// under its call in the caller's trace (`rdm.node_rpc.delivery.update.via-attempt-ended`, its
-/// `path` and `delivery_id`): a served call's attempt ends `stream-complete`, one whose reply
-/// direction the receiver resets with `INTERNAL_RPC_FAILURE` ends `reset`, one whose receiver's exit
-/// is proven ends `receiver-gone`. Must NOT happen: a call whose attempt task ended without the span,
-/// or a span naming a path other than the one its call ended on.
+/// Cell 23. CONTRACT (i146 Q38; Q441, a call is one span): every return of a request's attempt task
+/// names its path on its call's span in the caller's trace (`rdm.node_rpc.request.update.via-call`,
+/// its `path`, `attempts` and `delivery_id`): a served call's attempt ends `stream-complete`, one whose
+/// reply direction the receiver resets with `INTERNAL_RPC_FAILURE` ends `reset`, one whose receiver's
+/// exit is proven ends `receiver-gone`. Must NOT happen: a call whose attempt task ended without its
+/// path on the call's span, a path other than the one its call ended on, or a second span of the call.
 #[test]
 fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-attempt-ended").expect("the cell's evidence file can be created");
     let (trace, calls) = capture.run(4, async {
-        let root = tracing::info_span!("rdm.test.delivery.update.via-attempt-ended");
+        let root = tracing::info_span!("rdm.test.delivery.update.via-call-path");
         let trace = trace_of(&root);
         let calls = tracing::Instrument::instrument(
             async {
@@ -1312,16 +1312,268 @@ fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let named = |name: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace.as_str()).collect() };
     let calls_spanned = named("rdm.node_rpc.request.update.via-call");
-    let ended = named("rdm.node_rpc.delivery.update.via-attempt-ended");
     for (id, path) in &calls {
         let id = id.to_string();
-        let call = calls_spanned.iter().find(|c| c["attributes"]["delivery_id"] == id.as_str()).unwrap_or_else(|| panic!("the call {id} is spanned in the caller's trace: {}", flame(&trace)));
-        let of_call: Vec<&&serde_json::Value> = ended.iter().filter(|e| e["attributes"]["delivery_id"] == id.as_str()).collect();
-        assert_eq!(of_call.len(), 1, "one end of the call {id}'s attempt task, spanned: {of_call:#?} ({})", flame(&trace));
+        let of_call: Vec<&&serde_json::Value> = calls_spanned.iter().filter(|c| c["attributes"]["delivery_id"] == id.as_str()).collect();
+        assert_eq!(of_call.len(), 1, "the call {id} is one span in the caller's trace: {of_call:#?} ({})", flame(&trace));
         assert_eq!(of_call[0]["attributes"]["path"], *path, "the call {id} ended on `{path}`: {:#?} ({})", of_call[0]["attributes"], flame(&trace));
-        assert_eq!(of_call[0]["parent_span_id"], call["span_id"], "the end is spanned under its own call: {} ({})", of_call[0], flame(&trace));
+        assert!(of_call[0]["attributes"]["attempts"].as_str().is_some_and(|a| a.parse::<u32>().is_ok_and(|a| a >= 1)), "the call {id} records its attempts: {:#?} ({})", of_call[0]["attributes"], flame(&trace));
     }
-    println!("delivery flame (every attempt task's end, named by its path): {}", flame(&trace));
+    println!("delivery flame (every attempt task's end, named by its path on its call's span): {}", flame(&trace));
+}
+
+// ---- one span per call, at DEBUG (Q441) ----
+
+/// The handler span of the per-call span cells: the served work's own INFO span, under whatever span
+/// its serve runs in.
+const HANDLER_SPAN: &str = "rdm.test.call.serve.via-handler";
+
+/// A responder whose handlers each open their own INFO span ([`HANDLER_SPAN`], its `protocol`): `Run`
+/// replies at once; `Tick` streams `Started`, one `Item` and `Done`.
+async fn served_spanning() -> (Router, ResolvedNode) {
+    let (me, key) = (birth(), SecretKey::generate());
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let server = ServerBuilder::new()
+        .ledger(ledger())
+        .serve::<Command, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req: CommandRequest| async move {
+            tracing::info_span!("rdm.test.call.serve.via-handler", protocol = Command::NAME).in_scope(|| tracing::info!("the handler ran"));
+            let (CommandRequest::Run { tag, .. } | CommandRequest::Read { tag, .. }) = req;
+            Ok::<_, HandlerFault>(CommandReply::Ran { tag, runs: 1 })
+        })
+        .serve_stream::<Tick, _, _>(OpOwner::Product("test".into()), |_peer, _req: TickRequest, sink| async move {
+            tracing::info_span!("rdm.test.call.serve.via-handler", protocol = Tick::NAME).in_scope(|| tracing::info!("the handler ran"));
+            let Ok(mut sink) = sink.started(TickFrame::Started).await else { return Ok(TickFrame::Done) };
+            let _ = sink.data(TickFrame::Item { i: 1 }).await;
+            Ok::<_, HandlerFault>(TickFrame::Done)
+        })
+        .with_delivery(Delivery::with_pacing(me.clone(), pacing()))
+        .build(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() })
+        .unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+    let node = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: me.node_id.clone(), path: "mesh1.node".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    (router, node)
+}
+
+/// One unary `Run` and one `Tick` stream read to its terminal, from a client of its own to `node`:
+/// both replied.
+async fn served_calls(node: &ResolvedNode) {
+    let (client, _) = client_of(&[node]).await;
+    let target = NodeTarget::ExactNode(node.node_id.clone());
+    let (out, _) = client.call::<Command>(&target, &run(24, Mode::Apply), &budget(Duration::from_secs(5))).await;
+    assert_eq!(ran(&out), Some((24, 1)), "{out:?}");
+    let (stream, _) = client.call_stream::<Tick>(&target, &TickRequest::Tick, &budget(Duration::from_secs(5))).await.map_err(|(o, _)| o).expect("the stream opens");
+    let mut stream = stream.read_only();
+    let mut items = Vec::new();
+    while let Some(item) = stream.next().await {
+        items.push(item);
+    }
+    assert!(matches!(items.last(), Some(StreamItem::Frame(FrameKind::Terminal, TickFrame::Done))), "the stream read to its terminal: {items:?}");
+}
+
+/// The spans of `trace` in the capture's file.
+fn of_trace<'a>(spans: &'a [serde_json::Value], trace: &str) -> Vec<&'a serde_json::Value> {
+    spans.iter().filter(|s| s["trace_id"] == trace).collect()
+}
+
+/// Cell 24. CONTRACT (Q441): a served call is one span on its caller, `rdm.node_rpc.request.update.via-call`,
+/// DEBUG, carrying its `delivery_id`, `attempts` and `path` (how its delivery ended), a unary call and a
+/// stream alike. With DEBUG exported every span stays where it is: the serve is a child of the call,
+/// the handler's own span a child of the serve. Must NOT happen: a second span of the call
+/// (`rdm.node_rpc.delivery.update.via-attempt-ended`), a call span without its attempts or path, or a
+/// handler span outside its serve.
+#[test]
+fn a_served_call_is_one_debug_span_carrying_its_attempts_and_how_its_delivery_ended() {
+    if crate::own_process::delegated_with_env(module_path!(), "a_served_call_is_one_debug_span_carrying_its_attempts_and_how_its_delivery_ended", &[("RDM_OTEL_DEBUG", Some(std::ffi::OsStr::new("1")))]) {
+        return;
+    }
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-call-span-debug").expect("the cell's evidence file can be created");
+    let trace = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.call.update.via-caller");
+        let trace = trace_of(&root);
+        tracing::Instrument::instrument(
+            async {
+                let (_router, node) = served_spanning().await;
+                served_calls(&node).await;
+            },
+            root,
+        )
+        .await;
+        trace
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let spans = of_trace(&spans, &trace);
+    let named = |name: &str| -> Vec<&serde_json::Value> { spans.iter().copied().filter(|s| s["name"] == name).collect() };
+    let on = |s: &serde_json::Value, key: &str| s["attributes"][key].as_str().unwrap_or_default().to_string();
+    assert!(named("rdm.node_rpc.delivery.update.via-attempt-ended").is_empty(), "a call is one span: {}", flame(&trace));
+    let root = named("rdm.test.call.update.via-caller").into_iter().next().unwrap_or_else(|| panic!("the cell's root span: {}", flame(&trace)));
+    let calls = named("rdm.node_rpc.request.update.via-call");
+    assert_eq!(calls.len(), 2, "one span per call, a unary call and a stream: {calls:#?} ({})", flame(&trace));
+    let ids: std::collections::BTreeSet<String> = calls.iter().map(|c| on(c, "delivery_id")).collect();
+    assert!(ids.len() == 2 && !ids.contains(""), "each call names its own delivery: {ids:?} ({})", flame(&trace));
+    for call in &calls {
+        assert_eq!(on(call, "attempts"), "1", "a served call took one attempt: {:#?} ({})", call["attributes"], flame(&trace));
+        assert!(["stream-complete", "complete-at-turn"].contains(&on(call, "path").as_str()), "a served call's delivery ended with its invocation complete: {:#?} ({})", call["attributes"], flame(&trace));
+        assert_eq!(call["parent_span_id"], root["span_id"], "the call is a child of its caller: {} ({})", call, flame(&trace));
+    }
+    for (op, serve_name, protocol) in [(Command::OP, "rdm.node_rpc.request.serve.via-direct", Command::NAME), (Tick::OP, "rdm.node_rpc.stream.serve.via-direct", Tick::NAME)] {
+        let op = op.to_string();
+        let call = calls.iter().find(|c| on(c, "op") == op).unwrap_or_else(|| panic!("the op {op} call: {}", flame(&trace)));
+        let serve = named(serve_name).into_iter().find(|s| on(s, "op") == op).unwrap_or_else(|| panic!("the op {op} serve, {serve_name}: {}", flame(&trace)));
+        let handler = named(HANDLER_SPAN).into_iter().find(|s| on(s, "protocol") == protocol).unwrap_or_else(|| panic!("the {protocol} handler's span: {}", flame(&trace)));
+        assert_eq!(serve["parent_span_id"], call["span_id"], "the {protocol} serve is a child of its call: {serve} ({})", flame(&trace));
+        assert_eq!(handler["parent_span_id"], serve["span_id"], "the {protocol} handler's span is a child of its serve: {handler} ({})", flame(&trace));
+    }
+    println!("call span flame (DEBUG exported: one via-call per call with its attempts and path; serve under call, handler under serve): {}", flame(&trace));
+}
+
+/// Cell 25. CONTRACT (Q441): with DEBUG off, as production exports, a served call exports no Node RPC
+/// span on either side, unary or stream, and leaves none of its steps on its caller's span; the
+/// handler's own span is a child of the caller's nearest exported span, across the two processes as
+/// before: the serve runs under the caller's propagated context. Must NOT happen: a per-call or
+/// per-frame Node RPC span exported, a step line of the call on the caller's span, or a handler span
+/// that starts a trace of its own.
+#[test]
+fn with_debug_off_a_served_call_exports_no_span_of_its_own_and_its_handler_span_is_a_child_of_the_callers() {
+    if crate::own_process::delegated_with_env(module_path!(), "with_debug_off_a_served_call_exports_no_span_of_its_own_and_its_handler_span_is_a_child_of_the_callers", &[("RDM_OTEL_DEBUG", None)]) {
+        return;
+    }
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-call-span-info").expect("the cell's evidence file can be created");
+    let trace = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.call.update.via-caller");
+        let trace = trace_of(&root);
+        tracing::Instrument::instrument(
+            async {
+                let (_router, node) = served_spanning().await;
+                served_calls(&node).await;
+            },
+            root,
+        )
+        .await;
+        trace
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let spans = of_trace(&spans, &trace);
+    let node_rpc: Vec<&str> = spans.iter().filter_map(|s| s["name"].as_str()).filter(|n| n.starts_with("rdm.node_rpc.")).collect();
+    assert!(node_rpc.is_empty(), "a served call exports no Node RPC span with DEBUG off: {node_rpc:?} ({})", flame(&trace));
+    let root = spans.iter().find(|s| s["name"] == "rdm.test.call.update.via-caller").unwrap_or_else(|| panic!("the cell's root span: {}", flame(&trace)));
+    let handlers: Vec<&&serde_json::Value> = spans.iter().filter(|s| s["name"] == HANDLER_SPAN).collect();
+    assert_eq!(handlers.len(), 2, "both handlers' spans are in the caller's trace: {handlers:#?} ({})", flame(&trace));
+    for h in &handlers {
+        assert_eq!(h["parent_span_id"], root["span_id"], "the handler's span is a child of the caller's nearest exported span: {h} ({})", flame(&trace));
+    }
+    let lines: Vec<String> = root["events"].as_array().cloned().unwrap_or_default().iter().filter(|e| !e["attributes"]["step"].is_null() || e["name"].as_str().is_some_and(|n| n.starts_with("node rpc"))).map(|e| e.to_string()).collect();
+    assert!(lines.is_empty(), "a call that replied leaves none of its lines on its caller's span: {lines:#?} ({})", flame(&trace));
+    println!("call span flame (DEBUG off: no Node RPC span, both handler spans children of the caller's span): {}", flame(&trace));
+}
+
+/// Cell 26. CONTRACT (Q441; node-rpc.md §43): with DEBUG off, a call that ends with no reply records its
+/// end at INFO on its caller's nearest exported span (`node rpc call finished`), with every value its
+/// DEBUG span holds: `outcome`, `code`, `detail`, `reason`, `delivery_id`, `attempts` and `path`; a call
+/// that replied leaves no such line. Must NOT happen: a call that ends unanswered unseen at INFO, or its
+/// end without the values of its span.
+#[test]
+fn with_debug_off_a_call_that_ends_with_no_reply_records_its_end_at_info_on_the_callers_span() {
+    if crate::own_process::delegated_with_env(module_path!(), "with_debug_off_a_call_that_ends_with_no_reply_records_its_end_at_info_on_the_callers_span", &[("RDM_OTEL_DEBUG", None)]) {
+        return;
+    }
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-call-span-unanswered").expect("the cell's evidence file can be created");
+    let (trace, reset_id) = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.call.update.via-caller");
+        let trace = trace_of(&root);
+        let reset_id = tracing::Instrument::instrument(
+            async {
+                // Replied: no line at INFO.
+                let (_router, node) = served_spanning().await;
+                let (client, _) = client_of(&[&node]).await;
+                let (out, _) = client.call::<Command>(&NodeTarget::ExactNode(node.node_id.clone()), &run(26, Mode::Apply), &budget(Duration::from_secs(5))).await;
+                assert_eq!(ran(&out), Some((26, 1)), "{out:?}");
+                // No reply: the receiver reads the whole request, then resets its reply direction.
+                let mut r = raw().await;
+                let (client, _) = client_of(&[&r.node]).await;
+                let reset_id = DeliveryId { sender: client.delivery().me().clone(), delivery_seq: 1 };
+                let target = NodeTarget::ExactNode(r.node.node_id.clone());
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    async move { client.call::<Command>(&target, &run(26, Mode::Apply), &budget(Duration::from_secs(5))).await.0 },
+                    tracing::Span::current(),
+                ));
+                let conn = r.conns.recv().await.unwrap();
+                let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+                let _ = read_request(&mut recv).await;
+                send.reset(iroh::endpoint::VarInt::from_u32(rdm_core::ResetCode::InternalRpcFailure.code())).unwrap();
+                let out = call.await.unwrap();
+                assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::Reset(_))), "{out:?}");
+                reset_id
+            },
+            root,
+        )
+        .await;
+        (trace, reset_id)
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let spans = of_trace(&spans, &trace);
+    let root = spans.iter().find(|s| s["name"] == "rdm.test.call.update.via-caller").unwrap_or_else(|| panic!("the cell's root span: {}", flame(&trace)));
+    let ends: Vec<serde_json::Value> = root["events"].as_array().cloned().unwrap_or_default().into_iter().filter(|e| e["name"] == "node rpc call finished").collect();
+    assert_eq!(ends.len(), 1, "the call with no reply, and only it, ends at INFO on its caller's span: {ends:#?} ({})", flame(&trace));
+    let end = &ends[0]["attributes"];
+    let on = |key: &str| end[key].as_str().unwrap_or_default().to_string();
+    assert_eq!(on("outcome"), "Indeterminate", "{end:#?} ({})", flame(&trace));
+    assert_eq!(on("delivery_id"), reset_id.to_string(), "{end:#?} ({})", flame(&trace));
+    assert_eq!(on("attempts"), "1", "{end:#?} ({})", flame(&trace));
+    assert_eq!(on("path"), "reset", "{end:#?} ({})", flame(&trace));
+    assert_eq!(on("op"), Command::OP.to_string(), "{end:#?} ({})", flame(&trace));
+    assert!(on("reason").contains("Reset") && !on("code").is_empty() && !on("detail").is_empty(), "its reason, code and detail: {end:#?} ({})", flame(&trace));
+    println!("call span flame (DEBUG off: the call with no reply ends at INFO on the caller's span): {}", flame(&trace));
+}
+
+/// Cell 27. CONTRACT (Q441): with DEBUG off, the INFO spans a call's attempts open on its failure path,
+/// a resend (`rdm.node_rpc.delivery.update.via-resend`) and its receiver's proven end
+/// (`rdm.node_rpc.delivery.remove.via-receiver-gone`), are children of the caller's nearest exported
+/// span: the attempts run under the caller's context. Must NOT happen: such a span starting a trace of
+/// its own, or one outside the caller's trace.
+#[test]
+fn with_debug_off_the_spans_of_a_calls_failure_path_are_children_of_the_callers_span() {
+    if crate::own_process::delegated_with_env(module_path!(), "with_debug_off_the_spans_of_a_calls_failure_path_are_children_of_the_callers_span", &[("RDM_OTEL_DEBUG", None)]) {
+        return;
+    }
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-call-span-failure-path").expect("the cell's evidence file can be created");
+    let trace = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.call.update.via-caller");
+        let trace = trace_of(&root);
+        tracing::Instrument::instrument(
+            async {
+                // A silent receiver: its request is resent, then its exit is proven.
+                let gone = raw().await;
+                let (client, resolver) = client_of(&[&gone.node]).await;
+                let cd = client.delivery().clone();
+                let target = NodeTarget::ExactNode(gone.node.node_id.clone());
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    async move { client.call::<Command>(&target, &run(27, Mode::Apply), &budget(Duration::from_secs(20))).await.0 },
+                    tracing::Span::current(),
+                ));
+                eventually("the silent receiver's request is resent", Duration::from_secs(3), || get(&cd.stats().resends) >= 1).await;
+                resolver.remove_gone(&gone.node.node_id);
+                let out = call.await.unwrap();
+                assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))), "{out:?}");
+            },
+            root,
+        )
+        .await;
+        trace
+    });
+    let all = capture.spans().expect("the cell's spans reached its evidence file");
+    let spans = of_trace(&all, &trace);
+    let root = spans.iter().find(|s| s["name"] == "rdm.test.call.update.via-caller").unwrap_or_else(|| panic!("the cell's root span: {}", flame(&trace)));
+    for name in ["rdm.node_rpc.delivery.update.via-resend", "rdm.node_rpc.delivery.remove.via-receiver-gone"] {
+        let elsewhere: Vec<String> = all.iter().filter(|s| s["name"] == name && s["trace_id"] != trace.as_str()).map(|s| s.to_string()).collect();
+        assert!(elsewhere.is_empty(), "no {name} outside the caller's trace: {elsewhere:#?} ({})", flame(&trace));
+        let of_call: Vec<&&serde_json::Value> = spans.iter().filter(|s| s["name"] == name).collect();
+        assert!(!of_call.is_empty(), "the failure path's {name} is in the caller's trace: {}", flame(&trace));
+        for s in of_call {
+            assert_eq!(s["parent_span_id"], root["span_id"], "{name} is a child of the caller's nearest exported span: {s} ({})", flame(&trace));
+        }
+    }
+    println!("call span flame (DEBUG off: the failure path's spans are children of the caller's span): {}", flame(&trace));
 }
 
 /// Many attempts, each with a long time limit: a cell that watches a request resent and ends it
