@@ -370,6 +370,16 @@ fn step_counts(build: &Value, operation: &Op) -> BTreeMap<String, usize> {
 }
 
 /// `Ok` when the advertised roles equal the ones the public candidates compute.
+/// `nodes` without the birth at `held` when it is the only birth of its type in its mesh: the create that
+/// makes a type's first node commands its primary at its own step (Q407), so a held create leaves that
+/// type with no primary yet. A type with another member is judged with it.
+fn without_first_of_its_type(nodes: &[Value], held: &PathName) -> Vec<Value> {
+    let Some(h) = nodes.iter().find(|n| location(n) == *held) else { return nodes.to_vec() };
+    let (mesh, kind) = (rdm_test::estate::mesh_of(h), h["type"].clone());
+    let alone = nodes.iter().filter(|n| rdm_test::estate::mesh_of(n) == mesh && n["type"] == kind).count() == 1;
+    if alone { nodes.iter().filter(|n| location(n) != *held).cloned().collect() } else { nodes.to_vec() }
+}
+
 fn primaries(nodes: &[Value]) -> (bool, String) {
     match primaries_as_expected(nodes) {
         Ok(()) => (true, String::new()),
@@ -653,7 +663,13 @@ async fn fault_case(run: &Run, family: Family, id: &str, spec: Value, faults: &F
     let (routable, shown) = run.routable(&watch).await;
     ev.routing = Some(Routing { expected_routable: expect_routable, observed_routable: routable, observed: shown });
     let nodes_during = run.estate.node_values().await;
-    let (roles_during, roles_detail_during) = primaries(&nodes_during);
+    // A type's first node is commanded primary by its create's own step once it is Ready (node-create.md,
+    // node-primary-update.md; Q407): while that create is held, its type has no primary yet (rdm#392).
+    let judged_during = match &shape {
+        Shape::Create { node: Some(n) } => without_first_of_its_type(&nodes_during, n),
+        _ => nodes_during.clone(),
+    };
+    let (roles_during, roles_detail_during) = primaries(&judged_during);
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
     let held_pid = run.admin_pid(&faults.location()).await;
     let alive = held_pid.and_then(proc_state).is_some_and(|c| c != 'Z');
