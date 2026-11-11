@@ -3754,3 +3754,4 @@ rdm#174 with the lead's conforming text.
   - #3526 on rafka's 03:00 nightly;
   - rafka#3263 (the gate's wall);
   - the export measurement (laneG1), with the stacked tonic-inside-ours retry finding.
+- 2026-11-11 rdm#386 LANDED b6ab0b0b7 (lane 6, Q441). Every per-call and per-frame Node RPC span is DEBUG, and a call is one `via-call` span carrying its attempts and path (`via-attempt-ended` removed). A call that ends with no reply logs its end at INFO on the caller's nearest exported span. With DEBUG off, handler and failure-path spans parent to the caller through the carried context, so production traces stay linked. `RDM_OTEL_DEBUG` joins PASSTHROUGH. Red first: cells 23–27 at 513b47931. Flames: before 76901f04f7e4abc0be0a6463642a4a17; after at INFO a9411c5e5311c8f8ebc2d215edbc5b62. The rafka session takes the pin together with its RDM_DIRECTIVE following its debug gate.
