@@ -2616,18 +2616,28 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     }
 
     // C19: a primary that restarts loses its role to its mesh (its stop moves its roles) and keeps its NodeId
-    // and incarnation; back as the same birth it holds no role while the admin that filled it lives (R-A2: a
-    // lower NodeId never displaces a living primary); the fabric-primary hands off once more; no deleted
-    // identity returns.
+    // and incarnation; back as the same birth it holds no role while it hears the admin that filled it (elections
+    // §5: a restarted node never displaces the primary); the fabric-primary hands off once more; no deleted
+    // identity returns. A restarted admin that hears no other node-admin of its mesh past the floor elects
+    // itself, and once they hear each other the one election over the same records names the higher revision's
+    // (mesh-recovery.md "Two node-admins that each investigate the other", Q446): one primary either way, named
+    // alike in every admin's own view (the stable checkpoint below).
     let quiet = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
+    let restarted_ns = now_ns();
     restart_node(&mut f, &mut a, &st, &location(&incumbent), &format!("C19 {quiet}: the primary restarts and holds no primary role")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &admins_per_mesh(), &mut inv).await;
-    assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's role keeps it while it lives, whatever NodeId the restarted one holds");
     let back = st.admins.iter().find(|n| (rdm_test::estate::location(&n) == rdm_test::estate::location(&incumbent))).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
     assert_eq!(back["node_id"], incumbent["node_id"], "C19: the restart keeps the NodeId");
     assert_eq!(back["incarnation"], incumbent["incarnation"], "C19: the restart keeps the incarnation (node-stop.md, Kept)");
-    assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no primary role while the admin that filled it lives");
+    let self_elected = f.estate.spans_named(&["rdm.mesh.election.resolve.via-mesh-primary"]).into_iter().any(|sp| {
+        sp["attributes"]["observer_node_id"] == incumbent["node_id"] && sp["attributes"]["winner_node_id"] == incumbent["node_id"] && start_ns(&sp) >= restarted_ns
+    });
+    a.events.push(json!({"event": "C19.restarted-primary", "mesh": quiet, "node_id": incumbent["node_id"], "heard_no_other_admin_and_elected_itself": self_elected, "primary_after": st.primary_of(&quiet)["node_id"]}));
+    if !self_elected {
+        assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's role keeps it while the restarted one hears it, whatever NodeId the restarted one holds");
+        assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no primary role while it hears the admin that filled it");
+    }
     proofs.push(prove_path(&mut f, &mut a, &admins_per_mesh(), "C19 restarted primary", &mut inv).await);
     let (after, ev) = hand_off(&mut f, &mut a, &st, "C19: a repeated fabric-primary hand-off", &mut inv).await;
     st = replace_deleted(&mut f, &mut a, &after, &ev, "C19", &mut inv).await;
