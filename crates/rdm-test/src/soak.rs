@@ -380,7 +380,7 @@ struct Call {
     key: u64,
     value: Option<String>,
     expected: Option<String>,
-    /// The gateway that carries the call to its exact target (`--via path:<gateway>`).
+    /// The gateway that carries the call to its exact target, by its node ID (`--via exact:<gateway>`).
     via: Option<String>,
 }
 
@@ -414,7 +414,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Cal
         _ => {}
     }
     if let Some(gw) = &call.via {
-        args.extend(["--via".into(), format!("path:{gw}")]);
+        args.extend(["--via".into(), format!("exact:{gw}")]);
     }
     let (p, a) = (probe.clone(), admin.clone());
     let printed = tokio::task::spawn_blocking(move || {

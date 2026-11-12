@@ -122,8 +122,11 @@ impl Classification {
             Some("Unserved") => Ok(Self { bucket: Bucket::Unserved, detail: text(&out["reason"]), reply_success: false }),
             Some("RejectedStale") => Ok(Self { bucket: Bucket::RejectedStale, detail: format!("stale target {}", text(&out["target_node_id"])), reply_success: false }),
             Some("Indeterminate") => Ok(Self { bucket: Bucket::Indeterminate, detail: text(&out["reason"]), reply_success: false }),
-            // The probe refuses before it dispatches anything (a bad argument, the admin's node view
-            // unreadable, no endpoint): the request never left, which is what NotSent says.
+            // The probe refusing the arguments its caller gave it is the caller's defect, never traffic
+            // that went unsent: the operation stays unclassified and the ledger names it (rdm#407).
+            Some("Refused") if out["arguments"] == Value::Bool(true) => Err(format!("the probe refused the arguments it was given: {}", text(&out["reason"]))),
+            // The probe refuses before it dispatches anything (the admin's node view unreadable, no
+            // endpoint): the request never left, which is what NotSent says.
             Some("Refused") => Ok(Self { bucket: Bucket::NotSent, detail: format!("ProbeRefused({})", text(&out["reason"])), reply_success: false }),
             other => Err(format!("the probe printed no typed RpcOutcome ({other:?}): {out}")),
         }
@@ -440,6 +443,10 @@ mod tests {
         let refused = c(json!({"outcome": "Refused", "reason": "GET http://x/api/nodes: error"}));
         assert_eq!((refused.bucket, refused.detail.as_str()), (Bucket::NotSent, "ProbeRefused(GET http://x/api/nodes: error)"));
         assert!(Classification::of_probe(&json!({"outcome": "Mystery"})).is_err());
+        // The probe refusing the arguments its caller gave it (rdm#407: a NodeId given as `path:`) is
+        // the caller's defect: never NotSent, the operation left unclassified for the ledger to name.
+        let own = Classification::of_probe(&json!({"outcome": "Refused", "reason": "--via path target \"4pj06fepthpj\": invalid type: integer `4`", "arguments": true}));
+        assert!(own.is_err_and(|e| e.contains("refused the arguments")), "an argument refusal is never a NotSent");
     }
 
     #[test]

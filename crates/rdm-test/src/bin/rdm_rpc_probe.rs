@@ -117,6 +117,12 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    // The carrier is the caller's own argument: one that names no target is refused with the arguments,
+    // never sent as a call that is not made (rdm#407: a NodeId given as `path:` refused a quarter of a
+    // soak's calls, which its ledger counted as NotSent).
+    if let Some(v) = &via {
+        self::target(v).map_err(|e| format!("--via {e}"))?;
+    }
     let is_declare = matches!(op.as_deref(), Some("declare" | "topology" | "nodes" | "stream" | "fabric-delete" | "node-delete" | "own-config"));
     let admin_birth = admin_birth.ok_or("--admin-birth is required")?;
     let admin_birth: MeshNode = serde_json::from_str(&admin_birth).map_err(|e| format!("--admin-birth {admin_birth:?} is not a node-admin's birth: {e}"))?;
@@ -403,7 +409,7 @@ async fn probe() -> std::process::ExitCode {
                 rdm_transport::report_init_steps_here();
                 tracing::info!("the probe refused its arguments")
             });
-            println!("{}", json!({"outcome": "Refused", "reason": e}));
+            println!("{}", json!({"outcome": "Refused", "reason": e, "arguments": true}));
             return std::process::ExitCode::from(2);
         }
     };
