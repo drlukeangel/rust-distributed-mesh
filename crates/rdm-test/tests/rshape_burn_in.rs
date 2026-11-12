@@ -2275,7 +2275,9 @@ async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, del
     assert_ne!(born[0]["node_id"], deleted["old_node_id"], "{scenario}: a replacement never reuses the deleted NodeId");
     // A lower NodeId never displaces a living primary (R-A2): the late admin holds no mesh-primary role, whatever its
     // NodeId, and the incumbent keeps it.
-    let incumbent = after_delete.admins.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh.as_str()).unwrap().clone();
+    // The incumbent is the mesh's primary after the delete: at two admins per mesh the one left, at three
+    // (`scale`, L4's shape) the one the election named, the lowest NodeId of the others.
+    let incumbent = after_delete.primary_of(&mesh);
     let lower = s(&born[0]["node_id"]) < s(&incumbent["node_id"]);
     assert_eq!(born[0]["is_primary"], false, "{scenario}: the late admin {} (NodeId lower than the incumbent's {}: {lower}) holds no mesh-primary role while the incumbent lives", born[0]["node_id"], incumbent["node_id"]);
     let kept = st.admins.iter().find(|n| n["node_id"] == incumbent["node_id"]).unwrap_or_else(|| panic!("{scenario}: the incumbent {} is in the view", incumbent["name"]));
