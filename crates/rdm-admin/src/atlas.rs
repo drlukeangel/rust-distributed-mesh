@@ -238,24 +238,44 @@ pub struct Atlas {
 /// else the birth its subject's current record names newest (`rows`).
 fn birth_of_step(rows: &[NodeRecord], p: &BuildProjection, s: &crate::build_state::BuildStep) -> Option<Birth> {
     let node_id = s.subject.as_ref()?;
-    if let Some((_, b)) = p.topology.pinned.iter().find(|(_, b)| b.node_id == *node_id) {
+    if let Some(b) = pinned_birth(p, node_id) {
         return Some(Birth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() });
     }
     let row = rows.iter().find(|r| r.node_id == *node_id)?;
     Some(Birth { node_id: node_id.clone(), incarnation: row.incarnation.clone() })
 }
 
-/// The current records of `subjects` (query.md §1, read through `records`), by node ID: what names a
-/// step's birth when its Build pinned none ([`birth_of_step`]). `Err` names a read that failed.
-pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, subjects: impl IntoIterator<Item = &'a NodeId>) -> Result<Vec<NodeRecord>, String> {
-    let mut out: Vec<NodeRecord> = Vec::new();
-    for id in subjects {
-        let row = records.row(id).await?;
-        if let Some(r) = row.filter(|r| !out.iter().any(|o| o.node_id == r.node_id)) {
-            out.push(r);
+/// The birth of `node_id` the Build `p`'s acceptance pinned (build.md §4.4), when it pinned one.
+fn pinned_birth<'p>(p: &'p BuildProjection, node_id: &NodeId) -> Option<&'p crate::build::PinnedBirth> {
+    p.topology.pinned.iter().find(|(_, b)| b.node_id == *node_id).map(|(_, b)| b)
+}
+
+/// The subjects whose records [`Atlas::receipts`] reads: those of `p`'s completed lifecycle steps
+/// (node.stop, node.start, node.delete: [`take_effect`]) whose birth `p` pinned none of, the birth their
+/// current record names ([`birth_of_step`]). A create's subject, and a subject `p` pinned, is read by
+/// none. Each once.
+pub(crate) fn unpinned_subjects(p: &BuildProjection) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = Vec::new();
+    for s in p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete && lifecycle_of(&s.operation).is_some()) {
+        if let Some(id) = s.subject.as_ref().filter(|id| pinned_birth(p, id).is_none() && !out.contains(id)) {
+            out.push(id.clone());
         }
     }
-    Ok(out)
+    out
+}
+
+/// The current records of `subjects` (query.md §1, read through `records`), by node ID, each read at its
+/// node ID, the reads made together, never one after another; a subject named twice is read once: what
+/// names a step's birth when its Build pinned none ([`birth_of_step`]). `Err` names a read that failed.
+pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, subjects: impl IntoIterator<Item = &'a NodeId>) -> Result<Vec<NodeRecord>, String> {
+    let mut ids: Vec<&NodeId> = Vec::new();
+    for id in subjects {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let read = futures_util::future::try_join_all(ids.into_iter().map(|id| records.row(id))).await?;
+    Ok(read.into_iter().flatten().collect())
 }
 
 /// What a streamed receipt wrote in the atlas ([`Atlas::take_receipt`]).
@@ -529,7 +549,8 @@ impl Atlas {
 
     /// `p` completed: every completed lifecycle step of the Build is taken over an older effect of its
     /// birth. Called before the caller is answered `Complete` (R-FA2). `rows` are the current records of
-    /// the steps' subjects ([`subject_rows`]), what names an unpinned step's birth.
+    /// the subjects whose birth the Build pinned none of ([`unpinned_subjects`], [`subject_rows`]), what
+    /// names an unpinned step's birth.
     pub(crate) fn receipts(&self, p: &BuildProjection, rows: &[NodeRecord]) {
         let mut held = self.held.lock().unwrap();
         for (i, s) in p.steps.iter().enumerate().filter(|(_, s)| s.step == "Complete" && s.outcome == StepOutcome::Complete) {
@@ -878,8 +899,10 @@ impl crate::control_plane::ControlPlane {
 
     /// `build_id` completed: its completed lifecycle steps taken into this fabric-primary's atlas before
     /// the caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip view, is
-    /// what Build acceptance reads them from (Q197). The steps' subjects are read through the reader
-    /// (query.md §1), what names a step's birth its Build pinned none of ([`Atlas::receipts`]). One
+    /// what Build acceptance reads them from (Q197). Only the subjects whose birth the Build pinned none
+    /// of are read through the reader (query.md §1), each record at its node ID, the reads made together
+    /// ([`unpinned_subjects`], [`subject_rows`]): what names such a step's birth ([`Atlas::receipts`]); a
+    /// create's subject and a pinned one are never read. One
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span, its outcome `taken`, `build-unread` or
     /// `subjects-unread`, naming what its store calls took: how many (`io_calls`), their wait for a
     /// blocking thread (`io_queued_ms`) and their run on one (`io_ms`).
@@ -900,7 +923,7 @@ impl crate::control_plane::ControlPlane {
                     return;
                 }
             };
-            let subjects: Vec<NodeId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete).filter_map(|s| s.subject.clone()).collect();
+            let subjects = unpinned_subjects(&p);
             let read = match self.current_records() {
                 Some(records) => subject_rows(&records, subjects.iter()).await,
                 None => Ok(Vec::new()),

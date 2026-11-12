@@ -534,18 +534,32 @@ impl ControlPlane {
     /// (another path, sha256 or image; `launch_id` is not compared, D14). The row is the node's record
     /// read now, the record of what its birth runs (build-deployment.md §2), never the view or the
     /// accepted topology. A held path named with the same executable, a node-admin's, one of another type
-    /// or mesh, or one whose node has no record is not one: it stays `name-held`. Ordered as the plan runs
-    /// them, one at a time (D12): by mesh and type, the node-type primary's last of its type.
+    /// or mesh, or one whose node has no record is not one: it stays `name-held`. The rows are read
+    /// together, never one after another: one held path's at its node ID, more as each mesh's records in
+    /// one store read, the meshes read together ([`crate::current_record::CurrentRecords::rows_of`]).
+    /// Ordered as the plan runs them, one at a time (D12): by mesh and type, the node-type primary's last
+    /// of its type.
     async fn replaced_paths(&self, nodes: &[rdm_core::build::Nodes], observed: &Topology) -> Result<Vec<PathName>, Refusal> {
         let Some(records) = self.current_records() else { return Ok(Vec::new()) };
+        // The held paths whose row decides: each held by a node that is not a node-admin, of the entry's
+        // type and mesh, named with an executable.
+        let named: Vec<(PathName, &crate::model::Node, &rdm_core::binding::Binding)> = nodes
+            .iter()
+            .filter_map(|n| {
+                let path = PathName::new(&n.path, &n.name).ok()?;
+                let (held, asked) = (observed.node(&path)?, n.executable.as_ref()?);
+                let decides = !rdm_core::is_node_admin(&held.r#type) && !rdm_core::is_node_admin(&n.r#type) && held.r#type == n.r#type && held.mesh == n.mesh;
+                decides.then_some((path, held, asked))
+            })
+            .collect();
+        let rows: std::collections::BTreeMap<NodeId, crate::storage::NodeRecord> = match named.as_slice() {
+            [] => Default::default(),
+            [(path, held, _)] => records.row(&held.node_id).await.map_err(|e| Refusal::Unavailable(format!("the row of the node at path {:?}, name {:?}: {e}", path.path, path.name)))?.map(|r| (r.node_id.clone(), r)).into_iter().collect(),
+            many => records.rows_of(many.iter().map(|(_, held, _)| (&held.node_id, held.mesh.as_str()))).await.map_err(|e| Refusal::Unavailable(format!("the rows of the held paths a Create names: {e}")))?,
+        };
         let mut replaced: Vec<(String, String, bool, PathName)> = Vec::new();
-        for n in nodes {
-            let Ok(path) = PathName::new(&n.path, &n.name) else { continue };
-            let (Some(held), Some(asked)) = (observed.node(&path), n.executable.as_ref()) else { continue };
-            if rdm_core::is_node_admin(&held.r#type) || rdm_core::is_node_admin(&n.r#type) || held.r#type != n.r#type || held.mesh != n.mesh {
-                continue;
-            }
-            let Some(row) = records.row(&held.node_id).await.map_err(|e| Refusal::Unavailable(format!("the row of the node at path {:?}, name {:?}: {e}", path.path, path.name)))? else { continue };
+        for (path, held, asked) in named {
+            let Some(row) = rows.get(&held.node_id) else { continue };
             let same = row.executable.as_ref().is_some_and(|b| b.executable == asked.executable && b.sha256 == asked.sha256 && b.image == asked.image);
             tracing::info!(node_path = %path.path, node_name = %path.name, node_id = %held.node_id, row_executable = ?row.executable.as_ref().map(|b| (&b.executable, &b.sha256, &b.image)), asked_executable = ?(&asked.executable, &asked.sha256, &asked.image), replaced = !same, "a Create names a held path and name: another executable than its row records is the node's executable replacement, the same one is name-held");
             if !same {
