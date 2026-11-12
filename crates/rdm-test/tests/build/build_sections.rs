@@ -275,25 +275,28 @@ async fn a_first_start_held_at_its_hook_ends_cancelled_when_its_new_primary_comm
     let held_id = crate::build_log::created_id(&estate, &b, &held_at).await.to_string();
     until_pending(&mut stream, &format!("node.create:{held_id}")).await;
     drop(stream);
+    // From the old primary's loss, mesh2's new primary may command the held node back: its create step
+    // owes the birth another executor launched (Q445), or it hears the birth again after the hold below.
+    let lost_ns = now_ns();
     estate.kill_node(&old.location()).await;
     let new = estate
         .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != old.node_id).cloned())
         .await;
     let new_id = new.node_id.to_string();
 
-    // The held node goes unheard past the floor, then is heard again: its new primary commands it back.
+    // The held node goes unheard past the floor, then is heard again: its new primary commands it back,
+    // here or already at its create step (Q445), whichever comes first.
     // The OS stops it (its launcher is gone, so it is no child of this process to trace) and continues it.
     let floor = rdm_core::cadence::staleness_floor();
     let rt = ExactRuntime::published(Path::new(&estate.data_dir(&held_at).await)).expect("the held node published its runtime");
     let stopped = rt.apply(Fault::Stop).expect("the held node is stopped by the OS");
     assert_eq!(stopped.state_after, Some('T'), "the OS holds the held node: {stopped:?}");
     tokio::time::sleep(floor * 2).await;
-    let released_ns = now_ns();
     rt.apply(Fault::Continue).expect("the held node is continued by the OS");
     wait_for("mesh2's new primary commands the held node back through node.mesh.join", SETTLE, || {
         let spans = estate.spans();
         let held_id = held_id.clone();
-        async move { named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().any(|sp| attr(sp, "node_id") == held_id && start(sp) >= released_ns).then_some(()) }
+        async move { named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().any(|sp| attr(sp, "node_id") == held_id && start(sp) >= lost_ns).then_some(()) }
     })
     .await;
     rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "pass").unwrap();

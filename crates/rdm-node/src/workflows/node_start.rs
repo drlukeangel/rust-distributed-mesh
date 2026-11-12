@@ -387,6 +387,9 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         Err(why) => AcceptingPrimarySource::None(*why),
     };
     let HookParts { birth, node_hooks, cancel, state, runs, after } = parts;
+    // The steps after the hook are this cycle's too: a commanded node.mesh.join that begins the birth's next
+    // cycle (its token renewed) ends them, as it ends the hook (rdm#408).
+    let cycle = cancel.clone();
     let inherited = matches!(kind, StartKind::AfterStop)
         || matches!(accepting_primary, AcceptingPrimarySource::None(NoAcceptingPrimary::InheritedRoot | NoAcceptingPrimary::Recovery))
         || std::env::var("RDM_INHERITED_DATA_DIR").ok().as_deref() == Some("1");
@@ -394,7 +397,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let driver = node_hooks.driver(ctx, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.
-    let rest = AfterTheHook { root, name: name.clone(), birth_path: path.path.clone(), birth_name: path.name.clone(), node_id, client, rafka_time, channels, through: through.ok(), commander, after };
+    let rest = AfterTheHook { root, name: name.clone(), birth_path: path.path.clone(), birth_name: path.name.clone(), node_id, client, rafka_time, channels, through: through.ok(), commander, after, cycle };
     match runs {
         HookRuns::Spawned { spawn } => {
             let task = spawn(Box::pin(async move {
@@ -476,6 +479,9 @@ struct AfterTheHook {
     /// the mesh-primary's, node-topology-get.md).
     commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>>,
     after: Box<dyn AfterHook>,
+    /// This cycle's token: cancelled when a commanded node.mesh.join begins the birth's next cycle, which
+    /// runs the whole sequence again (node-mesh-join.md step 10); these steps then end, unserved and unreported.
+    cycle: CancelToken,
 }
 
 impl AfterTheHook {
@@ -532,12 +538,25 @@ impl AfterTheHook {
     }
 
     async fn steps(self, driver: Option<Arc<HookDriver>>) -> Result<(), (StartFailed, Box<dyn AfterHook>)> {
-        let Self { root, name, birth_path, birth_name, node_id, client, rafka_time, channels, through, mut commander, mut after } = self;
+        let Self { root, name, birth_path, birth_name, node_id, client, rafka_time, channels, through, mut commander, mut after, cycle } = self;
         let topology_view = channels.topology_view().clone();
         let path = rdm_core::PathName { path: birth_path, name: birth_name };
+        // A commanded node.mesh.join began the birth's next cycle while these steps ran: they end where they
+        // stand, and the commanded sequence reads the topology and reports (node-mesh-join.md step 10, rdm#408).
+        let ended = |at: &'static str| {
+            tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-after-hook-cancelled", node_path = %path.path, node_name = %name, node_id = %node_id, at)
+                .in_scope(|| tracing::info!("a commanded node.mesh.join began the next cycle: this start's steps after the hook end, unserved and unreported"));
+        };
         // 4. The Build facts the authority's floor requires, on every start: before any topology read.
         let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-build-floor", node_path = %path.path, node_name = %name, node_id = %node_id, owed = tracing::field::Empty, blockers = tracing::field::Empty, outcome = tracing::field::Empty);
-        after.floor(&step).instrument(step.clone()).await;
+        tokio::select! {
+            biased;
+            _ = cycle.cancelled() => {
+                ended("build-floor");
+                return Ok(());
+            }
+            _ = after.floor(&step).instrument(step.clone()) => {}
+        }
         drop(step);
         // Then the topology, once, the final startup read, with no conditional source version, and the
         // rafka-time of the same reply adopted after its install (node-start.md step 4): from the node's
@@ -554,10 +573,25 @@ impl AfterTheHook {
                 let (client, channels, mesh) = (&client, &channels, topology_view.mesh_name());
                 async move { crate::topology_read::get_topology(client, &target, mesh, channels, None, None).await }
             };
-            let taken = match commander.as_mut() {
-                None => at_own_mesh_primary(&name, &node_id, &topology_view, t, read).instrument(step.clone()).await,
-                commander => at_commander(&name, &client, t, commander, read).instrument(step.clone()).await,
+            let reading = async {
+                match commander.as_mut() {
+                    None => at_own_mesh_primary(&name, &node_id, &topology_view, t, read).instrument(step.clone()).await,
+                    commander => at_commander(&name, &client, t, commander, read).instrument(step.clone()).await,
+                }
             };
+            let taken = tokio::select! {
+                biased;
+                _ = cycle.cancelled() => {
+                    ended("topology-read");
+                    return Ok(());
+                }
+                taken = reading => taken,
+            };
+            // A read answered after the next cycle began is that cycle's to take, never this start's.
+            if cycle.is_cancelled() {
+                ended("topology-read");
+                return Ok(());
+            }
             let (read, who) = match taken {
                 Ok(read) => read,
                 Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
@@ -579,6 +613,10 @@ impl AfterTheHook {
             drop(step);
         }
         // 5. node.started.
+        if cycle.is_cancelled() {
+            ended("node.started");
+            return Ok(());
+        }
         if let Err(failed) = after.report().await {
             return Err((failed, after));
         }
@@ -693,6 +731,8 @@ mod tests {
         steps: Arc<Mutex<Vec<&'static str>>>,
         /// The report fails: a step after the hook that ends the start.
         fail_report: bool,
+        /// The floor step waits on this, when one is given, after it is recorded.
+        floor_held: Option<Arc<tokio::sync::Notify>>,
     }
 
     #[async_trait::async_trait]
@@ -703,6 +743,9 @@ mod tests {
 
         async fn floor(&mut self, step: &tracing::Span) {
             self.steps.lock().unwrap().push("floor");
+            if let Some(held) = &self.floor_held {
+                held.notified().await;
+            }
             step.record("owed", "none");
             step.record("outcome", "unit-cell-floor-checked");
         }
@@ -765,6 +808,8 @@ mod tests {
         state: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
         /// The report fails ([`RecordedAfter::fail_report`]).
         fail_report: bool,
+        /// The floor step waits on this ([`RecordedAfter::floor_held`]).
+        floor_held: Option<Arc<tokio::sync::Notify>>,
     }
 
     #[async_trait::async_trait]
@@ -863,6 +908,7 @@ mod tests {
                 after: Box::new(RecordedAfter {
                     steps: self.steps.clone(),
                     fail_report: self.fail_report,
+                    floor_held: self.floor_held.clone(),
                 }),
             })
         }
@@ -946,6 +992,7 @@ mod tests {
                 cycles: None,
                 state: Arc::default(),
                 fail_report: false,
+                floor_held: None,
             };
             node_start(&mut plug1, StartKind::FirstStart)
                 .await
@@ -973,6 +1020,7 @@ mod tests {
                 cycles: None,
                 state: Arc::default(),
                 fail_report: false,
+                floor_held: None,
             };
             node_start(&mut plug2, StartKind::AfterStop)
                 .await
@@ -1018,6 +1066,68 @@ mod tests {
                 "expected span {required} in node_start execution"
             );
         }
+    }
+
+    /// CONTRACT (node-mesh-join.md step 10: a commanded node.mesh.join "runs the whole sequence again" on the
+    /// birth, its next cycle): a first start whose hook passed, still in its steps after the hook, ends where
+    /// it stands when a commanded node.mesh.join begins the birth's next cycle (its token renewed): the
+    /// earlier start reports nothing and serves no read, and `rdm.mesh.node.update.via-after-hook-cancelled`
+    /// names where it ended. Must NOT happen (rdm#408): the earlier start's read and report running beside
+    /// the commanded sequence, two topology reads served one birth.
+    #[test]
+    fn a_first_starts_steps_after_its_hook_end_when_a_commanded_join_begins_the_next_cycle() {
+        let dir = std::env::temp_dir().join(format!("rdm-node-start-unit-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-unit").expect("evidence capture starts");
+        capture.run(2, async {
+            let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            rafka_time.adopt(1_000_000);
+            let steps = Arc::new(Mutex::new(Vec::new()));
+            let cycles = rdm_transport::BirthCancel::new();
+            let held = Arc::new(tokio::sync::Notify::new());
+            let mut plug = TestStartPlug {
+                starting: Starting {
+                    root: tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = "mesh1.node", node_name = "1"),
+                    name: "1".into(),
+                    birth_path: "mesh1.node".into(), birth_name: "1".into(),
+                    node_id: NodeId::mint(),
+                    mesh_id: None,
+                    client: client.clone(),
+                    rafka_time: rafka_time.clone(),
+                },
+                no_accepting_primary: NoAcceptingPrimary::Day0Root,
+                steps: steps.clone(),
+                observed_ctx: Arc::default(),
+                ready_notified: Arc::new(tokio::sync::Notify::new()),
+                pass: None,
+                cycles: Some(cycles.clone()),
+                state: Arc::default(),
+                fail_report: false,
+                floor_held: Some(held.clone()),
+            };
+            let start = tokio::spawn(async move { node_start(&mut plug, StartKind::FirstStart).await });
+            // The hook passed and the steps after it are under way (held in the floor step).
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !steps.lock().unwrap().contains(&"floor") {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the first start reaches its steps after the hook");
+            // A commanded node.mesh.join begins the birth's next cycle.
+            drop(cycles.renew());
+            let ended = tokio::time::timeout(std::time::Duration::from_secs(10), start).await.expect("the earlier start ends once its cycle is renewed").expect("the start's task");
+            assert!(ended.is_ok(), "the earlier start ends, not failed: {ended:?}");
+            assert!(!steps.lock().unwrap().contains(&"report"), "the earlier start reports nothing: {:?}", steps.lock().unwrap());
+        });
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            spans.iter().any(|s| s["name"] == "rdm.mesh.node.update.via-after-hook-cancelled" && s["attributes"]["at"] == "build-floor"),
+            "the earlier start's end is named where it stood"
+        );
     }
 
     /// A node-admin digest of mesh1, Ready.
@@ -1145,6 +1255,7 @@ mod tests {
                 cycles: Some(cycles.clone()),
                 state: state.clone(),
                 fail_report: false,
+                floor_held: None,
             };
             node_start(&mut plug, StartKind::FirstStart).await.expect("a first start whose hook answered Pending returns with the node Pending");
             let handle = state.lock().unwrap().clone().expect("the start handed the hook's handle");
@@ -1203,6 +1314,7 @@ mod tests {
                 cycles: None,
                 state: Arc::default(),
                 fail_report: true,
+                floor_held: None,
             };
             node_start(&mut plug, StartKind::FirstStart).await.map_err(|e| e.to_string())
         });
