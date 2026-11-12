@@ -601,6 +601,67 @@ async fn every_admin_answers_a_nodes_data_dir_from_its_record_after_its_launcher
 }
 
 // @feature: node-records
+/// CONTRACT (query.md §1: "A current-pair lookup resolves the path and name to a node ID from the node
+/// records. The reader reads the node's record at that node ID", and "`node.get` materializes records and
+/// applies its complete filter"; fabric-certs.md §Tracking: "`fabric.get` shows the next expiry across
+/// the fabric"): on a fabric of twenty nodes in two meshes, the fabric-primary answers `node.get` of one
+/// node's pair from that node's record alone (one `rdm.node_admin.node.resolve.via-lifecycle-record`
+/// span, its own) in at most two store calls, and `node.get [mesh: mesh2]` and `fabric.get` at one
+/// store call per mesh. Each read's store calls (`io_calls`) and wall at the fabric-primary are printed
+/// with its trace. Must NOT happen: a read at the fabric-primary making one store call per node its view
+/// holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fabric_primary_reads_one_record_for_a_pair_and_one_store_call_per_mesh() {
+    let test = "the_fabric_primary_reads_one_record_for_a_pair_and_one_store_call_per_mesh";
+    let shape = [("mesh1", 1, 9), ("mesh2", 1, 9)];
+    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "reads"), "fabric1", "mesh1").await, &shape).await;
+    estate.enter_fabric_primary().await;
+    let views = estate.node_views().await;
+    assert_eq!(views.len(), 20, "twenty nodes: {views:#?}");
+    let fp = views.iter().find(|n| n.is_fabric_primary).cloned().expect("the view names a fabric-primary");
+    let subject = views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node" && !n.is_primary).cloned().expect("a node of mesh2 that holds no role");
+    let (nodes, fabrics) = (estate.nodes_obj().await, estate.fabrics_obj().await);
+    let from = now_ns();
+    for _ in 0..3 {
+        let at = at_pair(&estate, &subject.location()).await;
+        assert_eq!(at.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), [subject.node_id.clone()], "node.get of the pair answers its node");
+        let mesh2 = nodes.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.unwrap_or_else(|e| panic!("node.get [mesh: mesh2]: {e:?}"));
+        assert_eq!(mesh2.len(), 10, "node.get [mesh: mesh2] answers mesh2's ten nodes");
+        let fabric = fabrics.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("fabric.get: {e:?}"));
+        assert_eq!(fabric.len(), 1, "fabric.get answers the fabric");
+    }
+    let to = now_ns();
+    estate.stop().await;
+    let spans = estate.spans();
+    let at_fp = |sp: &&Value| attr(sp, "node_path") == fp.path && attr(sp, "node_name") == fp.name && (from..=to).contains(&start_ns(sp));
+    let wall_ms = |sp: &Value| (sp["end_unix_nano"].as_u64().unwrap_or_default().saturating_sub(start_ns(sp))) as f64 / 1e6;
+    let read_of = |sp: &Value, name: &str| named(&spans, name).into_iter().find(|r| r["trace_id"] == sp["trace_id"]).map(wall_ms).unwrap_or_default();
+    let resolved = |sp: &Value| -> Vec<String> { named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record").into_iter().filter(|r| r["parent_span_id"] == sp["span_id"]).map(|r| attr(r, "subject_id")).collect() };
+    let calls = |sp: &Value| attr(sp, "io_calls").parse::<u64>().unwrap_or_else(|e| panic!("the read's span names its store calls: {e}: {sp}"));
+    let pair_reads: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(at_fp).filter(|sp| attr(sp, "pairs") == format!("(path, [{}]) (name, [{}])", subject.path, subject.name)).collect();
+    let mesh_reads: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(at_fp).filter(|sp| attr(sp, "pairs") == "(mesh, [mesh2])").collect();
+    let fabric_reads: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.serve.via-get").into_iter().filter(at_fp).collect();
+    let mut cost = Vec::new();
+    for (read, of, served) in [("node.get pair", "rdm.node_admin.node.serve.via-read", &pair_reads), ("node.get [mesh: mesh2]", "rdm.node_admin.node.serve.via-read", &mesh_reads), ("fabric.get", "rdm.node_admin.fabric.serve.via-read", &fabric_reads)] {
+        assert!(served.len() >= 3, "the fabric-primary served each {read}: {served:#?}");
+        for sp in served.iter() {
+            let line = format!("{read}: io_calls={} via-lifecycle-record={} io_queued_ms={} io_ms={} wall_ms={:.1} http://192.168.68.99:16687/trace/{}", attr(sp, "io_calls"), resolved(sp).len(), attr(sp, "io_queued_ms"), attr(sp, "io_ms"), read_of(sp, of), sp["trace_id"].as_str().unwrap_or_default());
+            println!("{line}");
+            cost.push(line);
+        }
+    }
+    estate.artifact("read-cost.json", &json!({"fabric_primary": fp, "subject": subject, "reads": cost}));
+    estate.record_trace_url(pair_reads[0]["trace_id"].as_str().unwrap());
+    for sp in &pair_reads {
+        assert_eq!(resolved(sp), [subject.node_id.to_string()], "node.get of one pair reads that node's record alone: {cost:#?}");
+        assert!(calls(sp) <= 2, "node.get of one pair: the current-pair lookup and the node's record, never a call per node: {cost:#?}");
+    }
+    for sp in mesh_reads.iter().chain(&fabric_reads) {
+        assert!(calls(sp) <= 2, "a mesh's records are one store call, never a call per node: {cost:#?}");
+    }
+}
+
+// @feature: node-records
 /// CONTRACT (i150 R9, e4; node-config-update.md "Deferred application and startup": "A stopped process
 /// remains alive with its Node RPC endpoint bound and applies an update as a running node does ...
 /// Existing durable properties and application recognition survive startup; an older environment must
