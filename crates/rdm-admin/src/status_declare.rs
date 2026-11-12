@@ -463,6 +463,12 @@ impl Declarer {
     /// by that authority; any other end is the key's last send.
     #[allow(clippy::too_many_arguments)]
     fn declared(&self, me: &PathName, p: &Pending, target: &crate::model::Node, via: &'static str, addressed: bool, outcome: String, finished: bool, typed: bool) {
+        // An end is its key's only while the request it carried is still the one owed under the key. A
+        // start begins this birth's next cycle and forgets the last cycle's declarations whole
+        // (`begin_own_cycle`), a call then in flight among them: that call's late end is the earlier
+        // cycle's and changes nothing owed now (rdm#406: an earlier start's Ready, answered
+        // `already-applied`, stood for a commanded join's Ready, which was then never sent).
+        let current = self.requests.lock().unwrap().get(&p.key).is_some_and(|(_, owed, _, _)| owed == &p.request);
         let operation = match &p.request {
             StatusRequest::DeclareNodeState { operation: Some(op), .. } => Some(&op.operation),
             _ => None,
@@ -478,9 +484,14 @@ impl Declarer {
             outcome = %outcome,
             finished,
             addressed,
+            current,
         );
         if let Some(op) = operation {
             span.record("operation", op.action.as_str()).record("operation_subject", format!("{:?}", op.subject).as_str());
+        }
+        if !current {
+            span.in_scope(|| tracing::info!("declared to the authority for an earlier cycle: the declaration owed now is unchanged"));
+            return;
         }
         span.in_scope(|| tracing::info!("declared to the authority"));
         if finished {
@@ -899,6 +910,51 @@ mod tests {
         let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.location() == mesh1_primary.location() { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
         d.reowe_moved(&me, "mesh1", &moved);
         assert!(d.pending.lock().unwrap().is_empty(), "the fabric-primary role moved, its own mesh's primary did not: nothing is owed again");
+    }
+
+    /// CONTRACT (node-status.md "Status report": a report "names the operation that produced the state
+    /// when one did ... a start's `Pending` and `Ready`"; node-mesh-join.md step 10: a commanded
+    /// node.mesh.join begins the birth's next cycle): a node-admin's Ready of an earlier cycle, its call
+    /// in flight when a commanded join begins the next cycle, ends after that begin answered
+    /// `already-applied` (its mesh-primary applied it under the earlier start). That end changes nothing
+    /// owed now: the next cycle's Ready, naming the join, is still owed to the mesh-primary and sent.
+    /// Must NOT happen (rdm#406): the earlier cycle's answer recorded as the key's, the join's Ready
+    /// never sent, and the mesh-primary holding the birth Pending for good.
+    #[test]
+    fn an_earlier_cycles_ready_answered_late_does_not_stand_for_the_next_cycles_ready() {
+        use rdm_core::model::NodeStatus as M;
+        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
+        let me_id = id_of(2);
+        let inc = IncarnationId::parse(INC).unwrap();
+        let v = view(1, 3);
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let op = |operation: &rdm_core::OperationId| DeclaredOperation { operation: operation.clone() };
+        let ready = Key::OwnState(INC.into(), NodeState::Ready);
+        let d = Declarer::new();
+        // The earlier cycle, begun by a start: its Ready, naming that start, goes out to mesh1's primary.
+        let start = op(&rdm_core::OperationId::node("node.start", &me_id));
+        d.begin_own_cycle(&me, INC, &start);
+        owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, |_| 0, &v, &ids);
+        let (earlier, to) = d.due(&me_id, &v, &BTreeSet::new()).into_iter().find(|(p, _)| p.key == ready).expect("the earlier cycle's Ready is owed");
+        // A commanded node.mesh.join begins the next cycle while that call is in flight; the next cycle's Ready names the join.
+        let join = op(&rdm_core::OperationId::node("node.mesh.join", &me_id));
+        d.begin_own_cycle(&me, INC, &join);
+        owed_from_view(&d, &me, &me_id, &inc, M::Ready, false, None, |_| 0, &v, &ids);
+        // The earlier call ends, answered `already-applied` by the mesh-primary that applied the earlier start's Ready.
+        d.declared(&me, &earlier, &to, "node-rpc", false, "already-applied".into(), true, true);
+        let owed: Vec<(Key, Option<DeclaredOperation>, String)> = d
+            .due(&me_id, &v, &BTreeSet::new())
+            .into_iter()
+            .map(|(p, to)| {
+                let operation = match &p.request {
+                    StatusRequest::DeclareNodeState { operation, .. } => operation.clone(),
+                    _ => None,
+                };
+                (p.key, operation, to.node_id.to_string())
+            })
+            .collect();
+        assert_eq!(owed, vec![(ready.clone(), Some(join), id_of(1).to_string())], "the next cycle's Ready, naming the join, is still owed to mesh1's primary");
+        assert!(!d.done.lock().unwrap().contains_key(&ready), "the earlier cycle's answer is not the key's");
     }
 
     /// CONTRACT (node-status.md "Status report": a report "names the operation that produced the
