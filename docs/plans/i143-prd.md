@@ -3805,5 +3805,10 @@ rdm#174 with the lead's conforming text.
     - Cause: the cells parse every span of the run into memory: 17 GB at L4, 85 % of it gossip receive spans and the per-record `via-lifecycle-record` resolves that no check reads.
     - Fix: `Estate::spans_except`; the R-shape cells read their run without those families.
     - Proof at bc01030ea: the scale authority job rc=0 (1,312 s, peak 13.7 GB), the first scale job to pass; the scale lifecycle job rc=0 (943 s, peak 5 GB); the canonical control rc=0.
-  - Running: the scale tier (12 jobs, release, 200 nodes), then the certifying chain, at 41303d21f (`scale-chain.sh`, lanes 3 and 6), one after the other on this box (Q290).
+  - The scale tier at 41303d21f: 8 of 12 jobs green (authority, lifecycle, routing, primary-victim, two-victims, direct-connection, cutback-restart, carrier-connection). The 4 reds were rdm#404's. The certifying chain at 41303d21f was held, since #404 makes a new candidate.
+  - **rdm#404 LANDED 81e4719a9**: the cut cells cut mesh1 from mesh2 only.
+    - At ten meshes, gossip carries each side's frames through the other eight, so neither side went silent and no re-feed was due. That is RDM working.
+    - Fix: a cut "between the meshes" drops UDP between every two meshes (`netfault::Partition::between`), and each admin waits for every other mesh silent. At two meshes every cell is as it was.
+    - All four cut jobs are green at their canonical and fast tiers and at scale.
+  - Running: the scale tier, then the certifying chain, at 81e4719a9 (`scale-chain.sh`, lanes 3 and 6), one after the other on this box (Q290).
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
