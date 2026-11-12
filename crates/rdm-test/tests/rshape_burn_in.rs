@@ -1648,10 +1648,12 @@ impl Stable {
         self.admins.iter().find(|a| rdm_test::estate::mesh_of(&a) == mesh && a["is_primary"] == true).cloned().unwrap_or_else(|| panic!("{mesh} has no primary node-admin: {:#?}", self.admins))
     }
 
+    /// The non-primary node-admin of `mesh` with the lowest NodeId: at two admins per mesh the one other
+    /// admin; at three (`scale`, L4) the one the election names if the primary is lost.
     fn secondary_of(&self, mesh: &str) -> Value {
-        let m: Vec<&Value> = self.admins.iter().filter(|a| rdm_test::estate::mesh_of(&a) == mesh && a["is_primary"] != true).collect();
-        assert_eq!(m.len(), 1, "{mesh} has exactly one non-primary node-admin: {m:?}");
-        m[0].clone()
+        lowest_node_id(self.admins.iter().filter(|a| rdm_test::estate::mesh_of(&a) == mesh && a["is_primary"] != true))
+            .cloned()
+            .unwrap_or_else(|| panic!("{mesh} has no non-primary node-admin: {:#?}", self.admins))
     }
 
 }
@@ -2104,9 +2106,18 @@ fn want_admins(per_mesh: &[(&str, usize)]) -> BTreeMap<String, usize> {
     per_mesh.iter().map(|(m, n)| (m.to_string(), *n)).collect()
 }
 
-fn both(n: usize) -> BTreeMap<String, usize> {
+/// What a stable checkpoint wants: every mesh of this run's tier at its shape's node-admin count (two at
+/// `canonical` and `fast`, three at `scale`, L4's shape).
+fn admins_per_mesh() -> BTreeMap<String, usize> {
+    let n = any_tier().node_admin as usize;
     let every: Vec<(&str, usize)> = meshes().iter().map(|m| (*m, n)).collect();
     want_admins(&every)
+}
+
+/// The admin of `admins` with the lowest NodeId: the one the election names when its mesh's primary is
+/// unheard (fabric-node-lifecycle-elections.md: "superseded by the lowest Ready node of its type in its mesh").
+fn lowest_node_id<'a>(admins: impl Iterator<Item = &'a Value>) -> Option<&'a Value> {
+    admins.min_by_key(|n| s(&n["node_id"]).parse::<rdm_core::NodeId>().unwrap_or_else(|e| panic!("{n}: its node_id does not parse: {e}")))
 }
 
 /// Which role nodes hold a Connected Direct fact to the current birth of their mesh's primary
@@ -2156,12 +2167,13 @@ async fn prove_path(f: &mut Formed, a: &mut Run, want: &BTreeMap<String, usize>,
     json!({"label": label, "puts_stored": replies, "looks": looks, "window_ms": window, "role_connections": connections})
 }
 
-/// A non-fabric-primary node-admin dies (SIGKILL) and the fabric recovers it: the surviving admin of
-/// its mesh takes the role, and a re-born admin stands at the same path.name. Returns the kill record,
+/// A non-fabric-primary node-admin dies (SIGKILL) and the fabric recovers it: the admin of its mesh the
+/// election names (the lowest NodeId of the others) takes the role, and a re-born admin stands at the same
+/// path.name. Returns the kill record,
 /// what the survivor saw, and the recovered view.
 async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
     let mesh = node.path.split('.').next().unwrap().to_string();
-    let survivor = st.admins.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh.as_str() && location(n) != *node).unwrap_or_else(|| panic!("{mesh} has a surviving admin")).clone();
+    let survivor = lowest_node_id(st.admins.iter().filter(|n| rdm_test::estate::mesh_of(&n) == mesh.as_str() && location(n) != *node)).unwrap_or_else(|| panic!("{mesh} has a surviving admin")).clone();
     let victim = st.admins.iter().find(|n| location(n) == *node).unwrap().clone();
     let fabric_build = s(&st.fabric["build_id"]);
     let kill = kill_admin(f, a, st, node).await;
@@ -2223,8 +2235,10 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     let build_id = a.write(f, st, &format!("{scenario}: fabric-primary.delete"), Write::Delete(old_name.clone())).await.expect("a delete opens a Build");
     let fin = a.finish(f, Some(&build_id), Until::Gone { node: old_name.clone() }, "during-handoff").await;
     let exit_ns = tokio::time::timeout(Duration::from_secs(30), watcher).await.unwrap_or_else(|_| panic!("{old_name:?} (pid {old_pid}) still runs 30 s after its deleting Build completed")).unwrap();
-    let mut want = both(2);
-    want.insert(mesh.clone(), 1);
+    let mut want = admins_per_mesh();
+    if let Some(n) = want.get_mut(&mesh) {
+        *n -= 1;
+    }
     let after = a.stable(f, &format!("{scenario}: after the fabric-primary deleted"), &want, inv).await;
     assert_ne!(after.fp["node_id"], old["node_id"], "{scenario}: the fabric-primary changed");
     assert!(after.admins.iter().all(|n| n["node_id"] != old["node_id"]), "{scenario}: the deleted birth is in no admin's view");
@@ -2255,7 +2269,7 @@ async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, del
     let before: BTreeSet<String> = after_delete.admins.iter().map(|n| s(&n["node_id"])).collect();
     let build_id = a.write(f, after_delete, &format!("{scenario}: node.spawn admin"), Write::Create { mesh: mesh.to_string(), kind: "node-admin".to_string() }).await.expect("a create opens a Build");
     let fin = a.finish(f, Some(&build_id), Until::Grew { mesh: mesh.clone(), before }, "during-spawn").await;
-    let st = a.stable(f, &format!("{scenario}: replacement ready"), &both(2), inv).await;
+    let st = a.stable(f, &format!("{scenario}: replacement ready"), &admins_per_mesh(), inv).await;
     let born: Vec<&Value> = st.admins.iter().filter(|n| rdm_test::estate::mesh_of(&n) == mesh.as_str() && !after_delete.admins.iter().any(|o| o["node_id"] == n["node_id"])).collect();
     assert_eq!(born.len(), 1, "{scenario}: one new admin in {mesh}");
     assert_ne!(born[0]["node_id"], deleted["old_node_id"], "{scenario}: a replacement never reuses the deleted NodeId");
@@ -2545,7 +2559,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let mut st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let steady = a.traffic.ops.iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply).count();
     inv.holds("steady traffic before any change: every operation replied", steady == a.traffic.ops.len(), json!({"issued": a.traffic.ops.len(), "replied": steady}));
@@ -2567,19 +2581,21 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
             first = location(&victim);
             kill_and_recover(&mut f, &mut a, &st, &first, &format!("C1+C4 {mesh}: the current mesh-primary dies")).await;
         }
-        st = a.stable(&mut f, &format!("C4 {mesh}: first admin {first:?} recovered"), &both(2), &mut inv).await;
-        proofs.push(prove_path(&mut f, &mut a, &both(2), &format!("C4 {mesh} after {first:?}"), &mut inv).await);
+        st = a.stable(&mut f, &format!("C4 {mesh}: first admin {first:?} recovered"), &admins_per_mesh(), &mut inv).await;
+        proofs.push(prove_path(&mut f, &mut a, &admins_per_mesh(), &format!("C4 {mesh} after {first:?}"), &mut inv).await);
         fp_trail.push(json!({"after": format!("C4 {mesh} first"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
-        let second = st.admins.iter().find(|n| rdm_test::estate::mesh_of(&n) == mesh && location(n) != first).unwrap_or_else(|| panic!("{mesh} has a second admin")).clone();
+        // The second admin is the fabric-primary when this mesh holds it (C2), else another admin of the mesh.
+        let in_mesh = |n: &&Value| rdm_test::estate::mesh_of(n) == mesh && location(n) != first;
+        let second = st.admins.iter().filter(in_mesh).find(|n| location(n) == st.fp_name()).or_else(|| st.admins.iter().find(in_mesh)).unwrap_or_else(|| panic!("{mesh} has a second admin")).clone();
         let second_name = location(&second);
         if second_name == st.fp_name() {
             let (after, ev) = hand_off(&mut f, &mut a, &st, &format!("C2+C4 {mesh}: the fabric-primary {second_name:?} hands off"), &mut inv).await;
             st = replace_deleted(&mut f, &mut a, &after, &ev, &format!("C2+C4 {mesh}"), &mut inv).await;
         } else {
             restart_node(&mut f, &mut a, &st, &second_name, &format!("C4 {mesh}: the second admin restarts")).await;
-            st = a.stable(&mut f, &format!("C4 {mesh}: second admin {second_name:?} recovered"), &both(2), &mut inv).await;
+            st = a.stable(&mut f, &format!("C4 {mesh}: second admin {second_name:?} recovered"), &admins_per_mesh(), &mut inv).await;
         }
-        proofs.push(prove_path(&mut f, &mut a, &both(2), &format!("C4 {mesh} after {second_name:?}"), &mut inv).await);
+        proofs.push(prove_path(&mut f, &mut a, &admins_per_mesh(), &format!("C4 {mesh} after {second_name:?}"), &mut inv).await);
         fp_trail.push(json!({"after": format!("C4 {mesh} second"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
     }
 
@@ -2590,21 +2606,21 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     let quiet = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
     restart_node(&mut f, &mut a, &st, &location(&incumbent), &format!("C19 {quiet}: the primary restarts and holds no primary role")).await;
-    st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
+    st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &admins_per_mesh(), &mut inv).await;
     assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's role keeps it while it lives, whatever NodeId the restarted one holds");
     let back = st.admins.iter().find(|n| (rdm_test::estate::location(&n) == rdm_test::estate::location(&incumbent))).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
     assert_eq!(back["node_id"], incumbent["node_id"], "C19: the restart keeps the NodeId");
     assert_eq!(back["incarnation"], incumbent["incarnation"], "C19: the restart keeps the incarnation (node-stop.md, Kept)");
     assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no primary role while the admin that filled it lives");
-    proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 restarted primary", &mut inv).await);
+    proofs.push(prove_path(&mut f, &mut a, &admins_per_mesh(), "C19 restarted primary", &mut inv).await);
     let (after, ev) = hand_off(&mut f, &mut a, &st, "C19: a repeated fabric-primary hand-off", &mut inv).await;
     st = replace_deleted(&mut f, &mut a, &after, &ev, "C19", &mut inv).await;
-    proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 after the repeated hand-off", &mut inv).await);
+    proofs.push(prove_path(&mut f, &mut a, &admins_per_mesh(), "C19 after the repeated hand-off", &mut inv).await);
     fp_trail.push(json!({"after": "C19", "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
 
     // Final state, the ledger's reads, and the stop.
     a.traffic.burst(&f, 6, "steady-after").await;
-    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "final", &admins_per_mesh(), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
     let mut verification = Vec::new();
@@ -2667,7 +2683,8 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
 /// CONTRACT: in the formed estate (node-admin / compute / gateway / broker = 2 / 2 / 3 / 3 x 2 meshes
 /// at the canonical tier; the 2 / 1 / 1 / 1 fixture only as a fast control) the topology has exactly
 /// one effective writer at every stable point while the admins churn, and seeded proof traffic is
-/// accounted for operation by operation. Each mesh's two admins are disturbed one after the other,
+/// accounted for operation by operation. Two admins of each mesh are disturbed one after the other (at
+/// `scale`, L4's three per mesh, the third is not),
 /// the second only once the first's replacement is Ready and a surviving path is proven (every compute
 /// and gateway holds a Connected Direct connection to the current primary's birth, fresh puts all stored):
 /// a mesh without the fabric-primary loses its current primary to a SIGKILL and the surviving admin
@@ -2750,7 +2767,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
     let names_initial: BTreeSet<PathName> = nodes.iter().map(|n| location(&n)).collect();
-    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let mut st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let b0 = f.build_id.clone();
     assert_eq!(s(&st.fabric["build_id"]), b0, "the fabric names the formation Build");
     a.traffic.burst(&f, 12, "steady-before").await;
@@ -2764,7 +2781,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         let victim = st.secondary_of(&fm);
         let node = location(&victim);
         let ev = restart_node(&mut f, &mut a, &st, &node, &format!("R{round}: a restart by node commands")).await;
-        st = a.stable(&mut f, &format!("R{round}: {node:?} restarted"), &both(2), &mut inv).await;
+        st = a.stable(&mut f, &format!("R{round}: {node:?} restarted"), &admins_per_mesh(), &mut inv).await;
         assert_eq!(s(&st.fabric["build_id"]), b0, "R{round}: the current build_id stays the formation Build");
         trail.push(json!({"after": format!("R{round}"), "fabric_build_id": st.fabric["build_id"], "restart": ev}));
     }
@@ -2784,7 +2801,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     // The re-created birth is read only once the death is established: a floor to mark it silent, half a
     // floor to its investigation, then the delete and the create (a further floor of margin).
     let recovered_by = (killed_at + Duration::from_millis(floor_ms * 7 / 2)).max(Instant::now() + Duration::from_secs(30));
-    let recovered = a.stable_by(&mut f, "R3: the dead mesh-primary's path.name is re-created", &both(2), &mut inv, recovered_by).await;
+    let recovered = a.stable_by(&mut f, "R3: the dead mesh-primary's path.name is re-created", &admins_per_mesh(), &mut inv, recovered_by).await;
     assert_eq!(s(&recovered.fabric["build_id"]), b0, "R3: recovery accepted no Build: the fabric names the formation Build");
     let recreated = recovered.admins.iter().find(|n| location(n) == victim_name).cloned().unwrap_or_else(|| panic!("R3: {victim_name:?} stands again"));
     assert_ne!(recreated["node_id"], victim["node_id"], "R3: node recovery re-creates the path under a new node.id (node-recovery.md, Lineage)");
@@ -2792,11 +2809,11 @@ async fn recovery_run(cell: &str, shape: Shape) {
     assert!(investigated.iter().any(|e| e["data"]["result"] == "re-created"), "R3: the dead birth's investigation is one rdm.node.investigated event ending re-created (node-investigation.md): {investigated:?}");
     a.events.push(json!({"event": "mesh-primary.death", "scenario": "R3", "victim": victim_name, "victim_node_id": victim_birth.0, "victim_incarnation_id": victim_birth.1, "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "recreated_node_id": recreated["node_id"], "investigated": investigated, "kill": kill}));
     trail.push(json!({"after": "R3", "fabric_build_id": recovered.fabric["build_id"], "recreated_node_id": recreated["node_id"]}));
-    let proof = prove_path(&mut f, &mut a, &both(2), "R3 after the mesh-primary's death", &mut inv).await;
+    let proof = prove_path(&mut f, &mut a, &admins_per_mesh(), "R3 after the mesh-primary's death", &mut inv).await;
 
     // Final state, reads for the ledger, the stop.
     a.traffic.burst(&f, 6, "steady-after").await;
-    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "final", &admins_per_mesh(), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, names_initial, "the topology is what it was: the same path.names, nothing added or removed");
@@ -3209,7 +3226,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     a.traffic.aim = matches!(r#type.as_str(), "broker" | "gateway").then(|| node.clone());
     let ev = restart_node(f, a, st, node, label).await;
     a.traffic.aim = None;
-    let st2 = a.stable(f, &format!("{label}: {node:?} restarted"), &both(2), inv).await;
+    let st2 = a.stable(f, &format!("{label}: {node:?} restarted"), &admins_per_mesh(), inv).await;
     let n2 = st2.nodes.iter().find(|x| location(x) == *node).unwrap_or_else(|| panic!("{node:?} is not in the view after its restart")).clone();
     assert_eq!(n2["node_id"], n["node_id"], "{node:?}: a restart keeps the logical node");
     assert_eq!(n2["endpoint_id"], n["endpoint_id"], "{node:?}: a restart keeps the node's EndpointId (the key in its data dir)");
@@ -3359,7 +3376,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let mut st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let steady = a.traffic.ops.iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply).count();
     inv.holds("steady traffic before any change: every operation replied", steady == a.traffic.ops.len(), json!({"issued": a.traffic.ops.len(), "replied": steady}));
@@ -3377,7 +3394,7 @@ async fn restart_run(cell: &str, shape: Shape) {
         records.push(rec);
         a.traffic.burst(&f, 4, "steady-between").await;
     }
-    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "final", &admins_per_mesh(), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, f.shape.names(), "the topology is what it was: the same path.names, nothing added or removed");
@@ -3513,7 +3530,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
     assert_ne!(build_id, before_build, "{node:?}: a delete changes the topology, so it is a new accepted Build");
     let fin = a.finish(f, Some(&build_id), Until::Gone { node: node.clone() }, "during-delete").await;
     a.traffic.aim = None;
-    let st2 = a.stable(f, &format!("{label}: {node:?} deleted"), &both(2), inv).await;
+    let st2 = a.stable(f, &format!("{label}: {node:?} deleted"), &admins_per_mesh(), inv).await;
     assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node:?}: the deleted NodeId is in the settled view");
     assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node:?}: the current build_id names the deleting Build");
     let terminal = terminal_proof(node, &rt_before);
@@ -3870,7 +3887,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let formation_build = f.build_id.clone();
 
@@ -3887,7 +3904,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let add_fin = a.finish(&mut f, Some(&add_build), Until::Joined { node: victim.clone(), not_node_id: old_id.clone() }, "during-create").await;
     // The node stands at its path again: the shape is whole.
     a.roles = None;
-    let st_new = a.stable(&mut f, "C8 planned new node: the broker is created", &both(2), &mut inv).await;
+    let st_new = a.stable(&mut f, "C8 planned new node: the broker is created", &admins_per_mesh(), &mut inv).await;
     let born = at(&st_new, &victim).clone();
     let (new_id, new_inc) = (s(&born["node_id"]), s(&born["incarnation"]));
     assert_ne!(born["node_id"], old["node_id"], "the successor is a new logical node: a new NodeId");
@@ -3954,7 +3971,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     progress(&format!("{victim2:?} exact runtime killed: {kill}"));
     // Node recovery re-creates it: its mesh-primary's own workflow, never a Build (Q342).
     let drift_fin = a.finish(&mut f, None, Until::Recovered { node: victim2.clone(), old_incarnation: inc2.clone() }, "during-drift").await;
-    let st_drift = a.stable(&mut f, "C8 drift: the dead gateway is re-born", &both(2), &mut inv).await;
+    let st_drift = a.stable(&mut f, "C8 drift: the dead gateway is re-born", &admins_per_mesh(), &mut inv).await;
     let n3 = at(&st_drift, &victim2).clone();
     let rt3 = exact_runtime(&f, &victim2).await;
     live_and_distinct(&victim2, &rt2, &rt3);
@@ -3970,7 +3987,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
 
     // Final state.
     a.traffic.burst(&f, 6, "steady-after").await;
-    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "final", &admins_per_mesh(), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, f.shape.names(), "the topology is the shape again: the replaced and the re-born nodes stand at their path.names");
@@ -4214,7 +4231,7 @@ async fn delete_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let steady = a.traffic.ops.iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply).count();
     inv.holds("steady traffic before any change: every operation replied", steady == a.traffic.ops.len(), json!({"issued": a.traffic.ops.len(), "replied": steady}));
@@ -4231,9 +4248,9 @@ async fn delete_run(cell: &str, shape: Shape) {
     // C17: a compute held by its exact runtime at a point the provider acknowledges: silence is not death.
     let compute = Estate::path("mesh2.compute", &f.shape.compute.to_string());
     let hold = hold_phase(&mut f, &mut a, &st2, &compute, &mut inv).await;
-    let st_held = a.stable(&mut f, "C17: after the hold", &both(2), &mut inv).await;
+    let st_held = a.stable(&mut f, "C17: after the hold", &admins_per_mesh(), &mut inv).await;
     let hold_restart = hold_restart(&mut f, &mut a, &st_held, &compute, &mut inv).await;
-    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "final", &admins_per_mesh(), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let mut want_names = f.shape.names();
     want_names.remove(&broker);
@@ -4433,7 +4450,7 @@ async fn close_run_with(
     gone_ok: BTreeSet<PathName>,
     checks: impl FnOnce(&Formed, &[Value], &mut Invariants) -> Value,
 ) {
-    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "final", &admins_per_mesh(), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, f.shape.names(), "the topology is what it was: the same path.names, nothing added or removed");
@@ -4575,7 +4592,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let (src, dst, other_src) = (Estate::path("mesh1.gateway", "1"), Estate::path("mesh1.broker", "1"), Estate::path("mesh2.gateway", "1"));
     let d0 = st.nodes.iter().find(|n| location(n) == dst).cloned().unwrap();
     let (d_id, d_inc0) = (s(&d0["node_id"]), s(&d0["incarnation"]));
@@ -4624,7 +4641,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     a.traffic.aim = Some(dst.clone());
     let recovery = recover_node(&mut f, &mut a, &st, &dst, "C11 destination birth supersession").await;
     a.traffic.aim = None;
-    let st2 = a.stable(&mut f, "C11: destination recovered", &both(2), &mut inv).await;
+    let st2 = a.stable(&mut f, "C11: destination recovered", &admins_per_mesh(), &mut inv).await;
     let d1 = st2.nodes.iter().find(|n| location(n) == dst).cloned().unwrap();
     let (d_id1, d_inc1) = (s(&d1["node_id"]), s(&d1["incarnation"]));
     assert!(d_id1 != d_id && d_inc1 != d_inc0, "a node recovery is a new node.id and incarnation at the same path.name (node-recovery.md, New): {d_id}@{d_inc0} -> {d_id1}@{d_inc1}");
@@ -4729,7 +4746,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     // The source is a compute (it originates), the carrier a gateway of its mesh (the shape's carrier kind),
     // the destination the other mesh's gateway (it serves the originate service, so it can dial the source).
     let (src, car, dst) = (Estate::path("mesh1.compute", "1"), Estate::path("mesh1.gateway", "1"), Estate::path("mesh2.gateway", "1"));
@@ -4923,7 +4940,7 @@ async fn churn_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let mut st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let (src, d1n, d2n, dialer) = (Estate::path("mesh1.gateway", "1"), Estate::path("mesh1.broker", "1"), Estate::path("mesh2.broker", "1"), Estate::path("mesh1.compute", "1"));
     let fp = st.fp_name();
     let src_pid = node_pid(&f, &src).await;
@@ -4974,7 +4991,7 @@ async fn churn_run(cell: &str, shape: Shape) {
         a.traffic.aim = Some(d.clone());
         let ev = recover_node(&mut f, &mut a, &st, d, "C18 superseding recovery").await;
         a.traffic.aim = None;
-        st = a.stable(&mut f, &format!("C18: {d:?} recovered"), &both(2), &mut inv).await;
+        st = a.stable(&mut f, &format!("C18: {d:?} recovered"), &admins_per_mesh(), &mut inv).await;
         let new = cur(&st, d);
         let (old_id, new_id) = (s(&old["node_id"]), s(&new["node_id"]));
         assert!(old_id != new_id && old["incarnation"] != new["incarnation"], "{d:?}: a node recovery is a new node.id and incarnation at the same path.name (node-recovery.md, New): {old_id}@{} -> {new_id}@{}", old["incarnation"], new["incarnation"]);
@@ -5091,7 +5108,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
@@ -5159,7 +5176,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     // Every birth the run saw by node id, before the cut and after the heal: its mesh, and whether its path was re-created.
     let renewed_ids: BTreeSet<String> = renewed.iter().flat_map(|p| [before.get(p).cloned(), converged.get(p).cloned()]).flatten().collect();
     let mesh_by_id: BTreeMap<String, String> = before.iter().chain(converged.iter()).map(|(p, id)| (id.clone(), p.path.split('.').next().unwrap_or("").to_string())).collect();
-    let st2 = a.stable(&mut f, "healed", &both(2), &mut inv).await;
+    let st2 = a.stable(&mut f, "healed", &admins_per_mesh(), &mut inv).await;
     let (nb1, nb2) = (st2.nodes.iter().find(|x| location(x) == b1).cloned().unwrap(), st2.nodes.iter().find(|x| location(x) == b2).cloned().unwrap());
     let mut redial = Vec::new();
     for (from, to) in [(&g1, &b2), (&g2, &b1)] {
@@ -5388,7 +5405,7 @@ async fn control_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let mut st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let formed = st.nodes.clone();
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
@@ -5468,7 +5485,7 @@ async fn control_run(cell: &str, shape: Shape) {
     let requested = restart["request_ns"].as_u64().expect("the restart's request_ns");
     assert!(stale < requested && requested < healed_at, "C14: the restart is requested under stale coverage while the cut holds: re-fed at {stale}, requested at {requested}, the cut dropped at {healed_at}");
     events.push(json!({"event": "control-lost", "victim": vname, "stale_after_ms": (stale - cut_at) / 1_000_000, "restart": restart}));
-    st = a.stable(&mut f, "C14: healed", &both(2), &mut inv).await;
+    st = a.stable(&mut f, "C14: healed", &admins_per_mesh(), &mut inv).await;
     // While it hears no node the victim is the lowest Ready node-admin of mesh2 in its own view and
     // becomes mesh2's primary there (elections §4.1); it investigates the nodes it cannot hear, the restarted
     // broker among them. A node its investigation does not reach is re-created at once at its path.name with
@@ -5679,7 +5696,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
@@ -5746,7 +5763,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let converged = one_live_birth_per_path(&f, &admin_names, &everyone_after).await;
     roles.insert(added.clone());
     a.roles = Some(roles);
-    let st2 = a.stable(&mut f, "C10: healed", &both(2), &mut inv).await;
+    let st2 = a.stable(&mut f, "C10: healed", &admins_per_mesh(), &mut inv).await;
     let done = wait_for(&format!("the fabric-primary holds Build {spawn} complete"), Duration::from_secs(120), || async {
         let b = build_at(&f.estate, &spawn).await?;
         (b["state"] == "complete").then_some(json!({"admin": st2.fp_name(), "state": b["state"], "steps": b["steps"].as_array().map_or(0, Vec::len)}))
@@ -5811,7 +5828,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
@@ -5891,7 +5908,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         NearFault::HardKill => assert_ne!(converged[&victim], victim_id, "{victim:?}: the recovered birth stands after the heal, under a new NodeId"),
     }
     let renewed: Vec<PathName> = converged.iter().filter(|(p, id)| s(&at(&st, p)["node_id"]) != **id).map(|(p, _)| p.clone()).collect();
-    a.stable(&mut f, "healed", &both(2), &mut inv).await;
+    a.stable(&mut f, "healed", &admins_per_mesh(), &mut inv).await;
     let verified_at = now_ns();
     let gone: BTreeSet<PathName> = renewed.iter().cloned().collect();
     let (victim_c, vid, near_primary_c) = (victim.clone(), victim_id.clone(), s(&st.primary_of(&near_mesh)["node_id"]));
@@ -5973,7 +5990,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the per-node UDP cut is the process provider's; the container provider cuts through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
@@ -6082,7 +6099,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     // as in the partition cell; the checkpoint is taken on the converged fabric.
     let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
     let converged = one_live_birth_per_path(&f, &admin_names, &everyone).await;
-    let st2 = a.stable_by(&mut f, "healed", &both(2), &mut inv, Instant::now() + window + Duration::from_secs(30)).await;
+    let st2 = a.stable_by(&mut f, "healed", &admins_per_mesh(), &mut inv, Instant::now() + window + Duration::from_secs(30)).await;
     let renewed: Vec<PathName> = converged.iter().filter(|(p, id)| before.get(*p).map(|(b, _)| b) != Some(*id)).map(|(p, _)| p.clone()).collect();
     // Every birth by node id, before the cut and after the heal: its mesh; and the ids at a re-created path.
     let mesh_by_id: BTreeMap<String, String> = before.iter().map(|(p, (id, _))| (p, id)).chain(converged.iter()).map(|(p, id)| (id.clone(), p.path.split('.').next().unwrap_or("").to_string())).collect();
@@ -6209,7 +6226,7 @@ async fn world(cell: &str, shape: Shape) -> World {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let st = a.stable(&mut f, "formed", &admins_per_mesh(), &mut inv).await;
     let fp = st.fp_name();
     let formation = f.build_id.clone();
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -6443,7 +6460,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     assert_eq!(rows_c.len(), rows_c0 + 1, "the Proxy deleted exactly once: {rows_c:?}");
     let reason = s(&rows_c.last().unwrap()["reason"]);
     assert!(matches!(reason.as_str(), "direct-restored" | "carrier-incarnation-superseded" | "connection-lost"), "a structural reason: {reason}");
-    let st2 = a.stable(&mut f, "C12: carrier restarted", &both(2), &mut inv).await;
+    let st2 = a.stable(&mut f, "C12: carrier restarted", &admins_per_mesh(), &mut inv).await;
     let dn2 = st2.nodes.iter().find(|n| location(n) == dst).cloned().unwrap();
     assert_eq!(dn2["incarnation"], dn["incarnation"], "the destination is the birth it was");
     let d = dial(&f, &dst, &src);
