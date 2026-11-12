@@ -41,8 +41,8 @@ An op is one family: its request enum's variants are the calls. Take a code no l
 |---|---|
 | `0x00` | never: an op of zero refuses the process |
 | `0x01`, `0x1A` | RDM core (`ping`, `forward`; `0x11` `echo` reserved forever, never served) |
-| `0x1B`–`0x22` | RDM (`status`, reserved, `join`, `topology`, `build-facts` (reserved, Q292), `build`, `node-primary-update`, `node-command`) |
-| `0x10`, `0x12`–`0x19` | product rows in `core_ledger()` (`0x16` `layout-reprovision` reserved forever, never served) |
+| `0x1B`–`0x23` | RDM (`status`, `build-claim` (reserved), `join`, `topology`, `build-facts` (reserved, Q292), `build`, `primary-update`, `node-command`, `read`) |
+| `0x10`, `0x12`–`0x19`, `0x24`–`0x3F` | Rafka's rows in `core_ledger()` (`0x16` `layout-reprovision`, `0x26` `otel-debug` and `0x27` `chaos-arm` reserved, never served); a new product family takes the next free code as its own row there first |
 | `0x70`–`0x7F` | the testkit only (`0x70`–`0x75` allocated in `core_ledger()`): a non-testkit owner there refuses the process |
 
 An op that is withdrawn from service stays reserved forever, never served or reassigned. A wire-incompatible change to a family is a new op, never a
