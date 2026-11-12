@@ -130,8 +130,9 @@ yet.
 
 ### Cancellation and lifecycle commands
 
-Ending the in-flight start cancels the token. That covers node.connection.delete, node.stop and a
-provider terminate. The hook and any pull it has in flight end, and no call is left behind. While a
+Ending the in-flight start cancels the token. That covers node.connection.delete, node.stop, a
+provider terminate, and a commanded node.mesh.join, which ends the earlier start and runs the whole
+sequence again on the commanding call ([node.mesh.join](lifecycles/node-mesh-join.md) step 10). The hook and any pull it has in flight end, and no call is left behind. While a
 start is `Pending`, node.connection.delete, node.stop and Status stay admissible, so a node that never
 becomes ready can still be removed.
 
