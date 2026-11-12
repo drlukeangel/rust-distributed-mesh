@@ -386,12 +386,13 @@ pub fn meshes_answer(me: &PathName, view: &Topology, filter: &Filter) -> StatusR
 /// A filter the fabric schema refuses is `RejectedFilter` naming the pair. The span names the pairs,
 /// the meshes and the Build answered.
 pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>, filter: &Filter) -> StatusReply {
-    fabrics_reply(me, vec![fabric(view, build_id)], filter)
+    fabrics_reply(me, vec![fabric(view, build_id)], filter, None)
 }
 
 /// The `Fabrics` answer of `fabrics`, the fabric the answering admin holds with every field it fills,
-/// filtered by `filter`.
-fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> StatusReply {
+/// filtered by `filter`. Its span names, from `io`, what the read's store calls took: how many, their
+/// wait for a blocking thread and their run on one, as `node.get`'s does.
+fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter, io: Option<&crate::blocking::IoTime>) -> StatusReply {
     let read = Entity::Fabrics.read();
     if let Some(reason) = filter.refusal(Entity::Fabrics) {
         tracing::info_span!("rdm.node_admin.fabric.reject.via-filter", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
@@ -400,8 +401,11 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
     }
     let fabrics: Vec<FabricView> = fabrics.into_iter().filter(|f| filter.matches(f)).collect();
     let (count, meshes, build) = (fabrics.len(), fabrics.first().map_or(0, |f| f.meshes.len()), fabrics.first().and_then(|f| f.build_id.clone()).unwrap_or_default());
-    tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), pairs = %pairs(filter), fabrics = count, meshes, build_id = %build, "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("the fabric the view holds answered"));
+    let span = tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), pairs = %pairs(filter), fabrics = count, meshes, build_id = %build, io_calls = tracing::field::Empty, io_queued_ms = tracing::field::Empty, io_ms = tracing::field::Empty, "otel.kind" = "internal");
+    if let Some(io) = io {
+        span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
+    }
+    span.in_scope(|| tracing::info!("the fabric the view holds answered"));
     StatusReply::Fabrics { fabrics }
 }
 
@@ -409,8 +413,10 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
 /// this admin is primary for, read through the reader, query.md §1; none: no cert summary) giving the
 /// next expiry across the fabric and each mesh whose renewals stall at `now_ms`, this admin's
 /// rafka-time (fabric-certs.md §Tracking), and `record`, what the Fabric row adds (its
-/// topology_storage_provider and the providers it left, storage.md §2).
-pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&[crate::storage::NodeRecord]>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter) -> StatusReply {
+/// topology_storage_provider and the providers it left, storage.md §2). `io` holds what the read's
+/// store calls took, named on its span.
+#[allow(clippy::too_many_arguments)]
+pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&[crate::storage::NodeRecord]>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter, io: Option<&crate::blocking::IoTime>) -> StatusReply {
     let (next_expiry, stalled) = records.map(|r| crate::cert_renewal::fabric_watch(view, r, now_ms)).unwrap_or_default();
     let mut f = fabric(view, build_id);
     f.next_expiry = next_expiry;
@@ -429,7 +435,7 @@ pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Optio
         });
         f.ca = record.ca.as_ref().map(|c| rdm_core::views::CaView { expires_at: c.expires_at });
     }
-    fabrics_reply(me, vec![f], filter)
+    fabrics_reply(me, vec![f], filter, io)
 }
 
 #[cfg(test)]
@@ -458,7 +464,7 @@ mod tests {
             ca: Some(crate::fabric_storage::CaRow { expires_at: 9_000, previous_expires_at: 5_000, issuer_receipts: Default::default() }),
             roots: Some(crate::fabric_storage::RootsRow { phase, roots: vec!["aa".into(), "bb".into()], expires_at: 3_000 }),
         };
-        let answer = |phase: RootsPhase, now: u64| match fabric_answer_with_status(&me, &view, None, None, Some(now), Some(&row(phase)), &Filter::new()) {
+        let answer = |phase: RootsPhase, now: u64| match fabric_answer_with_status(&me, &view, None, None, Some(now), Some(&row(phase)), &Filter::new(), None) {
             StatusReply::Fabrics { mut fabrics } => fabrics.pop().expect("one fabric"),
             other => panic!("expected Fabrics, got {other:?}"),
         };
@@ -605,6 +611,7 @@ mod tests {
                 Some(2_000),
                 Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
                 &Filter::new().eq("name", ["fabric1"]).eq("build_id", [build_id.clone()]),
+                None,
             );
             match fabric_reply {
                 StatusReply::Fabrics { fabrics } => {

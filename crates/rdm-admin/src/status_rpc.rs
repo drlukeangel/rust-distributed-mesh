@@ -1518,38 +1518,47 @@ impl StatusService {
                 if self.loads.is_none() {
                     return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} reads no digest view; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name));
                 }
-                // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
-                // a read that fails is named, never answered as no Build.
-                // Its topology_storage_provider and the providers it left are the Fabric row's (storage.md §2),
-                // read from fabric.storage: a read that fails is named, never answered as none.
-                let record = match self.fabric_storage.fabric().await {
-                    Ok(r) => r,
-                    Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the Fabric record: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
-                };
-                // The cert dates of the births of the meshes this admin is primary for (its atlas's scope,
-                // Q207), each on its record read through the reader (query.md §1): a read that fails is
-                // named, never answered as no expiry.
-                let mut certs = None;
-                if let (Some(atlas), Some(_)) = (self.atlas.get(), self.configs.get().and_then(|c| c.records())) {
-                    let reader = crate::current_record::CurrentRecords { nodes: &*self.nodes_storage };
-                    let scope = atlas.meshes();
-                    let mut rows = Vec::new();
-                    for n in view.births().filter(|n| scope.contains(&n.mesh)) {
-                        match reader.row(&n.node_id).await {
-                            Ok(Some(row)) => rows.push(row),
-                            Ok(None) => {}
-                            Err(e) => return rdm_core::reply::status::bounded_source_failed("node records", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the record of node {}: {e}", n.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name)),
-                        }
-                    }
-                    certs = Some(rows);
-                }
-                match self.builds.current_build().await {
-                    Ok(current) => {
-                        crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), certs.as_deref(), self.certs.as_ref().and_then(|c| c.now_ms()), record.as_ref(), &read.filter)
-                    }
-                    Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
+                // What the read's store calls took (the blocking pool's queue and run), named on its span.
+                let io = crate::blocking::IoTime::default();
+                crate::blocking::io_time_with(io.clone(), self.read_fabric(me_name, view, read, &io)).await
+            }
+        }
+    }
+
+    /// `fabric.get` ([`Self::read`]) answered from this admin's view, its fabric and builds records and
+    /// the cert dates its births' records hold, `io` holding what its store calls took.
+    async fn read_fabric(&self, me_name: &crate::model::PathName, view: &Topology, read: &rdm_core::status::Read, io: &crate::blocking::IoTime) -> StatusReply {
+        let op = read.entity.read();
+        // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
+        // a read that fails is named, never answered as no Build.
+        // Its topology_storage_provider and the providers it left are the Fabric row's (storage.md §2),
+        // read from fabric.storage: a read that fails is named, never answered as none.
+        let record = match self.fabric_storage.fabric().await {
+            Ok(r) => r,
+            Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the Fabric record: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
+        };
+        // The cert dates of the births of the meshes this admin is primary for (its atlas's scope,
+        // Q207), each on its record read through the reader (query.md §1): a read that fails is
+        // named, never answered as no expiry.
+        let mut certs = None;
+        if let (Some(atlas), Some(_)) = (self.atlas.get(), self.configs.get().and_then(|c| c.records())) {
+            let reader = crate::current_record::CurrentRecords { nodes: &*self.nodes_storage };
+            let scope = atlas.meshes();
+            let mut rows = Vec::new();
+            for n in view.births().filter(|n| scope.contains(&n.mesh)) {
+                match reader.row(&n.node_id).await {
+                    Ok(Some(row)) => rows.push(row),
+                    Ok(None) => {}
+                    Err(e) => return rdm_core::reply::status::bounded_source_failed("node records", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the record of node {}: {e}", n.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name)),
                 }
             }
+            certs = Some(rows);
+        }
+        match self.builds.current_build().await {
+            Ok(current) => {
+                crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), certs.as_deref(), self.certs.as_ref().and_then(|c| c.now_ms()), record.as_ref(), &read.filter, Some(io))
+            }
+            Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
         }
     }
 
