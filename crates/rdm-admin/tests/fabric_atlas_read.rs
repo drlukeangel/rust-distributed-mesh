@@ -93,7 +93,7 @@ fn status_service(
     fabric_id: FabricId,
     topology: Arc<tokio::sync::RwLock<Topology>>,
     meshes_storage: Arc<MemoryMeshStorage>,
-    nodes_storage: Arc<MemoryNodesStorage>,
+    nodes_storage: Arc<dyn NodesStorage>,
     mesh_ids: BTreeMap<String, MeshId>,
     atlas: Arc<OnceLock<Arc<Atlas>>>,
     configs: rdm_admin::node_config::NodeConfigsSlot,
@@ -511,4 +511,163 @@ fn an_atlas_of_more_than_six_hundred_nodes_reads_whole_at_the_fabric_primary() {
     let (rows, frames) = &served[0];
     assert_eq!(rows, &total.to_string(), "the serve span counts every node row sent");
     assert!(frames.parse::<u32>().is_ok_and(|f| f > 2), "the rows went in more than one data frame per mesh: {frames} frames");
+}
+
+/// A nodes store that names each read made of it, in order, over the file nodes store: a point read of
+/// one record (`node <id>`), the read of a mesh's records (`nodes <mesh>`) and the read of the records at
+/// a path and name (`records_at <path>/<name>`).
+struct NamedReads {
+    records: rdm_admin::storage::FileNodesStorage,
+    reads: Mutex<Vec<String>>,
+}
+
+impl NamedReads {
+    /// How many reads were made so far.
+    fn made(&self) -> usize {
+        self.reads.lock().unwrap().len()
+    }
+
+    /// The reads made since the `from`th.
+    fn since(&self, from: usize) -> Vec<String> {
+        self.reads.lock().unwrap()[from..].to_vec()
+    }
+}
+
+#[async_trait::async_trait]
+impl NodesStorage for NamedReads {
+    async fn node(&self, node_id: &NodeId) -> Result<Option<rdm_admin::storage::NodeLine>, rdm_admin::storage_error::StorageError> {
+        self.reads.lock().unwrap().push(format!("node {node_id}"));
+        self.records.node(node_id).await
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRecord>, rdm_admin::storage_error::StorageError> {
+        self.reads.lock().unwrap().push(format!("nodes {mesh}"));
+        self.records.nodes(mesh).await
+    }
+    async fn put_node(&self, record: &NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.records.put_node(record).await
+    }
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRecord>, rdm_admin::storage_error::StorageError> {
+        self.reads.lock().unwrap().push(format!("records_at {}/{}", name.path, name.name));
+        self.records.records_at(name).await
+    }
+}
+
+// @feature: fabric-atlas-read
+/// CONTRACT (query.md §1: "Node rows and property maps are not copied into an atlas to serve `node.get`
+/// or acceptance", and "A current-pair lookup resolves the path and name to a node ID from the node
+/// records. The reader reads the node's record at that node ID"; Q439: each atlas node row "read from the
+/// node's record"; build.md §4: "the fabric-primary composes the complete topology from its records at
+/// acceptance"): at the fabric-primary of two meshes of six births each, every node's record in the file
+/// nodes store, Build acceptance and the atlas reads read the records they answer, many records as one
+/// store read per mesh, never one read per node: a Delete's acceptance reads each mesh's records once and
+/// the deleted node's pair (its current-pair lookup and its record, the atlas row its gate reads);
+/// `fabric.atlas.get` reads each mesh's records once for its node rows, beside `fabric.get`'s cert dates
+/// at one read per mesh; `mesh.atlas.get [name: mesh2]` reads mesh2's records once beside them. The
+/// acceptance's span names its store calls (`io_calls`). Each answers what it answered before: every
+/// mesh in name order with its node rows in `(path, name)` order, and the Delete pinned to the birth the
+/// view holds. Each read's node-record store reads and wall are printed. Must NOT happen: a store read
+/// per node, or two per node row.
+#[test]
+fn build_acceptance_and_the_atlas_reads_read_the_node_records_at_one_store_read_per_mesh() {
+    let capture = Capture::new("fabric-atlas-read-store-reads");
+    let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build current-thread runtime");
+    let dir = std::env::temp_dir().join(format!("atlas-store-reads-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (births, cost) = rt.block_on(async {
+        let store = rdm_admin::store_root::StoreRoot::at(&dir).unwrap();
+        let records = Arc::new(NamedReads { records: rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_log::LogWriter::mint()).await.unwrap(), reads: Mutex::default() });
+        // Each mesh: its node-admin, the mesh-primary (mesh1's the fabric-primary), and five nodes.
+        let mut births = Vec::new();
+        for mesh in ["mesh1", "mesh2"] {
+            let mut admin = Node::allocated(PathName::numbered(mesh, "node-admin", 1), mesh, "node-admin");
+            admin.is_primary = true;
+            admin.is_fabric_primary = mesh == "mesh1";
+            births.push(admin);
+            births.extend((1..=5).map(|i| Node::allocated(PathName::numbered(mesh, "node", i), mesh, "node")));
+        }
+        for n in births.iter_mut() {
+            n.status = NodeStatus::Ready;
+            n.incarnation_id = Some(IncarnationId::mint());
+            let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), n.incarnation_id.clone().unwrap(), NodeStatus::Ready);
+            (row.is_primary, row.is_fabric_primary) = (n.is_primary.then_some(1), n.is_fabric_primary.then_some(1));
+            records.put_node(&row).await.unwrap();
+        }
+        let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
+        let view = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![
+                rdm_admin::model::Mesh { id: Some(mesh1_id.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                rdm_admin::model::Mesh { id: Some(mesh2_id.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
+            ],
+            nodes: births.clone(),
+        };
+        let meshes_storage = Arc::new(MemoryMeshStorage::default());
+        for (name, id) in [("mesh1", &mesh1_id), ("mesh2", &mesh2_id)] {
+            rdm_admin::storage::MeshStorage::put_mesh(&*meshes_storage, &rdm_admin::storage::MeshRecord::new(id.clone(), name)).await.unwrap();
+        }
+        // The current Build, accepted and complete, its topology every birth: what the atlas reads list
+        // and what a Build is compiled against.
+        let fp = births[0].clone();
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), &fp.birth().unwrap()).await.unwrap();
+
+        // The fabric-primary's reads over its atlas of both meshes, and its acceptance.
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind admin ep");
+        let configs = crate::bound_configs_over(records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(LiveNodeResolver::default()))))).await;
+        let configs_slot: rdm_admin::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
+        let _ = configs_slot.set(Arc::new(configs));
+        let atlas_slot: Arc<OnceLock<Arc<Atlas>>> = Arc::new(OnceLock::new());
+        let held = Arc::new(Atlas::default());
+        held.scope(["mesh1".to_string(), "mesh2".to_string()].into());
+        let _ = atlas_slot.set(held);
+        let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), mesh1_id), ("mesh2".to_string(), mesh2_id)].into();
+        let service = status_service(&fp.location(), &fp.node_id, view.fabric.id.clone(), Arc::new(tokio::sync::RwLock::new(view.clone())), meshes_storage, records.clone(), mesh_ids, atlas_slot, configs_slot, builds.clone());
+        let cp = crate::control_plane(builds.clone(), accepted, fp.location(), view.clone(), crate::adopted_time());
+        let _ = cp.node_rows.set(records.clone());
+
+        let rows = |births: &[Node], mesh: &str| -> (String, Vec<(String, String, NodeId)>) {
+            let mut of: Vec<&Node> = births.iter().filter(|n| n.mesh == mesh).collect();
+            of.sort_by_key(|n| n.location());
+            (mesh.to_string(), of.into_iter().map(|n| (n.path.clone(), n.name.clone(), n.node_id.clone())).collect())
+        };
+        let answered = |atlas: &rdm_core::views::AtlasView| -> Vec<(String, Vec<(String, String, NodeId)>)> {
+            atlas.fabrics[0].meshes.iter().map(|m| (m.name.clone(), m.nodes.iter().map(|n| (n.node.path.clone(), n.node.name.clone(), n.node.node_id.clone())).collect())).collect()
+        };
+        let mut cost: Vec<(&str, Vec<String>, std::time::Duration)> = Vec::new();
+
+        let (from, at) = (records.made(), std::time::Instant::now());
+        let atlas = service.atlas_answer("fabric.atlas.get", None).await.unwrap_or_else(|r| panic!("fabric.atlas.get is answered: {r:?}"));
+        cost.push(("fabric.atlas.get", records.since(from), at.elapsed()));
+        assert_eq!(answered(&atlas), vec![rows(&births, "mesh1"), rows(&births, "mesh2")], "fabric.atlas.get: both meshes in name order, each with its node rows in (path, name) order");
+
+        let (from, at) = (records.made(), std::time::Instant::now());
+        let atlas = service.atlas_answer("mesh.atlas.get", Some(&rdm_core::filter::Filter::new().eq("name", ["mesh2"]))).await.unwrap_or_else(|r| panic!("mesh.atlas.get [name: mesh2] is answered: {r:?}"));
+        cost.push(("mesh.atlas.get [name: mesh2]", records.since(from), at.elapsed()));
+        assert_eq!(answered(&atlas), vec![rows(&births, "mesh2")], "mesh.atlas.get [name: mesh2]: mesh2 with its node rows in (path, name) order");
+
+        let deleted = births.iter().find(|n| n.location() == PathName::numbered("mesh2", "node", 3)).cloned().unwrap();
+        let (from, at) = (records.made(), std::time::Instant::now());
+        let opened = cp.submit("store-reads", rdm_core::build::BuildChange::Delete { meshes: Vec::new(), node_ids: vec![deleted.node_id.clone()] }).await.unwrap_or_else(|r| panic!("the Delete of mesh2.node/3 is accepted: {r:?}"));
+        cost.push(("Build acceptance: a Delete of mesh2.node/3", records.since(from), at.elapsed()));
+        let pinned = builds.read_build(&opened.build_id).await.unwrap().topology.pinned;
+        assert_eq!(pinned.iter().map(|(at, b)| (at.clone(), b.node_id.clone(), b.incarnation.clone())).collect::<Vec<_>>(), vec![(deleted.location(), deleted.node_id.clone(), deleted.incarnation_id.clone().unwrap())], "the Delete is pinned to the birth the view holds at mesh2.node/3");
+        ep.close().await;
+        (births, cost)
+    });
+    drop(rt);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let spans = capture.all();
+    let accepted = spans.iter().find(|s| s.name == "rdm.node_admin.build.create.via-rest" && s.attributes.get("route").map(String::as_str) == Some("store-reads")).expect("the acceptance is spanned");
+    let io_calls: usize = accepted.attributes.get("io_calls").and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("the acceptance's span names its store calls (io_calls): {:?}", accepted.attributes));
+    for (what, reads, wall) in &cost {
+        eprintln!("{what}: {} node-record store reads, wall {:.1} ms: {reads:?}", reads.len(), wall.as_secs_f64() * 1e3);
+    }
+    eprintln!("the acceptance's span: io_calls {io_calls}");
+    let reads = |what: &str| cost.iter().find(|(w, _, _)| w.starts_with(what)).map(|(_, r, _)| r.clone()).unwrap();
+    assert!(reads("fabric.atlas.get").len() <= 4, "fabric.atlas.get reads each mesh's records once for its node rows and once for fabric.get's cert dates, never a read per node row: {cost:#?}");
+    assert!(reads("mesh.atlas.get").len() <= 3, "mesh.atlas.get [name: mesh2] reads mesh2's records once for its node rows beside fabric.get's cert dates, never a read per node row: {cost:#?}");
+    assert!(reads("Build acceptance").len() <= 4, "Build acceptance reads each mesh's records once and the deleted node's pair (its lookup and its record), never a read per birth: {cost:#?}");
+    assert!(io_calls < births.len(), "the acceptance's span names fewer store calls than the view holds births, never one per birth: io_calls {io_calls}, {} births", births.len());
 }
