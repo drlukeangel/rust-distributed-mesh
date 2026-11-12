@@ -3810,5 +3810,6 @@ rdm#174 with the lead's conforming text.
     - At ten meshes, gossip carries each side's frames through the other eight, so neither side went silent and no re-feed was due. That is RDM working.
     - Fix: a cut "between the meshes" drops UDP between every two meshes (`netfault::Partition::between`), and each admin waits for every other mesh silent. At two meshes every cell is as it was.
     - All four cut jobs are green at their canonical and fast tiers and at scale.
-  - Running: the scale tier, then the certifying chain, at 81e4719a9 (`scale-chain.sh`, lanes 3 and 6), one after the other on this box (Q290).
+  - **The scale tier at 81e4719a9: 12 of 12 jobs green** (release consumer executables, 10 meshes, 200 nodes, exported; Q290 step 4, load-testing.md "Chaos at scale"): authority 1,366 s, lifecycle 942 s, routing 622 s, partition 490 s, adv-cut-restart 403 s, adv-cut-spawn 371 s, adv-cut-kill 399 s, adv-primary-victim 376 s, adv-two-victims 545 s, adv-direct-connection 196 s, adv-cutback-restart 187 s, adv-carrier-connection 185 s. Load average stayed under 16 (15-minute).
+  - Running: the certifying chain at 81e4719a9 (`chain.sh`, lanes 3 and 6): fast, release, export, M9, soaks, the manifest, the L4 samples, M10.
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
