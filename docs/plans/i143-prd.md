@@ -3791,5 +3791,13 @@ rdm#174 with the lead's conforming text.
     - a first start never exits on a failed step after its `pre_node_ready` hook;
     - the create step its mesh owes commands a birth another executor launched to start again (Q445, decided by mesh-recovery.md step 4).
   - **rdm#399 LANDED 43fc3abf4** (Q444): RDM's op ledger holds RDM's own opcodes only; a product serves its families with no row; 0x40–0xFF is recommended for a product (consumer-guide-ops.md). The rafka session was told to repin at 43fc3abf4.
-  - Running: the scale tier, then the certifying chain, at 43fc3abf4 (`scale-chain.sh`). The consumer executables are built at the candidate first, because the scale jobs refused executables built from another candidate.
+  - The rafka session repinned all five RDM crates at 43fc3abf4 (rafka main 93570fcabb, gate GREEN). Its reserved codes 0x16, 0x26 and 0x27 go through `ServerBuilder::ledger`; no opcode moved.
+  - **rdm#401 LANDED a04d7f635**: the authority cells' checkpoints want their tier's node-admins per mesh, three at `scale` (L4's shape). A successor is the lowest NodeId of the mesh's other admins, as the election names it. The scale tier found it at 43fc3abf4: `mesh1 holds 3 ready node-admins, 2 wanted`.
+  - **rdm#402** (lane 7, proving): the scale tier ran the debug consumer executables.
+    - 200 debug nodes on 20 cores ran at load average about 600.
+    - The fabric-primary's `fabric.get` was p90 3.1 s, against 10 ms at 10 nodes, past the cells' 2 s read.
+    - Both authority scale cells stopped at `formed` with a good end state (Q442), and no story ran.
+    - Fix: the scale cells run the release consumer executables, the build L4 passed on (load-testing.md §Conditions). No bound changes.
+    - Named, not fixed: the fabric-primary's `fabric.get` reads every birth's record in its scope on each call (the cert watch).
+  - Next: the scale tier, then the certifying chain, at #402's landing (`scale-chain.sh`), one after the other on this box (Q290).
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
