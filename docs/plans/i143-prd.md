@@ -3813,5 +3813,16 @@ rdm#174 with the lead's conforming text.
   - **The scale tier at 81e4719a9: 12 of 12 jobs green** (release consumer executables, 10 meshes, 200 nodes, exported; Q290 step 4, load-testing.md "Chaos at scale"): authority 1,366 s, lifecycle 942 s, routing 622 s, partition 490 s, adv-cut-restart 403 s, adv-cut-spawn 371 s, adv-cut-kill 399 s, adv-primary-victim 376 s, adv-two-victims 545 s, adv-direct-connection 196 s, adv-cutback-restart 187 s, adv-carrier-connection 185 s. Load average stayed under 16 (15-minute).
   - The certifying chain at 81e4719a9: fast ok=82 FAIL=0; release ok=127 FAIL=0; M9 rc=0 (L4: launch to ready 34.6 s, Direct open 2 ms, Direct 224 MB/s median per pair, Proxy cold-discovery open 5.7 s, Proxy 187 MB/s; no pair measured nothing). The export was 65 of 66; `i143-2900-process` was refused, rdm#405. The chain was stopped in its soaks at 08:09 EST, because #405 makes a new candidate.
   - **rdm#405 LANDED 2cd35f5f4** (test only): `delta_gap_recovery` took its heal time after the cut's release returned. mesh1's primary replayed its last differential to the member, which installed it from the version it held (gossip.md §3.3), inside that release. The heal now begins at the release. Five sibling cells take their heal time the same way; they are named in #405 and unchanged.
-  - Running: the certifying chain at 2cd35f5f4 (`chain.sh`, lanes 3 and 6). The scale tier stands at 81e4719a9: the only change since is #405's test cell and docs.
+  - The certifying chain at 2cd35f5f4:
+    - fast ok=82 FAIL=0; release ok=127 FAIL=0; export 66 of 66;
+    - M9 rc=0 (L4 launch to ready 35.4 s, Direct open 2.1 ms, 205 MB/s per pair);
+    - soaks 13 of 14. `i143-2787-soak-process` was red: rdm#406.
+    - Stopped after the soaks (12:26 EST): #406 is a product fix, so a new candidate.
+  - **rdm#406** (lane 7, a0ff23b42, proven, gating): a node-admin's own declaration call in flight across a start's cycle begin answered late. Its `already-applied` was recorded for the new cycle's key, so a commanded join's Ready was never sent, mesh2's checklist held, and a Build stalled before Complete. `Declarer::declared` now records an end only for the request still owed under its key.
+    - unit test red then green;
+    - the soak at seed 1432787 rc=0;
+    - its first gate red in two rdm#400 cells, which are rdm#408.
+  - **rdm#408** (lane 5): the window rdm#400 named was reached under load. A commanded node.mesh.join after a first start's hook passed left that start's topology read running, so two reads served one birth. The steps after the hook now hold the birth's cancel token. Also, `build_sections`' held-at-hook cell counts a command back from the old primary's loss (Q445's create step can come first).
+  - **rdm#407** (lane 2): the soak's gateway carrier was passed as `path:<NodeId>`, so a quarter of the soak's traffic was refused unsent and counted NotSent (450 in one run). It is now `exact:<NodeId>`; an argument refusal is named by the ledger, never NotSent.
+  - Next: land #408, #406 and #407, then the scale tier and the certifying chain at the new main.
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
