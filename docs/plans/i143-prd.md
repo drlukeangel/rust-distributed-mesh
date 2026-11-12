@@ -3778,3 +3778,18 @@ rdm#174 with the lead's conforming text.
   - rdm#393, in lane 7 at its branch tip, restates the five changed §14 bullets in the pages' words (Q335/Q371, Q344/Q346, Q111/Q358; the replace steps; the primary role) and re-maps the manifest's cells. Run against today's receipts with that manifest, the certifier proves 70 §14 cells with 0 §14 refusals; only the 12 scale receipts remain.
   - Owed: rdm#393's gate and landing; the scale tier; a certifying chain at that SHA.
   - Also owed: the export registry's job ids `i143-rshape-soak-partition-*` and `i143-rshape-partition-chaos-scale-process` use the banned word "partition".
+- 2026-11-11 Landed since the chain at 238df4fe7, each with its flames on .99 in its issue:
+  - **rdm#393 LANDED 65e086929**: the export gate's §14 states the current contracts, each proven by a cell the gate discovers.
+  - **rdm#394 LANDED cd6fafd74** (the release suite on two cores at 65e086929, 6 reds): a mesh-primary replies mesh.block `blocked` only once its node recovery of a node of its mesh has finished. The other reds were starved runs, judged on their end state (Q442); all eight pass.
+  - **rdm#395 LANDED 7ee42c102**: the harness reads a node's data dir with one node.get of its pair. The product was right: the data dir converges from the node's record.
+  - **rdm#396 LANDED 43264da80**: a read reads only the records of the nodes it answers, one store call per mesh. At a 20-node fabric-primary, node.get of one pair went from 20 calls to 2, and fabric.get from 24 to 6.
+  - **rdm#397 LANDED 41903feaa**: Build acceptance and the atlas reads make one store call per mesh. Acceptance `io_calls` went from 37 to 19.
+  - **rdm#398 LANDED b6976cec0**: a Build's completion reads only its unpinned subjects' records (`io_calls` 21 → 2). A Create's held paths are read through `rows_of` whatever their number, so a `Withdrawn` record counts as none.
+  - **rdm#400 LANDED 8ea32bff8** (the `build_sections::` red in rdm#399's first gate):
+    - a first start's topology read follows the current primary its view names;
+    - `BirthCancel::renew` cancels the start it replaces;
+    - a first start never exits on a failed step after its `pre_node_ready` hook;
+    - the create step its mesh owes commands a birth another executor launched to start again (Q445, decided by mesh-recovery.md step 4).
+  - **rdm#399 LANDED 43fc3abf4** (Q444): RDM's op ledger holds RDM's own opcodes only; a product serves its families with no row; 0x40–0xFF is recommended for a product (consumer-guide-ops.md). The rafka session was told to repin at 43fc3abf4.
+  - Running: the scale tier, then the certifying chain, at 43fc3abf4 (`scale-chain.sh`). The consumer executables are built at the candidate first, because the scale jobs refused executables built from another candidate.
+  - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
