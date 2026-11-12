@@ -414,6 +414,11 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
 
 // ---------------------------------------------------------------- the definition matrix
 
+/// The scale tier's consumer executables and the build manifest that hashes them:
+/// `scripts/i143-rshape-build-consumer.sh --release` (rdm#402).
+const SCALE_BIN_DIR: &str = "target/i143-rshape/consumer-bin-release";
+const SCALE_MANIFEST: &str = "target/i143-rshape/consumer-build-release/manifest.json";
+
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
@@ -584,6 +589,15 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
         if !cmd.ends_with(&format!(" --test main rshape_burn_in::{test} -- --exact")) {
             v.push(format!("rshape-definition-scale-cell: {job}/{test} does not name exactly its own test"));
         }
+        // The release consumer executables: L4 passed on the release build, and a debug build measures
+        // its own overhead on the CPU-bound paths, not RDM (load-testing.md §Conditions, rdm#402).
+        // The cell binds, and the gate re-hashes, the executables against the release build's manifest.
+        if !cmd.starts_with(&format!("RDM_RSHAPE_CONSUMER_BIN_DIR={SCALE_BIN_DIR} RDM_RSHAPE_CONSUMER_MANIFEST={SCALE_MANIFEST} ")) {
+            v.push(format!("rshape-definition-scale-cell: {job}/{test} does not run the release consumer executables ({SCALE_BIN_DIR}, hashed by {SCALE_MANIFEST})"));
+        }
+    }
+    if s(&m["candidate_import"], "scale_bin_dir") != SCALE_BIN_DIR || s(&m["candidate_import"], "scale_manifest") != SCALE_MANIFEST {
+        v.push(format!("rshape-definition-scale-cell: the matrix's candidate_import does not name {SCALE_BIN_DIR} and {SCALE_MANIFEST}"));
     }
 
     // Registry: every job of the matrix that the registry owns matches it cell for cell, and no
@@ -709,6 +723,16 @@ fn rshape_definition_covers_every_scenario_without_business_dependencies() {
     m["cells"].as_array_mut().unwrap().push(json!({"test": "mock_unowned_cell", "issue": 2945, "provider": "process", "tier": "canonical", "job": "i143-rshape-x-process",
         "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-x-process/mock_unowned_cell/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_unowned_cell -- --exact"}));
     plant("rshape-definition-orphan-cell", "a cell that proves no scenario", &m, &reg);
+    let mut m = matrix.clone();
+    let c = m["cells"].as_array_mut().unwrap().iter_mut().find(|c| s(c, "tier") == "scale").unwrap();
+    let cmd = s(c, "command").replace(SCALE_BIN_DIR, "target/i143-rshape/consumer-bin");
+    c["command"] = json!(cmd);
+    plant("rshape-definition-scale-cell", "a scale cell on the debug consumer executables", &m, &reg);
+    let mut m = matrix.clone();
+    let c = m["cells"].as_array_mut().unwrap().iter_mut().find(|c| s(c, "tier") == "scale").unwrap();
+    let cmd = s(c, "command").replace(&format!("RDM_RSHAPE_CONSUMER_MANIFEST={SCALE_MANIFEST} "), "");
+    c["command"] = json!(cmd);
+    plant("rshape-definition-scale-cell", "a scale cell that binds the release executables against the debug build's manifest", &m, &reg);
 
     let first_adv = |m: &mut Value| -> usize { m["cells"].as_array().unwrap().iter().position(|c| s(c, "tier") == "adversarial").expect("the matrix holds an adversarial cell") };
     let mut m = matrix.clone();

@@ -120,7 +120,9 @@ before any target moves.
 
 Once a profile passes, the release suite's chaos families (the R-shape adversarial cuts, partitions,
 kills and holds) run once at that profile, with the same invariants their cells assert at 20 nodes. This
-is the "chaos" lift (Q246): chaos at scale, not more chaos at 20 nodes.
+is the "chaos" lift (Q246): chaos at scale, not more chaos at 20 nodes. They run on the release build the
+profile passed on (§Conditions): the `*-scale-process` cells run the consumer executables
+`scripts/i143-rshape-build-consumer.sh --release` builds (rdm#402).
 
 ### Multi-host
 

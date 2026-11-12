@@ -424,6 +424,17 @@ where
 /// [`Estate::bootstrap_on`]; the testkit binaries are refused.
 pub const ENV_CONSUMER_BIN_DIR: &str = "RDM_RSHAPE_CONSUMER_BIN_DIR";
 
+/// The environment variable naming the consumer build manifest that hashes the executables in
+/// [`ENV_CONSUMER_BIN_DIR`]; a registered command sets it beside the directory, and the acceptance gate
+/// re-hashes the executables against the same file. Unset, it is the debug build's manifest; the scale
+/// tier's commands name the release build's (`scripts/i143-rshape-build-consumer.sh --release`, rdm#402).
+pub const ENV_CONSUMER_MANIFEST: &str = "RDM_RSHAPE_CONSUMER_MANIFEST";
+
+/// The consumer build manifest [`ENV_CONSUMER_MANIFEST`] names, under the workspace `root`.
+pub fn consumer_manifest(root: &Path) -> PathBuf {
+    root.join(std::env::var(ENV_CONSUMER_MANIFEST).unwrap_or_else(|_| "target/i143-rshape/consumer-build/manifest.json".to_string()))
+}
+
 fn refuse_built_ins_in_consumer_mode(what: &str) {
     if let Ok(d) = std::env::var(ENV_CONSUMER_BIN_DIR) {
         panic!("REFUSED {what}: {ENV_CONSUMER_BIN_DIR}={d} selects an external consumer's executables, which launch only through Estate::bootstrap_on with an explicit binding set; the testkit binaries are never a fallback");

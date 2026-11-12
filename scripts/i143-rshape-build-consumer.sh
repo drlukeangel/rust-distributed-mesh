@@ -18,6 +18,12 @@
 # `--skip-ui-tests` builds the immutable consumer binaries before the gate starts its
 # concurrent test jobs; the gate runs the UI tests beside the other jobs.
 #
+# `--release` builds with `--release` and takes the binaries from the release profile: the scale
+# tier's executables (`*-scale-process`, target/i143-rshape/consumer-bin-release), because chaos at
+# scale runs at L4, the profile that passed on the release build, and a debug build measures its own
+# overhead on the CPU-bound paths, not RDM (docs/plans/proposal/load-testing.md §Conditions, rdm#402).
+# The manifest names the profile it was built with.
+#
 # Output: manifest.json (candidate, fixture/workspace hashes, binaries and their sha256, the
 # executable map), metadata.json (`cargo metadata --locked`), gate.log (the whole build).
 # REFUSED, by name and nonzero: a candidate that is not 40-hex, a build that fails, any RDM package
@@ -33,7 +39,7 @@ RDM_URL=https://github.com/drlukeangel/rust-distributed-mesh
 BINS="rshape-node-admin rshape-compute rshape-gateway rshape-broker"
 refuse() { echo "i143-rshape-build-consumer: REFUSED $*" >&2; exit 1; }
 
-CANDIDATE="" WORKSPACE="" BIN_DIR="" OUTPUT="" SKIP_UI_TESTS=0
+CANDIDATE="" WORKSPACE="" BIN_DIR="" OUTPUT="" SKIP_UI_TESTS=0 PROFILE=debug
 while [ $# -gt 0 ]; do
     case "$1" in
         --candidate-sha) CANDIDATE="${2:-}"; shift 2 ;;
@@ -41,7 +47,8 @@ while [ $# -gt 0 ]; do
         --bin-dir) BIN_DIR="${2:-}"; shift 2 ;;
         --output) OUTPUT="${2:-}"; shift 2 ;;
         --skip-ui-tests) SKIP_UI_TESTS=1; shift ;;
-        *) refuse "unknown argument '$1'; usage: --candidate-sha <sha> --workspace <dir> --bin-dir <dir> --output <dir>" ;;
+        --release) PROFILE=release; shift ;;
+        *) refuse "unknown argument '$1'; usage: --candidate-sha <sha> --workspace <dir> --bin-dir <dir> --output <dir> [--skip-ui-tests] [--release]" ;;
     esac
 done
 [ -n "$CANDIDATE" ] || refuse "no --candidate-sha: the candidate is always named, never an implicit HEAD"
@@ -57,7 +64,7 @@ rm -rf "$WORKSPACE" "$BIN_DIR" "$OUTPUT"
 mkdir -p "$WORKSPACE" "$BIN_DIR" "$OUTPUT"
 LOG="$OUTPUT/gate.log"
 materialize_and_build() {
-    echo "candidate=$CANDIDATE fixture_rev=$FIXTURE_REV workspace=$WORKSPACE"
+    echo "candidate=$CANDIDATE fixture_rev=$FIXTURE_REV workspace=$WORKSPACE profile=$PROFILE"
     # The fixture is a workspace of the consumer and the admin UI; the UI's web app is not part of
     # the Rust build (it is built with npm).
     (cd "$FIXTURE" && tar --exclude=./target --exclude=./admin-ui/web -cf - .) | tar -xf - -C "$WORKSPACE" || return 1
@@ -67,7 +74,8 @@ materialize_and_build() {
     for db in "${CARGO_HOME:-$HOME/.cargo}"/git/db/rust-distributed-mesh-*; do
         [ -d "$db" ] && git -C "$db" fetch -q "$ROOT" "+$CANDIDATE:refs/commit/$CANDIDATE" 2>/dev/null || true
     done
-    cargo build --locked --message-format=json --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins --tests --examples > "$OUTPUT/artifacts.json" || return 1
+    if [ "$PROFILE" = release ]; then set -- --release; else set --; fi
+    cargo build --locked "$@" --message-format=json --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins --tests --examples > "$OUTPUT/artifacts.json" || return 1
     # The admin UI's own tests (its flows run against node-admin's real control router).
     if [ "$SKIP_UI_TESTS" != 1 ]; then
         python3 - "$OUTPUT/artifacts.json" <<'PYTESTS' || return 1
@@ -132,23 +140,23 @@ grep -qE '^\[(patch|replace)' "$WORKSPACE/Cargo.toml" && refuse "$WORKSPACE/Carg
 
 TARGET=$(jq -r .target_directory "$OUTPUT/metadata.json")
 for b in $BINS; do
-    [ -x "$TARGET/debug/$b" ] || refuse "binary $b was not built at $TARGET/debug/$b"
-    cp "$TARGET/debug/$b" "$BIN_DIR/$b"
+    [ -x "$TARGET/$PROFILE/$b" ] || refuse "binary $b was not built at $TARGET/$PROFILE/$b"
+    cp "$TARGET/$PROFILE/$b" "$BIN_DIR/$b"
 done
 # The demo's admin UI binary rides beside the node binaries (not part of the hashed set).
-[ -x "$TARGET/debug/rdm-admin-ui" ] || refuse "binary rdm-admin-ui was not built at $TARGET/debug/rdm-admin-ui"
-cp "$TARGET/debug/rdm-admin-ui" "$BIN_DIR/rdm-admin-ui"
+[ -x "$TARGET/$PROFILE/rdm-admin-ui" ] || refuse "binary rdm-admin-ui was not built at $TARGET/$PROFILE/rdm-admin-ui"
+cp "$TARGET/$PROFILE/rdm-admin-ui" "$BIN_DIR/rdm-admin-ui"
 # So does the consumer guide's compiled example (demo-estate.sh example; not part of the hashed set).
-[ -x "$TARGET/debug/rshape-example" ] || refuse "binary rshape-example was not built at $TARGET/debug/rshape-example"
-cp "$TARGET/debug/rshape-example" "$BIN_DIR/rshape-example"
+[ -x "$TARGET/$PROFILE/rshape-example" ] || refuse "binary rshape-example was not built at $TARGET/$PROFILE/rshape-example"
+cp "$TARGET/$PROFILE/rshape-example" "$BIN_DIR/rshape-example"
 hashes=$(for b in $BINS; do printf '%s\t%s\n' "$b" "$(sha256sum "$BIN_DIR/$b" | cut -d' ' -f1)"; done | jq -R -s 'split("\n")[:-1] | map(split("\t") | {(.[0]): .[1]}) | add')
 src_hash=$(cd "$WORKSPACE" && find src admin-ui/src -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
 jq -n --arg cand "$CANDIDATE" --arg url "$RDM_URL" --arg fixture_rev "$FIXTURE_REV" --argjson bins "$hashes" \
     --arg toml "$(sha256sum "$WORKSPACE/Cargo.toml" | cut -d' ' -f1)" --arg lock "$(sha256sum "$WORKSPACE/Cargo.lock" | cut -d' ' -f1)" \
-    --arg src "$src_hash" --arg rustc "$(rustc --version)" --arg cargo "$(cargo --version)" --arg bindir "$BIN_DIR" --arg ws "$WORKSPACE" \
+    --arg src "$src_hash" --arg rustc "$(rustc --version)" --arg cargo "$(cargo --version)" --arg bindir "$BIN_DIR" --arg ws "$WORKSPACE" --arg profile "$PROFILE" \
     --argjson rdm "$(jq '[.packages[] | select((.source // "") | startswith("git+https://github.com/drlukeangel/rust-distributed-mesh")) | {name, version, source}] | sort_by(.name)' "$OUTPUT/metadata.json")" \
     '{candidate_sha:$cand, rdm_url:$url, fixture_pinned_rev:$fixture_rev, workspace:$ws, consumer_manifest_sha256:$toml, consumer_lockfile_sha256:$lock, consumer_source_sha256:$src,
-      toolchain:{rustc:$rustc, cargo:$cargo}, bin_dir:$bindir, binaries:$bins,
+      toolchain:{rustc:$rustc, cargo:$cargo}, profile:$profile, bin_dir:$bindir, binaries:$bins,
       executable_map:{"node-admin":"rshape-node-admin", compute:"rshape-compute", gateway:"rshape-gateway", broker:"rshape-broker"},
       rdm_packages:$rdm}' > "$OUTPUT/manifest.json"
-echo "i143-rshape-build-consumer: ok candidate=$CANDIDATE binaries=$BIN_DIR manifest=$OUTPUT/manifest.json"
+echo "i143-rshape-build-consumer: ok candidate=$CANDIDATE profile=$PROFILE binaries=$BIN_DIR manifest=$OUTPUT/manifest.json"

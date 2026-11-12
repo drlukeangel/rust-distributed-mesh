@@ -52,7 +52,7 @@ fn consumer_set() -> BindingSet {
     let root = workspace_root();
     let dir = std::env::var(ENV_CONSUMER_BIN_DIR).unwrap_or_else(|_| panic!("REFUSED: {ENV_CONSUMER_BIN_DIR} is not set; the registered command (tools/mesh-audit/i143-acceptance-jobs.json, i143-2776-process and i143-2776-container) sets it, and no default stands in for it"));
     let bin = root.join(&dir).canonicalize().unwrap_or_else(|e| panic!("RED: {ENV_CONSUMER_BIN_DIR}={dir}: {e} (scripts/i143-rshape-build-consumer.sh)"));
-    let manifest = root.join("target/i143-rshape/consumer-build/manifest.json");
+    let manifest = rdm_test::estate::consumer_manifest(&root);
     binding_set_from_build_manifest(&manifest, &bin, provider() == "container").unwrap_or_else(|e| panic!("RED: the demo's build manifest does not bind its executables: {e}"))
 }
 

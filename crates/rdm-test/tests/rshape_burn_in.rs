@@ -321,7 +321,7 @@ async fn birth(cell: &str, shape: Shape) -> Born {
     let started_ms = now_ms();
     let root = workspace_root();
     let bin = root.join(env("RDM_RSHAPE_CONSUMER_BIN_DIR"));
-    let manifest = root.join("target/i143-rshape/consumer-build/manifest.json");
+    let manifest = rdm_test::estate::consumer_manifest(&root);
     let set = binding_set_from_build_manifest(&manifest, &bin, provider() == "container").unwrap_or_else(|e| panic!("REFUSED: the consumer build manifest does not bind the executables: {e}"));
     // The candidate is the RDM commit the consumer imported, as its build manifest records it; the
     // cell's own checkout may be a later commit (the harness), never the candidate.

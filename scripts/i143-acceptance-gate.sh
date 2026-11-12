@@ -17,8 +17,9 @@
 # Layers: unit, static and export (no estate); process, container, fast(-process|-container),
 # chaos-(process|container) and soak-(process|container) (an estate on the named provider). A cell
 # whose command sets RDM_RSHAPE_CONSUMER_BIN_DIR runs an external consumer's executables: the
-# runner first re-hashes every binary of the consumer build manifest
-# (target/i143-rshape/consumer-build/manifest.json, or the cell's `consumer_manifest`) and refuses
+# runner first re-hashes every binary of the consumer build manifest (the one the command names in
+# RDM_RSHAPE_CONSUMER_MANIFEST, the cell binds the same file; else the cell's `consumer_manifest`, else
+# target/i143-rshape/consumer-build/manifest.json) and refuses
 # the cell by name on a missing manifest or file or a hash mismatch, and afterwards refuses it when
 # its estate manifest does not record explicit executable bindings (a built-in substitution).
 # A registry is refused before any cell runs when it holds a job id twice, a cell without name,
@@ -154,7 +155,8 @@ for i in $(seq 0 $((NCELLS - 1))); do
     consumer=0
     case "$command" in *RDM_RSHAPE_CONSUMER_BIN_DIR=*) consumer=1 ;; esac
     if [ "$consumer" = 1 ]; then
-        cm=$(jq -r --argjson i "$i" '.cells[$i].consumer_manifest // "target/i143-rshape/consumer-build/manifest.json"' "$JOBFILE")
+        cm=$(echo "$command" | sed -nE 's/.*RDM_RSHAPE_CONSUMER_MANIFEST=([^ ]+).*/\1/p')
+        [ -n "$cm" ] || cm=$(jq -r --argjson i "$i" '.cells[$i].consumer_manifest // "target/i143-rshape/consumer-build/manifest.json"' "$JOBFILE")
         cbin=$(echo "$command" | sed -nE 's/.*RDM_RSHAPE_CONSUMER_BIN_DIR=([^ ]+).*/\1/p')
         if [ ! -s "$cm" ]; then
             consumer_reason="the cell runs external consumer executables but their build manifest $cm does not exist"
