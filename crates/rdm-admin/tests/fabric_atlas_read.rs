@@ -557,24 +557,33 @@ impl NodesStorage for NamedReads {
 /// or acceptance", and "A current-pair lookup resolves the path and name to a node ID from the node
 /// records. The reader reads the node's record at that node ID"; Q439: each atlas node row "read from the
 /// node's record"; build.md §4: "the fabric-primary composes the complete topology from its records at
-/// acceptance"): at the fabric-primary of two meshes of six births each, every node's record in the file
-/// nodes store, Build acceptance and the atlas reads read the records they answer, many records as one
-/// store read per mesh, never one read per node: a Delete's acceptance reads each mesh's records once and
-/// the deleted node's pair (its current-pair lookup and its record, the atlas row its gate reads);
-/// `fabric.atlas.get` reads each mesh's records once for its node rows, beside `fabric.get`'s cert dates
-/// at one read per mesh; `mesh.atlas.get [name: mesh2]` reads mesh2's records once beside them. The
-/// acceptance's span names its store calls (`io_calls`). Each answers what it answered before: every
-/// mesh in name order with its node rows in `(path, name)` order, and the Delete pinned to the birth the
-/// view holds. Each read's node-record store reads and wall are printed. Must NOT happen: a store read
-/// per node, or two per node row.
+/// acceptance"; build-deployment.md §3: a Create naming a held path is a node's executable replacement
+/// when the node's row records another executable; fabric-atlas.md R-FA2: a completed Build's lifecycle
+/// steps are taken into the atlas, a step's birth its Build pinned none of named by its subject's record):
+/// at the fabric-primary of two meshes of six births each, every node's record in the file nodes store,
+/// Build acceptance, Build completion and the atlas reads read the records they answer, many records as
+/// one store read per mesh, never one read per node: a Delete's acceptance reads each mesh's records once
+/// and the deleted node's pair (its current-pair lookup and its record, the atlas row its gate reads); a
+/// Create naming one held path reads each mesh's records once and that node's record at its node id, and
+/// a Create naming every node's held path reads each mesh's records once more for their rows, never one
+/// read per path; the completion of the Build that made the births (a create of each, and a node.delete
+/// of mesh1.node/5 its Build pinned no birth of, as a mesh.delete's of its final primary is) reads that
+/// one record at its node id and none for a create; `fabric.atlas.get` reads each mesh's records once for
+/// its node rows, beside `fabric.get`'s cert dates at one read per mesh; `mesh.atlas.get [name: mesh2]`
+/// reads mesh2's records once beside them. The acceptance's and the completion's spans name their store
+/// calls (`io_calls`). Each answers what it answered before: every mesh in name order with its node rows
+/// in `(path, name)` order, the Delete pinned to the birth the view holds, each Create `name-held` (every
+/// path named at the executable its row records), and after the completion mesh1.node/5 no longer listed.
+/// Each read's node-record store reads and wall are printed. Must NOT happen: a store read per node, per
+/// path a Create names, per step a completed Build holds, or two per node row.
 #[test]
-fn build_acceptance_and_the_atlas_reads_read_the_node_records_at_one_store_read_per_mesh() {
+fn build_acceptance_completion_and_the_atlas_reads_read_the_node_records_at_one_store_read_per_mesh() {
     let capture = Capture::new("fabric-atlas-read-store-reads");
     let _guard = tracing::dispatcher::set_default(&capture.dispatch);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build current-thread runtime");
     let dir = std::env::temp_dir().join(format!("atlas-store-reads-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (births, cost) = rt.block_on(async {
+    let (births, cost, gone) = rt.block_on(async {
         let store = rdm_admin::store_root::StoreRoot::at(&dir).unwrap();
         let records = Arc::new(NamedReads { records: rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_log::LogWriter::mint()).await.unwrap(), reads: Mutex::default() });
         // Each mesh: its node-admin, the mesh-primary (mesh1's the fabric-primary), and five nodes.
@@ -591,6 +600,8 @@ fn build_acceptance_and_the_atlas_reads_read_the_node_records_at_one_store_read_
             n.incarnation_id = Some(IncarnationId::mint());
             let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), n.incarnation_id.clone().unwrap(), NodeStatus::Ready);
             (row.is_primary, row.is_fabric_primary) = (n.is_primary.then_some(1), n.is_fabric_primary.then_some(1));
+            // What the node's birth runs (build-deployment.md §2), the executable a Create names it at.
+            row.executable = Some(crate::test_executable(&n.r#type));
             records.put_node(&row).await.unwrap();
         }
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
@@ -617,14 +628,14 @@ fn build_acceptance_and_the_atlas_reads_read_the_node_records_at_one_store_read_
         let configs = crate::bound_configs_over(records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(LiveNodeResolver::default()))))).await;
         let configs_slot: rdm_admin::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs_slot.set(Arc::new(configs));
-        let atlas_slot: Arc<OnceLock<Arc<Atlas>>> = Arc::new(OnceLock::new());
-        let held = Arc::new(Atlas::default());
-        held.scope(["mesh1".to_string(), "mesh2".to_string()].into());
-        let _ = atlas_slot.set(held);
-        let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), mesh1_id), ("mesh2".to_string(), mesh2_id)].into();
-        let service = status_service(&fp.location(), &fp.node_id, view.fabric.id.clone(), Arc::new(tokio::sync::RwLock::new(view.clone())), meshes_storage, records.clone(), mesh_ids, atlas_slot, configs_slot, builds.clone());
+        // The fabric-primary's one atlas: what its acceptance and its completion write, and what its reads answer.
         let cp = crate::control_plane(builds.clone(), accepted, fp.location(), view.clone(), crate::adopted_time());
         let _ = cp.node_rows.set(records.clone());
+        let atlas_slot: Arc<OnceLock<Arc<Atlas>>> = Arc::new(OnceLock::new());
+        cp.atlas.scope(["mesh1".to_string(), "mesh2".to_string()].into());
+        let _ = atlas_slot.set(cp.atlas.clone());
+        let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), mesh1_id), ("mesh2".to_string(), mesh2_id)].into();
+        let service = status_service(&fp.location(), &fp.node_id, view.fabric.id.clone(), Arc::new(tokio::sync::RwLock::new(view.clone())), meshes_storage, records.clone(), mesh_ids, atlas_slot, configs_slot, builds.clone());
 
         let rows = |births: &[Node], mesh: &str| -> (String, Vec<(String, String, NodeId)>) {
             let mut of: Vec<&Node> = births.iter().filter(|n| n.mesh == mesh).collect();
@@ -646,28 +657,88 @@ fn build_acceptance_and_the_atlas_reads_read_the_node_records_at_one_store_read_
         cost.push(("mesh.atlas.get [name: mesh2]", records.since(from), at.elapsed()));
         assert_eq!(answered(&atlas), vec![rows(&births, "mesh2")], "mesh.atlas.get [name: mesh2]: mesh2 with its node rows in (path, name) order");
 
+        // A Create naming held paths, each at the executable its node's row records: each row is read
+        // (build-deployment.md §3), none records another executable, and the Create stays name-held.
+        let naming = |paths: &[PathName]| rdm_core::build::BuildChange::Create {
+            meshes: Vec::new(),
+            nodes: paths
+                .iter()
+                .map(|at| {
+                    let n = births.iter().find(|n| n.location() == *at).unwrap();
+                    rdm_core::build::Nodes { path: at.path.clone(), name: at.name.clone(), mesh: n.mesh.clone(), r#type: n.r#type.clone(), storage_persistence: None, executable: Some(crate::test_executable(&n.r#type)), tags: Default::default(), config: Default::default() }
+                })
+                .collect(),
+        };
+        let one = vec![PathName::numbered("mesh2", "node", 1)];
+        let every: Vec<PathName> = births.iter().filter(|n| n.r#type == "node").map(|n| n.location()).collect();
+        for (route, what, paths) in [("store-reads-create-one", "Create acceptance: one held path, mesh2.node/1", &one), ("store-reads-create-every", "Create acceptance: every node's held path, ten in two meshes", &every)] {
+            let (from, at) = (records.made(), std::time::Instant::now());
+            let refused = cp.submit(route, naming(paths)).await;
+            cost.push((what, records.since(from), at.elapsed()));
+            assert!(matches!(&refused, Err(rdm_admin::control_plane::Refusal::Reject(rdm_admin::build::BuildReject::NameHeld { .. }))), "{what}: every path named at the executable its row records stays name-held: {refused:?}");
+        }
+
         let deleted = births.iter().find(|n| n.location() == PathName::numbered("mesh2", "node", 3)).cloned().unwrap();
         let (from, at) = (records.made(), std::time::Instant::now());
         let opened = cp.submit("store-reads", rdm_core::build::BuildChange::Delete { meshes: Vec::new(), node_ids: vec![deleted.node_id.clone()] }).await.unwrap_or_else(|r| panic!("the Delete of mesh2.node/3 is accepted: {r:?}"));
         cost.push(("Build acceptance: a Delete of mesh2.node/3", records.since(from), at.elapsed()));
         let pinned = builds.read_build(&opened.build_id).await.unwrap().topology.pinned;
         assert_eq!(pinned.iter().map(|(at, b)| (at.clone(), b.node_id.clone(), b.incarnation.clone())).collect::<Vec<_>>(), vec![(deleted.location(), deleted.node_id.clone(), deleted.incarnation_id.clone().unwrap())], "the Delete is pinned to the birth the view holds at mesh2.node/3");
+
+        // The Build that made the births, complete: a create of each, and a node.delete of mesh1.node/5
+        // its Build pinned no birth of, as a mesh.delete's of its final primary is.
+        let gone = births.iter().find(|n| n.location() == PathName::numbered("mesh1", "node", 5)).cloned().unwrap();
+        let made = rdm_admin::build::BuildId::mint();
+        let mut topology = FabricTopology::of_observed(&view);
+        topology.created = births.iter().map(|n| (n.location(), n.node_id.clone())).collect();
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let change = rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() };
+        rdm_admin::build_state::accept(&*builds, &BuildAccepted { build_id: made.clone(), topology, change, source: None, time: now_ms }, None, fp.node_id.as_str(), "accepted").await.unwrap();
+        let by = fp.birth().unwrap();
+        crate::start_build(&*builds, &made, &by).await;
+        let steps = rdm_admin::build_run::FramedBuilds::stepping(builds.clone(), &crate::cell_fabric(), &fp.node_id, "mesh1");
+        let ops = births.iter().map(|n| (n.mesh.clone(), rdm_core::OperationId::node("node.create", &n.node_id))).chain([(gone.mesh.clone(), rdm_core::OperationId::node("node.delete", &gone.node_id))]);
+        for (mesh, operation) in ops {
+            let step = rdm_admin::build_state::StepWrite { build_id: made.clone(), mesh: Some(mesh), operation, step: "Complete".into(), outcome: rdm_admin::build_state::StepOutcome::Complete };
+            steps.write_step(&step).await.unwrap();
+        }
+        let source = rdm_admin::events_storage::EventSource { fabric_id: crate::cell_fabric(), node_id: by.node_id.clone(), incarnation: by.incarnation.clone() };
+        builds.events().append(&rdm_admin::events_storage::Event::build_ended(&source, now_ms, &made, &rdm_admin::events_storage::EndedState::Complete)).await.unwrap();
+        let (from, at) = (records.made(), std::time::Instant::now());
+        cp.take_receipts(&*builds, &made).await;
+        cost.push(("Build completion: thirteen steps, twelve creates and mesh1.node/5's delete", records.since(from), at.elapsed()));
+        let atlas = service.atlas_answer("fabric.atlas.get", None).await.unwrap_or_else(|r| panic!("fabric.atlas.get is answered after the completion: {r:?}"));
+        let left: Vec<Node> = births.iter().filter(|n| n.node_id != gone.node_id).cloned().collect();
+        assert_eq!(answered(&atlas)[0], rows(&left, "mesh1"), "the completion took mesh1.node/5's delete, its birth named by its record: fabric.atlas.get no longer lists it");
         ep.close().await;
-        (births, cost)
+        (births, cost, gone)
     });
     drop(rt);
     let _ = std::fs::remove_dir_all(&dir);
 
     let spans = capture.all();
-    let accepted = spans.iter().find(|s| s.name == "rdm.node_admin.build.create.via-rest" && s.attributes.get("route").map(String::as_str) == Some("store-reads")).expect("the acceptance is spanned");
-    let io_calls: usize = accepted.attributes.get("io_calls").and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("the acceptance's span names its store calls (io_calls): {:?}", accepted.attributes));
+    let io_calls_of = |what: &str, span: Option<&Captured>| -> usize {
+        let span = span.unwrap_or_else(|| panic!("{what} is spanned"));
+        span.attributes.get("io_calls").and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("{what}'s span names its store calls (io_calls): {:?}", span.attributes))
+    };
+    let accepted = |route: &str| spans.iter().find(|s| s.name == "rdm.node_admin.build.create.via-rest" && s.attributes.get("route").map(String::as_str) == Some(route));
+    let io_calls = io_calls_of("the Delete's acceptance", accepted("store-reads"));
+    let create_io_calls = io_calls_of("the Create of every node's held path", accepted("store-reads-create-every"));
+    let completed = spans.iter().find(|s| s.name == "rdm.node_admin.fabric.update.via-atlas-receipt" && s.attributes.contains_key("io_calls"));
+    let completion_io_calls = io_calls_of("the Build's completion", completed);
     for (what, reads, wall) in &cost {
         eprintln!("{what}: {} node-record store reads, wall {:.1} ms: {reads:?}", reads.len(), wall.as_secs_f64() * 1e3);
     }
-    eprintln!("the acceptance's span: io_calls {io_calls}");
+    eprintln!("the Delete's acceptance span: io_calls {io_calls}; the Create's of every held path: io_calls {create_io_calls}; the completion's: io_calls {completion_io_calls}");
     let reads = |what: &str| cost.iter().find(|(w, _, _)| w.starts_with(what)).map(|(_, r, _)| r.clone()).unwrap();
     assert!(reads("fabric.atlas.get").len() <= 4, "fabric.atlas.get reads each mesh's records once for its node rows and once for fabric.get's cert dates, never a read per node row: {cost:#?}");
     assert!(reads("mesh.atlas.get").len() <= 3, "mesh.atlas.get [name: mesh2] reads mesh2's records once for its node rows beside fabric.get's cert dates, never a read per node row: {cost:#?}");
     assert!(reads("Build acceptance").len() <= 4, "Build acceptance reads each mesh's records once and the deleted node's pair (its lookup and its record), never a read per birth: {cost:#?}");
     assert!(io_calls < births.len(), "the acceptance's span names fewer store calls than the view holds births, never one per birth: io_calls {io_calls}, {} births", births.len());
+    assert!(reads("Create acceptance: one").len() <= 3, "a Create naming one held path reads each mesh's records once and that node's record, never a read per birth: {cost:#?}");
+    assert!(reads("Create acceptance: every").len() <= 4, "a Create naming ten held paths in two meshes reads each mesh's records once for the view and once for their rows, never a read per path: {cost:#?}");
+    let paths = births.iter().filter(|n| n.r#type == "node").count();
+    assert!(create_io_calls < paths, "the Create's acceptance span names fewer store calls than the {paths} paths it names, never one per path: io_calls {create_io_calls}");
+    assert_eq!(reads("Build completion"), vec![format!("node {}", gone.node_id)], "the completion reads the one record that names a step's birth (mesh1.node/5's delete, its birth pinned by none) at its node id, and none for a create: {cost:#?}");
+    assert!(completion_io_calls <= 1, "the completion's span names one store call, mesh1.node/5's record, never one per step: io_calls {completion_io_calls}");
 }
