@@ -3801,8 +3801,9 @@ rdm#174 with the lead's conforming text.
     - Results on release: load 16–33; `formed` stable after 3.8 s; `fabric.get` p90 about 30 ms; the recovery cell ok (566 s).
     - The same unit fixed one more of the cell's two-admins-per-mesh readings: a replaced fabric-primary's incumbent is its mesh's primary after the delete, the lower NodeId the election named.
     - Named, not fixed: the fabric-primary's `fabric.get` reads every birth's record in its scope on each call (the cert watch).
-  - **rdm#403** (lane 7, proving): the handoffs cell passed every story at 200 nodes, then the kernel killed its test process at 104 GB.
+  - **rdm#403 LANDED 41303d21f**: the handoffs cell passed every story at 200 nodes, then the kernel killed its test process at 104 GB.
     - Cause: the cells parse every span of the run into memory: 17 GB at L4, 85 % of it gossip receive spans and the per-record `via-lifecycle-record` resolves that no check reads.
     - Fix: `Estate::spans_except`; the R-shape cells read their run without those families.
-  - Next: the scale tier, then the certifying chain, at #402's landing (`scale-chain.sh`), one after the other on this box (Q290).
+    - Proof at bc01030ea: the scale authority job rc=0 (1,312 s, peak 13.7 GB), the first scale job to pass; the scale lifecycle job rc=0 (943 s, peak 5 GB); the canonical control rc=0.
+  - Running: the scale tier (12 jobs, release, 200 nodes), then the certifying chain, at 41303d21f (`scale-chain.sh`, lanes 3 and 6), one after the other on this box (Q290).
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
