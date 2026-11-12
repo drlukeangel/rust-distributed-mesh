@@ -452,19 +452,24 @@ fn now_ns() -> u64 {
 /// or acceptance", and "A current-pair lookup resolves the path and name to a node ID from the node
 /// records. The reader reads the node's record at that node ID"; Q439: each atlas node row "read from the
 /// node's record"; build.md §4: "the fabric-primary composes the complete topology from its records at
-/// acceptance"): on a fabric of twenty nodes in two meshes, the fabric-primary answers `fabric.atlas.get`
-/// and `mesh.atlas.get [name: mesh2]` whole, and accepts two Deletes of mesh2's nodes, one at twenty
-/// births and one at nineteen, in the same store calls, fewer than the fabric has nodes: each mesh's
-/// records at one store call, never one per node. Each acceptance's store calls (`io_calls`) and wall,
-/// and each atlas read's wall at the fabric-primary (its read's stream there), are printed with its
-/// trace. Must NOT happen: an acceptance at the fabric-primary making a store call per node its view
-/// holds.
+/// acceptance"; build-deployment.md §3: a Create naming a held path is a node's executable replacement
+/// when the node's row records another executable; fabric-atlas.md R-FA2: a completed Build's lifecycle
+/// steps are taken into the atlas): on a fabric of twenty nodes in two meshes, the fabric-primary answers
+/// `fabric.atlas.get` and `mesh.atlas.get [name: mesh2]` whole; refuses `name-held` a Create naming
+/// mesh2's nine nodes and one naming all eighteen, each at the executable its row records, in store
+/// calls that grow by a mesh, never by a path; accepts two Deletes of mesh2's nodes, one at twenty births
+/// and one at nineteen, in the same store calls, fewer than the fabric has nodes; and completes the
+/// resize's Build of nineteen creates in fewer store calls than it created nodes: each mesh's records at
+/// one store call, never one per node. Each acceptance's and each completion's store calls (`io_calls`)
+/// and wall, and each atlas read's wall at the fabric-primary (its read's stream there), are printed with
+/// its trace. Must NOT happen: an acceptance or a completion at the fabric-primary making a store call
+/// per node its view holds, per path a Create names or per step its Build holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_call_per_mesh() {
-    let test = "the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_call_per_mesh";
+async fn the_fabric_primary_accepts_and_completes_builds_and_reads_its_atlas_at_one_store_call_per_mesh() {
+    let test = "the_fabric_primary_accepts_and_completes_builds_and_reads_its_atlas_at_one_store_call_per_mesh";
     let shape = [("mesh1", 1, 9), ("mesh2", 1, 9)];
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.resize_shape("fabric1", &shape).await;
+    let resized = estate.resize_shape("fabric1", &shape).await;
     estate.settled_views(&shape).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
     estate.enter_fabric_primary().await;
@@ -482,6 +487,23 @@ async fn the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_cal
         let atlas = estate.meshes_obj().await.atlas_get(&rdm_client::Filter::new().eq("name", ["mesh2"])).await.unwrap_or_else(|e| panic!("mesh.atlas.get [name: mesh2] at the fabric-primary: {e}"));
         assert_eq!(meshes_of(&atlas), [("mesh2".to_string(), 10)], "mesh.atlas.get [name: mesh2] answers mesh2 whole");
     }
+    // A Create naming held paths, each at the executable its node's row records: the fabric-primary reads
+    // each one's row (build-deployment.md §3), none records another executable, and it stays name-held.
+    // mesh2's nine nodes, then every mesh's eighteen.
+    let held = |mesh: Option<&str>| -> Vec<rdm_core::build::Nodes> {
+        views
+            .iter()
+            .filter(|n| n.r#type == "node" && mesh.is_none_or(|m| n.mesh() == m))
+            .map(|n| rdm_core::build::Nodes { path: n.path.clone(), name: n.name.clone(), mesh: n.mesh(), r#type: n.r#type.clone(), storage_persistence: None, executable: n.executable.clone(), tags: n.tags.clone(), config: n.config.clone() })
+            .collect()
+    };
+    for nodes in [held(Some("mesh2")), held(None)] {
+        let count = nodes.len();
+        match estate.carrier().await.create(rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes }).await {
+            Ok(stream) => panic!("a Create naming {count} held paths at their own executables is accepted as Build {}: it stays name-held", stream.build_id()),
+            Err(e) => assert!(format!("{e}").contains("name-held"), "a Create naming {count} held paths at their own executables is refused name-held: {e}"),
+        }
+    }
     for id in &deleted {
         Estate::workflow(&format!("node.delete of {id}"), estate.nodes_obj().await.delete(vec![id.clone()]).await).await;
     }
@@ -490,6 +512,15 @@ async fn the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_cal
     let spans = estate.spans();
     let in_window = |sp: &&Value| (from..=to).contains(&start_ns(sp));
     let accepted: Vec<&Value> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(in_window).filter(|sp| !attr(sp, "build_id").is_empty() && attr(sp, "change").contains("Delete")).collect();
+    // The two Creates naming held paths, refused (no Build id), in the order they were sent.
+    let mut creates: Vec<&Value> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(in_window).filter(|sp| attr(sp, "build_id").is_empty() && attr(sp, "change").contains("Create")).collect();
+    creates.sort_by_key(|sp| start_ns(sp));
+    // Each Build's completion at the fabric-primary: the span that names its store calls.
+    let completed: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-receipt").into_iter().filter(|sp| !attr(sp, "io_calls").is_empty()).collect();
+    // The estate reads a span's build_id bare, as the Build id is written (`SpanStream::read`).
+    let resize_id = resized.build_id.to_string();
+    let resize_completed: Vec<&Value> = completed.iter().copied().filter(|sp| attr(sp, "build_id") == resize_id).collect();
+    let deletes_completed: Vec<&Value> = completed.iter().copied().filter(in_window).collect();
     let atlas_reads: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.serve.via-atlas").into_iter().filter(in_window).filter(|sp| attr(sp, "node_path") == fp.path && attr(sp, "node_name") == fp.name).collect();
     // An atlas read's wall at the fabric-primary: its read's stream there, the read and its frames sent.
     let stream_ms = |sp: &Value| named(&spans, "rdm.node_rpc.stream.serve.via-direct").into_iter().find(|s| s["trace_id"] == sp["trace_id"] && attr(s, "protocol") == "read").map(wall_ms).unwrap_or_default();
@@ -498,6 +529,14 @@ async fn the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_cal
     for sp in &accepted {
         cost.push(format!("Build acceptance (Delete): io_calls={} io_queued_ms={} io_ms={} wall_ms={:.1} {}", attr(sp, "io_calls"), attr(sp, "io_queued_ms"), attr(sp, "io_ms"), wall_ms(sp), trace(sp)));
     }
+    for (sp, count) in creates.iter().zip([9, 18]) {
+        cost.push(format!("Build acceptance (Create naming {count} held paths, name-held): io_calls={} io_queued_ms={} io_ms={} wall_ms={:.1} {}", attr(sp, "io_calls"), attr(sp, "io_queued_ms"), attr(sp, "io_ms"), wall_ms(sp), trace(sp)));
+    }
+    for (what, of) in [("resize, nineteen creates", &resize_completed), ("Delete", &deletes_completed)] {
+        for sp in of.iter() {
+            cost.push(format!("Build completion ({what}): outcome={} io_calls={} io_queued_ms={} io_ms={} wall_ms={:.1} {}", attr(sp, "outcome"), attr(sp, "io_calls"), attr(sp, "io_queued_ms"), attr(sp, "io_ms"), wall_ms(sp), trace(sp)));
+        }
+    }
     for sp in &atlas_reads {
         cost.push(format!("{}: nodes={} wall_ms={:.1} {}", attr(sp, "op"), attr(sp, "nodes"), stream_ms(sp), trace(sp)));
     }
@@ -505,11 +544,17 @@ async fn the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_cal
         println!("{line}");
     }
     estate.artifact("acceptance-and-atlas-cost.json", &json!({"fabric_primary": fp, "deleted": deleted, "reads": cost}));
-    assert_eq!((accepted.len(), atlas_reads.len()), (2, 6), "the fabric-primary accepted each Delete and served each atlas read: {cost:#?}");
+    assert_eq!((accepted.len(), creates.len(), atlas_reads.len()), (2, 2, 6), "the fabric-primary accepted each Delete, refused each Create and served each atlas read: {cost:#?}");
+    assert_eq!((resize_completed.len(), deletes_completed.len()), (1, 2), "the fabric-primary completed the resize's Build and each Delete's: {cost:#?}");
     estate.record_trace_url(accepted[0]["trace_id"].as_str().unwrap_or_default());
-    let calls: Vec<usize> = accepted.iter().map(|sp| attr(sp, "io_calls").parse::<usize>().unwrap_or_else(|e| panic!("the acceptance's span names its store calls: {e}: {sp}"))).collect();
+    let calls_of = |sp: &Value| attr(sp, "io_calls").parse::<usize>().unwrap_or_else(|e| panic!("the span names its store calls: {e}: {sp}"));
+    let calls: Vec<usize> = accepted.iter().map(|sp| calls_of(sp)).collect();
     // Beside the node records, an acceptance reads its builds, events and fabric stores: the same calls
     // at every acceptance, whatever the view holds.
     assert_eq!(calls[0], calls[1], "the Delete at twenty births and the one at nineteen make the same store calls: each mesh's records at one call, never one per node: {cost:#?}");
     assert!(calls.iter().all(|c| *c < views.len()), "Build acceptance makes fewer store calls than the fabric has nodes, never one per node: {cost:#?}");
+    let created: Vec<usize> = creates.iter().map(|sp| calls_of(sp)).collect();
+    assert!(created[1] <= created[0] + 1, "a Create naming eighteen held paths in two meshes makes at most one store call more than one naming nine in one: each mesh's rows at one call, never one per path: {cost:#?}");
+    let resize = calls_of(resize_completed[0]);
+    assert!(resize < 19, "the completion of the resize's Build of nineteen creates makes fewer store calls than it created nodes, never one per step: {cost:#?}");
 }
