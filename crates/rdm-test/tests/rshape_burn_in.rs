@@ -242,6 +242,20 @@ fn launched_path(o: &Value) -> PathBuf {
 #[derive(Default)]
 struct Invariants(Vec<Value>);
 
+/// The span families no check of this file reads and none of its chains walks through (`descends_from`
+/// walks the build and deployment families; `check_spans` asserts on request, route and marker spans):
+/// the gossip receive spans and the fabric-primary's resolve of each record it reads. At L4 they are
+/// 85 % of a run's span bytes (rdm#403), so a cell reads its run without them
+/// ([`Estate::spans_except`]).
+const UNREAD_SPANS: &[&str] = &[
+    "rdm.node_admin.node.resolve.via-lifecycle-record",
+    "rdm.mesh.topology.update.via-digest-receipt",
+    "rdm.mesh.topology.update.via-digest",
+    "rdm.mesh.topology.update.via-frame",
+    "rdm.mesh.topology.update.via-full",
+    "rdm.mesh.topology.update.via-duplicate",
+];
+
 impl Invariants {
     fn holds(&mut self, name: &str, ok: bool, evidence: Value) {
         assert!(ok, "invariant `{name}` failed: {evidence}");
@@ -822,7 +836,7 @@ async fn mock_fast_estate_forms_and_routes_opaque_calls() {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let services = check_services(&spans, &mut inv);
     let chains = check_formation_chain(&f, &spans, &mut inv);
     let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -860,7 +874,7 @@ async fn formation(cell: &str, shape: Shape) {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let services = check_services(&spans, &mut inv);
     let chains = check_formation_chain(&f, &spans, &mut inv);
     let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -1135,7 +1149,7 @@ async fn mock_roles_route_opaque_calls_to_exact_nodes() {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let services = check_services(&spans, &mut inv);
     let chains = check_formation_chain(&f, &spans, &mut inv);
     let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -1438,7 +1452,7 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
 
     let Accounted { buckets, summary, indeterminate, refusals, operations, outcomes } = account(&spans, &ops, &final_state, &mut inv);
     let changes_trace: Vec<Value> = changes
@@ -2640,7 +2654,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
 
     let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
     let sections = section_rows(&spans);
@@ -2834,7 +2848,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
 
     let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
     let sections = section_rows(&spans);
@@ -3410,7 +3424,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
     let sections = section_rows(&spans);
     let steps_once = check_steps_run_once(&f, &a, &mut inv);
@@ -3963,7 +3977,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     // the canary's handler record off the evidence before it kills the process that holds it.
     let canary_trace = a.traffic.ops[ci].1.trace_id.clone();
     wait_for(&format!("{victim2:?}'s handler span of the canary is in the evidence before the kill"), Duration::from_secs(5), || async {
-        named(&f.estate.spans(), "rdm.node_rpc.testkit_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
+        named(&f.estate.spans_except(UNREAD_SPANS), "rdm.node_rpc.testkit_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
     })
     .await;
     let rt2 = exact_runtime(&f, &victim2).await;
@@ -4001,7 +4015,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
     let sections = section_rows(&spans);
     let steps_once = check_steps_run_once(&f, &a, &mut inv);
@@ -4276,7 +4290,7 @@ async fn delete_run(cell: &str, shape: Shape) {
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
     let sections = section_rows(&spans);
     let steps_once = check_steps_run_once(&f, &a, &mut inv);
@@ -4463,7 +4477,7 @@ async fn close_run_with(
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
-    let spans = f.estate.spans();
+    let spans = f.estate.spans_except(UNREAD_SPANS);
     let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
     let sections = section_rows(&spans);
     let steps_once = check_steps_run_once(&f, &a, &mut inv);
@@ -5142,7 +5156,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     // Bounded hold: each admin has handed each peer-mesh admin to its backbone channel twice.
     let admins: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["node_id"]), s(&rdm_test::estate::mesh_of(&n)))).collect();
     let held_at = wait_for("every admin re-feeds every peer-mesh admin twice", window * 6 + Duration::from_secs(40), || async {
-        let spans = f.estate.spans();
+        let spans = f.estate.spans_except(UNREAD_SPANS);
         let att = refeeds(&spans, cut_at);
         admins
             .iter()
@@ -5433,7 +5447,7 @@ async fn control_run(cell: &str, shape: Shape) {
     let quiet0 = now_ns();
     tokio::time::sleep(window * 2).await;
     let quiet1 = now_ns();
-    let quiet_spans = f.estate.spans();
+    let quiet_spans = f.estate.spans_except(UNREAD_SPANS);
     let quiet_sends: Vec<&Value> = named(&quiet_spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| start_ns(sp) >= quiet0 && start_ns(sp) <= quiet1).collect();
     assert!(quiet_sends.is_empty(), "a quiet fabric sends no status frame in {} ms: {}", (quiet1 - quiet0) / 1_000_000, quiet_sends.len());
     events.push(json!({"event": "quiet-baseline", "window_ms": (quiet1 - quiet0) / 1_000_000, "status_sends": 0}));
@@ -5480,7 +5494,7 @@ async fn control_run(cell: &str, shape: Shape) {
     f.actions.push(json!({"t_ms": healed_ms, "action": "fault.udp-drop.release"}));
     // The victim's coverage went stale and was re-fed while the cut held, before the restart's request.
     let stale = wait_for("the victim's coverage is stale and re-fed while the cut holds", window * 4 + Duration::from_secs(40), || async {
-        let spans = f.estate.spans();
+        let spans = f.estate.spans_except(UNREAD_SPANS);
         refeeds(&spans, cut_at).into_iter().filter(|sp| start_ns(sp) <= healed_at && (sp["attributes"]["peer_node_id"] == vid.as_str() || sp["attributes"]["node"] == vid.as_str())).map(start_ns).min()
     })
     .await;
@@ -5728,7 +5742,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
         let other_mesh = if *mesh == near_mesh { far_mesh.clone() } else { near_mesh.clone() };
         wait_for(&format!("{name:?} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
             let v = f.estate.held_values_at(name).await;
-            let silent = named(&f.estate.spans(), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == id.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
+            let silent = named(&f.estate.spans_except(UNREAD_SPANS), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == id.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
             (!v.is_empty() && holds_all_ready(&v, own) && silent).then_some(())
         })
         .await;
@@ -5862,7 +5876,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         let other_mesh = if *mesh == near_mesh { far_mesh.clone() } else { near_mesh.clone() };
         wait_for(&format!("{name:?} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
             let v = f.estate.held_values_at(name).await;
-            let silent = named(&f.estate.spans(), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == id.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
+            let silent = named(&f.estate.spans_except(UNREAD_SPANS), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == id.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
             (!v.is_empty() && holds_all_ready(&v, own) && silent).then_some(())
         })
         .await;
@@ -6018,7 +6032,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let quiet0 = now_ns();
     tokio::time::sleep(window * 2).await;
     let quiet1 = now_ns();
-    let quiet_spans = f.estate.spans();
+    let quiet_spans = f.estate.spans_except(UNREAD_SPANS);
     let quiet_sends = named(&quiet_spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| start_ns(sp) >= quiet0 && start_ns(sp) <= quiet1).count();
     assert_eq!(quiet_sends, 0, "a quiet fabric sends no status frame in {} ms", (quiet1 - quiet0) / 1_000_000);
 
@@ -6044,7 +6058,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
             continue;
         }
         wait_for(&format!("{name:?} holds every victim of its mesh unheard"), bound, || async {
-            let spans = f.estate.spans();
+            let spans = f.estate.spans_except(UNREAD_SPANS);
             let marked: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-member-stale").into_iter().filter(|sp| sp["attributes"]["node"] == oid.as_str() && start_ns(sp) >= cut_at).map(|sp| s(&sp["attributes"]["member_id"])).collect();
             own_victims.iter().all(|v| marked.contains(v)).then_some(())
         })
@@ -6063,7 +6077,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         for o in observers.iter().filter(|o| rdm_test::estate::mesh_of(&o) != vmesh.as_str()) {
             let (on, on_id) = (location(&o), s(&o["node_id"]));
             wait_for(&format!("{on:?} re-feeds the silent {vn:?}, or investigates it to its recovery"), bound, || async {
-                let spans = f.estate.spans();
+                let spans = f.estate.spans_except(UNREAD_SPANS);
                 let refed = refeeds(&spans, cut_at).into_iter().any(|sp| sp["attributes"]["node"] == on_id.as_str() && sp["attributes"]["peer_node_id"] == vid.as_str());
                 let investigated = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().any(|sp| start_ns(sp) >= cut_at && sp["attributes"]["caller"] == on_id.as_str() && sp["attributes"]["node_id"] == vid.as_str());
                 (refed || investigated).then_some(())

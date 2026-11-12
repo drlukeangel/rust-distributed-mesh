@@ -1041,6 +1041,15 @@ impl Estate {
         self.spans.lock().unwrap().named(&self.evidence, names)
     }
 
+    /// [`Self::spans`] without the spans named in `unread`, which are never parsed or kept: decided from
+    /// the line's bytes before parsing, as [`Self::spans_named`] does, with its own file offsets and
+    /// kept spans per name set. A cell whose checks read none of a high-volume family reads its run
+    /// this way, so its spans are not held whole (rdm#403: a 200-node run's 17 GB of spans parsed
+    /// whole grew the test process past 100 GB and the kernel killed it).
+    pub fn spans_except(&self, unread: &[&str]) -> Vec<Value> {
+        self.spans.lock().unwrap().except(&self.evidence, unread)
+    }
+
     /// Drop the span evidence written so far, for a run that outlasts the room its evidence takes
     /// (load-testing.md M10, a 4-hour soak): every `.spans.jsonl` file's bytes since the last drop, by
     /// file name, then each file truncated and the reader started over. A span a node is writing as its
@@ -1562,18 +1571,36 @@ impl Drop for ProbeObservation {
 pub(crate) struct SpanReader {
     all: SpanStream,
     by_names: std::collections::BTreeMap<Vec<String>, SpanStream>,
+    except: std::collections::BTreeMap<Vec<String>, SpanStream>,
+}
+
+/// Which lines a [`SpanStream`] parses and keeps: every one, only those naming one of the names, or
+/// every one except those naming one of the names.
+#[derive(Clone, Copy)]
+enum Keep<'a> {
+    All,
+    Named(&'a [&'a str]),
+    Except(&'a [&'a str]),
+}
+
+fn name_set(names: &[&str]) -> Vec<String> {
+    let mut set: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
+    set.sort();
+    set.dedup();
+    set
 }
 
 impl SpanReader {
     pub(crate) fn all(&mut self, dir: &Path) -> Vec<Value> {
-        self.all.read(dir, None)
+        self.all.read(dir, Keep::All)
     }
 
     pub(crate) fn named(&mut self, dir: &Path, names: &[&str]) -> Vec<Value> {
-        let mut set: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
-        set.sort();
-        set.dedup();
-        self.by_names.entry(set).or_default().read(dir, Some(names))
+        self.by_names.entry(name_set(names)).or_default().read(dir, Keep::Named(names))
+    }
+
+    pub(crate) fn except(&mut self, dir: &Path, unread: &[&str]) -> Vec<Value> {
+        self.except.entry(name_set(unread)).or_default().read(dir, Keep::Except(unread))
     }
 }
 
@@ -1590,7 +1617,7 @@ struct FileSpans {
 }
 
 impl SpanStream {
-    fn read(&mut self, dir: &Path, names: Option<&[&str]>) -> Vec<Value> {
+    fn read(&mut self, dir: &Path, keep: Keep<'_>) -> Vec<Value> {
         use std::io::{Seek, SeekFrom};
         use std::os::unix::fs::{FileExt, MetadataExt};
 
@@ -1649,15 +1676,19 @@ impl SpanStream {
                 if line.is_empty() {
                     continue;
                 }
-                if let Some(wanted) = names {
-                    if !line_carries_name(line, wanted) {
-                        continue;
-                    }
+                match keep {
+                    Keep::All => {}
+                    Keep::Named(wanted) if !line_carries_name(line, wanted) => continue,
+                    Keep::Named(_) => {}
+                    // A span name is never another span's attribute or event name, so a line that spells
+                    // an unread name is that span's own.
+                    Keep::Except(unread) if line_carries_name(line, unread) => continue,
+                    Keep::Except(_) => {}
                 }
                 let mut v = serde_json::from_slice::<Value>(line).unwrap_or_else(|e| {
                     panic!("{}: span line is not JSON ({e}): {}", path.display(), String::from_utf8_lossy(line))
                 });
-                if let Some(wanted) = names {
+                if let Keep::Named(wanted) = keep {
                     if !v["name"].as_str().is_some_and(|n| wanted.contains(&n)) {
                         continue;
                     }
@@ -2178,6 +2209,14 @@ mod span_reader_tests {
             filtered_names,
             vec!["rdm.wanted.a", "rdm.wanted.b"],
             "spans_named keeps only the listed names and never parses the non-JSON line carrying another name"
+        );
+
+        let kept = reader.except(&dir, &["rdm.unlisted", "rdm.other"]);
+        let kept_names: Vec<&str> = kept.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(
+            kept_names,
+            vec!["rdm.from_zero", "rdm.wanted.a"],
+            "spans_except keeps every span but the unread names, never parsing a line that spells one (the non-JSON line)"
         );
 
         let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
