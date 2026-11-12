@@ -534,9 +534,10 @@ impl ControlPlane {
     /// (another path, sha256 or image; `launch_id` is not compared, D14). The row is the node's record
     /// read now, the record of what its birth runs (build-deployment.md §2), never the view or the
     /// accepted topology. A held path named with the same executable, a node-admin's, one of another type
-    /// or mesh, or one whose node has no record is not one: it stays `name-held`. The rows are read
-    /// together, never one after another: one held path's at its node ID, more as each mesh's records in
-    /// one store read, the meshes read together ([`crate::current_record::CurrentRecords::rows_of`]).
+    /// or mesh, or one whose node has no record (a `Withdrawn` record is none) is not one: it stays
+    /// `name-held`. The rows are read together, never one after another, whatever the number of held
+    /// paths: each mesh's records in one store read, the meshes read together
+    /// ([`crate::current_record::CurrentRecords::rows_of`]).
     /// Ordered as the plan runs them, one at a time (D12): by mesh and type, the node-type primary's last
     /// of its type.
     async fn replaced_paths(&self, nodes: &[rdm_core::build::Nodes], observed: &Topology) -> Result<Vec<PathName>, Refusal> {
@@ -552,10 +553,10 @@ impl ControlPlane {
                 decides.then_some((path, held, asked))
             })
             .collect();
-        let rows: std::collections::BTreeMap<NodeId, crate::storage::NodeRecord> = match named.as_slice() {
-            [] => Default::default(),
-            [(path, held, _)] => records.row(&held.node_id).await.map_err(|e| Refusal::Unavailable(format!("the row of the node at path {:?}, name {:?}: {e}", path.path, path.name)))?.map(|r| (r.node_id.clone(), r)).into_iter().collect(),
-            many => records.rows_of(many.iter().map(|(_, held, _)| (&held.node_id, held.mesh.as_str()))).await.map_err(|e| Refusal::Unavailable(format!("the rows of the held paths a Create names: {e}")))?,
+        let rows: std::collections::BTreeMap<NodeId, crate::storage::NodeRecord> = if named.is_empty() {
+            Default::default()
+        } else {
+            records.rows_of(named.iter().map(|(_, held, _)| (&held.node_id, held.mesh.as_str()))).await.map_err(|e| Refusal::Unavailable(format!("the rows of the held paths a Create names: {e}")))?
         };
         let mut replaced: Vec<(String, String, bool, PathName)> = Vec::new();
         for (path, held, asked) in named {
