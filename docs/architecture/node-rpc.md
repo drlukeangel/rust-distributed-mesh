@@ -34,7 +34,7 @@ flowchart TB
     ME[rdm-core\nidentity/value types] --> MT[rdm-transport\ngossip / Iroh transport]
     ME --> NR[rdm-transport\nresolver + client/runtime]
     NC[rdm-core\ndescriptor / framing / outcome] --> NR
-    MO[rafka-mesh-ops\nRafka product contracts/codecs] --> PC
+    MO[a product's protocols\nits contracts/codecs] --> PC
 
     MT --> PC[process composition\nnode-admin / node / downstream node-base]
     NR --> PC
@@ -51,7 +51,7 @@ Owns Iroh/gossip transport mechanics and current topology dissemination. It does
 
 One live Iroh Endpoint belongs to one process. Router/ALPN multiplexes gossip and Node RPC over that process endpoint. Multiple bound addresses/endpoint slots may exist under the process EndpointId; EndpointId is the process transport identity, not a slot id.
 
-### 3.2 rafka-mesh-ops
+### 3.2 A product's protocols
 
 A product owns its protocol descriptors, codecs, opcodes and request/reply payloads, and serves its families with no row in RDM's [op ledger](node-rpc-envelope.md#the-op-ledger). RDM `rdm-core` owns the generic protocol and envelope vocabulary and the ledger's rows, which are RDM's own opcodes. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
 

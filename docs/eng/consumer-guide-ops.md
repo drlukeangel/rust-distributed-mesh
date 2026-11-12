@@ -85,7 +85,7 @@ pub enum ShuffleReply {
 pub struct CgShuffleRecord;
 
 impl NodeProtocol for CgShuffleRecord {
-    const OP: u8 = 0x25;
+    const OP: u8 = 0x40;
     const NAME: &'static str = "cg-shuffle-record";
     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;             // checked on the declared length
     const MAX_REPLY_FRAME_BYTES: usize = 4 * 1024;
