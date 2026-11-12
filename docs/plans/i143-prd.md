@@ -3823,7 +3823,8 @@ rdm#174 with the lead's conforming text.
     - the soak at seed 1432787 rc=0;
     - its first gate red in two rdm#400 cells, which are rdm#408.
   - **rdm#408 LANDED fd44532cf**: the window rdm#400 named was reached under load. A commanded node.mesh.join after a first start's hook passed left that start's topology read running, so two reads served one birth. The steps after the hook now hold the birth's cancel token. Also, `build_sections`' held-at-hook cell counts a command back from the old primary's loss (Q445's create step can come first).
-  - **rdm#407** (lane 2): the soak's gateway carrier was passed as `path:<NodeId>`, so a quarter of the soak's traffic was refused unsent and counted NotSent (450 in one run). It is now `exact:<NodeId>`; an argument refusal is named by the ledger, never NotSent.
+  - **rdm#407 LANDED 892233ca4**: the soak's gateway carrier was passed as `path:<NodeId>`, so a quarter of the soak's traffic was refused unsent and counted NotSent (450 in one run). It is now `exact:<NodeId>`; an argument refusal is named by the ledger, never NotSent.
     - #408's flames: before, two reads served http://192.168.68.99:16687/trace/bf3c6cc145c34adede7ddffbc0d2a4cd and http://192.168.68.99:16687/trace/2704ce429213e83c7f77a411484d1703; after, `via-after-hook-cancelled` http://192.168.68.99:16687/trace/3f3761e1d9696d9cd5c9a36149146ba2.
-  - Next: land #407, then the scale tier and the certifying chain at the new main.
+    - The soak at 7fa708071 rc=0: Reply 5,567 against 2,594 before, NotSent 239 against 948.
+  - Running: the scale tier, then the certifying chain, at 892233ca4 (`scale-chain.sh`, lanes 3 and 6).
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
