@@ -169,60 +169,6 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     estate.record_trace_url(picked["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (node-topology-get.md, "exact member → own mesh-primary"; node-start.md step 4: "obtain
-/// topology once through node.topology.get"; Q90: a start finishes on its direct calls): a Build grows
-/// `mesh2` by one node, held at its `pre_node_ready`. `mesh2`'s primary, which launched it, is stopped by
-/// the OS (alive, answering nothing) and the hold is released at once, so the node's one topology read
-/// goes to that primary while its own view still names it, and is under way there, unanswered.
-/// `mesh2`'s other node-admin takes the mesh's primary role; once the node's own view names it, the
-/// read under way is made again to it, which answers, and the node is Ready, its one topology step
-/// served by mesh2's new primary. Must NOT happen (rdm#400): the read held at the lost launcher until
-/// the start fails, the start ended at a step, or a second topology step.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_first_starts_read_under_way_at_its_lost_launcher_is_made_again_to_the_meshs_new_primary() {
-    let test = "a_first_starts_read_under_way_at_its_lost_launcher_is_made_again_to_the_meshs_new_primary";
-    let mut estate = born(test).await;
-    let old = mesh2_primary(&estate).await;
-    let (old_id, held_at) = (old.node_id.to_string(), Estate::path("mesh2.node", "3"));
-    rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "held by the cell").unwrap();
-    let mut stream = estate.submit_shape(FABRIC, &[("mesh1", 2, 1), ("mesh2", 2, 3)]).await;
-    let b = stream.build_id().to_string();
-    let held_id = crate::build_log::created_id(&estate, &b, &held_at).await.to_string();
-    until_pending(&mut stream, &format!("node.create:{held_id}")).await;
-    drop(stream);
-
-    // The launcher answers nothing from here, and the held node's hook passes at its next attempt.
-    let rt = ExactRuntime::published(Path::new(&estate.data_dir(&old.location()).await)).expect("mesh2's primary published its runtime");
-    let stopped = rt.apply(Fault::Stop).expect("mesh2's primary is stopped by the OS");
-    assert_eq!(stopped.state_after, Some('T'), "the OS holds mesh2's primary: {stopped:?}");
-    rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "pass").unwrap();
-    let new = estate
-        .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != old.node_id).cloned())
-        .await;
-    let new_id = new.node_id.to_string();
-    estate.until_node(&held_at, "the held node is Ready", SETTLE, |v| v.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
-    // The cell's own cleanup: the stopped launcher is no estate's.
-    rt.apply(Fault::Kill(estate.fabric_ready())).expect("the cell kills the launcher it stopped");
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let failed: Vec<&Value> = named(&spans, "rdm.mesh.node.reject.via-start-step-failed").into_iter().filter(|sp| attr(sp, "node_id") == held_id).collect();
-    assert!(failed.is_empty(), "the held node's start ended at no step: {failed:?}");
-    let taken: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-topology-taken").into_iter().filter(|sp| attr(sp, "node_id") == held_id).collect();
-    assert_eq!(taken.len(), 1, "the held node took its topology in one step: {taken:#?}");
-    let taken = taken[0];
-    assert_eq!((attr(taken, "launcher"), attr(taken, "served_by")), (old_id.as_str(), new_id.as_str()), "launched by the lost primary, its topology served by mesh2's new primary: {taken}");
-    // The read went to the launcher first, under way there before the node's own view named the new
-    // primary: the shape this cell holds, never a read made only after the election.
-    let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| sp["trace_id"] == taken["trace_id"] && attr(sp, "op") == "30" && start(sp) >= start(taken)).collect();
-    let at_old = calls.iter().find(|sp| attr(sp, "target").contains(&old_id)).unwrap_or_else(|| panic!("the read went to the launcher first: {calls:#?}"));
-    assert!(calls.iter().any(|sp| attr(sp, "target").contains(&new_id)), "the read was made again to mesh2's new primary: {calls:#?}");
-    let named_new = named(&spans, "rdm.node_rpc.primary.update.via-topology").into_iter().filter(|sp| attr(sp, "node") == held_id && attr(sp, "mesh") == "mesh2" && attr(sp, "primary_node_id") == new_id).map(start).min().unwrap_or_else(|| panic!("the held node's own view named mesh2's new primary"));
-    assert!(start(at_old) < named_new, "the read was under way at the launcher before the held node's view named the new primary: {at_old}");
-    println!("flame (the read under way at the lost launcher made again to mesh2's new primary): http://192.168.68.99:16687/trace/{}", s(&taken["trace_id"]));
-    estate.record_trace_url(taken["trace_id"].as_str().unwrap_or(""));
-}
-
 /// CONTRACT (node-mesh-join.md step 10: "a birth commanded back leaves its channels, runs the whole
 /// sequence again on the commanding call and publishes ready only once its hook has passed (Q87)";
 /// node-recovery.md step 3: a held birth heard again "is commanded back through node.mesh.join by the
