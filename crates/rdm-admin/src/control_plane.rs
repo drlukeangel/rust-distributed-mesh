@@ -217,6 +217,9 @@ impl ControlPlane {
             change = %serde_json::to_string(&change).unwrap_or_default(),
             previous_build_id = tracing::field::Empty,
             minted_meshes = tracing::field::Empty,
+            io_calls = tracing::field::Empty,
+            io_queued_ms = tracing::field::Empty,
+            io_ms = tracing::field::Empty,
         );
         self.submit_in(span, route, change).await
     }
@@ -228,12 +231,15 @@ impl ControlPlane {
 
     /// [`ControlPlane::submit_in`], the stopped-node collector's candidate (when one) rechecked under
     /// the admission before anything is compiled or written (node-identity-and-state.md §6.9 Recheck).
+    /// `span` names, where it declares them, what the acceptance's store calls took: how many
+    /// (`io_calls`), their wait for a blocking thread (`io_queued_ms`) and their run on one (`io_ms`).
     pub(crate) async fn submit_checked(&self, span: tracing::Span, route: &'static str, change: BuildChange, collect: Option<&crate::stopped_gc::Candidate>) -> Result<Opened, Refusal> {
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is held). A refusal is reported
         // beside the request span, in the caller's span.
         let outer = tracing::Span::current();
-        async {
+        let io = crate::blocking::IoTime::default();
+        let accepted = crate::blocking::io_time_with(io.clone(), async {
             self.require_fabric_primary(route).await?;
             // fabric.delete is the one Build that may interrupt the Build in progress (build.md §1): it is
             // compiled against the current Build whatever its state, and a fabric.delete in force answers
@@ -449,8 +455,10 @@ impl ControlPlane {
             self.build_submitted.notify_waiters();
             Ok::<Opened, Refusal>(Opened { build_id })
         }
-        .instrument(span.clone())
-        .await
+        .instrument(span.clone()))
+        .await;
+        span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
+        accepted
     }
 }
 

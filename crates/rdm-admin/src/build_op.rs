@@ -99,6 +99,9 @@ impl BuildService {
                 change = %serde_json::to_string(change).unwrap_or_default(),
                 previous_build_id = tracing::field::Empty,
                 minted_meshes = tracing::field::Empty,
+                io_calls = tracing::field::Empty,
+                io_queued_ms = tracing::field::Empty,
+                io_ms = tracing::field::Empty,
             )
         };
         let topology = |c: BuildChange| async move {
