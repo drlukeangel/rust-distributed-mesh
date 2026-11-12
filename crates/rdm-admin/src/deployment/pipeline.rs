@@ -467,6 +467,13 @@ pub trait NodeObserver: Send + Sync {
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer awaits no completion of a command to {}", node.node_id) }
     }
+    /// The live birth `node`, not Ready, commanded to start again by its mesh-primary through
+    /// node.mesh.join, the command back of node-recovery.md step 3 (node-mesh-join.md step 10: it "runs
+    /// the whole sequence again on the commanding call"), under its own guards. The outcome's name. An
+    /// observer that holds no command back commands nothing.
+    async fn command_start_again(&self, node: &Node) -> String {
+        format!("this observer holds no command back for {}", node.node_id)
+    }
     /// The create's command of a node type's first primary in its mesh (Q407; node-create.md): `node`,
     /// Ready, commanded `node.primary.update` by its mesh-primary when no primary of its type is held there,
     /// the create completing on its `node.primary.updated`. `Ok(true)` when it was commanded and answered,
@@ -2055,6 +2062,9 @@ impl DeploymentPipeline<'_> {
             }
         })
         .await?;
+        // A birth another executor launched: its first start was that executor's command, and that
+        // executor is lost with the section this run continues (build.md §4.1).
+        let launched_by_another = recorded_by_another(run, CreateStep::DeployRuntime);
         self.step_with(run, CreateStep::WaitForNodeReady.name(), async {
             // Ready only over committed prerequisites: each has a Complete
             // receipt in the Build's state, not merely a step that ran.
@@ -2065,6 +2075,17 @@ impl DeploymentPipeline<'_> {
                 if !missing.is_empty() {
                     return Err(format!("path {:?}, name {:?} cannot be Ready: no step event ended complete for {}", &req.path, &req.name, missing.join(", ")).into());
                 }
+            }
+            // The step its mesh owes (mesh-recovery.md step 4; build.md §4.1) of a birth another
+            // executor launched and that is not Ready: its start's commander is gone, so a start that
+            // ended at a step after its hook (the node Pending, its process running, Q445) is run
+            // again by nothing but this. The birth is commanded to start again through node.mesh.join,
+            // its mesh-primary's command back; a start of it still under way ends at that command's next
+            // cycle, and only the commanded sequence runs.
+            // The command's own span (`rdm.node_admin.node.update.via-mesh-join-commanded`, sent or not)
+            // is in this step's trace.
+            if launched_by_another && self.observer.ready(&node).await.is_err() {
+                let _ = self.observer.command_start_again(&node).await;
             }
             let until = Instant::now() + self.timeouts.ready;
             loop {
@@ -3331,6 +3352,8 @@ mod tests {
     /// silent.
     struct ReportsToThePrimary {
         joins: std::sync::Arc<Joins>,
+        /// The handle of the runtime it launched last.
+        spawned: std::sync::Mutex<Option<DeploymentHandle>>,
     }
 
     #[async_trait::async_trait]
@@ -3369,6 +3392,7 @@ mod tests {
             let joins = self.joins.clone();
             // The report the launched birth makes: its digest, its runtime and its data dir.
             let report = crate::join::JoinReport { digest, runtime: handle.fact(), data_dir: Some(spec.data_dir.display().to_string()), listeners: Vec::new() };
+            *self.spawned.lock().unwrap() = Some(handle.clone());
             tokio::spawn(async move {
                 loop {
                     if matches!(joins.standing(&report), crate::join::Standing::Deployed { .. }) {
@@ -3405,7 +3429,7 @@ mod tests {
     #[tokio::test]
     async fn wait_for_mesh_join_completes_from_the_accepted_report_while_gossip_is_silent() {
         let joins = std::sync::Arc::new(Joins::default());
-        let provider = ReportsToThePrimary { joins: joins.clone() };
+        let provider = ReportsToThePrimary { joins: joins.clone(), spawned: Default::default() };
         let memory = std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let build_id = accepted_build(&*memory).await;
         let template = cell_template("join-from-report");
@@ -3418,6 +3442,100 @@ mod tests {
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");
         assert!(steps.iter().any(|(s, o)| s == CreateStep::WaitForMeshJoin.name() && *o == StepOutcome::Complete), "WaitForMeshJoin's receipt is Complete: {steps:?}");
         let _ = std::fs::remove_dir_all(&template.data_root);
+    }
+
+    /// An observer that counts the commands to start again and answers Ready once one was sent.
+    struct CommandsBack {
+        commanded: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl NodeObserver for CommandsBack {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            None
+        }
+        async fn ready(&self, node: &Node) -> Result<(), String> {
+            match self.commanded.load(std::sync::atomic::Ordering::SeqCst) {
+                0 => Err(format!("{} is Pending: its start ended at a step", node.node_id)),
+                _ => Ok(()),
+            }
+        }
+        async fn command_start_again(&self, _: &Node) -> String {
+            self.commanded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            "mesh-joined".into()
+        }
+    }
+
+    /// CONTRACT (mesh-recovery.md step 4: the successor "runs each step its mesh owes that no
+    /// `rdm.build.step` event ended"; build.md §4.1: an incomplete Build's resubmission dispatches the
+    /// section to "the mesh's primary of the moment, which reads the Build's events and runs the steps its
+    /// mesh owes"; node-mesh-join.md step 10; Q445): a create whose executor launched the birth and ends
+    /// at WaitForNodeReady commands nothing: the start it waits on is its own. The same create run again
+    /// by another executor over the Build's events, the birth's DeployRuntime event recorded by the first
+    /// and the birth not Ready, commands the birth to start again once (node.mesh.join, the
+    /// mesh-primary's command back) and completes once the birth is Ready. Must NOT happen (rdm#400): the
+    /// owed step waiting out its bound on a birth whose start ended at a step with nothing commanding it,
+    /// a command from the create that launched the birth, or more than one command.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_create_another_executor_launched_commands_its_birth_to_start_again_once() {
+        let joins = std::sync::Arc::new(Joins::default());
+        let provider = ReportsToThePrimary { joins: joins.clone(), spawned: Default::default() };
+        let memory = std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let build_id = accepted_build(&*memory).await;
+        let node_id = rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let req = |build_id: &BuildId| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &crate::deployment::endpoint::NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
+
+        // The executor that launches the birth: its start never ends Ready, and it commands nothing.
+        let launcher = cell_template("owed-create-launcher");
+        let launched = CommandsBack { commanded: Default::default() };
+        let builds = crate::build_run::FramedBuilds::stepping(memory.clone(), &rdm_core::FabricId::parse("fab000000001").unwrap(), &launcher.launcher.node_id, "mesh1");
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &launched, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &launcher, timeouts: timeouts.clone() };
+        let err = pipeline.create(&req(&build_id)).await.map(|_| ()).expect_err("the launcher's create ends at WaitForNodeReady");
+        assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "{err}");
+        assert_eq!(launched.commanded.load(std::sync::atomic::Ordering::SeqCst), 0, "the create that launched the birth commands nothing: its start is its own");
+
+        // The mesh's primary of the moment, another executor on the same host, runs the step its mesh
+        // owes: the done steps' values from what is durable, the record the birth wrote at its join.
+        let successor = LaunchTemplate { launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ..launcher.clone() };
+        let owed = CommandsBack { commanded: Default::default() };
+        let view = std::sync::Arc::new(tokio::sync::RwLock::new(crate::topology::Topology {
+            fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: Vec::new(),
+        }));
+        let identity = identity_of(&req(&build_id));
+        let launched_handle = provider.spawned.lock().unwrap().clone().expect("the launcher's create launched the birth");
+        let mut own = rdm_node::nodes_storage::NodeRecord { runtime: launched_handle.fact().expect("the launched runtime's fact"), ..rdm_node::nodes_storage::fixture_record(&PathName::new("mesh1.node", "1").unwrap(), "node", node_id.clone(), identity.incarnation.clone(), rdm_core::model::NodeStatus::Pending) };
+        own.storage.data_dir = Some(super::super::node_data_dir(&launcher.data_root, &node_id).display().to_string());
+        let sink = RowsSink(std::sync::Arc::new(crate::node_rows::NodeRows::new(PathName::new("mesh1.node-admin", "2").unwrap(), successor.launcher.node_id.clone(), view, std::sync::Arc::new(OwnRecord(own)))));
+        let builds = crate::build_run::FramedBuilds::stepping(memory.clone(), &rdm_core::FabricId::parse("fab000000001").unwrap(), &successor.launcher.node_id, "mesh1");
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &owed, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &successor, timeouts };
+        let created = pipeline.create(&req(&build_id)).await.map(|c| c.node.node_id);
+        let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
+        assert_eq!(owed.commanded.load(std::sync::atomic::Ordering::SeqCst), 1, "the owed step commands the birth another executor launched to start again, once: {created:?}; receipts {steps:?}");
+        assert_eq!(created.map_err(|e| e.to_string()), Ok(node_id.clone()), "the owed create completes once the commanded birth is Ready: receipts {steps:?}");
+        let _ = std::fs::remove_dir_all(&launcher.data_root);
+    }
+
+    /// A nodes store that holds one birth's own record, the one it wrote at its join (Q356).
+    struct OwnRecord(rdm_node::nodes_storage::NodeRecord);
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for OwnRecord {
+        async fn node(&self, node_id: &NodeId) -> Result<Option<rdm_node::nodes_storage::NodeLine>, crate::storage_error::StorageError> {
+            Ok((&self.0.node_id == node_id).then(|| rdm_node::nodes_storage::NodeLine { record: self.0.clone(), time: None }))
+        }
+        async fn nodes(&self, _: &str) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            Ok(Vec::new())
+        }
+        async fn put_node(&self, _: &crate::storage::NodeRecord) -> Result<(), crate::storage_error::StorageError> {
+            Ok(())
+        }
+        async fn records_at(&self, _: &PathName) -> Result<Vec<crate::storage::NodeRecord>, crate::storage_error::StorageError> {
+            Ok(Vec::new())
+        }
     }
 
     /// A nodes store whose reads fail (`Io`): a store that cannot be read.

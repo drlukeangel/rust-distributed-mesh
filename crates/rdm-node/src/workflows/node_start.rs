@@ -301,10 +301,10 @@ pub trait AfterHook: Send + 'static {
     /// take (its Ready not recorded, Q356) is the start's failed step, answered as any other is.
     async fn report(&mut self) -> Result<(), StartFailed>;
 
-    /// A step after the hook failed, or a start after a stop ended Failed at the hook: `inside` the
-    /// start (which answers the failure; the kind ends what the start brought up), or in the task a
-    /// spawned hook ran in, after the start returned (the kind names the failure where its readiness
-    /// evidence is read; the node stays Pending). A first start that ended Failed at the hook calls
+    /// A step after the hook failed, or a start after a stop ended Failed at the hook: `inside` a start
+    /// after a stop (which answers the failure; the kind ends what the start brought up), or at a first
+    /// start, inside it or in the task its hook ran in (the kind names the failure where its readiness
+    /// evidence is read; the node stays Pending, its process running, Q445). A first start that ended Failed at the hook calls
     /// none of it: the node stays Pending, its process keeps running, and its probe answers
     /// `StartFailed` (fabric-node-hooks.md "Where the failure lands").
     async fn start_failed(self: Box<Self>, failed: &StartFailed, inside: bool) {
@@ -411,7 +411,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         }
         HookRuns::Inline => {
             let Some(driver) = driver else {
-                return rest.run_inline(None).await.map_err(Into::into);
+                return rest.run_after_the_hook(kind, None).await.map_err(Into::into);
             };
             let end = match driver.first().await {
                 Ok(end) => end,
@@ -433,7 +433,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
                 Err(hook_rest) => hook_rest.await,
             };
             match end {
-                End::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),
+                End::Passed => rest.run_after_the_hook(kind, Some(driver)).await.map_err(Into::into),
                 End::Failed(why) => {
                     rest.ended_failed_at_the_hook(&why);
                     match kind {
@@ -491,8 +491,24 @@ impl AfterTheHook {
             .in_scope(|| tracing::warn!("the start ended Failed at pre_node_ready: the node stays Pending and nothing calls the hook again"));
     }
 
-    /// The steps inside the start: a failed step ends what the start brought up, and the start
-    /// answers it.
+    /// The steps after a hook that passed inside the start. A start after a stop answers a failed step
+    /// to its caller ([`Self::run_inline`]). A first start never exits on one: the failed step is named
+    /// and the node stays Pending, its process running, as when the steps run in the start's own task
+    /// ([`Self::run_on`]), for the command the create step its mesh owes sends it (mesh-recovery.md step
+    /// 4: the successor "runs each step its mesh owes that no `rdm.build.step` event ended"; build.md
+    /// §4.1, Q445).
+    async fn run_after_the_hook(self, kind: StartKind, driver: Option<Arc<HookDriver>>) -> Result<(), StartFailed> {
+        match kind {
+            StartKind::FirstStart => {
+                self.run_on(driver).await;
+                Ok(())
+            }
+            StartKind::AfterStop => self.run_inline(driver).await,
+        }
+    }
+
+    /// The steps inside a start after a stop: a failed step ends what the start brought up, and the
+    /// start answers it.
     async fn run_inline(self, driver: Option<Arc<HookDriver>>) -> Result<(), StartFailed> {
         match self.steps(driver).await {
             Ok(()) => Ok(()),
@@ -503,8 +519,9 @@ impl AfterTheHook {
         }
     }
 
-    /// The steps in the task a spawned hook ran in: no caller waits on them, so a failed
-    /// step is named on its own span under the start's root, and the node stays Pending.
+    /// The steps of a first start, in the task a spawned hook ran in or inside the start: no caller
+    /// waits on them, so a failed step is named on its own span under the start's root, and the node
+    /// stays Pending.
     async fn run_on(self, driver: Option<Arc<HookDriver>>) {
         let (root, name, path, node_id) = (self.root.clone(), self.name.clone(), self.location(), self.node_id.clone());
         if let Err((failed, after)) = self.steps(driver).await {
@@ -674,6 +691,8 @@ mod tests {
 
     struct RecordedAfter {
         steps: Arc<Mutex<Vec<&'static str>>>,
+        /// The report fails: a step after the hook that ends the start.
+        fail_report: bool,
     }
 
     #[async_trait::async_trait]
@@ -690,7 +709,14 @@ mod tests {
 
         async fn report(&mut self) -> Result<(), StartFailed> {
             self.steps.lock().unwrap().push("report");
-            Ok(())
+            match self.fail_report {
+                true => Err(StartFailed { step: "node.started", reason: "the cell's report fails".into() }),
+                false => Ok(()),
+            }
+        }
+
+        async fn start_failed(self: Box<Self>, _: &StartFailed, inside: bool) {
+            self.steps.lock().unwrap().push(if inside { "start_failed(inside)" } else { "start_failed(task)" });
         }
     }
 
@@ -737,6 +763,8 @@ mod tests {
         cycles: Option<rdm_transport::BirthCancel>,
         /// Where the start hands the hook's handle.
         state: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
+        /// The report fails ([`RecordedAfter::fail_report`]).
+        fail_report: bool,
     }
 
     #[async_trait::async_trait]
@@ -834,6 +862,7 @@ mod tests {
                 runs: HookRuns::Inline,
                 after: Box::new(RecordedAfter {
                     steps: self.steps.clone(),
+                    fail_report: self.fail_report,
                 }),
             })
         }
@@ -916,6 +945,7 @@ mod tests {
                 pass: None,
                 cycles: None,
                 state: Arc::default(),
+                fail_report: false,
             };
             node_start(&mut plug1, StartKind::FirstStart)
                 .await
@@ -942,6 +972,7 @@ mod tests {
                 pass: None,
                 cycles: None,
                 state: Arc::default(),
+                fail_report: false,
             };
             node_start(&mut plug2, StartKind::AfterStop)
                 .await
@@ -1113,6 +1144,7 @@ mod tests {
                 pass: Some(pass.clone()),
                 cycles: Some(cycles.clone()),
                 state: state.clone(),
+                fail_report: false,
             };
             node_start(&mut plug, StartKind::FirstStart).await.expect("a first start whose hook answered Pending returns with the node Pending");
             let handle = state.lock().unwrap().clone().expect("the start handed the hook's handle");
@@ -1129,6 +1161,58 @@ mod tests {
         assert!(
             spans.iter().any(|s| s["name"] == "rdm.mesh.node.update.via-pre-node-ready-cancelled" && s["attributes"]["node_name"] == "4"),
             "the cancelled hook names the cancellation on its span"
+        );
+    }
+
+    /// CONTRACT (mesh-recovery.md step 4: "The successor reads the current Build's events and runs each
+    /// step its mesh owes that no `rdm.build.step` event ended"; build.md §4.1: an incomplete Build's
+    /// resubmission "dispatches the section to the mesh's primary of the moment, which reads the Build's
+    /// events and runs the steps its mesh owes"; Q445): a first start never exits on a failed step after
+    /// its hook. Whether its hook passed at its first attempt (the steps after it run inside the start) or
+    /// at a later one (they run in the start's own task), the failed step is named on its span, the kind
+    /// is told inside its own task (the node stays Pending, its process running), and the start returns,
+    /// so the create step its mesh owes can command it again. Must NOT happen (rdm#400): a first start
+    /// whose hook passed at once answering the failure, so that its node's process exits.
+    #[test]
+    fn a_first_start_whose_step_after_its_hook_fails_returns_with_the_node_pending() {
+        let dir = std::env::temp_dir().join(format!("rdm-node-start-failed-step-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-failed-step").expect("evidence capture starts");
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let started = capture.run(2, async {
+            let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            rafka_time.adopt(1_000_000);
+            let mut plug = TestStartPlug {
+                starting: Starting {
+                    root: tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = "mesh1.node", node_name = "3"),
+                    name: "3".into(),
+                    birth_path: "mesh1.node".into(),
+                    birth_name: "3".into(),
+                    node_id: NodeId::mint(),
+                    mesh_id: None,
+                    client,
+                    rafka_time,
+                },
+                no_accepting_primary: NoAcceptingPrimary::Day0Root,
+                steps: steps.clone(),
+                observed_ctx: Arc::default(),
+                ready_notified: Arc::new(tokio::sync::Notify::new()),
+                pass: None,
+                cycles: None,
+                state: Arc::default(),
+                fail_report: true,
+            };
+            node_start(&mut plug, StartKind::FirstStart).await.map_err(|e| e.to_string())
+        });
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(started, Ok(()), "the first start returns with the node Pending, never answering the failed step: steps {:?}", steps.lock().unwrap());
+        assert_eq!(*steps.lock().unwrap(), vec!["enter_channel", "joined", "pre_node_ready", "floor", "report", "start_failed(task)"], "the hook passed at its first attempt; the failed step is told as in the start's own task");
+        assert!(
+            spans.iter().any(|s| s["name"] == "rdm.mesh.node.reject.via-start-step-failed" && s["attributes"]["step"] == "node.started" && s["attributes"]["node_name"] == "3"),
+            "the failed step is named on its span"
         );
     }
 }

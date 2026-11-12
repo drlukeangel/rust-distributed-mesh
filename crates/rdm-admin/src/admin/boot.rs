@@ -1697,7 +1697,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 fabric_storage: fabric_storage.clone(),
                                 provider: provider_dyn.clone(),
                                 joins: joins.clone(),
-                                observer: Arc::new(TopologyObserver { digest_view: digest_view.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), status_service: status_service.clone(), primary_update: primary_update_slot.clone(), unreachable: records.unreachable.clone() }),
+                                observer: Arc::new(TopologyObserver { digest_view: digest_view.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), status_service: status_service.clone(), primary_update: primary_update_slot.clone(), unreachable: records.unreachable.clone(), heard_again: heard_again_slot.clone() }),
                                 records: records.clone(),
                                 builds: builds_dyn.clone(),
                                 local: journal.clone(),

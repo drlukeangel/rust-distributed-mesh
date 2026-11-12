@@ -125,6 +125,9 @@ pub struct TopologyObserver {
     /// The births a command never reached for a reachability reason, marked `PendingReconnect` at
     /// once for the mesh primary's tick (node-tickle.md step 1).
     pub unreachable: crate::offline::UnreachableMarks,
+    /// This admin's command back through node.mesh.join (node-recovery.md step 3), once it exists: a
+    /// create step this admin runs for a birth another executor launched commands its start again.
+    pub heard_again: crate::heard_again::HeardAgainSlot,
 }
 
 impl TopologyObserver {
@@ -234,6 +237,16 @@ impl NodeObserver for TopologyObserver {
             Some(Some(state)) => format!("this admin holds the birth declared {state:?}"),
         };
         Err(format!("{} is held {:?}, not ready: {member}; {started}", node.node_id, d.status))
+    }
+
+    /// The command back of node-recovery.md step 3 (`HeardAgain::command`, node.mesh.join under its
+    /// own guards), for a birth held off ready: the create step names it Pending, the status it waits on.
+    async fn command_start_again(&self, node: &Node) -> String {
+        let (Some(heard_again), Some(incarnation)) = (self.heard_again.get(), node.incarnation_id.as_ref()) else {
+            return format!("no command back at this admin yet for {}", node.node_id);
+        };
+        let held = Node { status: crate::model::NodeStatus::Pending, ..node.clone() };
+        heard_again.command(&held, incarnation).await
     }
 
     async fn ready_hook_answer(&self, node: &Node) -> Option<crate::node_hooks::ProbeAnswer> {

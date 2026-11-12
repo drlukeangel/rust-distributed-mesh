@@ -169,6 +169,86 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     estate.record_trace_url(picked["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (node-topology-get.md, "exact member → own mesh-primary"; mesh-recovery.md step 4: the
+/// successor "runs each step its mesh owes that no `rdm.build.step` event ended"; build.md §4.1: an
+/// incomplete Build's "resubmission dispatches the section to the mesh's primary of the moment, which
+/// reads the Build's events and runs the steps its mesh owes"; node-recovery.md step 3: a held birth
+/// "heard again by its digest, is commanded back through node.mesh.join"; Q445): a Build grows `mesh2`
+/// by one node, held at its `pre_node_ready`. `mesh2`'s primary, which launched it, is stopped by the OS
+/// (alive, answering nothing) and the hold released at once, so the node's one topology read goes to
+/// that primary and is under way there, unanswered. Either the node's view names `mesh2`'s new primary
+/// while the read is under way and the read is made again to it, or the read's attempts are spent first
+/// and the start ends at node.topology: the node stays up and Pending, its process running. The section
+/// call to the lost primary ends short and the Build ends incomplete naming `mesh2`. Resubmitted by its
+/// build_id once `mesh2`'s other node-admin holds the role, the section runs at that primary, which runs
+/// the node's create step its mesh owes. The Build ends complete and the node is Ready as the same birth,
+/// its one served topology read served by `mesh2`'s new primary; a start that ended at a step was
+/// commanded to start again through node.mesh.join (by that owed step, or as a held birth heard again).
+/// Must NOT happen (rdm#400): the node's process exiting, a start that ended at a step left with no
+/// command, the node left Pending, or the Build short of complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_start_whose_launcher_is_lost_under_its_read_is_ready_once_its_resubmitted_create_step_runs() {
+    let test = "a_first_start_whose_launcher_is_lost_under_its_read_is_ready_once_its_resubmitted_create_step_runs";
+    let mut estate = born(test).await;
+    let old = mesh2_primary(&estate).await;
+    let held_at = Estate::path("mesh2.node", "3");
+    rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "held by the cell").unwrap();
+    let mut stream = estate.submit_shape(FABRIC, &[("mesh1", 2, 1), ("mesh2", 2, 3)]).await;
+    let build_id: BuildId = stream.build_id().clone();
+    let b = build_id.to_string();
+    let held_id = crate::build_log::created_id(&estate, &b, &held_at).await.to_string();
+    until_pending(&mut stream, &format!("node.create:{held_id}")).await;
+    drop(stream);
+
+    // The launcher answers nothing from here, and the held node's hook passes at its next attempt.
+    let rt = ExactRuntime::published(Path::new(&estate.data_dir(&old.location()).await)).expect("mesh2's primary published its runtime");
+    let stopped = rt.apply(Fault::Stop).expect("mesh2's primary is stopped by the OS");
+    assert_eq!(stopped.state_after, Some('T'), "the OS holds mesh2's primary: {stopped:?}");
+    rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "pass").unwrap();
+    let short = crate::build_log::build_fact(&estate, &b, "the Build ended short of complete", SETTLE, |p| p.state.ended_short()).await.unwrap_or_else(|end| panic!("{end}"));
+    assert_eq!(short.state, BuildState::Incomplete, "the Build ran, so it is incomplete: {short:#?}");
+    assert!(short.unfinished.iter().any(|u| u.mesh == "mesh2"), "the end names mesh2's section: {:?}", short.unfinished);
+    let new = estate
+        .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != old.node_id).cloned())
+        .await;
+    let new_id = new.node_id.to_string();
+    let resubmitted_ns = now_ns();
+    let resumed = tokio::time::timeout(SETTLE * 2, async { estate.follow_to_terminal(estate.resubmit(&build_id).await).await }).await.unwrap_or_else(|_| panic!("the resubmitted Build {b} has no terminal within {:?}", SETTLE * 2));
+    assert!(matches!(resumed.frames.last(), Some(BuildFrame::Complete)), "the resubmitted Build completes: {:?}", resumed.frames);
+    let ready = estate.until_node(&held_at, "the held node is Ready", SETTLE, |v| v.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
+    assert_eq!(ready.node_id.to_string(), held_id, "the held node is Ready as the same birth: its process never exited and nothing re-created it");
+    // The cell's own cleanup: the stopped launcher is no estate's.
+    rt.apply(Fault::Kill(estate.fabric_ready())).expect("the cell kills the launcher it stopped");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let of_held = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node_id") == held_id).collect() };
+    let served: Vec<&Value> = of_held("rdm.mesh.node.update.via-topology-taken").into_iter().filter(|sp| !attr(sp, "served_by").is_empty()).collect();
+    assert_eq!(served.len(), 1, "one topology read served the held node: {served:#?}");
+    assert_eq!(attr(served[0], "served_by"), new_id, "mesh2's new primary served the held node's topology: {}", served[0]);
+    let section = named(&spans, "rdm.node_admin.build.serve.via-section-run").into_iter().find(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2" && start(sp) >= resubmitted_ns).cloned().unwrap_or_else(|| panic!("the resubmit's section call to mesh2"));
+    assert_eq!((attr(&section, "node_path"), attr(&section, "node_name")), (new.path.as_str(), new.name.as_str()), "mesh2's new primary ran the resubmitted section: {section}");
+    let failed = of_held("rdm.mesh.node.reject.via-start-step-failed");
+    assert!(failed.len() <= 1 && failed.iter().all(|sp| attr(sp, "step") == "node.topology"), "a start of the held node ends at a step only at its read of the lost launcher: {failed:#?}");
+    // A start that ended at a step is commanded to start again through node.mesh.join: by the create
+    // step its mesh owes (mesh-recovery.md step 4; build.md §4.1), or as a held birth heard again
+    // (node-recovery.md step 3).
+    let commanded: Vec<&Value> = of_held("rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|c| attr(c, "outcome") == "mesh-joined").collect();
+    for f in &failed {
+        assert!(commanded.iter().any(|c| start(c) > start(f)), "the start that ended at a step is commanded to start again: {f}; commands {commanded:#?}");
+    }
+    if let Some(c) = commanded.iter().find(|c| failed.iter().any(|f| start(c) > start(f))) {
+        let by = if c["trace_id"] == section["trace_id"] { "the create step its mesh owes" } else { "a held birth heard again" };
+        println!("flame (the held node commanded to start again through node.mesh.join, by {by}): http://192.168.68.99:16687/trace/{}", s(&c["trace_id"]));
+    }
+    println!("flame (the held node's topology served by mesh2's new primary): http://192.168.68.99:16687/trace/{}", s(&served[0]["trace_id"]));
+    if let Some(f) = failed.first() {
+        println!("flame (the held node's first start ended at node.topology, the node Pending): http://192.168.68.99:16687/trace/{}", s(&f["trace_id"]));
+    }
+    println!("flame (the resubmitted section at mesh2's new primary): http://192.168.68.99:16687/trace/{}", s(&section["trace_id"]));
+    estate.record_trace_url(served[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT (node-mesh-join.md step 10: "a birth commanded back leaves its channels, runs the whole
 /// sequence again on the commanding call and publishes ready only once its hook has passed (Q87)";
 /// node-recovery.md step 3: a held birth heard again "is commanded back through node.mesh.join by the

@@ -1192,6 +1192,7 @@ mod tests {
                 status_service: Arc::default(),
                 primary_update: Arc::default(),
                 unreachable: records.unreachable.clone(),
+                heard_again: Arc::default(),
             }),
             records: records.clone(),
             builds: steps.clone(),

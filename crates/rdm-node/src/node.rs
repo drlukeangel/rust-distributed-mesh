@@ -943,8 +943,6 @@ async fn start_booted(
                                     node_id: launch.node_id.clone(),
                                     path: launch.path.clone(), name: launch.name.clone(),
                                     becoming,
-                                    // A step that fails ends the node by name from its start, as an unaccepted join does.
-                                    ends: Some(out.clone()),
                                     knob: knob_fn.and_then(|f| f(&launch, &rafka_time, &boot)),
                                     leave: None,
                                     property_writer: property_writer.clone(),
@@ -1244,7 +1242,6 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
                 node_id: s.node_id.clone(),
                 path: me.path.clone(), name: me.name.clone(),
                 becoming,
-                ends: None,
                 knob: None,
                 leave: (self.operation.operation.action == "node.mesh.join").then(|| Leave { channels: channels.clone(), node_hooks: s.node_hooks.clone(), publisher: s.publisher.clone(), node_id: s.node_id.clone(), name: s.node_id.to_string() }),
                 property_writer: s.property_writer.clone(),
@@ -1264,9 +1261,6 @@ struct RpcAfterHook {
     /// The name, beside its path.
     name: String,
     becoming: Becoming,
-    /// What a step that fails inside the start ends: a first start's node (a start after a stop ends
-    /// nothing; its process stays stopped's).
-    ends: Option<Arc<Mutex<Option<RunningNode>>>>,
     /// A scenario's rafka-time knob, applied once rafka-time is refreshed, before the report.
     knob: Option<Box<dyn FnOnce() + Send>>,
     /// A commanded `node.mesh.join` (Q87): a step that fails after the hook leaves the birth off its
@@ -1325,11 +1319,10 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
         self.becoming.go().await
     }
 
+    /// A first start's failed step after its hook ends nothing it brought up: the node stays Pending,
+    /// its process running, for the command its mesh owes it (Q445). A start after a stop's process
+    /// stays its stop's.
     async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {
-        let running = self.ends.and_then(|out| out.lock().unwrap().take());
-        if let Some(running) = running {
-            running.close().await;
-        }
         if let Some(leave) = self.leave {
             leave.run(failed.step, &failed.reason).await;
         }
