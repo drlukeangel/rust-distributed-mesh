@@ -3793,11 +3793,16 @@ rdm#174 with the lead's conforming text.
   - **rdm#399 LANDED 43fc3abf4** (Q444): RDM's op ledger holds RDM's own opcodes only; a product serves its families with no row; 0x40–0xFF is recommended for a product (consumer-guide-ops.md). The rafka session was told to repin at 43fc3abf4.
   - The rafka session repinned all five RDM crates at 43fc3abf4 (rafka main 93570fcabb, gate GREEN). Its reserved codes 0x16, 0x26 and 0x27 go through `ServerBuilder::ledger`; no opcode moved.
   - **rdm#401 LANDED a04d7f635**: the authority cells' checkpoints want their tier's node-admins per mesh, three at `scale` (L4's shape). A successor is the lowest NodeId of the mesh's other admins, as the election names it. The scale tier found it at 43fc3abf4: `mesh1 holds 3 ready node-admins, 2 wanted`.
-  - **rdm#402** (lane 7, proving): the scale tier ran the debug consumer executables.
+  - **rdm#402 LANDED 3f0e7118b**: the scale tier ran the debug consumer executables.
     - 200 debug nodes on 20 cores ran at load average about 600.
     - The fabric-primary's `fabric.get` was p90 3.1 s, against 10 ms at 10 nodes, past the cells' 2 s read.
     - Both authority scale cells stopped at `formed` with a good end state (Q442), and no story ran.
-    - Fix: the scale cells run the release consumer executables, the build L4 passed on (load-testing.md §Conditions). No bound changes.
+    - Fix: the scale cells run the release consumer executables, the build L4 passed on (load-testing.md §Conditions). Each command names the manifest the cell binds and the gate re-hashes against (`RDM_RSHAPE_CONSUMER_MANIFEST`). No bound changes.
+    - Results on release: load 16–33; `formed` stable after 3.8 s; `fabric.get` p90 about 30 ms; the recovery cell ok (566 s).
+    - The same unit fixed one more of the cell's two-admins-per-mesh readings: a replaced fabric-primary's incumbent is its mesh's primary after the delete, the lower NodeId the election named.
     - Named, not fixed: the fabric-primary's `fabric.get` reads every birth's record in its scope on each call (the cert watch).
+  - **rdm#403** (lane 7, proving): the handoffs cell passed every story at 200 nodes, then the kernel killed its test process at 104 GB.
+    - Cause: the cells parse every span of the run into memory: 17 GB at L4, 85 % of it gossip receive spans and the per-record `via-lifecycle-record` resolves that no check reads.
+    - Fix: `Estate::spans_except`; the R-shape cells read their run without those families.
   - Next: the scale tier, then the certifying chain, at #402's landing (`scale-chain.sh`), one after the other on this box (Q290).
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
