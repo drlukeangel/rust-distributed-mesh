@@ -383,3 +383,132 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
 async fn status_of(view: &Topology, records: &MemoryNodesStorage, id: &NodeId) -> rdm_core::views::NodeStatus {
     answer(view, records, Filter::new().eq("id", [id.to_string()])).await.into_iter().next().expect("the birth is answered").state
 }
+
+/// The attribute `key` of the captured span `sp`, as its exporter holds it (text).
+fn attr(sp: &serde_json::Value, key: &str) -> String {
+    sp["attributes"][key].as_str().unwrap_or_default().to_string()
+}
+
+/// The store calls the captured read span `sp` names (`io_calls`).
+fn io_calls(sp: &serde_json::Value) -> u64 {
+    attr(sp, "io_calls").parse().unwrap_or_else(|e| panic!("the read's span names its store calls (io_calls): {e}: {sp}"))
+}
+
+/// CONTRACT (query.md §1: "A current-pair lookup resolves the path and name to a node ID from the node
+/// records. The reader reads the node's record at that node ID", and "`node.get` materializes records and
+/// applies its complete filter"; node-rpc-envelope.md, node properties: "path, mesh and type are
+/// immutable"; fabric-certs.md §Tracking: "`fabric.get` shows the next expiry across the fabric"): at the
+/// fabric-primary of two meshes of six births each, every node's record in the file nodes store, a read
+/// reads the records of the nodes it can answer, and many records as one store call per mesh, never one
+/// call per birth the view holds: `node.get` of one node's pair reads that node's record alone (one
+/// `rdm.node_admin.node.resolve.via-lifecycle-record` span, its own) in at most two store calls (the
+/// current-pair lookup and the record); `node.get` by id reads that id's record in one call;
+/// `node.get [mesh: mesh2]`, `[type: node]` and no pair read their records at one call per mesh;
+/// `fabric.get` reads the cert dates at one call per mesh. Each answers what it answered before.
+/// A record still claiming a role the view's election gave another birth (a primary killed before it
+/// cleared its record), read by its own pair, is settled against every claim as before (Q429: "a view
+/// decides between two claims by the elections rule"): it answers the role false, its role the view's.
+/// Must NOT happen: a read making one store call per birth the view holds.
+#[test]
+fn a_read_reads_the_records_of_the_nodes_it_answers_and_every_mesh_in_one_store_call() {
+    use rdm_core::filter::Entity;
+    use rdm_core::read::Rows;
+    use tracing::Instrument as _;
+    let cap = crate::mesh_delete_resume::capture();
+    let dir = std::env::temp_dir().join(format!("node-get-store-calls-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let spans = cap.run(async {
+        let store = rdm_admin::store_root::StoreRoot::at(&dir).unwrap();
+        let records = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_log::LogWriter::mint()).await.unwrap());
+        // Each mesh: its node-admin, its mesh-primary (mesh1's the fabric-primary), and five nodes.
+        let mut births = Vec::new();
+        for mesh in ["mesh1", "mesh2"] {
+            let mut admin = node(path(&format!("{mesh}.node-admin"), "1"), mesh, "node-admin");
+            admin.is_primary = true;
+            admin.is_fabric_primary = mesh == "mesh1";
+            births.push(admin);
+            for i in 1..=5 {
+                births.push(node(path(&format!("{mesh}.node"), &i.to_string()), mesh, "node"));
+            }
+        }
+        for n in &births {
+            let mut row = rdm_node::nodes_storage::fixture_record(&n.location(), &n.r#type, n.node_id.clone(), n.incarnation_id.clone().unwrap(), NodeStatus::Ready);
+            (row.is_primary, row.is_fabric_primary) = (n.is_primary.then_some(1), n.is_fabric_primary.then_some(1));
+            let expires_at = if n.location() == path("mesh2.node", "3") { 5_000_000 } else { 9_000_000 };
+            row.cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
+            records.put_node(&row).await.unwrap();
+        }
+        let view = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready }],
+            nodes: births.clone(),
+        };
+        let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
+        atlas.scope(["mesh1".to_string(), "mesh2".to_string()].into());
+        let meshes = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
+        crate::write_meshes(&view, &*meshes).await;
+        let fp = fabric_primary_at(&births[0], view, atlas, records.clone(), meshes).await;
+        let read = |entity: Entity, filter: Filter| {
+            let fp = &fp;
+            async move { fp.read_rows(&get(entity, filter)).instrument(tracing::info_span!("cell.read")).await.unwrap_or_else(|r| panic!("the read is answered: {r:?}")) }
+        };
+        let located = |rows: Rows| match rows {
+            Rows::Nodes(nodes) => nodes.into_iter().map(|n| n.location()).collect::<Vec<_>>(),
+            other => panic!("node.get answers nodes, not {other:?}"),
+        };
+
+        let subject = births.iter().find(|n| n.location() == path("mesh2.node", "3")).unwrap().clone();
+        assert_eq!(located(read(Entity::Nodes, Filter::new().eq("path", ["mesh2.node"]).eq("name", ["3"])).await), [path("mesh2.node", "3")], "the pair's node");
+        assert_eq!(located(read(Entity::Nodes, Filter::new().eq("id", [subject.node_id.to_string()])).await), [path("mesh2.node", "3")], "the id's node");
+        assert_eq!(located(read(Entity::Nodes, Filter::new().eq("mesh", ["mesh2"])).await).len(), 6, "mesh2's six births");
+        assert_eq!(located(read(Entity::Nodes, Filter::new().eq("type", ["node"])).await).len(), 10, "the ten nodes of type node");
+        assert_eq!(located(read(Entity::Nodes, Filter::new()).await).len(), 12, "every birth");
+        match read(Entity::Fabrics, Filter::new()).await {
+            Rows::Fabrics(fabrics) => assert_eq!(fabrics[0].next_expiry, Some(5_000_000), "the soonest cert expiry across the fabric: {fabrics:#?}"),
+            other => panic!("fabric.get answers the fabric, not {other:?}"),
+        }
+
+        // mesh2.node-admin/2, killed while it held mesh2's primary role: its record still claims it, and
+        // the view's election gave the role to mesh2.node-admin/1.
+        let mut stale = node(path("mesh2.node-admin", "2"), "mesh2", "node-admin");
+        stale.status = NodeStatus::Dead;
+        let mut row = rdm_node::nodes_storage::fixture_record(&stale.location(), &stale.r#type, stale.node_id.clone(), stale.incarnation_id.clone().unwrap(), NodeStatus::Ready);
+        row.is_primary = Some(1);
+        records.put_node(&row).await.unwrap();
+        fp.topology.write().await.nodes.push(stale.clone());
+        match read(Entity::Nodes, Filter::new().eq("path", ["mesh2.node-admin"]).eq("name", ["2"])).await {
+            Rows::Nodes(nodes) => {
+                assert_eq!(nodes.iter().map(|n| (n.node_id.clone(), n.is_primary)).collect::<Vec<_>>(), [(stale.node_id.clone(), false)], "the stale claim, read alone by its pair, is settled against mesh2's elected primary's: {nodes:#?}");
+            }
+            other => panic!("node.get answers nodes, not {other:?}"),
+        }
+        let primaries = located(read(Entity::Nodes, Filter::new().eq("is_primary", ["true"])).await);
+        assert_eq!(primaries, [path("mesh1.node-admin", "1"), path("mesh2.node-admin", "1")], "[is_primary: true]: each mesh's elected primary, never the stale claim");
+        cap.spans()
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let served = |pairs: &str| -> serde_json::Value {
+        spans.iter().find(|sp| sp["name"] == "rdm.node_admin.node.serve.via-get" && attr(sp, "pairs") == pairs).cloned().unwrap_or_else(|| panic!("node.get {pairs:?} is served"))
+    };
+    let by_id = spans.iter().find(|sp| sp["name"] == "rdm.node_admin.node.serve.via-get" && attr(sp, "pairs").starts_with("(id, ")).cloned().expect("node.get by id is served");
+    let resolved = |read: &serde_json::Value| -> Vec<String> {
+        spans.iter().filter(|sp| sp["name"] == "rdm.node_admin.node.resolve.via-lifecycle-record" && sp["parent_span_id"] == read["span_id"]).map(|sp| attr(sp, "subject_id")).collect()
+    };
+    let reads: Vec<serde_json::Value> = ["(path, [mesh2.node]) (name, [3])", "(mesh, [mesh2])", "(type, [node])", ""].into_iter().map(served).chain([by_id.clone()]).collect();
+    let cost: Vec<(String, u64, usize)> = reads.iter().map(|sp| (attr(sp, "pairs"), io_calls(sp), resolved(sp).len())).collect();
+    let fabric = spans.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.serve.via-get").cloned().expect("fabric.get is served");
+    eprintln!("each read's store calls and the records it resolved (pairs, io_calls, via-lifecycle-record spans): {cost:#?}; fabric.get io_calls {}", attr(&fabric, "io_calls"));
+
+    let pair = served("(path, [mesh2.node]) (name, [3])");
+    let subject = attr(&pair, "role_from").split(':').next().unwrap_or_default().to_string();
+    assert_eq!(resolved(&pair), [subject], "node.get of one pair reads that node's record alone: {cost:#?}");
+    assert!(io_calls(&pair) <= 2, "node.get of one pair: the current-pair lookup and the node's record, never a call per birth: {cost:#?}");
+    assert_eq!((io_calls(&by_id), resolved(&by_id).len()), (1, 1), "node.get by id reads that id's record in one store call: {cost:#?}");
+    for pairs in ["(mesh, [mesh2])", "(type, [node])", ""] {
+        assert!(io_calls(&served(pairs)) <= 2, "node.get {pairs:?} reads its records at one store call per mesh, never one per birth: {cost:#?}");
+    }
+    assert!(io_calls(&fabric) <= 2, "fabric.get reads the cert dates at one store call per mesh, never one per birth: {fabric}");
+    let stale = served("(path, [mesh2.node-admin]) (name, [2])");
+    assert!(attr(&stale, "role_from").ends_with(":view"), "the stale claim's role is the view's, settled against every claim: {stale}");
+}
