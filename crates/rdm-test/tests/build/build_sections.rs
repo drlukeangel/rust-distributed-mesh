@@ -223,6 +223,78 @@ async fn a_first_starts_read_under_way_at_its_lost_launcher_is_made_again_to_the
     estate.record_trace_url(taken["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (node-mesh-join.md step 10: "a birth commanded back leaves its channels, runs the whole
+/// sequence again on the commanding call and publishes ready only once its hook has passed (Q87)";
+/// node-recovery.md step 3: a held birth heard again "is commanded back through node.mesh.join by the
+/// primary above it"; fabric-node-hooks.md "Cancellation and lifecycle commands": "Ending the in-flight
+/// start cancels the token", and "A cancelled hook names the cancellation"): a Build grows `mesh2` by
+/// one node, held at its `pre_node_ready`. `mesh2`'s primary, which launched it, is killed and `mesh2`'s
+/// other node-admin takes the role. The held node is then hung past the staleness floor and released,
+/// so its new primary hears it again and commands it back through node.mesh.join while its first start
+/// is still held at its hook. That command begins the birth's next cycle, which ends the first start's
+/// hook: it ends Cancelled, named on its span in the first start's trace, and runs nothing after it.
+/// Once the hold is released the commanded sequence's hook passes, it reads its topology at mesh2's new
+/// primary, and the node is Ready once. Must NOT happen (rdm#400): the first start's hook passing later
+/// and reading its topology or reporting beside the commanded sequence, a second topology step or
+/// report, or a start ended at a step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_start_held_at_its_hook_ends_cancelled_when_its_new_primary_commands_it_back() {
+    let test = "a_first_start_held_at_its_hook_ends_cancelled_when_its_new_primary_commands_it_back";
+    let mut estate = born(test).await;
+    let old = mesh2_primary(&estate).await;
+    let held_at = Estate::path("mesh2.node", "3");
+    rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "held by the cell").unwrap();
+    let mut stream = estate.submit_shape(FABRIC, &[("mesh1", 2, 1), ("mesh2", 2, 3)]).await;
+    let b = stream.build_id().to_string();
+    let held_id = crate::build_log::created_id(&estate, &b, &held_at).await.to_string();
+    until_pending(&mut stream, &format!("node.create:{held_id}")).await;
+    drop(stream);
+    estate.kill_node(&old.location()).await;
+    let new = estate
+        .until_view("mesh2's other node-admin is its primary", SETTLE, |views| views.iter().find(|n| n.mesh() == "mesh2" && n.r#type == "node-admin" && n.is_primary && n.state == NodeStatus::Ready && n.node_id != old.node_id).cloned())
+        .await;
+    let new_id = new.node_id.to_string();
+
+    // The held node goes unheard past the floor, then is heard again: its new primary commands it back.
+    // The OS stops it (its launcher is gone, so it is no child of this process to trace) and continues it.
+    let floor = rdm_core::cadence::staleness_floor();
+    let rt = ExactRuntime::published(Path::new(&estate.data_dir(&held_at).await)).expect("the held node published its runtime");
+    let stopped = rt.apply(Fault::Stop).expect("the held node is stopped by the OS");
+    assert_eq!(stopped.state_after, Some('T'), "the OS holds the held node: {stopped:?}");
+    tokio::time::sleep(floor * 2).await;
+    let released_ns = now_ns();
+    rt.apply(Fault::Continue).expect("the held node is continued by the OS");
+    wait_for("mesh2's new primary commands the held node back through node.mesh.join", SETTLE, || {
+        let spans = estate.spans();
+        let held_id = held_id.clone();
+        async move { named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().any(|sp| attr(sp, "node_id") == held_id && start(sp) >= released_ns).then_some(()) }
+    })
+    .await;
+    rdm_test::write_pre_node_ready_knob(&estate.root, &held_at, "pass").unwrap();
+    estate.until_node(&held_at, "the held node is Ready", SETTLE, |v| v.filter(|n| n.state == NodeStatus::Ready).cloned()).await;
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let of_held = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node_id") == held_id).collect() };
+    let boot = of_held("rdm.mesh.node.create.via-boot").into_iter().next().unwrap_or_else(|| panic!("the held node's first start")).clone();
+    let cancelled = of_held("rdm.mesh.node.update.via-pre-node-ready-cancelled");
+    assert!(cancelled.iter().any(|sp| sp["trace_id"] == boot["trace_id"]), "the first start's hook ended Cancelled, named in its own trace: {cancelled:#?}");
+    let passed_first: Vec<&Value> = of_held("rdm.mesh.node.update.via-pre-node-ready-attempt").into_iter().filter(|sp| sp["trace_id"] == boot["trace_id"] && attr(sp, "outcome") == "ok").collect();
+    assert!(passed_first.is_empty(), "the first start's hook never passed after its cycle ended: {passed_first:#?}");
+    let failed = of_held("rdm.mesh.node.reject.via-start-step-failed");
+    assert!(failed.is_empty(), "no start of the held node ended at a step: {failed:#?}");
+    let taken = of_held("rdm.mesh.node.update.via-topology-taken");
+    assert_eq!(taken.len(), 1, "one topology step, the commanded sequence's: {taken:#?}");
+    assert_ne!(taken[0]["trace_id"], boot["trace_id"], "the topology step is the commanded sequence's, never the first start's: {}", taken[0]);
+    assert_eq!(attr(taken[0], "served_by"), new_id, "the commanded sequence read its topology at mesh2's new primary: {}", taken[0]);
+    let ready = of_held("rdm.mesh.node.update.via-ready");
+    assert_eq!(ready.len(), 1, "the held node reported ready once: {ready:#?}");
+    let first = cancelled.iter().find(|sp| sp["trace_id"] == boot["trace_id"]).unwrap();
+    println!("flame (the held node's first start ended Cancelled by its commanded cycle): http://192.168.68.99:16687/trace/{}", s(&first["trace_id"]));
+    println!("flame (the commanded sequence's one topology read and report): http://192.168.68.99:16687/trace/{}", s(&taken[0]["trace_id"]));
+    estate.record_trace_url(first["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT (Q346: "A failed step fails its mesh's section, never the Build, and a Build is never
 /// reverted"; build.md §5: each step's outcome is its `rdm.build.step` event): one Build creates a node
 /// in `mesh1` and one in `mesh2`, the `mesh2` node named on a copy of the node executable. `mesh2`'s
