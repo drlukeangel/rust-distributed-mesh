@@ -574,36 +574,34 @@ impl Atlas {
     }
 
     /// `t`, a view an acceptance decides from, with its primaries as the primary updates' answers set
-    /// them ([`Self::primaries`]), each of its births as its record (read through
-    /// `records`, query.md §1) and the ops left it ([`Self::answer`]; R-FA1: the fabric-primary accepts or
-    /// denies from the atlas, the gossip view context only): a birth an op deleted is not in it. A birth a
-    /// create this atlas took the receipt of made is in it before the gossip view hears it, from its
-    /// record, in place of a birth at its path and name that is no longer live: a node action on a path
-    /// node recovery just re-created is decided on the replacement, never refused `node-not-live` on the
-    /// deleted birth (rdm#239). With no `records` (none open yet) only the ops' effects are applied.
-    /// `Err` names a record that could not be read.
+    /// them ([`Self::primaries`]), each of its births as its record (read through `records`, query.md §1:
+    /// each mesh's records as one store read, the meshes read together,
+    /// [`crate::current_record::CurrentRecords::rows_of`], never one read per birth) and the ops left it
+    /// ([`Self::answer`]; R-FA1: the fabric-primary accepts or denies from the atlas, the gossip view
+    /// context only): a birth an op deleted is not in it. A birth a create this atlas took the receipt of
+    /// made is in it before the gossip view hears it, from its record read at its node id, in place of a
+    /// birth at its path and name that is no longer live: a node action on a path node recovery just
+    /// re-created is decided on the replacement, never refused `node-not-live` on the deleted birth
+    /// (rdm#239). With no `records` (none open yet) only the ops' effects are applied. `Err` names a
+    /// record that could not be read.
     pub(crate) async fn apply(&self, t: &mut Topology, records: Option<&crate::current_record::CurrentRecords<'_>>) -> Result<(), String> {
         self.primaries(t);
         let observed = t.clone();
-        let mut kept = Vec::with_capacity(t.nodes.len());
-        for mut n in std::mem::take(&mut t.nodes) {
-            let row = match records {
-                Some(records) => records.row(&n.node_id).await?,
-                None => None,
-            };
-            if self.answer(&mut n, row.as_ref()) {
-                kept.push(n);
-            }
-        }
-        t.nodes = kept;
+        let rows = match records {
+            Some(records) => records.rows_of(observed.births().map(|n| (&n.node_id, n.mesh.as_str()))).await?,
+            None => BTreeMap::new(),
+        };
+        t.nodes.retain_mut(|n| self.answer(n, rows.get(&n.node_id)));
         let Some(records) = records else { return Ok(()) };
         let created: Vec<Birth> = {
             let mut held = self.held.lock().unwrap();
             held.created.retain(|b| !observed.births().any(|n| n.node_id == b.node_id));
             held.created.iter().cloned().collect()
         };
-        for b in created {
-            let Some(r) = records.row(&b.node_id).await? else { continue };
+        // The births created that the view does not hold yet, each read at its node id, the reads made together.
+        let read = futures_util::future::try_join_all(created.iter().map(|b| records.row(&b.node_id))).await?;
+        for (b, r) in created.into_iter().zip(read) {
+            let Some(r) = r else { continue };
             let live = r.state.is_live() || r.state == NodeStatus::Starting;
             if !live || r.incarnation != b.incarnation {
                 continue;
@@ -773,16 +771,19 @@ impl Atlas {
 
     /// The node rows of a mesh for `fabric.atlas.get` and `mesh.atlas.get` (query.md §1, Q439): one for
     /// every node `paths` names (the mesh's nodes in the current Build's topology), in `(path, name)`
-    /// order, each the topology's node row read from its record ([`read_node`]), its status as the ops
+    /// order, each the topology's node row read from its record ([`read_node`]; the current-pair lookup
+    /// of every path at one store read of the mesh's records,
+    /// [`crate::current_record::CurrentRecords::rows_at`], never a read per node), its status as the ops
     /// left it, beside what is in flight on it; a deleted node is not listed. `held` is the answering
     /// admin's held digest of a node, for its lineage and digest sequence.
     pub(crate) async fn node_rows(&self, paths: impl IntoIterator<Item = PathName>, records: &crate::current_record::CurrentRecords<'_>, observed: &Topology, held: &(dyn Fn(&NodeId) -> Option<rdm_core::MeshDigest> + Sync)) -> Result<Vec<rdm_core::views::AtlasNodeView>, String> {
         let mut paths: Vec<PathName> = paths.into_iter().collect();
         paths.sort();
         paths.dedup();
+        let mut standing = records.rows_at(&paths).await?;
         let mut nodes = Vec::new();
         for path in paths {
-            let Some(record) = records.row_at(&path).await? else { continue };
+            let Some(record) = standing.remove(&path) else { continue };
             let Some(r) = self.project_row(Some(record.clone()), observed).await? else { continue };
             if r.status == NodeStatus::Deleted {
                 continue;

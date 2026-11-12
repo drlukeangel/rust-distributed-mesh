@@ -74,9 +74,7 @@ impl CurrentRecords<'_> {
     /// own span: `read` with its mesh, or `none`. `Err` names the mesh whose records could not be read.
     pub async fn rows_of<'n>(&self, births: impl IntoIterator<Item = (&'n NodeId, &'n str)>) -> Result<BTreeMap<NodeId, NodeRecord>, String> {
         let births: Vec<(&NodeId, &str)> = births.into_iter().collect();
-        let meshes: BTreeSet<&str> = births.iter().map(|(_, mesh)| *mesh).collect();
-        let read = futures_util::future::try_join_all(meshes.into_iter().map(|mesh| async move { self.nodes.nodes(mesh).await.map_err(|e| format!("the records of mesh {mesh} could not be read: {e}")) })).await?;
-        let mut held: BTreeMap<NodeId, NodeRecord> = read.into_iter().flatten().map(|r| (r.node_id.clone(), r)).collect();
+        let mut held: BTreeMap<NodeId, NodeRecord> = self.of_meshes(births.iter().map(|(_, mesh)| *mesh).collect()).await?.into_iter().map(|r| (r.node_id.clone(), r)).collect();
         let mut out = BTreeMap::new();
         for (node_id, _) in births {
             let span = resolve_span(node_id);
@@ -91,6 +89,37 @@ impl CurrentRecords<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// The current-pair lookup of each of `names` ([`Self::row_at`]), many pairs at one store read per
+    /// mesh: the records of each pair's mesh (the first location of its path) read as one store read, the
+    /// meshes read together, never one read per pair; the live record standing at each pair found among
+    /// them (node-identity-and-state.md §2), its record the one read at its node ID, resolved with its own
+    /// span as [`Self::line`] resolves one. A pair no live record stands at is not answered. `Err` names
+    /// the mesh whose records could not be read, or a pair two live records hold.
+    pub async fn rows_at<'n>(&self, names: impl IntoIterator<Item = &'n PathName>) -> Result<BTreeMap<PathName, NodeRecord>, String> {
+        let names: BTreeSet<&PathName> = names.into_iter().collect();
+        let meshes: BTreeSet<String> = names.iter().map(|at| rdm_core::path::mesh_of(&at.path)).collect();
+        let mut standing: BTreeMap<PathName, Vec<NodeRecord>> = BTreeMap::new();
+        for r in self.of_meshes(meshes.iter().map(String::as_str).collect()).await? {
+            standing.entry(r.location()).or_default().push(r);
+        }
+        let mut out = BTreeMap::new();
+        for name in names {
+            let at = rdm_node::pair_record::resolve(standing.remove(name).unwrap_or_default(), name).map_err(|e| format!("the record at path {:?}, name {:?} could not be read: {e}", name.path, name.name))?;
+            if let Some(record) = at {
+                resolve_span(&record.node_id).record("mesh", record.mesh().as_str()).record("outcome", "read");
+                out.insert(name.clone(), record);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The records of `meshes`, each mesh's as one store read ([`NodesStorage::nodes`], a `Withdrawn` one
+    /// skipped), the meshes read together. `Err` names the mesh whose records could not be read.
+    async fn of_meshes(&self, meshes: BTreeSet<&str>) -> Result<Vec<NodeRecord>, String> {
+        let read = futures_util::future::try_join_all(meshes.into_iter().map(|mesh| async move { self.nodes.nodes(mesh).await.map_err(|e| format!("the records of mesh {mesh} could not be read: {e}")) })).await?;
+        Ok(read.into_iter().flatten().collect())
     }
 
     /// The current-pair lookup: the live record standing at `name`, read from the node records by their

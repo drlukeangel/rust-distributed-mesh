@@ -1662,17 +1662,19 @@ impl StatusService {
         for mut fabric in fabrics {
             let mut meshes = std::mem::take(&mut fabric.meshes);
             meshes.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut rows = Vec::new();
-            for mesh in meshes {
-                let Some(planned) = current.as_ref().and_then(|p| p.topology.meshes.get(&mesh.name)) else { continue };
-                if !held.contains(&mesh.name) || filter.is_some_and(|f| !f.matches(&mesh)) {
-                    continue;
-                }
-                match atlas.node_rows(planned.nodes.iter().cloned(), &records, &view, &digest).await {
-                    Ok(nodes) => rows.push(AtlasMeshView::of(mesh, nodes)),
-                    Err(cause) => return Err(ReadReply::RejectedSourceFailed { source: "nodes.storage".into(), op: op.into(), cause }),
-                }
-            }
+            // The meshes answered, each beside the nodes the current Build's topology names in it: their
+            // node rows read together, each mesh's records at one store read.
+            let answered: Vec<_> = meshes
+                .into_iter()
+                .filter_map(|mesh| {
+                    let planned = current.as_ref().and_then(|p| p.topology.meshes.get(&mesh.name))?;
+                    (held.contains(&mesh.name) && !filter.is_some_and(|f| !f.matches(&mesh))).then_some((mesh, planned))
+                })
+                .collect();
+            let nodes = futures_util::future::try_join_all(answered.iter().map(|(_, planned)| atlas.node_rows(planned.nodes.iter().cloned(), &records, &view, &digest)))
+                .await
+                .map_err(|cause| ReadReply::RejectedSourceFailed { source: "nodes.storage".into(), op: op.into(), cause })?;
+            let rows = answered.into_iter().zip(nodes).map(|((mesh, _), nodes)| AtlasMeshView::of(mesh, nodes)).collect();
             answer.push(AtlasFabricView::of(fabric, build.clone(), rows));
         }
         Ok(AtlasView { fabrics: answer })
