@@ -3826,5 +3826,8 @@ rdm#174 with the lead's conforming text.
   - **rdm#407 LANDED 892233ca4**: the soak's gateway carrier was passed as `path:<NodeId>`, so a quarter of the soak's traffic was refused unsent and counted NotSent (450 in one run). It is now `exact:<NodeId>`; an argument refusal is named by the ledger, never NotSent.
     - #408's flames: before, two reads served http://192.168.68.99:16687/trace/bf3c6cc145c34adede7ddffbc0d2a4cd and http://192.168.68.99:16687/trace/2704ce429213e83c7f77a411484d1703; after, `via-after-hook-cancelled` http://192.168.68.99:16687/trace/3f3761e1d9696d9cd5c9a36149146ba2.
     - The soak at 7fa708071 rc=0: Reply 5,567 against 2,594 before, NotSent 239 against 948.
-  - Running: the scale tier, then the certifying chain, at 892233ca4 (`scale-chain.sh`, lanes 3 and 6).
+  - The scale tier at 892233ca4: 11 of 12 green. Authority was red in C19: a restarted mesh-primary heard no other node-admin for 3.5 s, past the test cadence's 3 s floor, elected itself, and the others took its higher-revision record.
+  - **Q446** (decided by mesh-recovery.md "Two node-admins that each investigate the other"): RDM did as the page says.
+  - **rdm#409 LANDED b335718db**: C19 takes the page's outcome when the restarted admin elected itself, else the incumbent keeps the role. The authority scale job was green at b335718db (1,684 s). Only the cell and docs changed since 892233ca4, so the scale tier stands at 12 of 12.
+  - Running: the certifying chain at b335718db (`chain.sh`, lanes 3 and 6).
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
