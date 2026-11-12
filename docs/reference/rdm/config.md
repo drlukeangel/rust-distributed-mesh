@@ -88,7 +88,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (65 names)
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1638 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 140 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 142 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 723 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 724 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 398 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, argument to `.get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 400 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 401 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
@@ -136,7 +136,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (65 names)
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 506 | fn `Launch::from_env` | `ENV_INCARNATION`, argument to `req` |
 | `RDM_INCARNATION_ID` | `crates/rdm-transport/src/transport_diag.rs` | 96 | fn `header` | argument to `env` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1838 | fn `DeploymentPipeline<'_>::create_to_ready_written_body` | argument to `.insert` |
-| `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 351 | fn `node_start` | argument to `std::env::var` |
+| `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 392 | fn `node_start` | argument to `std::env::var` |
 | `RDM_ISSUING_CERT` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_ISSUING_CERT`, argument to `get` |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 68 | const `ENV_ISSUING_CERT` | literal |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 367 | fn `decode_issuing` | `ENV_ISSUING_CERT`, argument to `decode_hex` |

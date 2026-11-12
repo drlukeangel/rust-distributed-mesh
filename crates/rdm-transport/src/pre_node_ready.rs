@@ -115,7 +115,8 @@ impl ServerBuilder {
 }
 
 /// A birth's deletion across its stopped cycles: the token the current cycle's hook and pulls end
-/// with. A stop (or connections delete) cancels it; a start renews it for the next cycle.
+/// with. A stop (or connections delete) cancels it; a start renews it for the next cycle, which ends
+/// the cycle it replaces.
 #[derive(Clone, Debug, Default)]
 pub struct BirthCancel {
     current: Arc<std::sync::Mutex<CancelToken>>,
@@ -137,10 +138,15 @@ impl BirthCancel {
         self.current.lock().unwrap().cancel();
     }
 
-    /// Begin the next cycle with a token not cancelled, and return it.
+    /// Begin the next cycle with a token not cancelled, and return it. The cycle it replaces ends: its
+    /// token is cancelled, so a hook still running on it (a first start held at its hook when its birth
+    /// is commanded back through node.mesh.join, node-mesh-join.md step 10) and any pull it has in
+    /// flight end, and only the new cycle's sequence runs (fabric-node-hooks.md "Cancellation and
+    /// lifecycle commands": "Ending the in-flight start cancels the token"). A stop's token is
+    /// cancelled already.
     pub fn renew(&self) -> CancelToken {
         let fresh = CancelToken::new();
-        *self.current.lock().unwrap() = fresh.clone();
+        std::mem::replace(&mut *self.current.lock().unwrap(), fresh.clone()).cancel();
         fresh
     }
 }

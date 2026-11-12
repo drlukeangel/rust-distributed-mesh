@@ -524,6 +524,18 @@ impl HookDriver {
         let sent = tokio::select! {
             biased;
             () = cancel.cancelled() => {
+                // A cancelled hook names the cancellation (fabric-node-hooks.md "Observability"), in an
+                // attempt or between two: its cycle ended (a stop, a connections delete, or the birth's
+                // next cycle, a commanded node.mesh.join), and nothing calls it again.
+                tracing::info_span!(
+                    parent: &self.boot,
+                    "rdm.mesh.node.update.via-pre-node-ready-cancelled",
+                    node_path = %self.ctx.birth.path, node_name = %self.ctx.birth.name,
+                    node_id = %self.ctx.birth.node_id,
+                    incarnation_id = %self.ctx.birth.incarnation.as_str(),
+                    attempts_made = made.load(std::sync::atomic::Ordering::SeqCst),
+                )
+                .in_scope(|| tracing::info!("pre_node_ready was cancelled: its cycle ended, and nothing calls the hook again"));
                 self.state.send_replace(PreNodeReadyState::Cancelled);
                 return End::Cancelled;
             }

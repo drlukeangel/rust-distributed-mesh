@@ -204,15 +204,41 @@ fn own_mesh_primary(topology_view: &TopologyView, node_id: &NodeId) -> Option<(N
 /// `read` made to the admin a first start reads from (node-topology-get.md, "exact member → own
 /// mesh-primary"; node-start.md step 4): its mesh's current primary as its topology view names it
 /// ([`own_mesh_primary`]), and the admin that answered its join (`through`) only while the view names
-/// none. The answer and who gave it; a failure names whom the read went to.
+/// none. A primary the view names in place of the one a read is under way to replaces it: that read is
+/// dropped and made again to the one named now, as a later commander replaces the one a start after a
+/// stop reads from ([`at_commander`]), so a primary lost while the read is under way holds no read
+/// past the record that named another. Its primary records and the births it holds are what move whom
+/// the view names. The answer and who gave it; a failure names whom the read went to.
 async fn at_own_mesh_primary<T, E: std::fmt::Display, F, Fut>(node: &str, node_id: &NodeId, topology_view: &TopologyView, through: &JoinThrough, read: F) -> Result<(T, String), (String, String)>
 where
     F: Fn(NodeTarget) -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
-    let _ = node;
-    let (target, who) = own_mesh_primary(topology_view, node_id).unwrap_or_else(|| (through.target.clone(), through.node_id.to_string()));
-    read(target).await.map(|v| (v, who.clone())).map_err(|e| (e.to_string(), who))
+    let named = || own_mesh_primary(topology_view, node_id).unwrap_or_else(|| (through.target.clone(), through.node_id.to_string()));
+    let (mut records, mut births) = (topology_view.primaries().subscribe(), topology_view.digest_view.birth_changes());
+    loop {
+        records.borrow_and_update();
+        births.borrow_and_update();
+        let (target, who) = named();
+        let reading = who.clone();
+        let replaced = async {
+            loop {
+                tokio::select! {
+                    changed = records.changed() => if changed.is_err() { std::future::pending::<()>().await },
+                    changed = births.changed() => if changed.is_err() { std::future::pending::<()>().await },
+                }
+                if named().1 != reading {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            r = read(target) => return r.map(|v| (v, who.clone())).map_err(|e| (e.to_string(), who)),
+            () = replaced => {
+                tracing::info!(node, from = %who, to = %named().1, "the view names another mesh-primary than the one the read is under way to: that read is made again to it");
+            }
+        }
+    }
 }
 
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.

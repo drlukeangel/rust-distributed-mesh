@@ -1024,6 +1024,9 @@ impl NodeSelf {
         session.leave_channels().await;
         self.server.resume();
         self.admit_new_connections();
+        // The command begins the birth's next cycle, which ends the one it replaces: a first start still
+        // held at its hook ends Cancelled and runs nothing after it, so only this sequence runs
+        // (node-mesh-join.md step 10, "runs the whole sequence again on the commanding call").
         let birth_cancel = match &self.birth_cancel {
             Some(r) => r.renew(),
             None => rdm_transport::CancelToken::new(),
