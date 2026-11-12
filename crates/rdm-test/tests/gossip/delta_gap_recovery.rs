@@ -427,8 +427,10 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         spans_of(&spans, "rdm.mesh.connection.update.via-neighbour-down", &member_id, cut_at).into_iter().find(|sp| attr(sp, "channel") == "mesh:mesh1" && attr(sp, "neighbours") == "0").map(|_| ())
     })
     .await;
-    drop(cut);
+    // The heal begins at the release: the helper removes its rules before it exits, so mesh1's primary can
+    // replay to the member, and the member install the replay, before the release returns (rdm#405).
     let healed_at = now_ns();
+    drop(cut);
     let delta_after_heal = wait_for("the member holds the version the source reached while it was cut", Duration::from_secs(60), || async {
         let spans = estate.spans();
         spans_of(&spans, "rdm.mesh.topology.update.via-delta", &member_id, healed_at).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") >= delta_e.2).cloned()
