@@ -135,27 +135,10 @@ impl crate::build_drive::Gate for RoleGate {
     }
 
     /// The completed lifecycle steps of the Build, taken into the fabric-primary's atlas before the
-    /// caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip view, is what
-    /// Build acceptance reads them from (Q197). The steps' subjects are read through the reader
-    /// (query.md §1), what names a step's birth its Build pinned none of.
+    /// caller is answered `Complete` (fabric-atlas.md R-FA2;
+    /// [`crate::control_plane::ControlPlane::take_receipts`]).
     async fn build_completed(&self, build_id: &crate::build::BuildId) {
-        if let Ok(p) = self.builds.read_build(build_id).await {
-            let rows = match self.control.current_records() {
-                Some(records) => {
-                    let subjects: Vec<rdm_core::NodeId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete).filter_map(|s| s.subject.clone()).collect();
-                    match crate::atlas::subject_rows(&records, subjects.iter()).await {
-                        Ok(rows) => rows,
-                        Err(e) => {
-                            tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), outcome = "subjects-unread", detail = %e, "otel.kind" = "internal")
-                                .in_scope(|| tracing::info!("the steps' subjects could not be read: a step its Build pinned no birth of takes no effect"));
-                            Vec::new()
-                        }
-                    }
-                }
-                None => Vec::new(),
-            };
-            self.control.atlas.receipts(&p, &rows);
-        }
+        self.control.take_receipts(&*self.builds, build_id).await;
     }
 
     async fn step_streamed(&self, mesh: &str, build_id: &crate::build::BuildId, operation: &str) {

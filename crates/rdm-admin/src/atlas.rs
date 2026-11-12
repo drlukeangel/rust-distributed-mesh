@@ -876,6 +876,53 @@ impl crate::control_plane::ControlPlane {
         span.in_scope(|| tracing::info!("a streamed step is the atlas's"));
     }
 
+    /// `build_id` completed: its completed lifecycle steps taken into this fabric-primary's atlas before
+    /// the caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip view, is
+    /// what Build acceptance reads them from (Q197). The steps' subjects are read through the reader
+    /// (query.md §1), what names a step's birth its Build pinned none of ([`Atlas::receipts`]). One
+    /// `rdm.node_admin.fabric.update.via-atlas-receipt` span, its outcome `taken`, `build-unread` or
+    /// `subjects-unread`, naming what its store calls took: how many (`io_calls`), their wait for a
+    /// blocking thread (`io_queued_ms`) and their run on one (`io_ms`).
+    pub async fn take_receipts(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId) {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!(
+            "rdm.node_admin.fabric.update.via-atlas-receipt",
+            build_id = %build_id.log(), outcome = tracing::field::Empty, detail = tracing::field::Empty,
+            io_calls = tracing::field::Empty, io_queued_ms = tracing::field::Empty, io_ms = tracing::field::Empty, "otel.kind" = "internal",
+        );
+        let io = crate::blocking::IoTime::default();
+        crate::blocking::io_time_with(io.clone(), async {
+            let p = match builds.read_build(build_id).await {
+                Ok(p) => p,
+                Err(e) => {
+                    span.record("outcome", "build-unread").record("detail", format!("Build {build_id} could not be read for its completed steps: {e}").as_str());
+                    tracing::info!("the completed Build's steps were not taken into the atlas");
+                    return;
+                }
+            };
+            let subjects: Vec<NodeId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete).filter_map(|s| s.subject.clone()).collect();
+            let read = match self.current_records() {
+                Some(records) => subject_rows(&records, subjects.iter()).await,
+                None => Ok(Vec::new()),
+            };
+            let rows = match read {
+                Ok(rows) => {
+                    span.record("outcome", "taken");
+                    rows
+                }
+                Err(e) => {
+                    span.record("outcome", "subjects-unread").record("detail", e.as_str());
+                    tracing::info!("the steps' subjects could not be read: a step its Build pinned no birth of takes no effect");
+                    Vec::new()
+                }
+            };
+            self.atlas.receipts(&p, &rows);
+        }
+        .instrument(span.clone()))
+        .await;
+        span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
+    }
+
     /// The current stored record for the exact node admitted by a standalone action.
     pub(crate) async fn atlas_row_id(&self, node_id: &NodeId, observed: &Topology) -> Result<Option<AtlasRow>, crate::control_plane::Refusal> {
         match self.current_records() {
