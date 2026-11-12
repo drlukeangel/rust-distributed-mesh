@@ -432,3 +432,84 @@ async fn a_delete_of_a_primary_right_after_its_only_other_admins_start_is_accept
     let last_admin: Vec<Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().cloned().collect();
     assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Delete of {primary:?} right after {other:?}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
 }
+
+/// When the span `sp` began, in Unix nanoseconds.
+fn start_ns(sp: &Value) -> u64 {
+    sp["start_unix_nano"].as_u64().unwrap_or_default()
+}
+
+/// How long the span `sp` ran, in milliseconds.
+fn wall_ms(sp: &Value) -> f64 {
+    sp["end_unix_nano"].as_u64().unwrap_or_default().saturating_sub(start_ns(sp)) as f64 / 1e6
+}
+
+/// Now, in Unix nanoseconds.
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// CONTRACT (query.md §1: "Node rows and property maps are not copied into an atlas to serve `node.get`
+/// or acceptance", and "A current-pair lookup resolves the path and name to a node ID from the node
+/// records. The reader reads the node's record at that node ID"; Q439: each atlas node row "read from the
+/// node's record"; build.md §4: "the fabric-primary composes the complete topology from its records at
+/// acceptance"): on a fabric of twenty nodes in two meshes, the fabric-primary answers `fabric.atlas.get`
+/// and `mesh.atlas.get [name: mesh2]` whole, and accepts two Deletes of mesh2's nodes, one at twenty
+/// births and one at nineteen, in the same store calls, fewer than the fabric has nodes: each mesh's
+/// records at one store call, never one per node. Each acceptance's store calls (`io_calls`) and wall,
+/// and each atlas read's wall at the fabric-primary (its read's stream there), are printed with its
+/// trace. Must NOT happen: an acceptance at the fabric-primary making a store call per node its view
+/// holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_call_per_mesh() {
+    let test = "the_fabric_primary_accepts_a_build_and_reads_its_atlas_at_one_store_call_per_mesh";
+    let shape = [("mesh1", 1, 9), ("mesh2", 1, 9)];
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.resize_shape("fabric1", &shape).await;
+    estate.settled_views(&shape).await;
+    estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
+    estate.enter_fabric_primary().await;
+    let views = estate.node_views().await;
+    assert_eq!(views.len(), 20, "twenty nodes: {views:#?}");
+    let fp = views.iter().find(|n| n.is_fabric_primary).cloned().expect("the view names a fabric-primary");
+    // Two of mesh2's nodes that hold no role, each deleted by a Build of its own.
+    let deleted: Vec<rdm_core::NodeId> = views.iter().filter(|n| n.mesh() == "mesh2" && n.r#type == "node" && !n.is_primary).take(2).map(|n| n.node_id.clone()).collect();
+    assert_eq!(deleted.len(), 2, "two of mesh2's nodes hold no role: {views:#?}");
+    let meshes_of = |atlas: &AtlasView| atlas.fabrics.iter().flat_map(|f| f.meshes.iter()).map(|m| (m.name.clone(), m.nodes.len())).collect::<Vec<_>>();
+    let from = now_ns();
+    for _ in 0..3 {
+        let atlas = estate.fabrics_obj().await.atlas_get().await.unwrap_or_else(|e| panic!("fabric.atlas.get at the fabric-primary: {e}"));
+        assert_eq!(meshes_of(&atlas), [("mesh1".to_string(), 10), ("mesh2".to_string(), 10)], "fabric.atlas.get answers both meshes whole");
+        let atlas = estate.meshes_obj().await.atlas_get(&rdm_client::Filter::new().eq("name", ["mesh2"])).await.unwrap_or_else(|e| panic!("mesh.atlas.get [name: mesh2] at the fabric-primary: {e}"));
+        assert_eq!(meshes_of(&atlas), [("mesh2".to_string(), 10)], "mesh.atlas.get [name: mesh2] answers mesh2 whole");
+    }
+    for id in &deleted {
+        Estate::workflow(&format!("node.delete of {id}"), estate.nodes_obj().await.delete(vec![id.clone()]).await).await;
+    }
+    let to = now_ns();
+    estate.stop().await;
+    let spans = estate.spans();
+    let in_window = |sp: &&Value| (from..=to).contains(&start_ns(sp));
+    let accepted: Vec<&Value> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(in_window).filter(|sp| !attr(sp, "build_id").is_empty() && attr(sp, "change").contains("Delete")).collect();
+    let atlas_reads: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.serve.via-atlas").into_iter().filter(in_window).filter(|sp| attr(sp, "node_path") == fp.path && attr(sp, "node_name") == fp.name).collect();
+    // An atlas read's wall at the fabric-primary: its read's stream there, the read and its frames sent.
+    let stream_ms = |sp: &Value| named(&spans, "rdm.node_rpc.stream.serve.via-direct").into_iter().find(|s| s["trace_id"] == sp["trace_id"] && attr(s, "protocol") == "read").map(wall_ms).unwrap_or_default();
+    let trace = |sp: &Value| format!("http://192.168.68.99:16687/trace/{}", sp["trace_id"].as_str().unwrap_or_default());
+    let mut cost = Vec::new();
+    for sp in &accepted {
+        cost.push(format!("Build acceptance (Delete): io_calls={} io_queued_ms={} io_ms={} wall_ms={:.1} {}", attr(sp, "io_calls"), attr(sp, "io_queued_ms"), attr(sp, "io_ms"), wall_ms(sp), trace(sp)));
+    }
+    for sp in &atlas_reads {
+        cost.push(format!("{}: nodes={} wall_ms={:.1} {}", attr(sp, "op"), attr(sp, "nodes"), stream_ms(sp), trace(sp)));
+    }
+    for line in &cost {
+        println!("{line}");
+    }
+    estate.artifact("acceptance-and-atlas-cost.json", &json!({"fabric_primary": fp, "deleted": deleted, "reads": cost}));
+    assert_eq!((accepted.len(), atlas_reads.len()), (2, 6), "the fabric-primary accepted each Delete and served each atlas read: {cost:#?}");
+    estate.record_trace_url(accepted[0]["trace_id"].as_str().unwrap_or_default());
+    let calls: Vec<usize> = accepted.iter().map(|sp| attr(sp, "io_calls").parse::<usize>().unwrap_or_else(|e| panic!("the acceptance's span names its store calls: {e}: {sp}"))).collect();
+    // Beside the node records, an acceptance reads its builds, events and fabric stores: the same calls
+    // at every acceptance, whatever the view holds.
+    assert_eq!(calls[0], calls[1], "the Delete at twenty births and the one at nineteen make the same store calls: each mesh's records at one call, never one per node: {cost:#?}");
+    assert!(calls.iter().all(|c| *c < views.len()), "Build acceptance makes fewer store calls than the fabric has nodes, never one per node: {cost:#?}");
+}
