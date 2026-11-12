@@ -3818,11 +3818,12 @@ rdm#174 with the lead's conforming text.
     - M9 rc=0 (L4 launch to ready 35.4 s, Direct open 2.1 ms, 205 MB/s per pair);
     - soaks 13 of 14. `i143-2787-soak-process` was red: rdm#406.
     - Stopped after the soaks (12:26 EST): #406 is a product fix, so a new candidate.
-  - **rdm#406** (lane 7, a0ff23b42, proven, gating): a node-admin's own declaration call in flight across a start's cycle begin answered late. Its `already-applied` was recorded for the new cycle's key, so a commanded join's Ready was never sent, mesh2's checklist held, and a Build stalled before Complete. `Declarer::declared` now records an end only for the request still owed under its key.
+  - **rdm#406 LANDED 918079392**: a node-admin's own declaration call in flight across a start's cycle begin answered late. Its `already-applied` was recorded for the new cycle's key, so a commanded join's Ready was never sent, mesh2's checklist held, and a Build stalled before Complete. `Declarer::declared` now records an end only for the request still owed under its key.
     - unit test red then green;
     - the soak at seed 1432787 rc=0;
     - its first gate red in two rdm#400 cells, which are rdm#408.
-  - **rdm#408** (lane 5): the window rdm#400 named was reached under load. A commanded node.mesh.join after a first start's hook passed left that start's topology read running, so two reads served one birth. The steps after the hook now hold the birth's cancel token. Also, `build_sections`' held-at-hook cell counts a command back from the old primary's loss (Q445's create step can come first).
+  - **rdm#408 LANDED fd44532cf**: the window rdm#400 named was reached under load. A commanded node.mesh.join after a first start's hook passed left that start's topology read running, so two reads served one birth. The steps after the hook now hold the birth's cancel token. Also, `build_sections`' held-at-hook cell counts a command back from the old primary's loss (Q445's create step can come first).
   - **rdm#407** (lane 2): the soak's gateway carrier was passed as `path:<NodeId>`, so a quarter of the soak's traffic was refused unsent and counted NotSent (450 in one run). It is now `exact:<NodeId>`; an argument refusal is named by the ledger, never NotSent.
-  - Next: land #408, #406 and #407, then the scale tier and the certifying chain at the new main.
+    - #408's flames: before, two reads served http://192.168.68.99:16687/trace/bf3c6cc145c34adede7ddffbc0d2a4cd and http://192.168.68.99:16687/trace/2704ce429213e83c7f77a411484d1703; after, `via-after-hook-cancelled` http://192.168.68.99:16687/trace/3f3761e1d9696d9cd5c9a36149146ba2.
+  - Next: land #407, then the scale tier and the certifying chain at the new main.
   - Named in rdm#400, with no red yet: a commanded node.mesh.join that arrives after the `pre_node_ready` hook passed, while the topology read runs; and an admin `config_update` waiting on its row, which answers not_ready on a commanded join.
