@@ -49,8 +49,8 @@ const FRAME_BOUND: Duration = Duration::from_secs(5);
 /// How long a held producer is watched for a frame past the 64-frame bound.
 const HELD_WATCH: Duration = Duration::from_millis(500);
 
-/// The protocol's registration: what its process's `serve_app` adds to the builder (its ledger rows
-/// and its `serve` or `serve_stream`). Called once per check, on a fresh builder.
+/// The protocol's registration: what its process's `serve_app` adds to the builder (its `serve` or
+/// `serve_stream`). Called once per check, on a fresh builder.
 pub type Serve = Arc<dyn Fn(ServerBuilder) -> ServerBuilder + Send + Sync>;
 
 /// A consumer of a stream: it reads the stream to its end, records each frame in `record` (the

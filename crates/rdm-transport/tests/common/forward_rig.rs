@@ -5,7 +5,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::{CallOptions, CarrierConnections, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::protocol::NodeProtocol;
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A forwardable test family on a ledgered test op.
+/// A forwardable test family on a test op with no ledger row.
 pub struct Probe;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,11 +87,6 @@ impl NodeProtocol for Probe {
     }
 }
 
-/// The builder starts from the core ledger; the test family adds its own row.
-pub fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
-}
-
 pub struct Node {
     pub router: Router,
     pub key: SecretKey,
@@ -158,7 +153,6 @@ pub async fn rig_with(connections: Option<Arc<dyn CarrierConnections>>, carrier_
     let (h, a) = (handled.clone(), applied.clone());
     let target_birth = birth();
     let target_server = ServerBuilder::new()
-        .ledger(test_ledger())
         .serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer, req: ProbeRequest| {
             let (h, a) = (h.clone(), a.clone());
             async move {
@@ -192,7 +186,7 @@ pub async fn rig_with(connections: Option<Arc<dyn CarrierConnections>>, carrier_
     carrier_resolver.insert(seen);
     let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver.clone()));
     let carrier_birth = birth();
-    let carrier_builder = ServerBuilder::new().ledger(test_ledger()).carry::<Probe>().carry::<Ping>();
+    let carrier_builder = ServerBuilder::new().carry::<Probe>().carry::<Ping>();
     let carrier_server = match connections {
         Some(e) => carrier_builder.serve_forward_with_connections(carrier_client.clone(), e),
         None => carrier_builder.serve_forward(carrier_client.clone()),

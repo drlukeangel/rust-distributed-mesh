@@ -1,14 +1,15 @@
 //! The built protocol catalog and op ledger (ownership amendment §10–§11,
 //! §14; node-rpc.md §9, §12; PRD §1.21).
 //!
-//! The ledger is the op-allocation registry: every op that is or was ever
-//! used is recorded with its owner, and a reserved op stays reserved forever.
+//! The ledger is the registry of RDM's own opcodes, each with its owner, and a
+//! reserved op stays reserved forever. RDM never records a product's opcodes:
+//! a product serves its families with no row (Q444).
 //! A process composes RDM core protocols, product protocols and transitional
 //! legacy adapters into one [`CatalogBuilder`] and builds it once, before the
 //! first accepted stream is dispatched. The built catalog is the only
-//! dispatch table: an op it does not hold is `421 UNSERVED_OP`, even when the
-//! ledger reserves that op for a product family. There is no second switch
-//! and no fallthrough to legacy code after it is built.
+//! dispatch table: an op it does not hold is `421 UNSERVED_OP`, whatever the
+//! ledger holds for that op. There is no second switch and no fallthrough to
+//! legacy code after it is built.
 
 use crate::protocol::NodeProtocol;
 use std::collections::BTreeMap;
@@ -21,14 +22,10 @@ pub enum OpOwner {
     Core,
     /// A product family (e.g. Rafka), named.
     Product(String),
-    /// RDM's proof testkit: served only by the testkit node, never by a
-    /// product binary, and only on an op in [`TESTKIT_OPS`].
+    /// RDM's test harness: its families serve only in RDM's own test
+    /// processes, never in a product binary.
     Testkit,
 }
-
-/// The opcodes reserved for RDM's proof testkit, permanently. No core or product
-/// family is ever allocated one, and no testkit family lives outside them.
-pub const TESTKIT_OPS: std::ops::RangeInclusive<u8> = 0x70..=0x7F;
 
 /// Whether an allocated op is served or reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,32 +49,12 @@ pub struct LedgerEntry {
     pub state: OpState,
 }
 
-/// RDM's ledger: core allocations plus the product reservations entering
-/// migration (ownership amendment §10), so RDM never allocates them.
+/// RDM's ledger: RDM's own opcodes only. A product's opcodes are never rows here: a product
+/// serves its families with no row (Q444).
 pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
-    let rafka = |op: u8, family: &str| LedgerEntry {
-        op,
-        family: family.into(),
-        owner: OpOwner::Product("rafka".into()),
-        state: OpState::Live,
-    };
     vec![
         LedgerEntry { op: 0x01, family: "ping".into(), owner: OpOwner::Core, state: OpState::Live },
-        rafka(0x10, "legacy-control"),
         LedgerEntry { op: 0x11, family: "echo".into(), owner: OpOwner::Core, state: OpState::Reserved },
-        rafka(0x12, "data-frame"),
-        rafka(0x13, "snapshot"),
-        rafka(0x14, "control"),
-        rafka(0x15, "credential-resolve"),
-        LedgerEntry {
-            op: 0x16,
-            family: "layout-reprovision".into(),
-            owner: OpOwner::Product("rafka".into()),
-            state: OpState::Reserved,
-        },
-        rafka(0x17, "forward-write"),
-        rafka(0x18, "forward-read"),
-        rafka(0x19, "peer-tickle"),
         LedgerEntry { op: 0x1A, family: "forward".into(), owner: OpOwner::Core, state: OpState::Live },
         LedgerEntry { op: 0x1B, family: "status".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x1C, family: "build-claim".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Reserved },
@@ -88,42 +65,6 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         LedgerEntry { op: 0x21, family: "node-primary-update".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x22, family: "node-command".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x23, family: "read".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
-        // Rafka's product families, allocated here (RDM's ledger allocates every opcode): each keeps the
-        // opcode Rafka held before it was recorded, but system.framework.update, which moved off 0x23.
-        rafka(0x24, "projection.get"),
-        rafka(0x25, "group.shuffle.create"),
-        LedgerEntry { op: 0x26, family: "otel-debug".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Reserved },
-        LedgerEntry { op: 0x27, family: "chaos-arm".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Reserved },
-        rafka(0x28, "upgrade-framework"),
-        rafka(0x29, "platform-bootstrap"),
-        rafka(0x2A, "broker-resync-step"),
-        rafka(0x2B, "broker.writer.target"),
-        rafka(0x2C, "broker.wal.capture"),
-        rafka(0x2D, "system.create"),
-        rafka(0x2E, "mesh-image"),
-        rafka(0x2F, "job.create"),
-        rafka(0x30, "job.get"),
-        rafka(0x31, "broker.data.get"),
-        rafka(0x32, "topic.traffic.close"),
-        rafka(0x33, "topic.delete"),
-        rafka(0x34, "topic.replica.update"),
-        rafka(0x35, "topic.partition.update"),
-        rafka(0x36, "job.target.update"),
-        rafka(0x37, "projection.delete"),
-        rafka(0x38, "topic.create"),
-        rafka(0x39, "topic.traffic.open"),
-        rafka(0x3A, "broker.sync.complete"),
-        rafka(0x3B, "secret.get"),
-        rafka(0x3C, "broker.data.update"),
-        rafka(0x3D, "topic.traffic.get"),
-        rafka(0x3E, "topic.slot.delete"),
-        rafka(0x3F, "system.framework.update"),
-        LedgerEntry { op: 0x70, family: "testkit-store".into(), owner: OpOwner::Testkit, state: OpState::Live },
-        LedgerEntry { op: 0x71, family: "resolve-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
-        LedgerEntry { op: 0x72, family: "declare-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
-        LedgerEntry { op: 0x73, family: "originate".into(), owner: OpOwner::Testkit, state: OpState::Live },
-        LedgerEntry { op: 0x74, family: "pre-node-ready-pull".into(), owner: OpOwner::Testkit, state: OpState::Live },
-        LedgerEntry { op: 0x75, family: "fault".into(), owner: OpOwner::Testkit, state: OpState::Live },
     ]
 }
 
@@ -223,14 +164,7 @@ pub enum CatalogError {
         /// The entry's name.
         name: String,
     },
-    /// The op has no ledger row: allocate it in the ledger before serving it.
-    UnledgeredTag {
-        /// The opcode with no ledger row.
-        op: u8,
-        /// The protocol's catalog name.
-        name: String,
-    },
-    /// The ledger names a different owner for this op.
+    /// The ledger names a different owner for this op: a product's family on an RDM opcode.
     OwnerMismatch {
         /// The opcode.
         op: u8,
@@ -270,16 +204,6 @@ pub enum CatalogError {
         /// The entry's name.
         name: String,
     },
-    /// A ledger row breaks the testkit range: a testkit family outside
-    /// [`TESTKIT_OPS`], or a core/product family inside it.
-    TestkitRange {
-        /// The opcode.
-        op: u8,
-        /// The ledger row's family.
-        family: String,
-        /// The ledger row's owner.
-        owner: OpOwner,
-    },
     /// Op `0` is reserved as invalid: a zeroed target is never served.
     /// An entry serves op 0.
     ReservedZero {
@@ -293,7 +217,6 @@ impl fmt::Display for CatalogError {
         match self {
             Self::DuplicateTag { op, first, second } => write!(f, "op {op:#04x} registered twice ({first}, {second})"),
             Self::ReservedOpcode { op, name } => write!(f, "op {op:#04x} ({name}) is reserved forever"),
-            Self::UnledgeredTag { op, name } => write!(f, "op {op:#04x} ({name}) has no op-ledger row"),
             Self::OwnerMismatch { op, name, ledger, entry } => {
                 write!(f, "op {op:#04x} ({name}) is owned by {ledger:?} in the ledger, registered by {entry:?}")
             }
@@ -301,12 +224,6 @@ impl fmt::Display for CatalogError {
             Self::ForwardableStream { op, name } => write!(f, "op {op:#04x} ({name}): streaming families are not forwardable"),
             Self::DuplicateLedgerRow { op } => write!(f, "the op ledger has two rows for {op:#04x}"),
             Self::ZeroCeiling { op, name } => write!(f, "op {op:#04x} ({name}) declares a zero frame ceiling"),
-            Self::TestkitRange { op, family, owner } => write!(
-                f,
-                "op {op:#04x} ({family}, {owner:?}) breaks the testkit range {:#04x}..={:#04x}: only testkit families live there, and only there",
-                TESTKIT_OPS.start(),
-                TESTKIT_OPS.end()
-            ),
             Self::ReservedZero { name } => write!(f, "op 0 ({name}) is reserved as invalid: a zeroed target is never served"),
         }
     }
@@ -325,7 +242,8 @@ impl CatalogBuilder {
         Self { ledger: core_ledger(), entries: Vec::new() }
     }
 
-    /// Add product ledger rows (new product allocations).
+    /// Optional: add a product's own reserved rows, so that a code the product has withdrawn
+    /// is refused by name. A product's served families need no row.
     pub fn ledger(mut self, rows: impl IntoIterator<Item = LedgerEntry>) -> Self {
         self.ledger.extend(rows);
         self
@@ -348,9 +266,6 @@ impl CatalogBuilder {
             if ledger.insert(row.op, row).is_some() {
                 errors.push(CatalogError::DuplicateLedgerRow { op: row.op });
             }
-            if TESTKIT_OPS.contains(&row.op) != (row.owner == OpOwner::Testkit) {
-                errors.push(CatalogError::TestkitRange { op: row.op, family: row.family.clone(), owner: row.owner.clone() });
-            }
         }
         let mut served: BTreeMap<u8, CatalogEntry> = BTreeMap::new();
         for e in self.entries {
@@ -364,10 +279,8 @@ impl CatalogBuilder {
                 continue;
             }
             match ledger.get(&e.op) {
-                None => {
-                    let (op, name) = named(&e);
-                    errors.push(CatalogError::UnledgeredTag { op, name });
-                }
+                // A product's family: no row, served under its own owner (Q444).
+                None => {}
                 Some(row) if row.state == OpState::Reserved => {
                     let (op, name) = named(&e);
                     errors.push(CatalogError::ReservedOpcode { op, name });
@@ -439,51 +352,90 @@ mod tests {
         assert_eq!(c.lookup(0x01).unwrap().name, "ping");
         assert_eq!(c.request_ceiling(0x01), Some(64 * 1024));
         assert_eq!(c.lookup(0x11), None, "0x11 (echo) is reserved");
-        for op in [0x10u8, 0x12, 0x17, 0x19, 0x42] {
-            assert_eq!(c.lookup(op), None, "ledger-reserved or free, an unregistered op is unserved: {op:#x}");
+        for op in [0x10u8, 0x12, 0x17, 0x1B, 0x42] {
+            assert_eq!(c.lookup(op), None, "with a ledger row or none, an unregistered op is unserved: {op:#x}");
         }
+    }
+
+    /// A product's family on `op`, owned by the product `demo`.
+    fn product(op: u8, name: &str) -> CatalogEntry {
+        CatalogEntry { op, name: name.into(), owner: OpOwner::Product("demo".into()), ..echo() }
+    }
+
+    #[test]
+    fn a_product_family_with_no_ledger_row_builds_and_serves() {
+        let mut testkit = product(0x70, "testkit-store");
+        testkit.owner = OpOwner::Testkit;
+        let c = CatalogBuilder::new()
+            .serve(echo())
+            .serve(product(0x52, "records"))
+            .serve(product(0x24, "a-former-rafka-code"))
+            .serve(CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 1024))
+            .serve(testkit)
+            .build()
+            .unwrap();
+        for (op, name, owner) in [
+            (0x52, "records", OpOwner::Product("demo".into())),
+            (0x24, "a-former-rafka-code", OpOwner::Product("demo".into())),
+            (0x12, "data-frame", OpOwner::Product("rafka".into())),
+            (0x70, "testkit-store", OpOwner::Testkit),
+        ] {
+            let held = c.lookup(op).unwrap_or_else(|| panic!("{op:#04x} is served with no ledger row"));
+            assert_eq!((held.name.as_str(), &held.owner), (name, &owner), "served under its own owner: {op:#04x}");
+        }
+        let header = crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x52 });
+        let head = crate::framing::encode_request(&header, &[0]);
+        assert_eq!(
+            parse_request_head(&head, |t| c.request_ceiling(t)),
+            RequestHead::Ready { op: 0x52, header, payload_len: 1, head_len: head.len() - 1 }
+        );
     }
 
     #[test]
     fn a_duplicate_tag_refuses_the_build() {
         let err = CatalogBuilder::new().serve(echo()).serve(echo()).build().unwrap_err();
         assert_eq!(err, vec![CatalogError::DuplicateTag { op: 0x01, first: "ping".into(), second: "ping".into() }]);
+        let two_products = CatalogBuilder::new().serve(product(0x52, "records")).serve(product(0x52, "orders")).build().unwrap_err();
+        assert_eq!(two_products, vec![CatalogError::DuplicateTag { op: 0x52, first: "records".into(), second: "orders".into() }]);
     }
 
     #[test]
     fn a_tag_whose_row_is_not_live_refuses_the_build() {
-        let err = CatalogBuilder::new()
-            .serve(CatalogEntry::transitional(0x16, "layout-reprovision", "rafka", "never", 1024))
+        let rdm_reserved = CatalogBuilder::new().serve(product(0x1C, "build-claim")).build().unwrap_err();
+        assert_eq!(rdm_reserved, vec![CatalogError::ReservedOpcode { op: 0x1C, name: "build-claim".into() }]);
+        // A product's own reserved row (the optional `ledger` call): a code it withdrew is refused by name.
+        let withdrawn = CatalogBuilder::new()
+            .ledger([LedgerEntry { op: 0x60, family: "withdrawn".into(), owner: OpOwner::Product("demo".into()), state: OpState::Reserved }])
+            .serve(product(0x60, "withdrawn"))
             .build()
             .unwrap_err();
-        assert_eq!(err, vec![CatalogError::ReservedOpcode { op: 0x16, name: "layout-reprovision".into() }]);
+        assert_eq!(withdrawn, vec![CatalogError::ReservedOpcode { op: 0x60, name: "withdrawn".into() }]);
     }
 
     #[test]
-    fn an_unledgered_tag_or_a_wrong_owner_refuses_the_build() {
+    fn a_product_family_on_an_rdm_opcode_refuses_the_build() {
         let err = CatalogBuilder::new()
-            .serve(CatalogEntry::transitional(0x42, "mystery", "rafka", "u9", 1024))
             .serve(CatalogEntry::transitional(0x01, "ping-legacy", "rafka", "u1", 1024))
+            .serve(product(0x1D, "join"))
             .build()
             .unwrap_err();
         assert_eq!(
             err,
             vec![
-                CatalogError::UnledgeredTag { op: 0x42, name: "mystery".into() },
                 CatalogError::OwnerMismatch {
                     op: 0x01,
                     name: "ping-legacy".into(),
                     ledger: OpOwner::Core,
                     entry: OpOwner::Product("rafka".into())
                 },
+                CatalogError::OwnerMismatch {
+                    op: 0x1D,
+                    name: "join".into(),
+                    ledger: OpOwner::Product("rdm".into()),
+                    entry: OpOwner::Product("demo".into())
+                },
             ]
         );
-        // A product allocates a new op through the ledger first.
-        let ok = CatalogBuilder::new()
-            .ledger([LedgerEntry { op: 0x42, family: "mystery".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Live }])
-            .serve(CatalogEntry::transitional(0x42, "mystery", "rafka", "u9", 1024))
-            .build();
-        assert!(ok.is_ok());
     }
 
     #[test]
@@ -494,8 +446,8 @@ mod tests {
             .build()
             .unwrap();
         assert!(matches!(c.lookup(0x12).unwrap().kind, EntryKind::Transitional { .. }));
-        // 0x17 is reserved for rafka forward-write in the ledger but not registered:
-        // the built catalog is the only table, so it is unserved — no legacy fallthrough.
+        // 0x17 is not registered: the built catalog is the only table, so it is
+        // unserved — no legacy fallthrough.
         let unserved = crate::framing::encode_request(&crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x17 }), &[]);
         assert_eq!(parse_request_head(&unserved, |t| c.request_ceiling(t)), RequestHead::Unserved { op: 0x17 });
         let header = crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x12 });
@@ -541,38 +493,20 @@ mod tests {
     }
 
     #[test]
-    fn the_core_ledger_matches_the_ownership_amendment() {
+    fn the_core_ledger_holds_rdms_own_opcodes_only() {
         let l = core_ledger();
         let codes: Vec<u8> = l.iter().map(|r| r.op).collect();
-        assert_eq!(codes, vec![0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75]);
+        assert_eq!(codes, vec![0x01, 0x11, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23]);
         assert_eq!(l.iter().find(|r| r.op == 0x11).map(|r| r.state), Some(OpState::Reserved), "echo is reserved forever; ping took op 1");
         assert!(l.iter().all(|r| r.op != 0), "op 0 is reserved as invalid");
         assert_eq!(l.iter().find(|r| r.op == 0x1B).map(|r| r.owner.clone()), Some(OpOwner::Product("rdm".into())), "status is RDM's control family, not core");
         let core: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Core && r.state == OpState::Live).map(|r| r.op).collect();
         assert_eq!(core, vec![0x01, 0x1A], "the live core ops are exactly ping and Forward");
-        let testkit: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Testkit).map(|r| r.op).collect();
-        assert_eq!(testkit, vec![0x70, 0x71, 0x72, 0x73, 0x74, 0x75], "the testkit opcodes are the testkit store, the resolve probe, the declare probe, the originate service, the pre_node_ready pull and the fault service");
-    }
-
-    #[test]
-    fn the_testkit_range_holds_only_testkit_families_and_they_live_nowhere_else() {
-        let product_inside = CatalogBuilder::new()
-            .ledger([LedgerEntry { op: 0x7F, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Live }])
-            .build()
-            .unwrap_err();
-        assert_eq!(
-            product_inside,
-            vec![CatalogError::TestkitRange { op: 0x7F, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()) }]
+        assert!(
+            l.iter().all(|r| r.owner == OpOwner::Core || r.owner == OpOwner::Product("rdm".into())),
+            "every row is RDM's: core or the mesh product, never another product's or the testkit's"
         );
-        let testkit_outside = CatalogBuilder::new()
-            .ledger([LedgerEntry { op: 0x42, family: "stray".into(), owner: OpOwner::Testkit, state: OpState::Live }])
-            .build()
-            .unwrap_err();
-        assert_eq!(testkit_outside, vec![CatalogError::TestkitRange { op: 0x42, family: "stray".into(), owner: OpOwner::Testkit }]);
-        let core_inside = CatalogBuilder::new()
-            .ledger([LedgerEntry { op: 0x7F, family: "core-probe".into(), owner: OpOwner::Core, state: OpState::Live }])
-            .build()
-            .unwrap_err();
-        assert_eq!(core_inside, vec![CatalogError::TestkitRange { op: 0x7F, family: "core-probe".into(), owner: OpOwner::Core }]);
+        let reserved: Vec<u8> = l.iter().filter(|r| r.state == OpState::Reserved).map(|r| r.op).collect();
+        assert_eq!(reserved, vec![0x11, 0x1C, 0x1F], "echo, build-claim and build-facts are reserved forever");
     }
 }

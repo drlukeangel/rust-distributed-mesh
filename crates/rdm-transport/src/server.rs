@@ -355,8 +355,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Add the ledger rows that reserve ops for other products; each op is named once in the built
-    /// catalog.
+    /// Optional: add a product's own reserved ledger rows, so that a code the product has withdrawn
+    /// is refused by name at the build. A product's served families need no row (Q444).
     pub fn ledger(mut self, rows: impl IntoIterator<Item = rdm_core::catalog::LedgerEntry>) -> Self {
         self.catalog = self.catalog.ledger(rows);
         self

@@ -12,7 +12,7 @@
 //!   an index, the stream's terminal naming where the next read starts.
 //! - **An application service held in an `Arc`** ([`ExampleService`]): its durable record ([`ExampleRecord`]) is a
 //!   JSON-lines file in the node's data dir; every handler clones the `Arc` (§4).
-//! - **Registration** (§3): [`ledger_rows`] and [`register`], the `serve_app` handed to
+//! - **Registration** (§3): [`register`], the `serve_app` handed to
 //!   `rdm_node::run_with` by [`run`]. The unary op is served behind the `pre_node_ready` gate
 //!   (`ServerBuilder::serve_gated`); the streaming handler reads the same gate itself.
 //! - **A mutating handler that records, then accepts** (§3, §5), on RDM's recovery helpers
@@ -43,7 +43,7 @@
 //! ops: a `Submit` to one ends `Unserved`, a records copy from one fails `Unserved` on its first
 //! item ([`ReadFailure::Unserved`]), and the caller passes that node over.
 
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::filter::Filter;
 use rdm_core::framing::DeliveryId;
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
@@ -67,7 +67,7 @@ use tracing::Instrument;
 // 1. The protocols: what a product changes.
 // ---------------------------------------------------------------------------------------------------
 
-/// The product that owns the two ops, as its ledger rows and its serving name it.
+/// The product that owns the two ops, as its serving names it.
 pub const OWNER: &str = "rshape-consumer";
 /// The kind whose nodes serve the ops and hold the record.
 pub const SERVING_TYPE: &str = "broker";
@@ -391,25 +391,17 @@ impl ExampleService {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// 3. Registration: the ledger rows and the two handlers.
+// 3. Registration: the two handlers.
 // ---------------------------------------------------------------------------------------------------
 
-/// The ledger rows reserving the two ops for [`OWNER`].
-pub fn ledger_rows() -> Vec<LedgerEntry> {
-    [(ExampleWork::OP, ExampleWork::NAME), (ExampleRecords::OP, ExampleRecords::NAME)]
-        .into_iter()
-        .map(|(op, family)| LedgerEntry { op, family: family.to_string(), owner: OpOwner::Product(OWNER.to_string()), state: OpState::Live })
-        .collect()
-}
-
-/// The `serve_app` of a node serving the two ops over `service`. `gate` is the node's
-/// `pre_node_ready` gate (`NodeHooks::gate`): neither op answers before [`Resume`] passed.
+/// The `serve_app` of a node serving the two ops over `service`, with no ledger row (RDM never
+/// records a product's opcodes). `gate` is the node's `pre_node_ready` gate (`NodeHooks::gate`):
+/// neither op answers before [`Resume`] passed.
 pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeReadyGate) -> ServerBuilder {
     let work = service.clone();
     let records = service;
     let records_gate = gate.clone();
-    b.ledger(ledger_rows())
-        .serve_gated::<ExampleWork, _, _>(OpOwner::Product(OWNER.to_string()), gate, move |peer, request| {
+    b.serve_gated::<ExampleWork, _, _>(OpOwner::Product(OWNER.to_string()), gate, move |peer, request| {
             let svc = work.clone();
             async move {
                 let faulted = |e: std::io::Error| HandlerFault::invariant_broken(format!("the operations record: {e}"));

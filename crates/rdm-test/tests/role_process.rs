@@ -125,7 +125,7 @@ async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() 
     let compute = born(PathName::new("mesh1.compute", "1").unwrap(), "mesh1", "compute").await;
     let adapter = &LEGACY_ADAPTERS[0];
     let held = compute.running.server.catalog().lookup(adapter.op).expect("the adapter is catalogued");
-    assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "built under the ledger's owner");
+    assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "built under its own owner, with no ledger row");
     assert!(matches!(&held.kind, EntryKind::Transitional { migration_unit } if migration_unit == adapter.migration_unit));
     let (client, target) = compute.peer().await;
     let (out, _) = client
@@ -286,9 +286,9 @@ mod tempdir {
     }
 }
 
-/// e11.s8 — the product's own unary family: `broker_data` (0x40, forwardable), ledgered under
-/// the product and served only by the broker. A compute catalogues the family (one ledger per
-/// process) and carries it for others, but serves no handler for it: a call there is unserved, 421.
+/// e11.s8 — the product's own unary family: `broker_data` (0x40, forwardable), owned by the
+/// product with no ledger row and served only by the broker. A compute catalogues the family (one
+/// catalog per process) and carries it for others, but serves no handler for it: a call there is unserved, 421.
 #[tokio::test]
 async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute() {
     use rdm_test::families::{BrokerData, BrokerDataReply, BrokerDataRequest};

@@ -151,10 +151,10 @@ Every term below links to the architecture pages that define it.
   streams (`rdm/node-rpc/1`), carrying unary and server-streaming calls with W3C trace context and
   typed [`RpcOutcome`](architecture/node-rpc.md) results (`Reply`, `NotSent`, `Unserved`,
   `RejectedStale`, `Indeterminate`).
-- **op ledger** ([Node RPC envelope](architecture/node-rpc-envelope.md)): The table of registered
-  Node RPC op codes. Each has an owner (`core`, the generic substrate; `rdm`, the mesh product;
-  `rafka`, Rafka's own adapters; `testkit`, `0x70` to `0x7F`, test-only oracles that never ship in a
-  product binary) and a ledger state that says whether the op may be served at all.
+- **op ledger** ([Node RPC envelope](architecture/node-rpc-envelope.md)): The table of RDM's own
+  Node RPC opcodes. Each has an owner (`core`, the generic substrate; `rdm`, the mesh product) and a
+  ledger state that says whether the op may be served at all. A product's opcodes are never rows
+  here: a product serves its families with no row (Q444).
 - **`Direct` and `Proxy` connections** ([Connections](architecture/connections.md)): The two kinds
   of data-plane connection facts recorded in `connections.storage`. `Direct` is an open connection
   from the source node to the destination node; `Proxy` routes through an intermediate carrier node

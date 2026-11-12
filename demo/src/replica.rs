@@ -18,7 +18,7 @@
 //! What the application does is a log line (target `rshape`) under RDM's own call and serve spans, as
 //! in [`crate::consumer_example`].
 
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::filter::Filter;
@@ -98,11 +98,6 @@ impl NodeProtocol for Records {
     fn read_only(req: &RecordsRequest) -> bool {
         matches!(req, RecordsRequest::Fetch { .. })
     }
-}
-
-/// The ledger row reserving the op for [`OWNER`].
-pub fn ledger_rows() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { op: Records::OP, family: Records::NAME.to_string(), owner: OpOwner::Product(OWNER.to_string()), state: OpState::Live }]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -429,7 +424,7 @@ impl OnCallFailed for PassOver {
 
 /// The broker's `serve_app`: [`Records`] over its log.
 pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> ServerBuilder {
-    b.ledger(ledger_rows()).serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |peer, request| {
+    b.serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |peer, request| {
         let (broker, node) = (broker.clone(), node.clone());
         async move {
             if node.view.get().is_none() {
@@ -469,7 +464,7 @@ pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> Ser
 
 /// The gateway's `serve_app`: [`Records`], each request forwarded to its mesh's broker primary.
 pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node) -> ServerBuilder {
-    b.ledger(ledger_rows()).serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |_peer, request| {
+    b.serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |_peer, request| {
         let (client, node) = (client.clone(), node.clone());
         async move {
             if node.view.get().is_none() {

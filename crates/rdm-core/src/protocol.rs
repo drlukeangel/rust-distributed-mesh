@@ -9,8 +9,10 @@
 //!
 //! Every Node RPC op RDM declares, by opcode. Each request and reply body is an enum whose variants
 //! are in declaration order, which is their postcard position: each variant's documentation names its
-//! position, and the fields of a variant or a carried struct travel in declaration order. The
-//! testkit's own ops (`0x40`, `0x70`–`0x75`) are listed on `rdm_test`'s front page.
+//! position, and the fields of a variant or a carried struct travel in declaration order. These
+//! are the live rows of the op ledger, RDM's own opcodes. A product's ops, the testkit's included,
+//! are never rows there: each serves with no row (Q444); the testkit's are listed on `rdm_test`'s
+//! front page.
 //!
 //! | op | name | protocol | request | reply |
 //! |---|---|---|---|---|

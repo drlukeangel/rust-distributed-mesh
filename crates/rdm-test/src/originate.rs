@@ -3,10 +3,8 @@
 //! (`NodeRpcClient::call_connected`, connections.md §5), to arm or release its storage fault
 //! ([`crate::faults`]), and to answer a copy of what it holds and owes. A scenario thereby
 //! proves CONN-B, CONN-D and CONN-G on a real, restartable node: the node is the source, its
-//! writer records the facts, its storage is the one hydrated after a restart. Testkit range only
-//! ([`TESTKIT_OPS`]); never a product binary.
-//!
-//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
+//! writer records the facts, its storage is the one hydrated after a restart. Testkit only
+//! (`OpOwner::Testkit`); never a product binary.
 
 use crate::faults::StorageFault;
 use crate::testkit_store::{TestkitStoreReply, TestkitStoreRequest, TestkitStore};

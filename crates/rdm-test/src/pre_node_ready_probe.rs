@@ -3,9 +3,7 @@
 //! [`TestPreNodeReady`] is a node's `pre_node_ready` that pulls those rows and applies them once
 //! per row version, whether a row arrives by the pull, by gossip, or both.
 //!
-//! Testkit range only ([`TESTKIT_OPS`]); never a product binary.
-//!
-//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
+//! Testkit only (`OpOwner::Testkit`); never a product binary.
 
 use rdm_node::node_hooks::{HookOutcome, PreNodeReady, NodeReadyCtx};
 use rdm_transport::{CallOptions, PreNodeReadyGate, PeerContext, ServerBuilder};

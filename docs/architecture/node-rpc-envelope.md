@@ -177,29 +177,28 @@ are never reassigned.
 
 ## The op ledger
 
-The ledger is the registry of opcodes: one row per op, naming its family, its owner and
+The ledger is the registry of RDM's own opcodes: one row per op, naming its family, its owner and
 whether it is live or reserved. An op is a family: its request enum's variants are the calls. A
-reserved op is never served and never reissued.
+reserved op is never served and never reissued. RDM never records a product's opcodes: a product
+picks its own, keeps its own list and serves its families with no row here.
 
-The ledger is consulted in exactly one place: the build, once per process at boot. The core rows
-are built into the contract; a product adds its rows through the server builder. The build takes
-the ledger and the entries the process serves and makes the built catalog, refusing the
-process on any of:
+The ledger is consulted in exactly one place: the build, once per process at boot. Its rows are
+built into the contract; a product may add a reserved row of its own through the server builder,
+so that a code it has withdrawn is refused by name. The build takes the ledger and the entries the
+process serves and makes the built catalog, refusing the process on any of:
 
 - an op of zero;
 - a duplicate ledger row;
-- a row in the testkit range `0x70` to `0x7F` whose owner is not testkit, or a testkit owner
-  outside that range;
-- a served entry with no ledger row;
+- two served entries on one op;
 - a served entry whose row is reserved;
-- an owner that differs between the row and the entry;
+- a served entry whose owner differs from its row's (a product's family on an RDM opcode);
 - a core entry marked transitional;
 - a forwardable server-streaming entry;
 - a zero request or reply ceiling.
 
 After the build the ledger is not read again. The target consults the built catalog's served
 entries: the op is looked up for its request ceiling, and an op with no entry is `421`. The
-ledger decides what a process may serve, the catalog decides what it does serve, and the wire
+ledger decides what a process may not serve, the catalog decides what it does serve, and the wire
 sees only the catalog.
 
 | op | family | owner | ledger state | serving | calls |
@@ -216,58 +215,16 @@ sees only the catalog.
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `UpdatePrimary`; replies `PrimaryUpdating`, `PrimaryUpdated`, `AlreadyApplied`; server-streaming |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `BlockMesh`, `UnblockMesh`, `UpdateConfig`, `UpdateName` (position 4 reserved): `StopNode`, `StartNode` and `DeleteConnections` from the caller to the node's mesh-primary, directly; `UpdateConfig` and `UpdateName` from the caller to the fabric-primary and down to the node's mesh-primary, each hop direct; every variant but `BlockMesh` and `UnblockMesh` from the mesh-primary to the exact node; `BlockMesh` and `UnblockMesh` from the fabric-primary to each mesh-primary; never forwarded; server-streaming; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
 | `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get; `GetConnections`: node.connection.get; `GetAtlas`, `GetMeshAtlas`: fabric.atlas.get, mesh.atlas.get; server-streaming, never forwarded (Q285) |
-| `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
-| `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
-| `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
-| `0x14` | control | rafka | live | transitional | `MeshControlMessage` |
-| `0x15` | credential-resolve | rafka | live | transitional | credential resolution |
-| `0x16` | layout-reprovision | rafka | reserved | | |
-| `0x17` | forward-write | rafka | live | transitional | write through a peer |
-| `0x18` | forward-read | rafka | live | transitional | read through a peer |
-| `0x19` | peer-tickle | rafka | live | transitional | tickle exact path |
-| `0x24` | projection.get | rafka | live | canonical | Rafka's product op |
-| `0x25` | group.shuffle.create | rafka | live | canonical | Rafka's product op |
-| `0x26` | otel-debug | rafka | reserved | | |
-| `0x27` | chaos-arm | rafka | reserved | | |
-| `0x28` | upgrade-framework | rafka | live | canonical | Rafka's product op |
-| `0x29` | platform-bootstrap | rafka | live | canonical | Rafka's product op |
-| `0x2A` | broker-resync-step | rafka | live | canonical | Rafka's product op |
-| `0x2B` | broker.writer.target | rafka | live | canonical | Rafka's product op |
-| `0x2C` | broker.wal.capture | rafka | live | canonical | Rafka's product op |
-| `0x2D` | system.create | rafka | live | canonical | Rafka's product op |
-| `0x2E` | mesh-image | rafka | live | canonical | Rafka's product op |
-| `0x2F` | job.create | rafka | live | canonical | Rafka's product op |
-| `0x30` | job.get | rafka | live | canonical | Rafka's product op |
-| `0x31` | broker.data.get | rafka | live | canonical | Rafka's product op |
-| `0x32` | topic.traffic.close | rafka | live | canonical | Rafka's product op |
-| `0x33` | topic.delete | rafka | live | canonical | Rafka's product op |
-| `0x34` | topic.replica.update | rafka | live | canonical | Rafka's product op |
-| `0x35` | topic.partition.update | rafka | live | canonical | Rafka's product op |
-| `0x36` | job.target.update | rafka | live | canonical | Rafka's product op |
-| `0x37` | projection.delete | rafka | live | canonical | Rafka's product op |
-| `0x38` | topic.create | rafka | live | canonical | Rafka's product op |
-| `0x39` | topic.traffic.open | rafka | live | canonical | Rafka's product op |
-| `0x3A` | broker.sync.complete | rafka | live | canonical | Rafka's product op |
-| `0x3B` | secret.get | rafka | live | canonical | Rafka's product op |
-| `0x3C` | broker.data.update | rafka | live | canonical | Rafka's product op |
-| `0x3D` | topic.traffic.get | rafka | live | canonical | Rafka's product op |
-| `0x3E` | topic.slot.delete | rafka | live | canonical | Rafka's product op |
-| `0x3F` | system.framework.update | rafka | live | canonical | Rafka's product op (moved off 0x23) |
-| `0x70` | testkit-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
-| `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
-| `0x72` | declare-probe | testkit | live | canonical | `Declare` |
-| `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Copy`, `RecordProxy`, `Dial`, `StopTransport` |
-| `0x74` | pre-node-ready-pull | testkit | live | canonical | `Pull` |
-| `0x75` | fault | testkit | live | canonical | `Arm`, `Release`, `State` |
 
-Every opcode is allocated in this table, a product's included: a product family takes the next free opcode here, as a row its product owns, before it is served, so no two families ever hold one opcode. The ledger state says whether an op may be served at all: `live` or `reserved`. The serving
-mode is the catalog entry's, not the ledger's: `canonical`, or `transitional` naming the
-canonical family that replaces it. A rafka adapter is live in the ledger and transitional in
-this process's catalog.
+RDM's opcodes are these rows and `0x02` to `0x0F`, kept for RDM's future ops; `0x00` is never an
+op. Every other opcode is a product's, `0x40` to `0xFF` recommended for a new family. A clash
+between a product's family and an RDM opcode, a reserved opcode or another served family is refused
+by name at the build, never met on the wire. The serving mode is the catalog entry's, not the
+ledger's: `canonical`, or `transitional` naming the canonical family that replaces it.
 
-Owners: `core` is the generic substrate; `rdm` is the mesh product; `rafka` is Rafka's own
-adapters, which are transitional entries; `testkit` holds `0x70` to
-`0x7F` for test-only oracles that never ship in a product binary.
+Owners: `core` is the generic substrate; `rdm` is the mesh product (`Product("rdm")`); any other
+`Product(<name>)` is a product built on RDM, naming itself; `testkit` is RDM's test harness, whose
+families serve only in RDM's own test processes and never ship in a product binary.
 
 ## Typed object contract
 
@@ -523,7 +480,7 @@ call span's SpanId. Both spans are DEBUG, as is every Node RPC span opened once 
 Stream result frames and the invocation's end record their own `code` and `detail`; workflow step
 spans retain the step's code and named detail, and a failed step's `rdm.build.step` event carries that code beside
 its step and reason. An application's compatibility adapters emit their own diagnostics, stated
-on its pages; they do not acquire canonical spans merely by being reserved in the ledger.
+on its pages; they do not acquire canonical spans merely by being served in the catalog.
 
 Each call carries the operation trace; the child calls of one workflow share it, each with its
 own caller span. Correlate events by `build_id`, `operation`, `step`,
@@ -1613,19 +1570,11 @@ The owner records each frame before acknowledging recovery; repeated frames caus
 
 ## Transitional codec conventions
 
-A transitional catalog entry uses its compatibility codec; being live in the ledger does not
+A transitional catalog entry uses its compatibility codec; being served in the catalog does not
 turn a struct, raw snapshot or fire-and-forget message into a postcard request/reply enum.
-The exact bodies and typed replies of Rafka's adapters are Rafka's own.
+The exact bodies and typed replies of a product's adapters are the product's own.
 A compatibility rail without a typed reply enum has none. Numeric domain fields named fabric_id do not key transport;
 transport uses endpoint_id.
-
-## The rafka op families, `0x10` to `0x19`
-
-rafka's own families on this envelope (legacy-control `0x10`, data-frame `0x12`, snapshot `0x13`, control `0x14`,
-credential-resolve `0x15`, forward-write `0x17`, forward-read `0x18`, peer-tickle `0x19`) are rafka's product
-ops: their schemas, directions and reply enums are Rafka's own.
-They ride the same target, context and body, the same ledger and the same runtime rules as every op here;
-nothing in this repository serves them.
 
 ## Testkit store, op `0x70`, testkit
 

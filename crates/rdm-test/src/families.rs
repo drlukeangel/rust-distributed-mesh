@@ -1,9 +1,9 @@
 //! The proof product's own Node RPC families, composed per role (i143.e11.s8). A family is the
-//! product's: tagged in the product's own ledger rows, served only by the kinds that own it, and
+//! product's: owned by the product with no ledger row, served only by the kinds that own it, and
 //! unserved (`421`) everywhere else in the same built catalog.
 
 use rdm_transport::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::NodeProtocol;
 
@@ -129,15 +129,10 @@ pub const PROOF_HANG: &str = "proof:hang";
 /// Appending under this key is a handler fault (423): the fault arm of a certainty cell.
 pub const PROOF_FAULT: &str = "proof:fault";
 
-/// The product's ledger rows: its own allocations, beside the core ledger.
-pub(crate) fn product_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { op: BrokerData::OP, family: BrokerData::NAME.into(), owner: OpOwner::Product(crate::PRODUCT.into()), state: OpState::Live }]
-}
-
 /// The families `type` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every type carries the forwardable families
 /// for others (a gateway is the carrier of `broker_data`); only a broker serves it.
 pub(crate) fn for_type(r#type: &str, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
-    let b = b.ledger(product_ledger()).carry::<BrokerData>();
+    let b = b.carry::<BrokerData>();
     match r#type {
         "broker" => {
             let store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<Vec<u8>>>>> = Default::default();

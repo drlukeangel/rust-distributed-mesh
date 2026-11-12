@@ -10,7 +10,7 @@ use rdm_core::connections::{
 };
 use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, PeerContext, ResolvedNode, RouteChoice, RouteLeg, ServedBirth, ServerBuilder, StaticResolver};
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
@@ -90,10 +90,6 @@ impl NodeProtocol for Probe {
     }
 }
 
-pub fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
-}
-
 pub struct Node {
     pub _router: Router,
     pub key: SecretKey,
@@ -106,7 +102,7 @@ pub async fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, carrier_cl
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let handled = Arc::new(AtomicU64::new(0));
     let (h, me) = (handled.clone(), node_id.to_string());
-    let mut b = ServerBuilder::new().ledger(test_ledger()).serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer: PeerContext, req: ProbeRequest| {
+    let mut b = ServerBuilder::new().serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer: PeerContext, req: ProbeRequest| {
         let (h, me) = (h.clone(), me.clone());
         async move {
             h.fetch_add(1, Ordering::SeqCst);

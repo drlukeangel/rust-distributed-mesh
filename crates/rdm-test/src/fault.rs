@@ -2,10 +2,8 @@
 //! cuts of a faulted node-admin ([`crate::admin_faults`]). A scenario reaches the admin by its
 //! ID or an explicit path/name pair; the admin's readiness gate answers NotReady until its
 //! readiness gate is open, so a cut that must be in force before then is armed from
-//! `<root>/faults/<location-index>.boot.json` (`admin_faults::arm_boot_cuts`). Testkit range only
-//! ([`TESTKIT_OPS`]); the testkit's own `faulted-node-admin` serves it, never a product binary.
-//!
-//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
+//! `<root>/faults/<location-index>.boot.json` (`admin_faults::arm_boot_cuts`). Testkit only
+//! (`OpOwner::Testkit`); the testkit's own `faulted-node-admin` serves it, never a product binary.
 
 use crate::admin_faults::{AdminFaults, CutSpec};
 use rdm_core::PathName;

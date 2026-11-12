@@ -144,7 +144,7 @@ count against the config cap.
 |---|---|
 | call a node | Node RPC: [node-rpc-envelope.md](../architecture/node-rpc-envelope.md); outcomes and codes on [node-rpc.md](../architecture/node-rpc.md) |
 | set how many tries a call makes and how long each may take | every call and every dial carries one `Send { attempts, TimeLimit }`, mine to set, default 3 attempts and 10 s; it is the only retry. A call whose attempts are spent ends to me by name (`NotSent` or `Indeterminate`) and calls `on_call_failed` ([node-rpc.md §43](../architecture/node-rpc.md#43-send-delivery-is-the-runtimes)) |
-| add my own Node RPC ops (declare, reserve in the op ledger, serve, call) | [consumer-guide-ops.md](consumer-guide-ops.md) |
+| add my own Node RPC ops (pick an opcode, declare, serve, call) | [consumer-guide-ops.md](consumer-guide-ops.md) |
 | open a stream on my own app protocol | the node's connections handle for my ALPN; routes, proxies and the return to Direct on [connections.md](../architecture/connections.md) (a lost Direct is dialled on `Send`; nothing re-dials on its own); a node's member cert admits it ([fabric-certs.md](../architecture/fabric-certs.md)) |
 | publish and receive my events | gossip's envelope ([gossip.md §3.4](../architecture/gossip.md#34-the-envelope)) |
 

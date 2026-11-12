@@ -34,8 +34,9 @@
 //!
 //! # Testkit ops
 //!
-//! The testkit's own Node RPC ops, by opcode (RDM's own are on `rdm_core::protocol`). Each body
-//! variant's documentation names its postcard position.
+//! The testkit's own Node RPC ops, by opcode (RDM's own are on `rdm_core::protocol`). None has a
+//! ledger row: each serves with no row, as a product's family does (Q444). Each body variant's
+//! documentation names its postcard position.
 //!
 //! | op | name | protocol | request | reply |
 //! |---|---|---|---|---|
@@ -240,7 +241,7 @@ mod tests {
 
 // ── Proof-Node Families & Oracles (from former rafka-node-base) ──────────────
 
-/// The product family every role's own tags are ledgered under.
+/// The product that owns every role's own families.
 pub(crate) const PRODUCT: &str = "rdm-roles";
 
 /// One live legacy op a product serves through a transitional adapter until its named cut.
@@ -250,13 +251,13 @@ pub struct LegacyAdapter {
     pub op: u8,
     /// The op's catalog name.
     pub name: &'static str,
-    /// The product the core ledger reserves the op for.
+    /// The product that owns the op.
     pub owner: &'static str,
     /// The migration unit that deletes the adapter.
     pub migration_unit: &'static str,
 }
 
-/// The proof product's transitional adapters: the ledgered Rafka reservations it stands in for.
+/// The proof product's transitional adapters: the Rafka families it stands in for.
 pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter {
     op: 0x12,
     name: "data-frame",

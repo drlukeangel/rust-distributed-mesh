@@ -4,10 +4,8 @@
 //! The probe binary resolves from its entry admin's view (`fabric.get`, `node.get`), which
 //! is current-only: it can never say `Gone`. This protocol asks a real node,
 //! whose `LiveNodeResolver` is fed by its own topology view, so a scenario proves
-//! `Found` / `Gone` / `Unknown` where they are decided. Testkit range only
-//! ([`TESTKIT_OPS`]); never a product binary.
-//!
-//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
+//! `Found` / `Gone` / `Unknown` where they are decided. Testkit only
+//! (`OpOwner::Testkit`); never a product binary.
 
 use crate::held_name::HeldName;
 use rdm_core::launch::Launch;

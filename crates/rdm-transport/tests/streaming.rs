@@ -8,7 +8,7 @@ use rdm_transport::stream::{SinkError, StreamFailure, StreamItem};
 use opentelemetry_sdk::trace::SpanData;
 use rdm_transport::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::context::CallContext;
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{IndeterminateReason, MalformedKind, ReplyKind};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
@@ -133,11 +133,11 @@ struct Rig {
     finished: Arc<tokio::sync::Notify>,
 }
 
-/// Count's registration, as a process's `serve_app` adds it: its ledger row and its streaming
+/// Count's registration, as a process's `serve_app` adds it, with no ledger row: its streaming
 /// handler, which counts the frames it produced and the writes that found the caller gone, and
 /// notifies `finished` once it stops producing.
 fn serve_count(b: ServerBuilder, produced: Arc<AtomicU64>, caller_gone: Arc<AtomicU64>, finished: Arc<tokio::sync::Notify>) -> ServerBuilder {
-    b.ledger([LedgerEntry { op: Count::OP, family: "count".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]).serve_stream::<Count, _, _>(
+    b.serve_stream::<Count, _, _>(
         OpOwner::Product("test".into()),
         move |_peer, req: CountRequest, sink| {
             let (p, g, fin) = (produced.clone(), caller_gone.clone(), finished.clone());

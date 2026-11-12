@@ -312,7 +312,6 @@ async fn spy_carrier() -> (NodeRpcClient, NodeTarget, Arc<std::sync::Mutex<Vec<u
     let s = seen.clone();
     let birth = birth();
     let server = ServerBuilder::new()
-        .ledger(test_ledger())
         .serve::<Forward, _, _>(OpOwner::Core, move |_peer, req: ForwardRequest| {
             let s = s.clone();
             async move {
@@ -366,7 +365,7 @@ async fn every_inner_indeterminate_cause_crosses_a_carrier_with_its_code() {
     use rdm_core::outcome::Code;
     for (cause, code) in [(IndeterminateCause::ReceiverGone, Code::Unavailable), (IndeterminateCause::ReplyDeadline, Code::DeadlineExceeded), (IndeterminateCause::ReplyLost, Code::Unknown)] {
         let birth = birth();
-        let server = ServerBuilder::new().ledger(test_ledger())
+        let server = ServerBuilder::new()
             .serve::<Forward, _, _>(OpOwner::Core, move |_peer, _req: ForwardRequest| async move {
                 let typed_inner = cause.into_reason("same explanation".into());
                 Ok::<_, HandlerFault>(ForwardReply::InnerIndeterminate { cause: IndeterminateCause::from_reason(&typed_inner), reason: "same explanation".into() })

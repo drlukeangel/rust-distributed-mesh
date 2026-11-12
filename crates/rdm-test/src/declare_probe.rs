@@ -6,10 +6,8 @@
 //! testkit-only overrides exist so a scenario can prove the refusals, which are decided for the
 //! subject the declaration names and never for its caller (node-rpc.md §14): a `node_id` the
 //! authority does not hold (`RejectedNotPrimary: subject-unknown`) and an `incarnation` that is
-//! not its birth's (`RejectedStaleIncarnation`). Testkit range only ([`TESTKIT_OPS`]); never a
+//! not its birth's (`RejectedStaleIncarnation`). Testkit only (`OpOwner::Testkit`); never a
 //! product binary.
-//!
-//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use rdm_core::launch::Launch;
 use rdm_core::{NodeId, PathName};

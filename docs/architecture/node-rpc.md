@@ -53,7 +53,7 @@ One live Iroh Endpoint belongs to one process. Router/ALPN multiplexes gossip an
 
 ### 3.2 rafka-mesh-ops
 
-Rafka owns its product protocol descriptors, codecs, op allocations and request/reply payloads in `rafka-mesh-ops`, and adds its rows to the [op ledger](node-rpc-envelope.md#the-op-ledger) through the server builder. RDM `rdm-core` owns the generic protocol and envelope vocabulary and the core ledger rows. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
+A product owns its protocol descriptors, codecs, opcodes and request/reply payloads, and serves its families with no row in RDM's [op ledger](node-rpc-envelope.md#the-op-ledger). RDM `rdm-core` owns the generic protocol and envelope vocabulary and the ledger's rows, which are RDM's own opcodes. Product contracts own no generic topology or election; domain retry policy stays with the owning caller.
 
 ### 3.3 rdm-transport (the Node RPC runtime)
 
@@ -199,7 +199,7 @@ pub trait StreamingNodeProtocol: NodeProtocol {
 
 ## 9. Protocol catalog and op allocation
 
-The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rdm-core`, a product adds its rows through the server builder, and the build makes the served catalog once at boot. Op uniqueness, reserved ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
+RDM's opcodes are the [op ledger](node-rpc-envelope.md#the-op-ledger)'s rows, built into `rdm-core`; a product serves its own opcodes with no row, and the build makes the served catalog once at boot. Op uniqueness, reserved ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
 
 A descriptor is the envelope's `NodeProtocol` declaration plus two runtime facts: unary or server-streaming, and its default admission (§17).
 

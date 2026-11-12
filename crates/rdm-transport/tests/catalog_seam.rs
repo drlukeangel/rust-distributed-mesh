@@ -60,5 +60,6 @@ fn a_core_owned_transitional_entry_is_refused_at_build() {
     let mut entry = CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 1024);
     entry.owner = OpOwner::Core;
     let errors = ServerBuilder::new().adapter(entry).build(ServedBirth { node_id: "n".into(), incarnation: "i".into() }).err().expect("refused");
-    assert!(errors.iter().any(|e| matches!(e, rdm_core::catalog::CatalogError::OwnerMismatch { op: 0x12, .. } | rdm_core::catalog::CatalogError::CoreTransitional { op: 0x12, .. })), "{errors:?}");
+    // 0x12 has no ledger row (a product's code, Q444): the refusal is the core owner alone.
+    assert_eq!(errors, vec![rdm_core::catalog::CatalogError::CoreTransitional { op: 0x12, name: "data-frame".into() }]);
 }

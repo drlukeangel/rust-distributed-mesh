@@ -1,13 +1,13 @@
 # Consumer guide: my own ops on Node RPC
 
-How an application adds its own calls to RDM's Node RPC: declare a protocol, take an opcode, reserve
-it in the op ledger, serve it, and call it. The contract this follows is the
-[Node RPC envelope](../architecture/node-rpc-envelope.md) (Section 2, the body; the op ledger; the
-ledger row) and [node-rpc.md §9](../architecture/node-rpc.md). This page is the how-to; the pages
+How an application adds its own calls to RDM's Node RPC: declare a protocol, take an opcode, serve
+it, and call it. The contract this follows is the
+[Node RPC envelope](../architecture/node-rpc-envelope.md) (Section 2, the body; the op ledger)
+and [node-rpc.md §9](../architecture/node-rpc.md). This page is the how-to; the pages
 are the rule. Back to the [consumer guide](consumer-guide.md).
 
 The worked examples are [`demo/src/consumer_example.rs`](../../demo/src/consumer_example.rs)
-(`ConsumerOrder` unary op `0x31` and `ConsumerProgress` streaming op `0x32`, which a product copies,
+(`ExampleWork` unary op `0x50` and `ExampleRecords` streaming op `0x51`, which a product copies,
 changing its protocols, the enums and the constants beside them) and the testkit's
 [`rdm-test/src/families.rs`](../../crates/rdm-test/src/families.rs) (`BrokerData`, a unary op) and
 [`rdm-test/src/originate.rs`](../../crates/rdm-test/src/originate.rs) (`Originate`).
@@ -35,18 +35,20 @@ it. Streams cannot be carried through Forward. Data-plane Proxy registration is 
 
 ## 1. Pick an opcode
 
-An op is one family: its request enum's variants are the calls. Take a code no ledger row holds.
+An op is one family: its request enum's variants are the calls. Take a code RDM does not hold. RDM never records your codes: keep your own list in your docs.
 
 | codes | held by |
 |---|---|
 | `0x00` | never: an op of zero refuses the process |
-| `0x01`, `0x1A` | RDM core (`ping`, `forward`; `0x11` `echo` reserved forever, never served) |
-| `0x1B`–`0x23` | RDM (`status`, `build-claim` (reserved), `join`, `topology`, `build-facts` (reserved, Q292), `build`, `primary-update`, `node-command`, `read`) |
-| `0x10`, `0x12`–`0x19`, `0x24`–`0x3F` | Rafka's rows in `core_ledger()` (`0x16` `layout-reprovision`, `0x26` `otel-debug` and `0x27` `chaos-arm` reserved, never served); a new product family takes the next free code as its own row there first |
-| `0x70`–`0x7F` | the testkit only (`0x70`–`0x75` allocated in `core_ledger()`): a non-testkit owner there refuses the process |
+| `0x01`–`0x0F` | RDM: `0x01` `ping`; `0x02`–`0x0F` kept for RDM's future ops |
+| `0x11` | RDM: `echo`, reserved forever, never served |
+| `0x1A`–`0x23` | RDM: `forward`, `status`, `build-claim` (reserved), `join`, `topology`, `build-facts` (reserved), `build`, `primary-update`, `node-command`, `read` |
+| every other code | yours; `0x40`–`0xFF` recommended for a new family |
+
+To use one, set it as your protocol's `const OP: u8` (§2) and serve the family (§3). The build refuses, by name, a family on an RDM code, on a reserved code, or two of your families on one code.
 
 An op that is withdrawn from service stays reserved forever, never served or reassigned. A wire-incompatible change to a family is a new op, never a
-reuse. The current rows are the [op ledger table](../architecture/node-rpc-envelope.md#the-op-ledger) (`crates/rdm-core/src/catalog.rs` `core_ledger`).
+reuse. RDM's rows are the [op ledger table](../architecture/node-rpc-envelope.md#the-op-ledger) (`crates/rdm-core/src/catalog.rs` `core_ledger`).
 
 ## 2. Declare the protocol
 
@@ -129,23 +131,13 @@ impl NodeProtocol for CgShuffleRecord {
 - **Evolution:** never append a field to an existing variant. New data is a new variant, listed in
   the helper in its position, and the variant counts step up. Never reorder or reuse a discriminant.
 
-## 3. Reserve it in the ledger and serve it
+## 3. Serve it
 
-The ledger is read once, when the process builds its catalog at boot. Add your row, then serve the op:
+The ledger is read once, when the process builds its catalog at boot. Serve the op:
 
 ```rust
-pub fn ledger_rows() -> Vec<LedgerEntry> {
-    vec![LedgerEntry {
-        op: 0x25,
-        family: "cg-shuffle-record".to_string(),
-        owner: OpOwner::Product("rshape-consumer".to_string()),
-        state: OpState::Live,
-    }]
-}
-
 pub fn register(b: rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder {
-    b.ledger(ledger_rows())
-        .serve::<CgShuffleRecord, _, _>(OpOwner::Product("rshape-consumer".to_string()), |peer, request| serve(peer, request))
+    b.serve::<CgShuffleRecord, _, _>(OpOwner::Product("rshape-consumer".to_string()), |peer, request| serve(peer, request))
 }
 
 async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Result<ShuffleReply, rdm_transport::HandlerFault> {
@@ -169,19 +161,22 @@ async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Res
   request is suppressed by the runtime, a second request for the same operation is yours to
   recognise by its operation id (node-rpc.md §33). You define how your pending work is rebuilt from
   your record after a restart; the runtime holds no durable queue.
-- **`ServerBuilder::ledger(rows)`** adds your ledger rows. **`ServerBuilder::serve::<P, _, _>(owner, handler)`**
-  serves a unary op. **`ServerBuilder::serve_stream::<P, _, _>(owner, handler)`** serves a
-  server-streaming op: the handler gets a `ReplySink` for its frames and returns the final reply. A
-  streaming op is never forwardable.
+- **`ServerBuilder::serve::<P, _, _>(owner, handler)`** serves a unary op.
+  **`ServerBuilder::serve_stream::<P, _, _>(owner, handler)`** serves a server-streaming op: the
+  handler gets a `ReplySink` for its frames and returns the final reply. A streaming op is never
+  forwardable. **`ServerBuilder::ledger(rows)`** is optional: it adds a reserved row of your own, so
+  that a code you have withdrawn is refused by name.
 - **Hand the builder to RDM** where the node starts: `rdm_node::run_with(role, types, node_hooks, serve_app)`,
   where `serve_app: FnOnce(ServerBuilder) -> ServerBuilder` adds your ops before the catalog is built
   (`run_with_alpns` also registers your data-plane protocols).
 - **The process refuses to start**, naming the cause, on any of:
-  - an op of zero, or a duplicate ledger row;
-  - a testkit-range row not owned by the testkit, or the reverse;
-  - a served op with no ledger row, or with a row that is not live;
-  - an owner that differs between the row and the served entry;
-  - a forwardable streaming op;
+  - an op of zero;
+  - a duplicate ledger row;
+  - two served entries on one op;
+  - a served entry whose row is reserved;
+  - a served entry whose owner differs from its row's (a product's family on an RDM opcode);
+  - a core entry marked transitional;
+  - a forwardable server-streaming entry;
   - a zero request or reply ceiling.
 - **An op this process does not serve** is answered `421 UNSERVED_OP`. A process may hold a row without
   serving it: the row reserves the code, and the serving decides what this process answers.
@@ -317,7 +312,7 @@ application resumption after a new invocation are different: define the latter i
 
 ## 7. Checklist for a new op
 
-1. A code no ledger row holds (§1), and its row in your product's ledger rows.
+1. A code RDM does not hold (§1).
 2. The protocol: ceilings, the six refusals as reply variants, and `read_only` where it is true;
    `rdm_core::protocol_variants!` writes the variant counts, `classify_reply`, `reply_detail` and the
    six refusal constructors from the variants in wire order (§2).
@@ -339,7 +334,7 @@ refusals, frame limits, an unserved op, duplicate delivery, ordering, backpressu
 and for a stream the consumer's acknowledgement after its record); `BrokerData` and `Count` run it as
 their own cells. The compiled consumer example is available:
 [`demo/src/consumer_example.rs`](../../demo/src/consumer_example.rs) holds an application service in an
-`Arc`, registration through `run_with` (its ledger rows, a unary op and a streaming op), target
+`Arc`, registration through `run_with` (a unary op and a streaming op), target
 selection from the topology, calls through the process's client with all five outcomes handled, a
 mutating handler that records then accepts and a restart that resumes the pending work, both on the
 recovery helpers; its ops run the harness as their cells ([`demo/tests/consumer_example.rs`](../../demo/tests/consumer_example.rs),

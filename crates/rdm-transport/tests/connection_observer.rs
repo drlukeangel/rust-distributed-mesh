@@ -97,7 +97,6 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
     let accepts = Arc::new(Accepts::default());
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = ServerBuilder::new()
-        .ledger(test_ledger())
         .with_accept_trigger(resolver, accepts.clone())
         .serve::<Probe, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req: ProbeRequest| async move {
             let ProbeRequest::Probe { payload } = req;

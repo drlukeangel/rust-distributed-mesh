@@ -9,7 +9,7 @@
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::SecretKey;
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::framing::{
     decode_header, decode_request, encode_ack_frame, encode_request_frame, encode_response_frame, Birth, DeliveryId, HeaderRead, RequestHeader, Target, TransportHeader,
 };
@@ -220,13 +220,6 @@ impl StreamingProtocol for Tick {
     }
 }
 
-fn ledger() -> Vec<LedgerEntry> {
-    vec![
-        LedgerEntry { op: Command::OP, family: "command".into(), owner: OpOwner::Product("test".into()), state: OpState::Live },
-        LedgerEntry { op: Tick::OP, family: "tick".into(), owner: OpOwner::Product("test".into()), state: OpState::Live },
-    ]
-}
-
 // ---- the responder that serves Command ----
 
 struct Served {
@@ -266,7 +259,7 @@ async fn served_on(me: Birth, key: SecretKey, ep: iroh::Endpoint, build: impl Fn
     let seen = Arc::new(Mutex::new(Vec::new()));
     let gate = Arc::new(Semaphore::new(0));
     let (r, s, g) = (runs.clone(), seen.clone(), gate.clone());
-    let builder = ServerBuilder::new().ledger(ledger()).serve::<Command, _, _>(OpOwner::Product("test".into()), move |peer: PeerContext, req| {
+    let builder = ServerBuilder::new().serve::<Command, _, _>(OpOwner::Product("test".into()), move |peer: PeerContext, req| {
         let (r, s, g) = (r.clone(), s.clone(), g.clone());
         async move {
             s.lock().unwrap().push(peer.delivery.clone());
@@ -872,7 +865,7 @@ fn a_read_only_request_passes_the_reply_lost_after_acceptance_check() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-conformance-read-only-reply-lost").expect("the cell's evidence file can be created");
     let fixture = rdm_test::conformance::Unary::<Command> {
         serve: Arc::new(|b: ServerBuilder| {
-            b.ledger(ledger()).serve::<Command, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req| async move {
+            b.serve::<Command, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req| async move {
                 Ok::<_, HandlerFault>(match req {
                     CommandRequest::Read { tag, .. } => CommandReply::Ran { tag, runs: 0 },
                     CommandRequest::Run { tag, .. } => CommandReply::Ran { tag, runs: 1 },
@@ -1061,7 +1054,7 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
         resolver.insert(target.node.clone());
         let delivery = Delivery::with_pacing(b.clone(), pacing());
         let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone()));
-        let server = ServerBuilder::new().ledger(ledger()).carry::<Command>().serve_forward(client).with_delivery(delivery).build(ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }).unwrap();
+        let server = ServerBuilder::new().carry::<Command>().serve_forward(client).with_delivery(delivery).build(ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }).unwrap();
         let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         carriers.push((router, ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: b.node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.incarnation }));
     }
@@ -1127,7 +1120,7 @@ async fn a_connections_deleting_endpoint_still_receives_an_owed_response() {
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let client = NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone());
-    let server = ServerBuilder::new().ledger(ledger()).with_delivery(delivery.clone()).build(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
+    let server = ServerBuilder::new().with_delivery(delivery.clone()).build(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     server.begin_connections_delete();
     let mut r = r;
@@ -1334,7 +1327,6 @@ async fn served_spanning() -> (Router, ResolvedNode) {
     let (me, key) = (birth(), SecretKey::generate());
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let server = ServerBuilder::new()
-        .ledger(ledger())
         .serve::<Command, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req: CommandRequest| async move {
             tracing::info_span!("rdm.test.call.serve.via-handler", protocol = Command::NAME).in_scope(|| tracing::info!("the handler ran"));
             let (CommandRequest::Run { tag, .. } | CommandRequest::Read { tag, .. }) = req;

@@ -8,12 +8,10 @@
 //! arrived on, and the op, so a test reads where a call landed from the reply
 //! itself.
 //!
-//! `0x70` is in the RDM testkit range ([`TESTKIT_OPS`]): only the testkit rpc
+//! `0x70` is a testkit family (`OpOwner::Testkit`): only the testkit rpc
 //! node serves it, never a product binary. Each mutation writes the whole
 //! store to a temp file, fsyncs it and renames it over the store file before
 //! it answers, so an answered mutation survives a crash.
-//!
-//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use crate::held_name::HeldName;
 use rdm_core::launch::Launch;
@@ -722,7 +720,6 @@ mod tests {
     #[test]
     fn the_protocol_is_testkit_forwardable_and_every_variant_round_trips() {
         assert_eq!(TestkitStore::OP, 0x70);
-        assert!(rdm_core::catalog::TESTKIT_OPS.contains(&TestkitStore::OP));
         assert!(TestkitStore::FORWARDABLE);
         let a = at(TestkitStoreOp::Get);
         let replies = vec![

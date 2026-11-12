@@ -17,7 +17,7 @@ use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::trace::SpanData;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::catalog::OpOwner;
 use rdm_core::context::{CallContext, MAX_BAGGAGE_BYTES, MAX_TRACESTATE_BYTES};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
@@ -66,7 +66,7 @@ fn echo(payload: &[u8]) -> PingRequest {
     PingRequest::Ping { payload: payload.to_vec() }
 }
 
-/// A forwardable test family on a ledgered test op (Ping is not forwardable by design).
+/// A forwardable test family on a test op with no ledger row (Ping is not forwardable by design).
 struct Probe;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,10 +138,6 @@ impl NodeProtocol for Probe {
     }
 }
 
-fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
-}
-
 /// A process serving Ping on `rpc-0`; the handler keeps the PeerContext each call brought.
 struct Process {
     _router: Router,
@@ -158,7 +154,6 @@ async fn process(name: rdm_core::PathName, mesh: &str, r#type: &str) -> Process 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (s, s2) = (seen.clone(), seen.clone());
     let server = ServerBuilder::new()
-        .ledger(test_ledger())
         .serve::<Ping, _, _>(OpOwner::Core, move |peer, req: PingRequest| {
             s.lock().unwrap().push(peer);
             async move {
@@ -442,7 +437,6 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
     let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver).with_caller_system("carrier"));
     let (cid, cinc) = (NodeId::mint(), IncarnationId::mint());
     let carrier_server = ServerBuilder::new()
-        .ledger(test_ledger())
         .carry::<Probe>()
         .serve_forward(carrier_client)
         .build(ServedBirth { node_id: cid.to_string(), incarnation: cinc.to_string() })

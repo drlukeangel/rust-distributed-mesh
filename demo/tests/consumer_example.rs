@@ -184,11 +184,17 @@ fn a_record_cut_short_by_a_crash_opens_without_its_last_line() {
     assert!(refused.to_string().contains("line 1"), "{refused}");
 }
 
-/// CONTRACT: the ops' ledger rows are the product's, live, on the ops the protocols declare.
+/// CONTRACT: both ops build and serve under the product with no ledger row (RDM never records a
+/// product's opcodes, Q444).
 #[test]
-fn the_ledger_rows_reserve_both_ops_for_the_product() {
+fn both_ops_serve_under_the_product_with_no_ledger_row() {
     use rdm_core::protocol::NodeProtocol;
-    let rows = rshape_consumer::consumer_example::ledger_rows();
-    assert_eq!(rows.iter().map(|r| r.op).collect::<Vec<_>>(), vec![ExampleWork::OP, ExampleRecords::OP]);
-    assert!(rows.iter().all(|r| r.owner == OpOwner::Product(OWNER.into())));
+    let service = ExampleService::open(&record_dir("catalog"), Duration::from_secs(3600)).expect("the record opens");
+    let server = register(rdm_transport::ServerBuilder::new(), service, passed_gate())
+        .build(rdm_transport::ServedBirth { node_id: "n".into(), incarnation: "i".into() })
+        .expect("the catalog builds with no ledger row");
+    for op in [ExampleWork::OP, ExampleRecords::OP] {
+        let held = server.catalog().lookup(op).unwrap_or_else(|| panic!("{op:#04x} is served"));
+        assert_eq!(held.owner, OpOwner::Product(OWNER.into()), "{op:#04x} is the product's");
+    }
 }
