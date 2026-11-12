@@ -109,11 +109,22 @@ fn port_set(ports: &[u16]) -> String {
 /// The rules that drop UDP from every port of `a` to every port of `b`, and back, on loopback.
 /// Neither set is cut from itself; an empty set cuts nothing.
 pub fn partition_rules(a: &[u16], b: &[u16]) -> Vec<String> {
-    if a.is_empty() || b.is_empty() {
-        return Vec::new();
+    drop_rules_between(&[a.to_vec(), b.to_vec()])
+}
+
+/// The rules that drop every UDP datagram on loopback between two different sets of `sets`, both ways: one
+/// rule per set, from its ports to every other set's. At two sets they are [`partition_rules`]; an empty set
+/// cuts nothing and is cut from nothing.
+pub fn drop_rules_between(sets: &[Vec<u16>]) -> Vec<String> {
+    let mut rules = Vec::new();
+    for (i, own) in sets.iter().enumerate() {
+        let rest: Vec<u16> = sets.iter().enumerate().filter(|(j, _)| *j != i).flat_map(|(_, s)| s.iter().copied()).collect();
+        if own.is_empty() || rest.is_empty() {
+            continue;
+        }
+        rules.push(format!("iifname \"lo\" udp sport {} udp dport {} drop", port_set(own), port_set(&rest)));
     }
-    let (a, b) = (port_set(a), port_set(b));
-    vec![format!("iifname \"lo\" udp sport {a} udp dport {b} drop"), format!("iifname \"lo\" udp sport {b} udp dport {a} drop")]
+    rules
 }
 
 /// The rules that drop every UDP datagram on loopback from or to `ports`, whatever port is on the other end, so
@@ -135,6 +146,11 @@ impl Partition {
     /// `Err` names why the host cannot partition (a skip, or a CI failure).
     pub fn start(a: &[u16], b: &[u16]) -> Result<Self, String> {
         Ok(Self { held: Held::install("part", &partition_rules(a, b))? })
+    }
+
+    /// UDP between every two of `sets` dropped ([`drop_rules_between`]): each set keeps its own.
+    pub fn between(sets: &[Vec<u16>]) -> Result<Self, String> {
+        Ok(Self { held: Held::install("part", &drop_rules_between(sets))? })
     }
 
     /// Every UDP datagram to or from `ports` dropped, births after the cut included.
@@ -166,6 +182,18 @@ mod tests {
         let rules = partition_rules(&[40002, 40001, 40001], &[40003]);
         assert_eq!(rules, vec![r#"iifname "lo" udp sport { 40001, 40002 } udp dport { 40003 } drop"#, r#"iifname "lo" udp sport { 40003 } udp dport { 40001, 40002 } drop"#]);
         assert!(partition_rules(&[], &[40003]).is_empty() && partition_rules(&[40001], &[]).is_empty());
+    }
+
+    #[test]
+    fn rules_between_sets_drop_every_two_sets_both_ways_and_at_two_sets_are_the_two_set_rules() {
+        assert_eq!(drop_rules_between(&[vec![40002, 40001], vec![40003]]), partition_rules(&[40002, 40001], &[40003]));
+        let rules = drop_rules_between(&[vec![40001], vec![40002], vec![40003, 40004]]);
+        assert_eq!(rules, vec![
+            r#"iifname "lo" udp sport { 40001 } udp dport { 40002, 40003, 40004 } drop"#,
+            r#"iifname "lo" udp sport { 40002 } udp dport { 40001, 40003, 40004 } drop"#,
+            r#"iifname "lo" udp sport { 40003, 40004 } udp dport { 40001, 40002 } drop"#,
+        ]);
+        assert!(drop_rules_between(&[vec![40001], vec![]]).is_empty(), "one non-empty set cuts nothing");
     }
 
     #[test]

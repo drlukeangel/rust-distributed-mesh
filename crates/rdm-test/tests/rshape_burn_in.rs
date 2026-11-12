@@ -4580,6 +4580,21 @@ async fn cut_sets(f: &Formed, nodes: &[Value], a: &[PathName], b: &[PathName]) -
     }
 }
 
+/// The cut between every two meshes of the tier, both ways: each mesh keeps its own UDP paths and loses every
+/// path to another mesh. At two meshes it is the cut between them; at ten (`scale`, L4's shape) a cut of two
+/// meshes alone isolates neither, since gossip carries each side's frames through the other eight (rdm#404).
+/// The container provider cuts two meshes only.
+async fn cut_meshes(f: &Formed, nodes: &[Value]) -> Cut {
+    let side = |m: &str| -> Vec<PathName> { nodes.iter().filter(|n| rdm_test::estate::mesh_of(n) == m).map(|n| location(n)).collect() };
+    let sides: Vec<Vec<PathName>> = meshes().iter().map(|m| side(m)).collect();
+    if provider() == "container" {
+        assert_eq!(sides.len(), 2, "REFUSED: the container provider cuts two meshes, the tier holds {}", sides.len());
+        return cut_sets(f, nodes, &sides[0], &sides[1]).await;
+    }
+    let ports: Vec<Vec<u16>> = sides.iter().map(|s| udp_ports(nodes, s)).collect();
+    Cut::Process { _partition: Partition::between(&ports).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between the meshes: {why}")) }
+}
+
 /// The cut between two nodes, both ways, on the estate's provider ([`cut_sets`]). The fabric-primary
 /// is never one of the two. Held until the returned value drops.
 async fn cut_between(f: &Formed, nodes: &[Value], a: &PathName, b: &PathName, fabric_primary: &PathName) -> (Cut, Value) {
@@ -5150,9 +5165,9 @@ async fn partition_run(cell: &str, shape: Shape) {
     events.push(json!({"event": "healthy-control", "ledger_ops": control}));
 
     // C9: every UDP path between the meshes is dropped; no node is cut from a member of its own mesh.
-    let cut = cut_sets(&f, &st.nodes, &mesh1, &mesh2).await;
+    let cut = cut_meshes(&f, &st.nodes).await;
     let cut_at = now_ns();
-    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": ["mesh1", "mesh2"], "acknowledged": true}));
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": meshes(), "acknowledged": true}));
     // Bounded hold: each admin has handed each peer-mesh admin to its backbone channel twice.
     let admins: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["node_id"]), s(&rdm_test::estate::mesh_of(&n)))).collect();
     let held_at = wait_for("every admin re-feeds every peer-mesh admin twice", window * 6 + Duration::from_secs(40), || async {
@@ -5259,7 +5274,7 @@ async fn partition_run(cell: &str, shape: Shape) {
         }
         let created: BTreeSet<String> = named(spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
         assert_eq!(created, BTreeSet::from([f.build_id.clone()]), "no Build was accepted through cut and heal: recovered unchanged topology opens no new Build");
-        inv.holds("C9/C10: under the A/B cut each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins, every view holds one primary per node type and recovery follows the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
+        inv.holds("C9/C10: under the cut between the meshes each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins, every view holds one primary per node type and recovery follows the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
         json!({"refeed_attempts": att.len(), "lifecycle_marks": life.len(), "topology_version_publishers": tv.len()})
     })
     .await;
@@ -5345,7 +5360,7 @@ fn recovery_follows_the_verdict(spans: &[Value], from: u64, to: u64) {
     }
 }
 
-/// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
+/// CONTRACT: in the formed estate every UDP path between every two meshes is dropped (acknowledged by the host's
 /// rule install; no node is cut from a member of its own mesh). Each admin hands each peer-mesh admin to its
 /// backbone channel again once per repair window (only after the coverage was stale for the window), no admin
 /// loses its own mesh; a gateway reaches its mesh's broker, nothing reaches across. For two staleness floors
@@ -5719,8 +5734,6 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
     let side = |m: &str| -> Vec<PathName> { st.nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == m).map(|n| location(&n)).collect() };
     let near_mesh = st.mesh_of_fp();
-    let far_mesh = if near_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
-    let (near, far) = (side(&near_mesh), side(&far_mesh));
     let near_fp = st.fp_name();
     let sides: Vec<(PathName, String, String)> = st.admins.iter().map(|n| (location(&n), s(&rdm_test::estate::mesh_of(&n)), s(&n["node_id"]))).collect();
     for (name, _, _) in &sides {
@@ -5729,21 +5742,22 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let formation = f.build_id.clone();
     let mut events = Vec::new();
 
-    let cut = cut_sets(&f, &st.nodes, &near, &far).await;
+    let cut = cut_meshes(&f, &st.nodes).await;
     let cut_at = now_ns();
-    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": [near_mesh, far_mesh], "acknowledged": true}));
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": meshes(), "acknowledged": true}));
     for (name, mesh, id) in &sides {
-        let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
+        let own = side(mesh);
         // What this admin holds itself (query.md §2; never the atlas read, which a cut-off mesh-primary
         // carries up to the fabric-primary and cannot answer during the cut, query.md §1): its own mesh
-        // ready; and the other mesh unheard, which a node-admin records when its direct backbone receipt of
+        // ready; and every other mesh unheard, which a node-admin records when its direct backbone receipt of
         // that mesh stops (gossip.md §3.2: rdm.mesh.topology.update.via-mesh-silent), never by ageing the
         // other mesh's members out of its topology.
-        let other_mesh = if *mesh == near_mesh { far_mesh.clone() } else { near_mesh.clone() };
-        wait_for(&format!("{name:?} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
+        let others: Vec<&str> = meshes().iter().copied().filter(|m| *m != mesh.as_str()).collect();
+        wait_for(&format!("{name:?} holds its own mesh ready and every other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
             let v = f.estate.held_values_at(name).await;
-            let silent = named(&f.estate.spans_except(UNREAD_SPANS), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == id.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
-            (!v.is_empty() && holds_all_ready(&v, own) && silent).then_some(())
+            let spans = f.estate.spans_except(UNREAD_SPANS);
+            let silent: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-mesh-silent").into_iter().filter(|sp| sp["attributes"]["node"] == id.as_str() && start_ns(sp) >= cut_at).map(|sp| s(&sp["attributes"]["mesh"])).collect();
+            (!v.is_empty() && holds_all_ready(&v, &own) && others.iter().all(|m| silent.contains(*m))).then_some(())
         })
         .await;
     }
@@ -5800,14 +5814,14 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
         recovery_follows_the_verdict(spans, cut_at, verified_at);
         let create_added = named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| at_location(sp, &added_c) && sp["attributes"]["build_id"] == spawn_b.as_str()).count();
         assert_eq!(create_added, 1, "the added gateway was created once, by the Build that named it");
-        inv.holds("C9/C10: under the A/B cut the fabric-primary accepted and served a topology Build on its own side and refused a second one in flight by name; every view held one primary per (mesh, node type) and recovery followed the verdict; after the heal every path.name holds one live birth, the same in every admin's view, the Build completed and the healed fabric took the added gateway's delete", true, json!({"created_added": create_added}));
+        inv.holds("C9/C10: under the cut between the meshes the fabric-primary accepted and served a topology Build on its own side and refused a second one in flight by name; every view held one primary per (mesh, node type) and recovery followed the verdict; after the heal every path.name holds one live birth, the same in every admin's view, the Build completed and the healed fabric took the added gateway's delete", true, json!({"created_added": create_added}));
         json!({"created_added": create_added})
     })
     .await;
 }
 
-/// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
-/// rule install). Every admin holds its own mesh ready and the other mesh unheard. The fabric-primary adds a
+/// CONTRACT: in the formed estate every UDP path between every two meshes is dropped (acknowledged by the host's
+/// rule install). Every admin holds its own mesh ready and every other mesh unheard. The fabric-primary adds a
 /// gateway to its own mesh: a second topology Build sent while that one is in flight is refused by name
 /// `build-in-progress` naming the Build (build.md), and the gateway is ready on the near side under the cut.
 /// For two staleness floors past the decision step every view an admin answers holds at most one primary per
@@ -5831,7 +5845,7 @@ enum NearFault {
     HardKill,
 }
 
-/// A near-side gateway is restarted or killed inside the A/B cut. Each side serves its own, nothing holds and
+/// A near-side gateway is restarted or killed inside the cut between the meshes. Each side serves its own, nothing holds and
 /// nothing waits for proof (fabric-recovery.md step 3, Q111): which side's births survive is not pinned (Q4).
 async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     if !cuts_here(cell) {
@@ -5851,8 +5865,6 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
     let side = |m: &str| -> Vec<PathName> { st.nodes.iter().filter(|n| rdm_test::estate::mesh_of(&n) == m).map(|n| location(&n)).collect() };
     let near_mesh = st.mesh_of_fp();
-    let far_mesh = if near_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
-    let (near, far) = (side(&near_mesh), side(&far_mesh));
     let sides: Vec<(PathName, String, String)> = st.admins.iter().map(|n| (location(&n), s(&rdm_test::estate::mesh_of(&n)), s(&n["node_id"]))).collect();
     for (name, _, _) in &sides {
         wait_for(&format!("{name:?} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(name).await, &everyone).then_some(()) }).await;
@@ -5863,21 +5875,22 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let formation = f.build_id.clone();
     let rt = if fault == NearFault::HardKill { Some(exact_runtime(&f, &victim).await) } else { None };
 
-    let cut = cut_sets(&f, &st.nodes, &near, &far).await;
+    let cut = cut_meshes(&f, &st.nodes).await;
     let cut_at = now_ns();
-    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": [near_mesh, far_mesh], "acknowledged": true}));
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": meshes(), "acknowledged": true}));
     for (name, mesh, id) in &sides {
-        let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
+        let own = side(mesh);
         // What this admin holds itself (query.md §2; never the atlas read, which a cut-off mesh-primary
         // carries up to the fabric-primary and cannot answer during the cut, query.md §1): its own mesh
-        // ready; and the other mesh unheard, which a node-admin records when its direct backbone receipt of
+        // ready; and every other mesh unheard, which a node-admin records when its direct backbone receipt of
         // that mesh stops (gossip.md §3.2: rdm.mesh.topology.update.via-mesh-silent), never by ageing the
         // other mesh's members out of its topology.
-        let other_mesh = if *mesh == near_mesh { far_mesh.clone() } else { near_mesh.clone() };
-        wait_for(&format!("{name:?} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
+        let others: Vec<&str> = meshes().iter().copied().filter(|m| *m != mesh.as_str()).collect();
+        wait_for(&format!("{name:?} holds its own mesh ready and every other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
             let v = f.estate.held_values_at(name).await;
-            let silent = named(&f.estate.spans_except(UNREAD_SPANS), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == id.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
-            (!v.is_empty() && holds_all_ready(&v, own) && silent).then_some(())
+            let spans = f.estate.spans_except(UNREAD_SPANS);
+            let silent: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-mesh-silent").into_iter().filter(|sp| sp["attributes"]["node"] == id.as_str() && start_ns(sp) >= cut_at).map(|sp| s(&sp["attributes"]["mesh"])).collect();
+            (!v.is_empty() && holds_all_ready(&v, &own) && others.iter().all(|m| silent.contains(*m))).then_some(())
         })
         .await;
     }
@@ -5949,7 +5962,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             assert_eq!(near_repair[0]["attributes"]["submitter"], near_primary_c.as_str(), "the near mesh's own mesh-primary submitted it");
         }
         inv.holds(
-            &format!("C9/C10: under the A/B cut the near side served the {} of {victim_c:?}; every view held one primary per (mesh, node type) and recovery followed the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view", if fault == NearFault::Restart { "restart" } else { "recovery" }),
+            &format!("C9/C10: under the cut between the meshes the near side served the {} of {victim_c:?}; every view held one primary per (mesh, node type) and recovery followed the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view", if fault == NearFault::Restart { "restart" } else { "recovery" }),
             true,
             json!({"created_at_victim": created_at_victim}),
         );
@@ -5958,7 +5971,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     .await;
 }
 
-/// CONTRACT: in the formed estate every UDP path between the two meshes is dropped and the near side's writer
+/// CONTRACT: in the formed estate every UDP path between every two meshes is dropped and the near side's writer
 /// restarts a near gateway: node.stop then node.start, node commands of no Build (Q342), bring it back under its
 /// NodeId and incarnation (node-stop.md, node-start.md: stop then start of the same live process; no birth is created). For two
 /// staleness floors past the decision step every view an admin answers holds at most one primary per (mesh,
@@ -5972,7 +5985,7 @@ async fn mock_cut_restart_of_a_near_node_completes_and_the_heal_converges() {
     cut_near_fault_run("mock_cut_restart_of_a_near_node_completes_and_the_heal_converges", Shape { gateway: tier.gateway.max(2), ..tier }, NearFault::Restart).await;
 }
 
-/// CONTRACT: in the formed estate every UDP path between the two meshes is dropped and the provider kills the
+/// CONTRACT: in the formed estate every UDP path between every two meshes is dropped and the provider kills the
 /// exact runtime of a near gateway. Under the cut the near mesh's own mesh-primary runs the one recovery, its
 /// own workflow and never a Build (node-recovery.md, Q342), which creates the gateway under a new NodeId at
 /// the same path.name. For two staleness floors past the decision step every view
