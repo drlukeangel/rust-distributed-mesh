@@ -193,11 +193,26 @@ where
 /// mesh-primary"): the exact birth of its mesh's current primary as its topology view names it (the
 /// birth a top-up reads from, `TopologyView::mesh_primary`), with whom the step names as its server;
 /// `None` while the view names none, before the read itself hands the node its primary records
-/// (`topology_read::get_topology`, `learn_primaries`), when the read goes to the admin that answered
-/// the join.
-fn own_mesh_primary(topology_view: &TopologyView) -> Option<(NodeTarget, String)> {
-    let d = topology_view.mesh_primary().ok()?;
+/// (`topology_read::get_topology`, `learn_primaries`), and while it names this node itself (a
+/// mesh-primary reads at the primary above it, node-start.md "Admission"), when the read goes to the
+/// admin that answered the join.
+fn own_mesh_primary(topology_view: &TopologyView, node_id: &NodeId) -> Option<(NodeTarget, String)> {
+    let d = topology_view.mesh_primary().ok().filter(|d| &d.node.node_id != node_id)?;
     Some((NodeTarget::ExactNode(d.node.node_id.clone()), d.node.node_id.to_string()))
+}
+
+/// `read` made to the admin a first start reads from (node-topology-get.md, "exact member → own
+/// mesh-primary"; node-start.md step 4): its mesh's current primary as its topology view names it
+/// ([`own_mesh_primary`]), and the admin that answered its join (`through`) only while the view names
+/// none. The answer and who gave it; a failure names whom the read went to.
+async fn at_own_mesh_primary<T, E: std::fmt::Display, F, Fut>(node: &str, node_id: &NodeId, topology_view: &TopologyView, through: &JoinThrough, read: F) -> Result<(T, String), (String, String)>
+where
+    F: Fn(NodeTarget) -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let _ = node;
+    let (target, who) = own_mesh_primary(topology_view, node_id).unwrap_or_else(|| (through.target.clone(), through.node_id.to_string()));
+    read(target).await.map(|v| (v, who.clone())).map_err(|e| (e.to_string(), who))
 }
 
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.
@@ -496,9 +511,9 @@ impl AfterTheHook {
                 let (client, channels, mesh) = (&client, &channels, topology_view.mesh_name());
                 async move { crate::topology_read::get_topology(client, &target, mesh, channels, None, None).await }
             };
-            let taken = match (commander.as_mut(), own_mesh_primary(&topology_view)) {
-                (None, Some((target, who))) => read(target).instrument(step.clone()).await.map(|r| (r, who.clone())).map_err(|e| (e.to_string(), who)),
-                (commander, _) => at_commander(&name, &client, t, commander, read).instrument(step.clone()).await,
+            let taken = match commander.as_mut() {
+                None => at_own_mesh_primary(&name, &node_id, &topology_view, t, read).instrument(step.clone()).await,
+                commander => at_commander(&name, &client, t, commander, read).instrument(step.clone()).await,
             };
             let (read, who) = match taken {
                 Ok(read) => read,
@@ -657,6 +672,8 @@ mod tests {
         steps: Arc<Mutex<Vec<&'static str>>>,
         observed_ctx: Arc<Mutex<Vec<(StartKind, bool)>>>,
         ready_notified: Arc<tokio::sync::Notify>,
+        /// `Pending` until set, when one is given; `Ok` at once otherwise.
+        pass: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     #[async_trait::async_trait]
@@ -667,7 +684,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((ctx.start_kind, ctx.inherited));
-            HookOutcome::Ok
+            match &self.pass {
+                Some(pass) if !pass.load(std::sync::atomic::Ordering::SeqCst) => HookOutcome::Pending { reason: "held by the cell".into() },
+                _ => HookOutcome::Ok,
+            }
         }
     }
 
@@ -685,6 +705,12 @@ mod tests {
         steps: Arc<Mutex<Vec<&'static str>>>,
         observed_ctx: Arc<Mutex<Vec<(StartKind, bool)>>>,
         ready_notified: Arc<tokio::sync::Notify>,
+        /// The hook's `Pending` until set ([`TestHook::pass`]).
+        pass: Option<Arc<std::sync::atomic::AtomicBool>>,
+        /// The birth's cycles: the hook runs on the current cycle's token. A fresh token when `None`.
+        cycles: Option<rdm_transport::BirthCancel>,
+        /// Where the start hands the hook's handle.
+        state: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
     }
 
     #[async_trait::async_trait]
@@ -765,6 +791,7 @@ mod tests {
                 steps: self.steps.clone(),
                 observed_ctx: self.observed_ctx.clone(),
                 ready_notified: self.ready_notified.clone(),
+                pass: self.pass.clone(),
             });
             Ok(HookParts {
                 birth: Birth {
@@ -776,8 +803,8 @@ mod tests {
                     r#type: "node".into(),
                 },
                 node_hooks: NodeHooks::new(hook.clone()).with_on_node_ready(hook),
-                cancel: CancelToken::new(),
-                state: Arc::default(),
+                cancel: self.cycles.as_ref().map(|c| c.token()).unwrap_or_else(CancelToken::new),
+                state: self.state.clone(),
                 runs: HookRuns::Inline,
                 after: Box::new(RecordedAfter {
                     steps: self.steps.clone(),
@@ -860,6 +887,9 @@ mod tests {
                 steps: steps.clone(),
                 observed_ctx: observed.clone(),
                 ready_notified: notify1.clone(),
+                pass: None,
+                cycles: None,
+                state: Arc::default(),
             };
             node_start(&mut plug1, StartKind::FirstStart)
                 .await
@@ -883,6 +913,9 @@ mod tests {
                 steps: steps.clone(),
                 observed_ctx: observed.clone(),
                 ready_notified: notify2.clone(),
+                pass: None,
+                cycles: None,
+                state: Arc::default(),
             };
             node_start(&mut plug2, StartKind::AfterStop)
                 .await
@@ -928,5 +961,148 @@ mod tests {
                 "expected span {required} in node_start execution"
             );
         }
+    }
+
+    /// A node-admin digest of mesh1, Ready.
+    fn admin(fabric_id: &FabricId, name: &str, node_id: &NodeId) -> MeshDigest {
+        MeshDigest {
+            fabric_id: fabric_id.clone(),
+            node: rdm_core::MeshNode {
+                mesh: "mesh1".into(),
+                r#type: "node-admin".into(),
+                node_id: node_id.clone(),
+                path: "mesh1.node-admin".into(),
+                name: name.into(),
+                endpoint_id: rdm_core::EndpointId(format!("key-{node_id}")),
+                transport_addr: "127.0.0.1:41000".parse().unwrap(),
+                incarnation: IncarnationId::mint(),
+                supersedes: None,
+            },
+            status: NodeStatus::Ready,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1,
+            primary: Vec::new(),
+        }
+    }
+
+    fn record(d: &MeshDigest, revision: u64) -> rdm_core::Primary {
+        rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+    }
+
+    /// CONTRACT (node-topology-get.md, "exact member → own mesh-primary"; node-start.md step 4, "obtain
+    /// topology once through node.topology.get"; the steps' own words: "at a first start the mesh's
+    /// current primary its topology view names, never the admin that answered the join once another
+    /// holds the role, and that admin only while the view names none"): a first start's one topology
+    /// read goes to its mesh's current primary as its view names it. A read under way to that primary
+    /// when the view comes to name another (a later record, its birth held) is dropped and made again to
+    /// the one named now, which answers it, on the view's own change: no timer, no retry of a failed
+    /// read. A view that names the node itself sends the read to the admin that answered its join (a
+    /// mesh-primary reads at the primary above it, node-start.md "Admission"). Must NOT happen: the read
+    /// held at a primary the view no longer names (rdm#400: a launcher lost with the read under way), or
+    /// a read aimed at the node itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_first_starts_read_under_way_follows_the_primary_its_view_names_now() {
+        let fabric_id = FabricId::mint();
+        let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+        rafka_time.adopt(1_000_000);
+        let view = TopologyView::new(&fabric_id, "mesh1", &MeshId::mint(), "mesh1.node.3", Arc::new(rafka_time), Default::default());
+        let (old_id, new_id, me) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
+        let (old, new) = (admin(&fabric_id, "1", &old_id), admin(&fabric_id, "2", &new_id));
+        for d in [&old, &new] {
+            assert!(view.digest_view.record_at(d.clone(), std::time::Instant::now()), "the view holds {}", d.node.node_id);
+        }
+        view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &record(&old, 1));
+        let through = JoinThrough { target: NodeTarget::ExactNode(old_id.clone()), endpoint: iroh::SecretKey::generate().public(), node_id: old_id.clone(), anchor: "launcher".into() };
+        // The launcher answers nothing (it is lost with the read under way); any other admin answers.
+        let (reads, under_way) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(tokio::sync::Notify::new()));
+        let read = |target: NodeTarget| {
+            let (reads, under_way, old_id) = (reads.clone(), under_way.clone(), old_id.clone());
+            async move {
+                let NodeTarget::ExactNode(id) = target else { panic!("a first start reads at an exact birth: {target:?}") };
+                reads.lock().unwrap().push(id.to_string());
+                under_way.notify_one();
+                if id == old_id {
+                    std::future::pending::<()>().await;
+                }
+                Ok::<_, String>(format!("answered by {id}"))
+            }
+        };
+        let elected = async {
+            under_way.notified().await;
+            view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &record(&new, 2));
+        };
+        let (taken, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async { tokio::join!(at_own_mesh_primary("mesh1.node.3", &me, &view, &through, read), elected) })
+            .await
+            .expect("the read under way at the launcher ends once the view names another primary");
+        assert_eq!(taken, Ok((format!("answered by {new_id}"), new_id.to_string())), "the read is answered by the primary the view names now");
+        assert_eq!(*reads.lock().unwrap(), vec![old_id.to_string(), new_id.to_string()], "one read to the primary named first, made again once to the one named now");
+
+        // A view that names the node itself: the read goes to the admin that answered the join.
+        let mine = admin(&fabric_id, "3", &me);
+        assert!(view.digest_view.record_at(mine.clone(), std::time::Instant::now()));
+        view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &record(&mine, 3));
+        let through = JoinThrough { target: NodeTarget::ExactNode(new_id.clone()), endpoint: iroh::SecretKey::generate().public(), node_id: new_id.clone(), anchor: "above".into() };
+        let at = |target: NodeTarget| async move { Ok::<_, String>(target) };
+        let taken = tokio::time::timeout(std::time::Duration::from_secs(10), at_own_mesh_primary("mesh1.node-admin.3", &me, &view, &through, at)).await.expect("answered");
+        assert_eq!(taken, Ok((NodeTarget::ExactNode(new_id.clone()), new_id.to_string())), "a node its view names primary reads at the admin above it, never at itself");
+    }
+
+    /// CONTRACT (node-mesh-join.md step 10: "a birth commanded back leaves its channels, runs the whole
+    /// sequence again on the commanding call and publishes ready only once its hook has passed (Q87)";
+    /// fabric-node-hooks.md "Cancellation and lifecycle commands": "Ending the in-flight start cancels the
+    /// token ... The hook and any pull it has in flight end", and "Observability": "A cancelled hook
+    /// names the cancellation"): a first start whose hook answered `Pending` returns with the node
+    /// Pending and runs the rest of its hook in a task. When the birth begins its next cycle (a
+    /// commanded node.mesh.join renews its `BirthCancel`, node_self `serve_join_mesh`), that cycle
+    /// replaces this one: the first start's hook ends `Cancelled`, named on its own span, and nothing
+    /// after it runs. Must NOT happen (rdm#400): the first start's hook passing at its next attempt and
+    /// its Build floor, topology read or report running beside the commanded sequence.
+    #[test]
+    fn a_first_start_held_at_its_hook_ends_cancelled_when_the_birth_begins_its_next_cycle() {
+        let dir = std::env::temp_dir().join(format!("rdm-node-start-cycle-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-cycle").expect("evidence capture starts");
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        capture.run(2, async {
+            let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            rafka_time.adopt(1_000_000);
+            let (cycles, pass, state) = (rdm_transport::BirthCancel::new(), Arc::new(std::sync::atomic::AtomicBool::new(false)), Arc::new(Mutex::new(None)));
+            let mut plug = TestStartPlug {
+                starting: Starting {
+                    root: tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = "mesh1.node", node_name = "4"),
+                    name: "4".into(),
+                    birth_path: "mesh1.node".into(),
+                    birth_name: "4".into(),
+                    node_id: NodeId::mint(),
+                    mesh_id: None,
+                    client,
+                    rafka_time,
+                },
+                no_accepting_primary: NoAcceptingPrimary::Day0Root,
+                steps: steps.clone(),
+                observed_ctx: Arc::default(),
+                ready_notified: Arc::new(tokio::sync::Notify::new()),
+                pass: Some(pass.clone()),
+                cycles: Some(cycles.clone()),
+                state: state.clone(),
+            };
+            node_start(&mut plug, StartKind::FirstStart).await.expect("a first start whose hook answered Pending returns with the node Pending");
+            let handle = state.lock().unwrap().clone().expect("the start handed the hook's handle");
+            assert!(matches!(handle.state(), crate::node_hooks::PreNodeReadyState::Pending { .. }), "the hook answered Pending: {:?}", handle.state());
+            // The birth begins its next cycle, and the hook would pass at its next attempt.
+            let _next = cycles.renew();
+            pass.store(true, std::sync::atomic::Ordering::SeqCst);
+            let end = tokio::time::timeout(std::time::Duration::from_secs(10), handle.settled()).await.expect("the first start's hook settles");
+            assert_eq!(end, crate::node_hooks::PreNodeReadyState::Cancelled, "the next cycle ends the first start's hook: steps {:?}", steps.lock().unwrap());
+        });
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(*steps.lock().unwrap(), vec!["enter_channel", "joined", "pre_node_ready"], "nothing after the hook runs: no Build floor, no topology read, no report");
+        assert!(
+            spans.iter().any(|s| s["name"] == "rdm.mesh.node.update.via-pre-node-ready-cancelled" && s["attributes"]["node_name"] == "4"),
+            "the cancelled hook names the cancellation on its span"
+        );
     }
 }
