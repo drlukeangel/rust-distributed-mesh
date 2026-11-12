@@ -1538,21 +1538,17 @@ impl StatusService {
             Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the Fabric record: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
         };
         // The cert dates of the births of the meshes this admin is primary for (its atlas's scope,
-        // Q207), each on its record read through the reader (query.md §1): a read that fails is
-        // named, never answered as no expiry.
+        // Q207), each on its record read through the reader (query.md §1), each mesh's records as one
+        // store read, never one read per birth (fabric-certs.md §Tracking: "`fabric.get` shows the next
+        // expiry across the fabric"): a read that fails is named, never answered as no expiry.
         let mut certs = None;
         if let (Some(atlas), Some(_)) = (self.atlas.get(), self.configs.get().and_then(|c| c.records())) {
             let reader = crate::current_record::CurrentRecords { nodes: &*self.nodes_storage };
             let scope = atlas.meshes();
-            let mut rows = Vec::new();
-            for n in view.births().filter(|n| scope.contains(&n.mesh)) {
-                match reader.row(&n.node_id).await {
-                    Ok(Some(row)) => rows.push(row),
-                    Ok(None) => {}
-                    Err(e) => return rdm_core::reply::status::bounded_source_failed("node records", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the record of node {}: {e}", n.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name)),
-                }
+            match reader.rows_of(view.births().filter(|n| scope.contains(&n.mesh)).map(|n| (&n.node_id, n.mesh.as_str()))).await {
+                Ok(rows) => certs = Some(rows.into_values().collect::<Vec<_>>()),
+                Err(e) => return rdm_core::reply::status::bounded_source_failed("node records", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the records of its births: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
             }
-            certs = Some(rows);
         }
         match self.builds.current_build().await {
             Ok(current) => {

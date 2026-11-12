@@ -5,6 +5,18 @@
 
 use crate::model::{NodeId, PathName};
 use crate::storage::{NodeLine, NodeRecord, NodesStorage};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The shared resolver's span of the record of `node_id` (i150 § OTLP span-assertion bar): the reading
+/// node (`node_id`, this process's own) and the subject, its mesh, outcome and reason recorded once
+/// known. No value of the record is logged.
+fn resolve_span(node_id: &NodeId) -> tracing::Span {
+    tracing::info_span!(
+        "rdm.node_admin.node.resolve.via-lifecycle-record",
+        node_id = rdm_transport::service_instance_id().unwrap_or_default(), subject_id = %node_id,
+        mesh = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal",
+    )
+}
 
 /// The store a current record is read from: the nodes store, each node's record at its node id.
 #[derive(Clone, Copy)]
@@ -35,17 +47,13 @@ impl CurrentRecords<'_> {
     /// `Err`: a read failed, named.
     ///
     /// The shared resolver (i150 § OTLP span-assertion bar): one
-    /// `rdm.node_admin.node.resolve.via-lifecycle-record` span per read, naming the reading node
-    /// (`node_id`, this process's own), the subject, its mesh and the outcome: `read` (the node's
+    /// `rdm.node_admin.node.resolve.via-lifecycle-record` span per record resolved, naming the reading
+    /// node (`node_id`, this process's own), the subject, its mesh and the outcome: `read` (the node's
     /// latest record is read), `none` (the node has no record yet) or `unavailable` (the reason named).
     /// No value of the record is logged.
     pub async fn line(&self, node_id: &NodeId) -> Result<Option<NodeLine>, String> {
         use tracing::Instrument as _;
-        let span = tracing::info_span!(
-            "rdm.node_admin.node.resolve.via-lifecycle-record",
-            node_id = rdm_transport::service_instance_id().unwrap_or_default(), subject_id = %node_id,
-            mesh = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal",
-        );
+        let span = resolve_span(node_id);
         let read = self.nodes.node(node_id).instrument(span.clone()).await.map_err(|e| format!("the record of node {node_id} could not be read: {e}"));
         match &read {
             Ok(Some(line)) => span.record("mesh", line.record.mesh().as_str()).record("outcome", "read"),
@@ -58,6 +66,31 @@ impl CurrentRecords<'_> {
     /// The record of `node_id` ([`Self::line`]). `Ok(None)`: the node has no record yet.
     pub async fn row(&self, node_id: &NodeId) -> Result<Option<NodeRecord>, String> {
         Ok(self.line(node_id).await?.map(|l| l.record))
+    }
+
+    /// The records of `births`, each a node id beside its mesh: the records of each of their meshes read
+    /// as one store read ([`NodesStorage::nodes`], a `Withdrawn` one skipped), the meshes read together,
+    /// never one read per node. Each birth's record is resolved as [`Self::line`] resolves one, with its
+    /// own span: `read` with its mesh, or `none`. `Err` names the mesh whose records could not be read.
+    pub async fn rows_of<'n>(&self, births: impl IntoIterator<Item = (&'n NodeId, &'n str)>) -> Result<BTreeMap<NodeId, NodeRecord>, String> {
+        let births: Vec<(&NodeId, &str)> = births.into_iter().collect();
+        let meshes: BTreeSet<&str> = births.iter().map(|(_, mesh)| *mesh).collect();
+        let read = futures_util::future::try_join_all(meshes.into_iter().map(|mesh| async move { self.nodes.nodes(mesh).await.map_err(|e| format!("the records of mesh {mesh} could not be read: {e}")) })).await?;
+        let mut held: BTreeMap<NodeId, NodeRecord> = read.into_iter().flatten().map(|r| (r.node_id.clone(), r)).collect();
+        let mut out = BTreeMap::new();
+        for (node_id, _) in births {
+            let span = resolve_span(node_id);
+            match held.remove(node_id) {
+                Some(record) => {
+                    span.record("mesh", record.mesh().as_str()).record("outcome", "read");
+                    out.insert(node_id.clone(), record);
+                }
+                None => {
+                    span.record("outcome", "none").record("reason", "the node has no record yet");
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The current-pair lookup: the live record standing at `name`, read from the node records by their

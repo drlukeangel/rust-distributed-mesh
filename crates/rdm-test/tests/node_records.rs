@@ -636,7 +636,8 @@ async fn the_fabric_primary_reads_one_record_for_a_pair_and_one_store_call_per_m
     let at_fp = |sp: &&Value| attr(sp, "node_path") == fp.path && attr(sp, "node_name") == fp.name && (from..=to).contains(&start_ns(sp));
     let wall_ms = |sp: &Value| (sp["end_unix_nano"].as_u64().unwrap_or_default().saturating_sub(start_ns(sp))) as f64 / 1e6;
     let read_of = |sp: &Value, name: &str| named(&spans, name).into_iter().find(|r| r["trace_id"] == sp["trace_id"]).map(wall_ms).unwrap_or_default();
-    let resolved = |sp: &Value| -> Vec<String> { named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record").into_iter().filter(|r| r["parent_span_id"] == sp["span_id"]).map(|r| attr(r, "subject_id")).collect() };
+    // The records the read resolved: the shared resolver's spans in its trace (fabric.get resolves them before its answer's span opens).
+    let resolved = |sp: &Value| -> Vec<String> { named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record").into_iter().filter(|r| r["trace_id"] == sp["trace_id"]).map(|r| attr(r, "subject_id")).collect() };
     let calls = |sp: &Value| attr(sp, "io_calls").parse::<u64>().unwrap_or_else(|e| panic!("the read's span names its store calls: {e}: {sp}"));
     let pair_reads: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(at_fp).filter(|sp| attr(sp, "pairs") == format!("(path, [{}]) (name, [{}])", subject.path, subject.name)).collect();
     let mesh_reads: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(at_fp).filter(|sp| attr(sp, "pairs") == "(mesh, [mesh2])").collect();
@@ -656,8 +657,13 @@ async fn the_fabric_primary_reads_one_record_for_a_pair_and_one_store_call_per_m
         assert_eq!(resolved(sp), [subject.node_id.to_string()], "node.get of one pair reads that node's record alone: {cost:#?}");
         assert!(calls(sp) <= 2, "node.get of one pair: the current-pair lookup and the node's record, never a call per node: {cost:#?}");
     }
-    for sp in mesh_reads.iter().chain(&fabric_reads) {
-        assert!(calls(sp) <= 2, "a mesh's records are one store call, never a call per node: {cost:#?}");
+    for sp in &mesh_reads {
+        assert!(calls(sp) <= 2, "node.get [mesh: mesh2] reads the mesh's records as one store call, never a call per node: {cost:#?}");
+    }
+    // fabric.get reads the Fabric record and the current Build beside the node records: fewer store calls
+    // than the fabric has nodes, never one per node.
+    for sp in &fabric_reads {
+        assert!(calls(sp) < views.len() as u64, "fabric.get reads the node records at one store call per mesh, never a call per node: {cost:#?}");
     }
 }
 

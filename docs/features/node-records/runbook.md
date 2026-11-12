@@ -8,6 +8,7 @@
 | `node.get` lists a node with properties unavailable | The node has written no property record yet, or its backend keeps its stores in another process. |
 | A config update ends `ConfigNotApplied` | The node did not answer. Nothing is recorded, and a later update applies as usual (Q310). |
 | Properties revert after a restart | The node's retained property record against its launch environment. |
+| A `node.get` or `fabric.get` is slow at the answering admin | The read's span, `rdm.node_admin.node.serve.via-get` or `rdm.node_admin.fabric.serve.via-get`: `io_calls` counts its store calls (a read naming nodes by id reads each record at its id; by `(path, name)`, the current-pair lookup and each record; any other read, each mesh's records as one call; never one call per node), `io_queued_ms` and `io_ms` what they took. |
 
 The spans to read:
 - `rdm.node.record.update.via-properties`: the node's own write.
